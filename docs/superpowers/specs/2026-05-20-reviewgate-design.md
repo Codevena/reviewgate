@@ -273,7 +273,11 @@ else:
                                     'ask-once' → block once; if Claude rejects
                                                  all remaining WARN with
                                                  reviewer_was_wrong:true, the
-                                                 next iter SOFT-PASS allow_stops
+                                                 next iter SOFT-PASS allow_stops.
+                                  FP-Ledger interaction in 'ask-once':
+                                    each rejected finding counts as ONE FP
+                                    candidate contribution per reviewer that
+                                    raised it (not one bulk contribution).
      FAIL and decisions/<n>.jsonl exists with all finding_ids addressed:
                                   iter++; run new review
      FAIL with missing decisions: BLOCK (emit decision-block JSON)
@@ -821,7 +825,9 @@ and counted as `reviewer.hallucination_count`.
 **Companion schemas** (all version-tagged, all zod-validated at read/write):
 
 ```ts
-// .reviewgate/pending.json — written by ReportWriter
+// .reviewgate/pending.json — written by ReportWriter on PASS/SOFT-PASS/FAIL.
+// NOT written on ESCALATE — ESCALATION.md is the authoritative output for
+// escalated runs (and the run.complete audit event records the final state).
 interface PendingReport {
   schema: 'reviewgate.pending.v1';
   run_id: string;
@@ -1235,6 +1241,11 @@ export default defineConfig({
                      timeoutMs: 300_000 },
   },
   phases: {
+    // NOTE: the `model` field below is the user-stated PREFERENCE.
+    // At preflight time the anti-sycophancy downgrade table (§5.4 rule 5)
+    // overrides this value when host-model tier ≤ this tier — e.g. Sonnet
+    // host downgrades triage to Haiku, Opus host downgrades triage to Sonnet.
+    // The config block does not silently win; doctor reports the active tier.
     triage: { provider: 'claude-code', model: 'claude-sonnet-4-6' },
     review: {
       reviewers: [
