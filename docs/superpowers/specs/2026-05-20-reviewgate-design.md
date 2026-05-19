@@ -241,6 +241,19 @@ range-specified changes; CLI prints a one-line verdict + path to
 }
 ```
 
+**`dirty.flag` lifecycle** — exhaustive:
+
+| Event | Action on `dirty.flag` |
+|---|---|
+| `PostToolUse` fires (any Edit/Write/MultiEdit/NotebookEdit) | `trigger.sh` writes/overwrites `dirty.flag` with `{diff_hash, ts}`. |
+| `Stop` hook starts (`gate.sh`) | Reads flag. If absent or `ts < last_stop_ts` → skip review, allow_stop. |
+| Review completes with verdict=PASS | `gate.sh` deletes `dirty.flag` (atomic rename to `.dirty.consumed.<ts>` then unlink) and writes `last_stop_ts` into `state.json`. |
+| Review completes with verdict=SOFT-PASS | Same as PASS: delete the flag, update `state.json`. |
+| Review completes with verdict=FAIL | Keep `dirty.flag` — the next Stop after Claude's fix attempt will re-review. |
+| Review completes with verdict=ESCALATE | Delete the flag (escalation surfaces to user; the loop must not restart on the same diff). |
+| `SessionStart` (`reset.sh`) | Delete `dirty.flag`, `decisions/`, `pending.*`; reset `state.json`. New session = clean slate. |
+| Diff hash matches the hash of the last PASS (cache-hit case) | Delete the flag without running a review. |
+
 **FSM (executed by `gate.sh` on every Stop):**
 
 ```
@@ -251,6 +264,16 @@ else:
    run_review_iteration()
    case verdict:
      PASS:                       allow_stop
+     SOFT-PASS (no CRITICAL, only singleton/minority WARN):
+                                  allow_stop, BUT write SOFT_PASS banner
+                                  to pending.md and audit-log; configurable
+                                  via loop.softPassPolicy:
+                                    'allow' (default) → allow_stop with banner
+                                    'block' → treat as FAIL, require decisions
+                                    'ask-once' → block once; if Claude rejects
+                                                 all remaining WARN with
+                                                 reviewer_was_wrong:true, the
+                                                 next iter SOFT-PASS allow_stops
      FAIL and decisions/<n>.jsonl exists with all finding_ids addressed:
                                   iter++; run new review
      FAIL with missing decisions: BLOCK (emit decision-block JSON)
@@ -269,11 +292,13 @@ instructs Claude to read the structured report from disk via its Read tool:
 ```json
 {
   "decision": "block",
-  "reason": "Reviewgate FAIL — iteration <N> of <MAX>. <S> CRITICAL, <W> WARN. The structured report is at .reviewgate/pending.md and .reviewgate/pending.json. For each finding, append exactly one line to .reviewgate/decisions/<N>.jsonl with either {verdict:\"accepted\", action:\"fixed\", ...} or {verdict:\"rejected\", reason:\"...\", reviewer_was_wrong:true}. Reviewgate will not unblock until every finding ID has a decision.",
-  "continue": true,
-  "suppressOutput": false
+  "reason": "Reviewgate FAIL — iteration <N> of <MAX>. <S> CRITICAL, <W> WARN. The structured report is at .reviewgate/pending.md and .reviewgate/pending.json. For each finding, append exactly one line to .reviewgate/decisions/<N>.jsonl with either {verdict:\"accepted\", action:\"fixed\", ...} or {verdict:\"rejected\", reason:\"...\", reviewer_was_wrong:true}. Reviewgate will not unblock until every finding ID has a decision."
 }
 ```
+
+Only `decision` and `reason` are documented Stop-hook response fields.
+We intentionally do NOT include `continue` / `suppressOutput` — those
+fields are not part of the documented Stop response surface.
 
 The reason text is bounded at 4 KB (well below any documented hook-output
 cap) and includes only the counters that drive Claude's response. The full
@@ -285,6 +310,70 @@ Claude's action lives only in the hook return value.
 current Claude Code version. If accepted, Reviewgate may upgrade to
 inline-inject the top-3 findings as an optimisation. If not, the
 disk-only path remains correct.
+
+**`state.json` schema (zod-validated):**
+
+```ts
+interface ReviewgateState {
+  schema: 'reviewgate.state.v1';
+  session_id: string;                    // ULID, set by SessionStart
+  iteration: number;                     // current-iteration index, 0 before first review
+  cost_usd_so_far: number;
+  tokens_so_far: { input: number; output: number };
+  signature_history: string[][];          // per-iter sorted finding signatures
+  decision_history: Array<{ iter: number; accepted: string[]; rejected: string[] }>;
+  last_diff_hash: string | null;
+  last_stop_ts: string | null;            // RFC3339; consulted by dirty.flag check
+  last_pass_diff_hash: string | null;     // for cache-hit short-circuit on repeat diffs
+  started_at: string;                     // RFC3339 UTC
+  escalated: boolean;
+  escalation_reason: 'max-iterations' | 'cost-cap' | 'stuck-signatures' | 'reject-rate-high' | null;
+  recovered_from?: 'crash' | 'corruption';
+}
+```
+
+Corrupted state recovery (parse failure or `schema:` field bump) backs the
+old file up to `state.corrupt.<ts>.json`, re-initialises a fresh
+`state.json`, and sets `recovered_from: 'corruption'`. The iteration
+counter restarts at 0 — intentional, because a corrupted state cannot
+safely be continued; `dirty.flag` is still present so the review re-runs
+from scratch.
+
+**`ESCALATION.md` schema and path:**
+
+`.reviewgate/ESCALATION.md` (gitignored — added to `.gitignore` by
+`reviewgate init`). Written by `gate.sh` on every ESCALATE verdict;
+overwritten on each escalation (durable history lives in the audit-log
+JSONL). The reason text is also embedded in the Stop-hook `reason` field
+so Claude can surface it to the user without reading the file.
+
+```markdown
+# Reviewgate Escalation
+
+**Session:** <ulid>  ·  **Iteration:** <N>/<MAX>  ·  **Verdict:** ESCALATED
+**Reason code:** max-iterations | cost-cap | stuck-signatures | reject-rate-high
+**Triggered at:** <RFC3339>
+
+## Summary
+<one-paragraph human-readable reason>
+
+## Final findings (last iteration)
+<top-5 findings, severity-ordered, file:line, reviewer>
+
+## Per-iteration history
+| Iter | Verdict | CRIT | WARN | Cost   | Findings |
+|------|---------|------|------|--------|----------|
+| 1    | FAIL    | 2    | 3    | $0.22  | 5        |
+| 2    | FAIL    | 1    | 3    | $0.18  | 4        |
+| 3    | FAIL    | 1    | 2    | $0.15  | 3        |
+
+## Suggested human actions
+- Review the listed findings yourself before committing.
+- If a finding is genuinely a false positive, run
+  `reviewgate fp pin <signature>` to permanently exclude it.
+- If the panel diverges from your intent systematically, run
+  `reviewgate config edit` to adjust reviewer personas.
+```
 
 **Anti-stuck heuristics:**
 
@@ -510,11 +599,31 @@ opencode run "$(<{promptFile})" \
 **Anti-sycophancy hard rules** (enforced by Orchestrator preflight):
 
 1. Author ≠ Reviewer at the **session** level: if Claude Code is the
-   host process (detected via env `CLAUDE_PROJECT_DIR` + process tree),
-   any `claude-code` reviewer **must** use a different model tier than
-   the host (Opus host → Sonnet reviewer; Sonnet host → Haiku reviewer;
+   host process, any `claude-code` reviewer (including the triage call)
+   **must** use a different model tier than the host. The downgrade
+   table is: Opus host → Sonnet reviewer; Sonnet host → Haiku reviewer;
    Haiku host → claude-code reviewer is **disabled** for this run, since
-   no smaller tier exists — Codex/Gemini compensate).
+   no smaller tier exists — Codex/Gemini compensate.
+
+   **Host-model detection mechanism** (in priority order):
+   - **a.** Environment variable `REVIEWGATE_HOST_MODEL` set by user
+          (explicit, authoritative — overrides every other source).
+   - **b.** Environment variable `CLAUDE_MODEL` (Claude Code is expected
+          to expose its active model here; verify in §12 Q9 spike).
+   - **c.** Parse the JSON arriving on stdin to the hook: Claude Code's
+          hook payload includes session metadata that includes the
+          model identifier (`session.model` field — confirm field name
+          in §12 Q9 spike).
+   - **d.** Last resort fallback: assume the **highest known tier** is
+          host (Opus); this picks Sonnet reviewer, which is safe because
+          Sonnet < Opus and "smaller tier than the actually-running tier"
+          still holds when host is actually Sonnet/Haiku — the rule's
+          only failure mode is "reviewer is the same tier as host",
+          which fallback (d) cannot produce.
+
+   `reviewgate doctor` checks all four sources and reports which is
+   active. Mis-configuration cannot silently bypass the rule because
+   step (d) is fail-safe by construction.
 2. Claude-code reviewer always runs with `--bare` (no CLAUDE.md load,
    no plugins, no MCP servers) — guaranteed fresh context.
 3. Claude-code reviewer always gets `--append-system-prompt` with an
@@ -522,6 +631,13 @@ opencode run "$(<{promptFile})" \
 4. **DiffSanitizer** scrubs author cues from diff text before passing
    to any reviewer: `Co-Authored-By: Claude`, `Generated with Claude Code`,
    `// AI:`, `// claude:` comments, etc.
+5. **The Triage call also obeys rule 1.** Triage is not a "reviewer" per
+   se, but it pre-classifies risk and can bias the entire pipeline. If
+   triage uses the same model tier as the host, the host's blind spots
+   propagate into phase selection. The triage provider in
+   `reviewgate.config.ts` is therefore subject to the same downgrade table
+   as reviewers. With Sonnet host, default triage is Haiku; with Opus host,
+   default triage is Sonnet.
 
 **Sandbox wrapping:**
 
@@ -591,6 +707,16 @@ ProviderAdapter is being launched.
 **Reviewgate fails closed (review refused) if:**
 - Host is Windows and `sandbox.mode != 'off'`.
 - `bubblewrap` is missing on Linux and `sandbox.mode='strict'`.
+- `bubblewrap` is **present but non-functional** on Linux. Ubuntu 24.04+
+  enables `kernel.apparmor_restrict_unprivileged_userns=1` by default,
+  which leaves `bwrap` installed but unable to create user namespaces.
+  `which bubblewrap` returns success while every sandbox attempt silently
+  fails. `reviewgate doctor` therefore runs a **functional verification**
+  on every install (`bwrap --ro-bind / / --unshare-user --uid 0 -- true`)
+  and refuses to mark the sandbox as ready unless the test succeeds.
+  Remediation hints (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+  or an AppArmor profile for bwrap) are emitted by doctor when the
+  functional test fails.
 - `sandbox-exec` is missing on macOS (extremely rare; system-shipped).
 
 When `sandbox.mode='off'` is set explicitly, every audit event for that
@@ -625,13 +751,22 @@ interface Finding {
   fp_ledger_match?: {
     pattern_id; matched_count; suppressed;
   };
+
+  // Optional rebuttal channel — when the reviewer's finding intentionally
+  // contradicts an existing Brain entry, this field lets the reviewer
+  // surface that disagreement. The Curator inspects this on subsequent
+  // runs to decide whether to revise the Brain entry.
+  contradicts_memory?: {
+    brain_entry_id: string;            // ID of the Brain entry being contradicted
+    reason: string;                    // ≤ 500 chars, why the reviewer disagrees
+  };
 }
 ```
 
 **Signature definition (canonical):**
 
 ```ts
-signature = sha1([
+signature = sha256([
   finding.file,
   normalizedRuleId,           // rule_id lowercased, hyphens collapsed
   normalizedCategory,
@@ -751,9 +886,16 @@ interface MemoryProposal {
   body: string;                  // ≤ 500 chars
   evidence: Array<{
     kind: 'reviewer-finding' | 'web-fetch' | 'deterministic' | 'reviewer-observation';
-    source_url?: string;
-    run_id?: string;
-    reviewer_id?: string;
+    source_url?: string;         // required when kind='web-fetch'
+    body_sha256?: string;        // required when kind='web-fetch' — sha256 of fetched body
+    fetched_at?: string;         // RFC3339, required when kind='web-fetch'
+    run_id?: string;             // required when kind='reviewer-finding' or 'reviewer-observation'
+    reviewer_id?: string;        // required when kind='reviewer-finding' or 'reviewer-observation'
+    from_diff?: {                // set when the evidence is derived from diff content
+      file: string;              //   — triggers §5.6 rule 6 doubled-quorum requirement
+      line_start: number;
+      line_end: number;
+    };
     snippet?: string;            // ≤ 200 chars
   }>;
   confidence: number;            // 0..1
@@ -870,6 +1012,7 @@ shape appears in §6.
 ├── state.json                          loop FSM state
 ├── research.md                         current iter triage output
 ├── dirty.flag                          touched by PostToolUse hook
+├── ESCALATION.md                       written on ESCALATE verdict
 └── .lock                               concurrent-session file lock
 ```
 
@@ -885,6 +1028,7 @@ shape appears in §6.
 .reviewgate/state.json
 .reviewgate/research.md
 .reviewgate/dirty.flag
+.reviewgate/ESCALATION.md
 .reviewgate/.lock
 .reviewgate/cache/
 ```
@@ -1432,6 +1576,12 @@ Reviewgate **never** charges directly. There is no payment integration.
 | R9 | v1 scope is broad (4 adapters × 3 auth-modes × adaptive pipeline + brain + curator + FP-ledger + audit + cassettes + sandbox) | Codex-review flagged this honestly. Implementation plan is staged in milestones M1–M6 (see writing-plans output) so a usable subset ships before the full v1 surface. M1 = single-reviewer baseline; M6 = full v1 |
 | R10 | Egress content channel (reviewer can include source/secrets in allowed API call) | Acknowledged as known limitation; partial mitigation via pre-prompt secret redaction (§8.1) and provider-side zero-retention headers |
 | R11 | Audit chain rewritable by privileged local attacker | Acknowledged; opt-in external anchor (§8.2) recommended for compliance use |
+| Q9 | How does Reviewgate read the host Claude session's model identifier inside hooks? | Spike — verify that the Stop hook stdin payload contains `session.model` (or similar). Fallback chain documented in §5.4 rule 1: `REVIEWGATE_HOST_MODEL` env → `CLAUDE_MODEL` env → hook payload field → assume-Opus fallback (fail-safe) |
+| Q10 | Claude CLI `--append-system-prompt-file` flag name verification | Spike — if the flag does not exist, fall back to `--append-system-prompt "$(<file)"` shell-substitution. Adapter abstracts this difference; doctor reports which form is active |
+| Q11 | OpenCode `opencode stats --json --days 1` command availability | Spike — if the command is not present in installed OpenCode, cost extraction returns `null` (not 0) and a doctor warning surfaces. We never silently report $0 |
+| Q12 | Interaction between Codex CLI's built-in `--sandbox read-only` and our outer `@anthropic-ai/sandbox-runtime` wrapper | Spike — verify they layer cleanly. If Codex's internal sandbox conflicts with bubblewrap (e.g., on network proxy ports), drop our outer sandbox for Codex only and rely on Codex's built-in (still safer than no sandbox) |
+| Q13 | Gemini `--include-directories` interaction with bubblewrap bind-mounts | Spike — confirm path resolution happens after bind-mount, not at flag-parse time. If broken, pass repo path as relative-to-cwd instead |
+| Q14 | Interaction between user-facing `sandbox.deniedReads` (host config) and runtime sandbox profile (§5.4) | Document explicitly: the config field controls the HOST process's sandbox; reviewers always get the stricter per-run profile. Doctor verifies no overlap-misuse |
 
 ---
 
@@ -1456,7 +1606,7 @@ that edits files results in:
 
 - arxiv 2509.16533 — Sycophancy in self-review under iterative pressure
 - arxiv 2601.06884 — Confirmation bias in LLM code review
-- arxiv 2509.16533 — Multi-Agent Debate for LLM Judges (NeurIPS 2025)
+- openreview Vusd1Hw2D9 — Multi-Agent Debate for LLM Judges (NeurIPS 2025)
 - arxiv 2604.02923 — Council Mode, heterogeneous models
 - arxiv 2510.02534 — ZeroFalse, LLM as SAST FP filter
 - arxiv 2411.03079 — SAST-Genius 91% FP reduction
