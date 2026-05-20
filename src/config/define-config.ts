@@ -38,6 +38,24 @@ export const ConfigSchema = z.object({
       .object({ provider: ProviderId, model: z.string().optional() })
       .nullable()
       .default(null),
+    brain: z
+      .object({
+        enabled: z.boolean(),
+        maxPromptTokens: z.number().int().positive().default(1500),
+        curator: z
+          .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
+          .optional(), // hybrid: optional LLM judge
+        embeddings: z.object({
+          provider: z.literal("openrouter"),
+          model: z.string().default("baai/bge-base-en-v1.5"),
+          apiKeyEnv: z.string().default("OPENROUTER_API_KEY"),
+        }),
+        egressAllowlist: z.array(z.string()).default([]),
+        curatorTimeoutMs: z.number().int().positive().default(20_000),
+      })
+      .nullable()
+      .default(null)
+      .optional(),
   }),
   cache: z
     .object({ enabled: z.boolean(), reviewTtlDays: z.number().int().positive() })
@@ -79,10 +97,11 @@ function deepMerge<T>(base: T, override: DeepPartial<T>): T {
   for (const k of Object.keys(override) as Array<keyof T>) {
     const v = override[k];
     if (v && typeof v === "object" && !Array.isArray(v)) {
-      (out as Record<string, unknown>)[k as string] = deepMerge(
-        (base as Record<string, unknown>)[k as string],
-        v as DeepPartial<unknown>,
-      );
+      const baseVal = (base as Record<string, unknown>)[k as string];
+      (out as Record<string, unknown>)[k as string] =
+        baseVal != null && typeof baseVal === "object"
+          ? deepMerge(baseVal, v as DeepPartial<unknown>)
+          : v;
     } else if (v !== undefined) {
       (out as Record<string, unknown>)[k as string] = v as unknown;
     }
