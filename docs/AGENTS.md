@@ -23,11 +23,14 @@ fix the underlying issues instead.
 
 When blocked, the `reason` looks like:
 
-> Reviewgate FAIL — iteration 1 of 3. See `.reviewgate/pending.md`. Append
-> per-finding decisions to `.reviewgate/decisions/1.jsonl`.
+> 🔴 Reviewgate · GATE CLOSED — iteration 1/3 · 3 finding(s). See
+> `.reviewgate/pending.md` · record per-finding decisions in
+> `.reviewgate/decisions/1.jsonl`.
 
 The number (`1`) is the **current iteration index**. Use it as the decisions
-filename: iteration 1 → `.reviewgate/decisions/1.jsonl`.
+filename: iteration 1 → `.reviewgate/decisions/1.jsonl`. The gate states you will
+see are **🟢 GATE OPEN** (pass — you may finish), **🔴 GATE CLOSED** (blocked —
+act), and **🟠 GATE ESCALATED** (the gate gave up; surface to the human).
 
 ## Multi-reviewer panel (M2)
 
@@ -118,7 +121,8 @@ One line per finding. Match `finding_id` to the `id` shown in `pending.md`.
 
 You edited `src/token.ts`. On stop you get:
 
-> Reviewgate FAIL — iteration 1 of 3. See `.reviewgate/pending.md`.
+> 🔴 Reviewgate · GATE CLOSED — iteration 1/3 · 1 finding(s). See
+> `.reviewgate/pending.md`.
 
 You read `pending.md` and see one finding:
 
@@ -141,8 +145,8 @@ You stop again → Reviewgate re-reviews → PASS → your turn ends.
 If the repo runs with `loop.acknowledgePass: true`, a PASSING review blocks your
 turn ONCE with a message like:
 
-> ✅ Reviewgate PASS on iteration 1 — the review is complete and clean, no
-> findings to address. No action needed: simply end your turn again to finish.
+> 🟢 Reviewgate · GATE OPEN — ✅ PASS (iteration 1). Review is clean, no findings
+> to address. No action needed: simply end your turn again to pass through.
 
 This is NOT a failure and there is nothing to fix. Do not edit code, do not write
 a decisions file. Optionally confirm the pass to the user in one short line, then
@@ -150,15 +154,16 @@ just end your turn again — Reviewgate will let you stop.
 
 ## Verdicts you may encounter
 
-- **PASS / SOFT-PASS** — you are allowed to stop (SOFT-PASS = only minor WARNs).
-- **FAIL** — blocked; follow the protocol above.
-- **ESCALATE** — Reviewgate gave up after repeated rounds (max iterations, no
-  progress, cost cap, or you ended a re-prompted turn without addressing the
-  findings). It writes `.reviewgate/ESCALATION.md` and lets you stop. Surface the
-  escalation to the human; do not silently move on.
-- **ERROR** — the reviewer could not run (crash/timeout, or a sandbox mode it
-  cannot satisfy). You are blocked, fail-closed. Tell the human to run
-  `reviewgate doctor`; do not treat this as a pass.
+- **PASS / SOFT-PASS** (🟢 GATE OPEN) — you are allowed to stop (SOFT-PASS = only
+  minor WARNs).
+- **FAIL** (🔴 GATE CLOSED) — blocked; follow the protocol above.
+- **ESCALATE** (🟠 GATE ESCALATED) — Reviewgate gave up after repeated rounds (max
+  iterations, no progress, cost cap, or you ended a re-prompted turn without
+  addressing the findings). It writes `.reviewgate/ESCALATION.md` and lets you
+  stop. Surface the escalation to the human; do not silently move on.
+- **ERROR** (🔴 GATE CLOSED) — the reviewer could not run (crash/timeout, or a
+  sandbox mode it cannot satisfy). You are blocked, fail-closed. Tell the human to
+  run `reviewgate doctor`; do not treat this as a pass.
 
 ## Rules
 

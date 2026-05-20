@@ -106,9 +106,10 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
 
   // Completion signal — so a passing review is no longer SILENT (the agent
   // can't be pinged on allow_stop by the hook architecture, but the human can):
-  //  - always write a one-line summary to stderr (surfaced in the hook output),
+  //  - always write the gate status to stderr (surfaced in the hook output),
   //  - optionally fire a desktop notification when notify.desktop is enabled.
-  const signal = `Reviewgate: ${decision.kind === "block" ? "BLOCK" : "DONE"} — ${decision.reason}`;
+  // The reason is already self-branded ("🟢 Reviewgate · GATE OPEN — …").
+  const signal = decision.reason;
   if (cfg.notify.desktop) {
     notifyDesktop("Reviewgate", decision.reason);
   }

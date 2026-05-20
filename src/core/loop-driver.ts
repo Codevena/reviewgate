@@ -97,7 +97,10 @@ export class LoopDriver {
 
     // No dirty.flag since last PASS → nothing to review.
     if (!flag) {
-      return { kind: "allow_stop", reason: "No code changes detected since last review." };
+      return {
+        kind: "allow_stop",
+        reason: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
+      };
     }
 
     // Re-arm on commit, but ONLY to recover an escalated gate. If HEAD moved
@@ -186,7 +189,7 @@ export class LoopDriver {
         }
         return {
           kind: "block",
-          reason: `Iteration ${state.iteration} findings are not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
+          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
         };
       }
     }
@@ -237,12 +240,12 @@ export class LoopDriver {
       if (this.i.config.loop.acknowledgePass) {
         return {
           kind: "block",
-          reason: `✅ Reviewgate ${result.verdict} on iteration ${nextIter} — the review is complete and clean, no findings to address. No action needed: simply end your turn again to finish (you may briefly confirm the pass to the user first).`,
+          reason: `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
         };
       }
       return {
         kind: "allow_stop",
-        reason: `Reviewgate ${result.verdict} on iteration ${nextIter}.`,
+        reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
       };
     }
 
@@ -254,13 +257,13 @@ export class LoopDriver {
     if (result.verdict === "ERROR") {
       return {
         kind: "block",
-        reason: `Reviewgate could not complete a review on iteration ${nextIter} (reviewer did not run successfully). Run \`reviewgate doctor\` to diagnose, fix the reviewer, then continue. Reviewgate will not pass a turn it could not review.`,
+        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}). The review could not complete. Run \`reviewgate doctor\` to diagnose, fix the reviewer, then continue. Reviewgate will not open the gate on a turn it could not review.`,
       };
     }
 
     return {
       kind: "block",
-      reason: `Reviewgate FAIL — iteration ${nextIter} of ${this.i.config.loop.maxIterations}. See .reviewgate/pending.md. Append per-finding decisions to .reviewgate/decisions/${nextIter}.jsonl.`,
+      reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations} · ${result.signaturesThisIter.length} finding(s). See .reviewgate/pending.md · record per-finding decisions in .reviewgate/decisions/${nextIter}.jsonl.`,
     };
   }
 
@@ -301,12 +304,12 @@ export class LoopDriver {
     if (firstAnnounce) {
       return {
         kind: "block",
-        reason: `⚠ Reviewgate ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is NO LONGER reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.`,
+        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.`,
       };
     }
     return {
       kind: "allow_stop",
-      reason: `Reviewgate escalated (${reasonCode}); not gating. See .reviewgate/ESCALATION.md.`,
+      reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — not gating. See .reviewgate/ESCALATION.md.`,
     };
   }
 
