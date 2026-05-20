@@ -3,19 +3,19 @@
 **A code-review gate that runs inside Claude Code's agent loop.**
 
 When Claude Code edits files in a Reviewgate-initialised repo, Reviewgate spawns
-a heterogeneous LLM reviewer (Codex in M1) as an isolated subprocess, aggregates
-its findings under a severity-weighted veto, and **blocks Claude from ending its
+a heterogeneous LLM reviewer panel as isolated subprocesses, aggregates their
+findings under a severity-weighted veto, and **blocks Claude from ending its
 turn** until every finding is either fixed or rejected-with-reason. Findings live
 in files (`.reviewgate/pending.md`) that Claude reads with its normal Read tool —
 no chat-stream parsing, no flaky stdout scraping.
 
-Reviewers run the official provider CLIs, so users on Claude Pro/Max, ChatGPT
-Plus/Pro and Gemini Advanced pay **$0 per review** within their subscription
-quotas (OAuth-first).
+Reviewers run the official provider CLIs (Codex, Gemini, Claude), so users on
+Claude Pro/Max, ChatGPT Plus/Pro and Gemini Advanced pay **$0 per review** within
+their subscription quotas (OAuth-first). OpenRouter reviewers use an API key and
+can target any hosted model by name.
 
-> **Status: M1 (Minimum Viable Loop).** One reviewer (Codex), one phase pair
-> (Static + Review), single iteration loop with escalation. No multi-reviewer
-> panel, critic, learning "brain", or adaptive triage yet — those are M2–M6.
+> **Status: M2 (Multi-Reviewer Panel).** Ships Codex + Gemini + Claude + OpenRouter
+> reviewers, a parallel panel, an adversarial critic phase, and cost tracking.
 > See [Scope & limitations](#scope--limitations).
 
 ---
@@ -112,6 +112,8 @@ reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 
 ## Configuration — `reviewgate.config.ts`
 
+Minimal single-reviewer setup (Codex only, OAuth, $0):
+
 ```ts
 import { defineConfig } from "reviewgate";
 
@@ -125,8 +127,44 @@ export default defineConfig({
     softPassPolicy: "allow", // allow | block | ask-once for WARN-only verdicts
   },
   sandbox: {
-    mode: "off",             // M1 default. "strict"/"permissive" fail closed
-                             // until @anthropic-ai/sandbox-runtime is available.
+    mode: "off",
+  },
+});
+```
+
+Multi-reviewer panel with an OpenRouter critic (M2):
+
+```ts
+import { defineConfig } from "reviewgate";
+
+export default defineConfig({
+  providers: {
+    codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
+    gemini: { enabled: true, auth: "oauth", model: "gemini-3-pro", timeoutMs: 300_000 },
+    "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300_000 },
+    openrouter: {
+      enabled: true,
+      auth: "openrouter",
+      model: "google/gemini-3.5-flash",   // any OpenRouter model slug
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      costPerMTokensUsd: 0.075,            // fed into loop costCapUsd tracking
+      timeoutMs: 120_000,
+    },
+  },
+  phases: {
+    review: {
+      reviewers: [
+        { provider: "codex",       persona: "security" },
+        { provider: "gemini",      persona: "security" },
+        { provider: "claude-code", persona: "adversarial" },
+      ],
+    },
+    critic: { provider: "openrouter", persona: "critic" },
+  },
+  loop: {
+    maxIterations: 3,
+    costCapUsd: 2.0,
+    softPassPolicy: "allow",
   },
 });
 ```
@@ -190,18 +228,22 @@ Reviewgate blocks your turn (read `pending.md`, fix or reject each finding, writ
 
 ---
 
-## Scope & limitations (M1)
+## Scope & limitations
 
 **In M1:** single Codex reviewer · Static + Review phases · single-iteration loop
 with escalation (max-iterations / stuck-signatures / cost-cap) · severity-weighted
 verdict · pending.md/json + decisions protocol · hash-chained audit log ·
 `init` / `gate` / `doctor` / `audit verify` commands · OAuth ($0) cost model.
 
-**Not yet (M2–M6):** multi-reviewer panel (Gemini, Claude-as-reviewer) ·
-adversarial critic phase · adaptive triage & research phase · symbol-graph via
+**In M2:** multi-reviewer panel (Codex + Gemini + Claude + OpenRouter any-model) ·
+parallel panel execution · adversarial critic phase · `confirmed_by` consensus
+tracking across reviewers · OpenRouter API-key cost tracking against `costCapUsd` ·
+`google/gemini-3.5-flash` and any other OpenRouter model by slug.
+
+**Not yet (M3–M6):** adaptive triage & research phase · symbol-graph via
 tree-sitter · per-repo learning "brain" & curator · false-positive ledger ·
-cassette replay & weekly reports · OpenRouter/api-key cost enforcement · native
-sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1).
+cassette replay & weekly reports · native sandbox isolation (pending
+`@anthropic-ai/sandbox-runtime` v1).
 
 ---
 

@@ -29,6 +29,25 @@ When blocked, the `reason` looks like:
 The number (`1`) is the **current iteration index**. Use it as the decisions
 filename: iteration 1 → `.reviewgate/decisions/1.jsonl`.
 
+## Multi-reviewer panel (M2)
+
+From M2 onwards Reviewgate runs a panel of reviewers in parallel (Codex, Gemini,
+Claude, or any OpenRouter model). You may see two extra fields on findings in
+`pending.md`:
+
+- **`confirmed_by`** — lists the providers that independently reported the same
+  finding. A finding confirmed by multiple reviewers carries higher confidence and
+  should be prioritised for fixing over singleton findings.
+- **`critic_verdict`** — when a critic phase is configured, the critic may mark a
+  finding as a likely false-positive (`demoted`). A demoted finding is still
+  present in `pending.md` so you can review it, but the gate treats it as advisory
+  rather than blocking.
+
+The response protocol (read `pending.md`, write `decisions/<iter>.jsonl`) is
+unchanged regardless of how many reviewers ran.
+
+---
+
 ## Your response protocol
 
 1. **Read `.reviewgate/pending.md`** with your Read tool. It lists every finding,

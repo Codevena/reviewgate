@@ -62,6 +62,21 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     detail: cfgExists ? "present" : "missing (defaults will apply)",
   });
 
+  // Optional reviewer CLIs (M2). These are only needed if enabled in config;
+  // report as warn (not fail) when absent so codex-only setups stay green.
+  for (const [bin, name] of [
+    ["gemini", "gemini CLI (optional)"],
+    ["claude", "claude CLI (optional)"],
+  ] as const) {
+    const c = checkBinary(bin, name);
+    checks.push({ ...c, status: c.status === "fail" ? "warn" : c.status });
+  }
+  checks.push({
+    name: "OPENROUTER_API_KEY",
+    status: process.env.OPENROUTER_API_KEY ? "ok" : "warn",
+    detail: process.env.OPENROUTER_API_KEY ? "set" : "unset (only needed for openrouter reviewers)",
+  });
+
   if (!input.capture) {
     for (const c of checks) {
       const sym = c.status === "ok" ? "✓" : c.status === "warn" ? "⚠" : "✗";
