@@ -9,22 +9,31 @@ export const ProviderConfigSchema = z.object({
   reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
   maxTokens: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive(),
+  costPerMTokensUsd: z.number().nonnegative().optional(),
 });
+
+const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter"]);
 
 export const ConfigSchema = z.object({
   version: z.literal(1),
-  providers: z.object({ codex: ProviderConfigSchema }),
+  providers: z.object({
+    codex: ProviderConfigSchema,
+    gemini: ProviderConfigSchema.optional(),
+    "claude-code": ProviderConfigSchema.optional(),
+    openrouter: ProviderConfigSchema.optional(),
+  }),
   phases: z.object({
     review: z.object({
       reviewers: z
         .array(
-          z.object({
-            provider: z.enum(["codex", "claude-code", "gemini", "opencode"]),
-            persona: z.string(),
-          }),
+          z.object({ provider: ProviderId, persona: z.string(), model: z.string().optional() }),
         )
         .min(1),
     }),
+    critic: z
+      .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
+      .nullable()
+      .default(null),
   }),
   loop: z.object({
     maxIterations: z.number().int().positive(),

@@ -1,16 +1,30 @@
 export const defaultConfig = {
   version: 1 as const,
   providers: {
-    codex: {
-      enabled: true,
+    codex: { enabled: true, auth: "oauth" as const, model: "gpt-5.4", timeoutMs: 300_000 },
+    gemini: { enabled: false, auth: "oauth" as const, model: "gemini-3-pro", timeoutMs: 300_000 },
+    "claude-code": {
+      enabled: false,
       auth: "oauth" as const,
-      model: "gpt-5.4",
+      model: "claude-sonnet-4-6",
+      timeoutMs: 300_000,
+    },
+    openrouter: {
+      enabled: false,
+      auth: "openrouter" as const,
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      model: "google/gemini-3.5-flash",
       timeoutMs: 300_000,
     },
   },
   phases: {
     review: {
       reviewers: [{ provider: "codex" as const, persona: "security" }],
+    },
+    critic: null as null | {
+      provider: "codex" | "gemini" | "claude-code" | "openrouter";
+      model?: string;
+      persona: string;
     },
   },
   loop: {

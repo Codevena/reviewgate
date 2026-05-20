@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../../src/config/defaults.ts";
+import { defineConfig } from "../../src/config/define-config.ts";
 import { loadConfig } from "../../src/config/loader.ts";
 
 function writeConfig(content: string): string {
@@ -40,5 +41,54 @@ describe("loadConfig", () => {
       });
     `);
     await expect(loadConfig(file)).rejects.toThrow();
+  });
+
+  it("accepts a multi-reviewer panel with gemini + claude + openrouter", () => {
+    const cfg = defineConfig({
+      providers: {
+        gemini: { enabled: true, auth: "oauth", model: "gemini-3-pro", timeoutMs: 300_000 },
+        "claude-code": {
+          enabled: true,
+          auth: "oauth",
+          model: "claude-sonnet-4-6",
+          timeoutMs: 300_000,
+        },
+        openrouter: {
+          enabled: true,
+          auth: "openrouter",
+          apiKeyEnv: "OPENROUTER_API_KEY",
+          model: "google/gemini-3.5-flash",
+          timeoutMs: 300_000,
+        },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            { provider: "codex", persona: "security" },
+            { provider: "gemini", persona: "architecture" },
+            { provider: "claude-code", persona: "adversarial" },
+            { provider: "openrouter", persona: "security" },
+          ],
+        },
+        critic: { provider: "gemini", model: "gemini-3-flash", persona: "fp-filter" },
+      },
+    });
+    expect(cfg.phases.review.reviewers.length).toBe(4);
+    expect(cfg.providers.gemini?.enabled).toBe(true);
+    expect(cfg.phases.critic?.provider).toBe("gemini");
+  });
+
+  it("rejects an unknown provider in reviewers", () => {
+    expect(() =>
+      defineConfig({
+        phases: { review: { reviewers: [{ provider: "bogus" as never, persona: "x" }] } },
+      }),
+    ).toThrow();
+  });
+
+  it("defaults critic to null and keeps codex as the sole default reviewer", () => {
+    const cfg = defineConfig({});
+    expect(cfg.phases.critic).toBeNull();
+    expect(cfg.phases.review.reviewers).toEqual([{ provider: "codex", persona: "security" }]);
   });
 });

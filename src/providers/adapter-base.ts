@@ -9,6 +9,7 @@ export interface ProviderConfig {
   reasoningEffort?: "low" | "medium" | "high";
   maxTokens?: number;
   timeoutMs: number;
+  costPerMTokensUsd?: number;
 }
 
 export interface Preflight {
