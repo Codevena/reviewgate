@@ -16,7 +16,7 @@ cat > "$LAST_MSG" <<'JSON'
     {
       "id": "F-001",
       "signature": "fakesig",
-      "severity": "WARN",
+      "severity": "CRITICAL",
       "category": "security",
       "rule_id": "fake-rule",
       "file": "x.ts",
