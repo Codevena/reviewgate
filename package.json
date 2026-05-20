@@ -3,9 +3,14 @@
   "version": "0.1.0-m1",
   "description": "Multi-agent code review gate for Claude Code's agent loop",
   "type": "module",
-  "bin": { "reviewgate": "./dist/reviewgate" },
+  "bin": {
+    "reviewgate": "./dist/reviewgate"
+  },
   "files": ["dist", "bin-templates", "src/personas"],
-  "engines": { "bun": ">=1.0.0", "node": ">=20" },
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate",
@@ -19,8 +24,11 @@
   },
   "dependencies": {
     "citty": "^0.1.6",
-    "zod": "^3.23.0",
-    "ulid": "^2.3.0"
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "ulid": "^2.3.0",
+    "web-tree-sitter": "^0.26.9",
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
