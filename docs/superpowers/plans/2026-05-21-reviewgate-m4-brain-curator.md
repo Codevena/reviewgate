@@ -74,6 +74,14 @@ bun run build
 
 ---
 
+## Spike results (resolved 2026-05-21)
+
+- **SM4-1 → embedding default = `baai/bge-base-en-v1.5`** (OpenRouter, 768-dim). Confirmed clean 0.85 separation: near-dup cosine 0.924, unrelated 0.588. (Alternatives that also separate: `google/gemini-embedding-001` 0.942/0.549, `qwen/qwen3-embedding-8b` 0.870/0.437.) Use as the Task 12 config default.
+- **Curator type = HYBRID** (resolved with user): the deterministic 7-rule gates ALWAYS run (Task 9 core); an OPTIONAL final LLM accept/reject judgment runs only when `phases.brain.curator` is configured (a non-reviewer provider), covering the judgment-heavy rules 3 (consistency) + 5 (scope/quality). Brain works out-of-the-box deterministically; the LLM curator is opt-in and design-faithful (§5.6).
+- **SM4-2** (egress hardening) is validated by Task 7's unit tests + the post-Task-7 binary check (it IS the implementation). **SM4-3** (curator provider) only matters for the opt-in LLM judge; confirmed via Task 17 real e2e + the integration test's fake judge.
+
+---
+
 ## Task 1: Brain schemas
 
 **Files:**
@@ -1124,6 +1132,15 @@ describe("runCurator", () => {
     expect(res.queued).toBe(1);
   });
 
+  it("hybrid: a configured LLM judge can reject a proposal that passed the deterministic gates", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-judge-"));
+    const store = new BrainStore(repo);
+    const rejectJudge = async () => ({ accept: false, reason: "contradicts existing convention" });
+    const res = await runCurator({ repoRoot: repo, runId: "r", proposals: [p()], store, embedder: fakeEmbedder([1, 0]), nowIso: "t", judge: rejectJudge });
+    expect(res.promoted).toBe(0);
+    expect(res.rejected).toBe(1);
+  });
+
   it("requires doubled quorum for diff-derived proposals", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-cur6-"));
     const store = new BrainStore(repo);
@@ -1161,6 +1178,10 @@ export interface CuratorInput {
   embedder: Embedder;
   embedCfg?: { model: string; apiKeyEnv?: string; timeoutMs: number };
   nowIso: string;
+  // Hybrid: optional LLM judgment (only when phases.brain.curator is configured).
+  // Runs AFTER the deterministic gates pass, on rules 3 (consistency) + 5 (scope/
+  // quality). Rejecting drops the proposal; a judge error fails closed (queue).
+  judge?: (proposal: MemoryProposal) => Promise<{ accept: boolean; reason?: string }>;
 }
 export interface CuratorResult {
   promoted: number;
@@ -1235,6 +1256,18 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
         return { next: s, result: undefined };
       });
       res.merged++; log("merged-duplicate", proposal.title, { entry_id: dup.id }); continue;
+    }
+    // Hybrid: optional LLM judgment on the fuzzy rules (consistency/scope/quality).
+    if (input.judge) {
+      let verdict: { accept: boolean; reason?: string };
+      try {
+        verdict = await input.judge(proposal);
+      } catch {
+        res.queued++; log("queued", proposal.title, { rule_failed: "judge-error" }); continue;
+      }
+      if (!verdict.accept) {
+        res.rejected++; log("rejected", proposal.title, { rule_failed: "llm-judge" }); continue;
+      }
     }
     // Promote as candidate
     const id = await input.store.nextId();
@@ -1438,8 +1471,8 @@ brain: z
   .object({
     enabled: z.boolean(),
     maxPromptTokens: z.number().int().positive().default(1500),
-    curator: z.object({ provider: ProviderId, model: z.string().optional(), persona: z.string() }),
-    embeddings: z.object({ provider: z.literal("openrouter"), model: z.string(), apiKeyEnv: z.string().default("OPENROUTER_API_KEY") }),
+    curator: z.object({ provider: ProviderId, model: z.string().optional(), persona: z.string() }).optional(), // hybrid: optional LLM judge
+    embeddings: z.object({ provider: z.literal("openrouter"), model: z.string().default("baai/bge-base-en-v1.5"), apiKeyEnv: z.string().default("OPENROUTER_API_KEY") }),
     egressAllowlist: z.array(z.string()).default([]),
     curatorTimeoutMs: z.number().int().positive().default(20_000),
   })
@@ -1520,12 +1553,28 @@ if (brainCfg?.enabled && proposals.length > 0) {
       const { enriched: e } = await enrichProposal(repo, p, { allow: brainCfg.egressAllowlist });
       enriched.push(e);
     }
+    // Hybrid: build the optional LLM judge only when phases.brain.curator is set.
+    // It calls the configured non-reviewer provider (critic-phase invocation
+    // pattern) with a prompt asking accept/reject on rules 3 (consistency) + 5
+    // (scope/quality), and parses {"accept":bool,"reason":"..."}.
+    const curatorCfg = brainCfg.curator;
+    const judge = curatorCfg
+      ? async (prop: MemoryProposal) => {
+          const adapter = this.input.adapters[curatorCfg.provider];
+          const pcfg = this.input.config.providers[curatorCfg.provider];
+          if (!adapter || !pcfg) return { accept: true }; // not available → don't block (gates already passed)
+          // build a temp prompt file with the proposal + active brain titles; call adapter.review;
+          // parse rawText for {"accept":true|false,"reason":"..."}; default accept on parse failure.
+          return parseJudge(/* rawText */);
+        }
+      : undefined;
     await withTimeout(
       runCurator({
         repoRoot: repo, runId: opts.runId, proposals: enriched, store,
         embedder: embAdapter,
         embedCfg: { model: brainCfg.embeddings.model, apiKeyEnv: brainCfg.embeddings.apiKeyEnv, timeoutMs: brainCfg.curatorTimeoutMs },
         nowIso: new Date().toISOString(),
+        ...(judge ? { judge } : {}),
       }),
       brainCfg.curatorTimeoutMs,
     ).catch(() => undefined); // best-effort: never affects the already-returned verdict
