@@ -43,6 +43,22 @@ export const defaultConfig = {
       provider: "codex" | "gemini" | "claude-code" | "openrouter";
       model?: string;
     },
+    brain: null as null | {
+      enabled: boolean;
+      maxPromptTokens: number;
+      curator?: {
+        provider: "codex" | "gemini" | "claude-code" | "openrouter";
+        model?: string;
+        persona: string;
+      };
+      embeddings: {
+        provider: "openrouter";
+        model: string;
+        apiKeyEnv: string;
+      };
+      egressAllowlist: string[];
+      curatorTimeoutMs: number;
+    },
   },
   cache: { enabled: true, reviewTtlDays: 7 },
   research: { languages: ["typescript", "tsx", "python"] },
