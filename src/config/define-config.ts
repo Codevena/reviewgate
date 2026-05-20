@@ -52,6 +52,7 @@ export const ConfigSchema = z.object({
     stuckThreshold: z.number().int().positive(),
     rejectRateEscalation: z.number().min(0).max(1),
     softPassPolicy: z.enum(["allow", "block", "ask-once"]),
+    acknowledgePass: z.boolean().default(false),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

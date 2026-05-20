@@ -54,6 +54,10 @@ export const defaultConfig = {
     stuckThreshold: 2,
     rejectRateEscalation: 0.8,
     softPassPolicy: "allow" as const,
+    // When true, the gate blocks ONCE on a passing verdict so the agent is told
+    // the review passed (the Stop hook can't reach the agent on a silent
+    // allow_stop). Costs one extra turn per pass. Default off.
+    acknowledgePass: false,
   },
   sandbox: {
     // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished

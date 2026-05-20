@@ -75,6 +75,68 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("stop_hook_active");
   });
 
+  it("acknowledgePass=true blocks ONCE on a passing verdict so the agent is told", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQACK");
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const config = { ...defaultConfig, loop: { ...defaultConfig.loop, acknowledgePass: true } };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        // Doc-only diff → triage skips the panel → PASS without calling a reviewer.
+        diff: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("PASS");
+    expect(decision.reason).toContain("No action needed");
+  });
+
+  it("acknowledgePass=false (default) allows stop silently on a passing verdict", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQACK2");
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+  });
+
   it("escalates after maxIterations FAIL streak", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

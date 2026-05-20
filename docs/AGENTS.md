@@ -136,6 +136,18 @@ You change `==` to a constant-time comparison, then append to
 
 You stop again → Reviewgate re-reviews → PASS → your turn ends.
 
+## The "✅ PASS — acknowledge" message (acknowledgePass mode)
+
+If the repo runs with `loop.acknowledgePass: true`, a PASSING review blocks your
+turn ONCE with a message like:
+
+> ✅ Reviewgate PASS on iteration 1 — the review is complete and clean, no
+> findings to address. No action needed: simply end your turn again to finish.
+
+This is NOT a failure and there is nothing to fix. Do not edit code, do not write
+a decisions file. Optionally confirm the pass to the user in one short line, then
+just end your turn again — Reviewgate will let you stop.
+
 ## Verdicts you may encounter
 
 - **PASS / SOFT-PASS** — you are allowed to stop (SOFT-PASS = only minor WARNs).

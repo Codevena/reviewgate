@@ -206,6 +206,16 @@ export class LoopDriver {
         iter: nextIter,
         trigger: "stop-hook",
       });
+      // Opt-in: block ONCE on a passing verdict so the agent is told the review
+      // passed (on allow_stop the hook can't reach the agent at all). The dirty
+      // flag is already deleted, so the agent's re-stop sees no work + stop_hook_active
+      // → allow_stop. No loop. Default off (silent pass) to keep the happy path lean.
+      if (this.i.config.loop.acknowledgePass) {
+        return {
+          kind: "block",
+          reason: `✅ Reviewgate ${result.verdict} on iteration ${nextIter} — the review is complete and clean, no findings to address. No action needed: simply end your turn again to finish (you may briefly confirm the pass to the user first).`,
+        };
+      }
       return {
         kind: "allow_stop",
         reason: `Reviewgate ${result.verdict} on iteration ${nextIter}.`,

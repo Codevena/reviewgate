@@ -194,6 +194,11 @@ Note: by hook architecture, an AI agent can only be *interrupted* on a blocking
 notification are the human-facing signal; an agent confirms a pass by reading
 `.reviewgate/state.json` / `pending.md`.
 
+If you want the **agent** to be told about a pass too, set
+`loop: { acknowledgePass: true }`. Then a passing review blocks ONCE with a
+`✅ Reviewgate PASS …` message so the agent can confirm the result to you, and
+ends cleanly on the next stop (one extra turn per pass; default off).
+
 ### Choosing the OpenRouter model
 
 The OpenRouter reviewer can target **any model OpenRouter hosts** — just set the
