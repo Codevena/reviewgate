@@ -30,3 +30,6 @@ dist
 # Editor
 .vscode/
 .idea/
+
+# Local secrets (never commit)
+.env
