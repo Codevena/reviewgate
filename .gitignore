@@ -24,6 +24,9 @@ dist
 # Spike artifacts
 /tmp/reviewgate-spike-*
 
+# Review pipeline scratch (Codex/Claude reviewer outputs — never commit)
+.review/
+
 # Editor
 .vscode/
 .idea/
