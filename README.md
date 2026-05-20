@@ -140,7 +140,7 @@ import { defineConfig } from "reviewgate";
 export default defineConfig({
   providers: {
     codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
-    gemini: { enabled: true, auth: "oauth", model: "gemini-3-pro", timeoutMs: 300_000 },
+    gemini: { enabled: true, auth: "oauth", model: "gemini-2.5-flash", timeoutMs: 300_000 },
     "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300_000 },
     openrouter: {
       enabled: true,
