@@ -23,12 +23,13 @@ function lineBucket(lineStart: number, bucketSize: number): number {
 
 export function computeSignature(input: SignatureInput): string {
   const symbolName = input.symbolName ?? "";
-  const offset =
-    input.symbolName && input.symbolStartLine !== undefined
-      ? Math.max(0, input.lineStart - input.symbolStartLine)
-      : 0;
-  // No tree-sitter context in M1: bucket size 10 (per spec §5.5).
-  const bucketedOffset = input.symbolName ? offset : lineBucket(input.lineStart, 10);
+  let bucketedOffset: number;
+  if (input.symbolName && input.symbolStartLine !== undefined) {
+    const offset = Math.max(0, input.lineStart - input.symbolStartLine);
+    bucketedOffset = Math.floor(offset / 5) * 5;
+  } else {
+    bucketedOffset = lineBucket(input.lineStart, 10);
+  }
   const parts = [
     input.file,
     normalizeRuleId(input.ruleId),
