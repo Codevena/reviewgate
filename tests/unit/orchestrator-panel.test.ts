@@ -8,7 +8,7 @@ import { Orchestrator } from "../../src/core/orchestrator.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
-function stub(id: ProviderAdapter["id"], findings: Finding[]): ProviderAdapter {
+function stub(id: ProviderAdapter["id"], findings: Finding[], rawText = ""): ProviderAdapter {
   return {
     id,
     async preflight() {
@@ -23,6 +23,7 @@ function stub(id: ProviderAdapter["id"], findings: Finding[]): ProviderAdapter {
         durationMs: 1,
         exitCode: 0,
         rawEventsPath: "",
+        rawText,
         status: "ok",
       } satisfies ReviewResult;
     },
@@ -85,5 +86,82 @@ describe("Orchestrator panel", () => {
     const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
     expect(report.reviewers.length).toBe(2);
     expect(report.findings[0].consensus).toBe("majority");
+  });
+
+  it("assigns UNIQUE finding ids across reviewers (no F-001 collision)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ids-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const config = {
+      ...defaultConfig,
+      providers: {
+        ...defaultConfig.providers,
+        gemini: { enabled: true, auth: "oauth" as const, model: "gemini-3-pro", timeoutMs: 1000 },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            { provider: "codex" as const, persona: "security" },
+            { provider: "gemini" as const, persona: "architecture" },
+          ],
+        },
+        critic: null,
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: {
+        // DIFFERENT signatures → two distinct findings, each numbered F-001 by its reviewer
+        codex: stub("codex", [f("sigCodex", "codex", "security")]),
+        gemini: stub("gemini", [f("sigGemini", "gemini", "architecture")]),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      reasonOnFailEnabled: true,
+    });
+    await orch.runIteration({ runId: "RUN", iter: 1 });
+    const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
+    const ids = report.findings.map((x: { id: string }) => x.id);
+    expect(ids.length).toBe(2);
+    expect(new Set(ids).size).toBe(2); // unique — no collision
+    expect(ids).toEqual(["F-001", "F-002"]);
+  });
+
+  it("applies a critic demotion from the critic's rawText (WARN→INFO→PASS)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-critic-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const finding = f("sigW", "codex", "security");
+    // critic returns its verdicts as the inner model text (rawText)
+    const criticText = `{"verdicts":[{"signature":"${finding.signature}","verdict":"likely_fp","reason":"stylistic only"}]}`;
+    const config = {
+      ...defaultConfig,
+      providers: {
+        ...defaultConfig.providers,
+        gemini: { enabled: true, auth: "oauth" as const, model: "gemini-3-flash", timeoutMs: 1000 },
+      },
+      phases: {
+        review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
+        critic: { provider: "gemini" as const, persona: "fp-filter" },
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: {
+        codex: stub("codex", [{ ...finding, severity: "WARN", category: "quality" }]),
+        gemini: stub("gemini", [], criticText),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      reasonOnFailEnabled: true,
+    });
+    const result = await orch.runIteration({ runId: "RUN", iter: 1 });
+    // WARN singleton demoted to INFO by the critic → PASS
+    expect(result.verdict).toBe("PASS");
+    const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
+    expect(report.findings[0].severity).toBe("INFO");
+    expect(report.findings[0].critic_verdict).toBe("likely_fp");
   });
 });

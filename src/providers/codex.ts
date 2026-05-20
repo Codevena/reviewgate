@@ -135,6 +135,12 @@ export class CodexAdapter implements ProviderAdapter {
       input.persona,
       input.workingDir,
     );
+    let rawText = "";
+    try {
+      rawText = readFileSync(lastMsgFile, "utf8");
+    } catch {
+      rawText = "";
+    }
     return {
       reviewerId: input.reviewerId,
       verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
@@ -145,6 +151,7 @@ export class CodexAdapter implements ProviderAdapter {
       durationMs: res.durationMs,
       exitCode: 0,
       rawEventsPath: eventsFile,
+      rawText,
       status: "ok",
     };
   }

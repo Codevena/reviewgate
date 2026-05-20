@@ -107,7 +107,7 @@ export class GeminiAdapter implements ProviderAdapter {
         statusDetail: readFileSync(errFile, "utf8").slice(0, 1000),
       };
     }
-    const { findings, usage } = this.parse(
+    const { findings, usage, rawText } = this.parse(
       outFile,
       input.cfg.model,
       input.persona,
@@ -123,6 +123,7 @@ export class GeminiAdapter implements ProviderAdapter {
       durationMs: res.durationMs,
       exitCode: 0,
       rawEventsPath: outFile,
+      rawText,
       status: "ok",
     };
   }
@@ -132,7 +133,7 @@ export class GeminiAdapter implements ProviderAdapter {
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; usage: ReviewResult["usage"] } {
+  ): { findings: Finding[]; usage: ReviewResult["usage"]; rawText: string } {
     let env: GeminiEnvelope = {};
     try {
       env = JSON.parse(readFileSync(outFile, "utf8")) as GeminiEnvelope;
@@ -140,9 +141,11 @@ export class GeminiAdapter implements ProviderAdapter {
       return {
         findings: [],
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+        rawText: "",
       };
     }
-    const out = env.response ? parseReviewOutput(env.response) : null;
+    const rawText = env.response ?? "";
+    const out = rawText ? parseReviewOutput(rawText) : null;
     const findings = out
       ? mapReviewOutputToFindings(out, { provider: "gemini", model, persona, workingDir })
       : [];
@@ -152,6 +155,10 @@ export class GeminiAdapter implements ProviderAdapter {
       inputTokens += m.tokens?.prompt ?? 0;
       outputTokens += m.tokens?.candidates ?? 0;
     }
-    return { findings, usage: { inputTokens, outputTokens, costUsd: 0, quotaUsedPct: null } };
+    return {
+      findings,
+      usage: { inputTokens, outputTokens, costUsd: 0, quotaUsedPct: null },
+      rawText,
+    };
   }
 }

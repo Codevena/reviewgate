@@ -113,7 +113,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         statusDetail: readFileSync(errFile, "utf8").slice(0, 1000),
       };
     }
-    const { findings, usage } = this.parse(
+    const { findings, usage, rawText } = this.parse(
       outFile,
       input.cfg.model,
       input.persona,
@@ -129,6 +129,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       durationMs: res.durationMs,
       exitCode: 0,
       rawEventsPath: outFile,
+      rawText,
       status: "ok",
     };
   }
@@ -138,16 +139,16 @@ export class ClaudeAdapter implements ProviderAdapter {
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; usage: ReviewResult["usage"] } {
+  ): { findings: Finding[]; usage: ReviewResult["usage"]; rawText: string } {
     let env: ClaudeEnvelope = {};
-    let rawText = "";
+    let fileText = "";
     try {
-      rawText = readFileSync(outFile, "utf8");
-      env = JSON.parse(rawText) as ClaudeEnvelope;
+      fileText = readFileSync(outFile, "utf8");
+      env = JSON.parse(fileText) as ClaudeEnvelope;
     } catch {
       env = {};
     }
-    const text = env.result ?? rawText;
+    const text = env.result ?? fileText;
     const out = parseReviewOutput(text);
     const findings = out
       ? mapReviewOutputToFindings(out, { provider: "claude-code", model, persona, workingDir })
@@ -160,6 +161,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         costUsd: 0,
         quotaUsedPct: null,
       },
+      rawText: text,
     };
   }
 }

@@ -39,9 +39,11 @@ Claude, or any OpenRouter model). You may see two extra fields on findings in
   finding. A finding confirmed by multiple reviewers carries higher confidence and
   should be prioritised for fixing over singleton findings.
 - **`critic_verdict`** — when a critic phase is configured, the critic may mark a
-  finding as a likely false-positive (`demoted`). A demoted finding is still
-  present in `pending.md` so you can review it, but the gate treats it as advisory
-  rather than blocking.
+  finding `"likely_fp"` (a likely false-positive), which demotes its severity one
+  level (CRITICAL→WARN→INFO). A demoted finding is still present in `pending.md`
+  so you can review it, but it weighs less toward a blocking verdict. The critic
+  can never demote a CRITICAL security/correctness finding or one all reviewers
+  agreed on.
 
 The response protocol (read `pending.md`, write `decisions/<iter>.jsonl`) is
 unchanged regardless of how many reviewers ran.

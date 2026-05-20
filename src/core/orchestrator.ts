@@ -1,5 +1,5 @@
 // src/core/orchestrator.ts
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../config/define-config.ts";
@@ -103,7 +103,12 @@ export class Orchestrator {
       return { res, provider: r.provider, persona: r.persona, model };
     });
 
-    const settled = (await Promise.all(tasks)).filter((x): x is ReviewerRun => x !== null);
+    // allSettled (not all): a single adapter that THROWS (not just returns
+    // ERROR) must not abort the whole panel — treat a rejection as no run.
+    const outcomes = await Promise.allSettled(tasks);
+    const settled = outcomes
+      .map((o) => (o.status === "fulfilled" ? o.value : null))
+      .filter((x): x is ReviewerRun => x !== null);
     const okRuns = settled.filter((s) => s.res.status === "ok");
 
     // Fail closed: at least one reviewer attempted but none succeeded.
@@ -140,12 +145,10 @@ export class Orchestrator {
           persona: criticCfg.persona,
           diffPath: join(cRun, "d.patch"),
         });
-        let criticText = "";
-        try {
-          criticText = cRes.rawEventsPath ? readFileSync(cRes.rawEventsPath, "utf8") : "";
-        } catch {
-          criticText = "";
-        }
+        // The critic returns {verdicts:[...]} as its model text, which the
+        // adapter exposes already-unwrapped in `rawText` (NOT rawEventsPath,
+        // which is the raw CLI envelope and would never contain `verdicts`).
+        const criticText = cRes.rawText ?? "";
         if (criticText) criticMap = parseCriticOutput(criticText);
       }
     }

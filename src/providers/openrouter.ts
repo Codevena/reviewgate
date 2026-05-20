@@ -132,6 +132,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       durationMs: Date.now() - start,
       exitCode: 0,
       rawEventsPath: "",
+      rawText: content,
       status: "ok",
     };
   }

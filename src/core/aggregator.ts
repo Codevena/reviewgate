@@ -101,5 +101,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
   else if (warn > 0) verdict = "SOFT-PASS";
   else verdict = "PASS";
 
-  return { verdict, dedupedFindings: survivors, counts: { critical, warn, info } };
+  // Reassign unique sequential ids across the merged panel. Each reviewer
+  // numbers its own findings from F-001, so without this two distinct findings
+  // could share an id — and the decisions-gate keys on finding_id, so a single
+  // decision would wrongly satisfy both. Unique ids keep the gate sound.
+  const renumbered = survivors.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
+
+  return { verdict, dedupedFindings: renumbered, counts: { critical, warn, info } };
 }

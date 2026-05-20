@@ -45,6 +45,11 @@ export interface ReviewResult {
   durationMs: number;
   exitCode: number;
   rawEventsPath: string;
+  // The unwrapped inner model text (the assistant's answer), already extracted
+  // from each provider's CLI/API envelope. Used by non-review calls such as the
+  // critic phase, which needs the raw model JSON ({verdicts:[...]}) rather than
+  // the mapped findings. Absent when the call errored.
+  rawText?: string;
   status: ReviewStatus;
   statusDetail?: string;
 }
