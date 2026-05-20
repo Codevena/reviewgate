@@ -21,7 +21,10 @@ export const defaultConfig = {
       enabled: false,
       auth: "openrouter" as const,
       apiKeyEnv: "OPENROUTER_API_KEY",
-      model: "google/gemini-3.5-flash",
+      // Production default OpenRouter model. Users override per project with any
+      // slug from https://openrouter.ai/models (and choose OAuth vs OpenRouter
+      // per provider). Verified end-to-end (CRITICAL timing finding, ~38s).
+      model: "deepseek/deepseek-v4-pro",
       timeoutMs: 300_000,
     },
   },
