@@ -36,6 +36,18 @@ reviews and reduces repeated findings/false-positives over time.
    output. Extend the finding/review-output schema (`src/schemas/`) and the
    tolerant parser (`src/providers/review-output.ts`) to read it. Confidence floor
    0.5 — lower-confidence proposals are not submitted at all.
+
+   **Two-stage evidence (resolves the schema requirement for `web-fetch`).** The
+   approved §5 `MemoryProposal` schema requires `body_sha256` + `fetched_at` for
+   `kind:'web-fetch'`, which a reviewer (no web tools) cannot produce. So a
+   reviewer-submitted proposal carries URL citations in a lightweight form
+   (`source_url` + optional `snippet`), NOT a strict `web-fetch` item. During the
+   Curator phase Reviewgate **enriches** each citation into a schema-conformant
+   `kind:'web-fetch'` evidence record by adding `body_sha256` + `fetched_at` from
+   its own hardened fetch (§2.4). §5.6 **rule 1 (schema validation) is applied to
+   the ENRICHED proposal**, so the approved schema is honored, not weakened. If
+   enrichment fails (fetch blocked/failed), that evidence item is dropped and the
+   proposal falls back to the LLM-citation quorum (or is rejected).
 3. **Curator phase (P4).** Modeled on the existing Critic phase
    (`src/core/orchestrator.ts:215`), but runs AFTER the verdict is computed and is
    **non-blocking** (never affects the gate decision or the loop). Uses its own
@@ -46,25 +58,69 @@ reviews and reduces repeated findings/false-positives over time.
    `provenance: diff-derived` tag, (7) max 3 promotions per run (excess queued).
 4. **Web-fetch evidence (Reviewgate-owned).** Reviewers have web tools disabled
    (spec line 557), so they only cite `source_url` in `web-fetch` evidence items.
-   During the Curator phase, Reviewgate fetches each cited URL over a conservative
-   **egress allowlist** (HTTPS only, per-run logged), computes `body_sha256`, sets
-   `fetched_at`, and writes the deterministic evidence record. A reviewer can
-   never forge the hash. This satisfies §5.6 rule 2's "1 deterministic source".
+   During the Curator phase, Reviewgate fetches each cited URL, computes
+   `body_sha256`, sets `fetched_at`, and writes the deterministic evidence record.
+   A reviewer can never forge the hash. This satisfies §5.6 rule 2's "1
+   deterministic source". **Because `source_url` is attacker-controllable (esp.
+   from diff-derived proposals), the fetcher is a hardened SSRF-resistant gate, not
+   a plain `fetch`:**
+   - HTTPS only; scheme + host validated against a **final-host allowlist** (docs
+     domains) AFTER URL canonicalization.
+   - Resolve DNS, then **block private / loopback / link-local / CGNAT / unique-
+     local / metadata (169.254.169.254) addresses**; pin the resolved IP for the
+     actual connection to resist **DNS rebinding** (resolve-then-connect to the
+     same IP).
+   - Redirects followed only up to a small cap, and **each hop is re-validated**
+     against the allowlist + IP rules; a redirect to a non-allowlisted/private
+     host aborts the fetch.
+   - **No credential or auth-header forwarding**; a fixed minimal request (no
+     cookies, no Authorization), bounded **timeout**, **max body size**, and an
+     allowed **content-type** set (text/HTML/JSON). Oversize/disallowed responses
+     are rejected, not truncated-then-trusted.
+   - **URL-shape policy (closes the egress *content* channel, master spec R10):**
+     query strings are stripped/denied by default and the URL + path are
+     length-capped, so attacker-controlled path/query bytes cannot smuggle diff/
+     repo data out to an allowlisted host. Only plain doc-page path shapes are
+     fetched.
+   - **Reproducible evidence:** the fetched body is persisted as a content-
+     addressed snapshot (keyed by `body_sha256`) under the brain store; the
+     evidence record points at that snapshot. This keeps the evidence verifiable
+     even if the live page later changes (§5.6 rule 2 "reproducible content").
+   - Every fetch (URL, final host, resolved IP, status, bytes, sha256, allow/deny
+     decision) is appended to a **per-run egress log** in the audit trail.
+   - A `source_url` that fails any check yields **no** web-fetch evidence (the
+     proposal then falls back to the LLM-citation quorum or is rejected).
 5. **Embeddings via OpenRouter** for rule-4 dedup. Extend the existing OpenRouter
    adapter with an embeddings path (`POST /api/v1/embeddings`, OpenAI-compatible,
    same key/auth). Cosine similarity ≥ 0.85 against existing brain entries =
    duplicate (rejected/merged). Embeddings are used ONLY for dedup, nowhere else.
+   **Fail-closed:** if the embeddings call errors or returns an invalid/empty
+   vector, rule 4 cannot be verified, so the Curator does NOT promote the
+   proposal — it is queued to the next run (never admitted as "not a duplicate").
 6. **Lifecycle.** `candidate` (on approval, `referenced_count: 1`) → `active`
    (after 3 references across ≥ 3 distinct reviewers) → `stale` (90 days without
    reference; drops from default prompt injection) → archived to
    `brain/archive.md` (180 more days stale). A cheap decay check runs at the start
    of each Curator phase.
+
+   > **Per-run brain snapshot (consistency with the M3 cache).** BrainEngine pins
+   > an immutable snapshot of the active brain at the START of a run. That single
+   > snapshot feeds BOTH the injected reviewer content AND the M3 cache key's
+   > brain-active hash. The Curator (P4) runs after the verdict and its mutations
+   > are visible only to SUBSEQUENT runs — so within one run, cache-key
+   > computation, prompt assembly, and audit all observe the same brain state, and
+   > async curation can never make cache reuse or the audit nondeterministic.
 7. **CLI.** `reviewgate brain list`, `reviewgate brain show <id>`,
    `reviewgate brain revoke <id>` (immediate invalidation — §5.6 user veto).
 8. **Storage & audit.** `.reviewgate/brain/{brain.md, brain.json, sources.jsonl,
    proposals/}`. `brain.md`/`brain.json`/`sources.jsonl` are committed;
    `proposals/` (and `proposals/curator-decisions/<run_id>.jsonl`) are gitignored.
-   Curator decisions are appended to the hash-chained audit log.
+   Curator decisions are appended to the hash-chained audit log. **All brain
+   mutations are atomic + locked:** the Curator acquires the same per-repo lock as
+   `StateStore` and writes `brain.md` / `brain.json` / `sources.jsonl` / archive
+   via temp-write-then-rename in one guarded update, so a concurrent or next run
+   never reads a torn brain and a Curator crash leaves the committed brain files
+   untouched.
 
 ### Out of M4 (deferred)
 
@@ -95,8 +151,25 @@ reviews and reduces repeated findings/false-positives over time.
 | CLI | New `reviewgate brain` subcommands in `src/cli/` |
 
 The Curator being non-blocking means the gate decision (LoopDriver) is computed
-and returned BEFORE the Curator runs; the Curator's work happens after and only
-mutates `.reviewgate/brain/`. A Curator failure must never change a verdict.
+BEFORE the Curator runs; the Curator's work only mutates `.reviewgate/brain/` and
+can never change a verdict, never corrupt the committed brain files (per §2.8 —
+locked, atomic temp-write-then-rename, single guarded update per run).
+
+**Execution model (M4): synchronous-after-verdict, in-process, hard-timeout-bounded,
+best-effort.** The gate process computes the decision FIRST, then runs the Curator
+synchronously within the same process before exiting. This keeps recording
+deterministic — the brain lock is held in-process, so there is no orphaned/killed
+background job and no torn write (resolves the "post-return curator may be skipped"
+race). To honor §5.6's "does not block Claude Code's loop", P4 is **strictly
+bounded by `phases.curator.timeoutMs`** and is **best-effort**: verdict delivery is
+detached from curator success — the already-computed decision is emitted regardless
+of curator outcome. If the curator (or its provider/web-fetch) hangs, errors, or
+exceeds the timeout, the gate **abandons it, queues the proposals to the next run,
+and emits the decision** — so turn-end latency is bounded by
+`verdict-compute + curator.timeoutMs` and never depends on curator success. The
+curator only runs at all when reviewers actually emitted proposals (often none).
+It adds NO review iterations and never affects the gate decision. A detached/durable
+background executor (zero added turn-end latency) is a deferred optimization, not M4.
 
 ## 4. Decisions locked during brainstorming
 
@@ -117,8 +190,12 @@ mutates `.reviewgate/brain/`. A Curator failure must never change a verdict.
   stable vectors; confirm cosine 0.85 is a sane threshold on a few real
   near-duplicate convention strings.
 - **SM4-2 (egress allowlist + binary):** confirm the Curator web-fetch works from
-  the compiled Bun binary and that the allowlist is enforced; decide default
-  allowed domains (docs sites) and the per-run egress log format.
+  the compiled Bun binary. **Acceptance gates (must all hold before M4 ships the
+  web-fetch path):** final-host allowlist after canonicalization; private/
+  loopback/link-local/CGNAT/metadata IP blocking; resolve-then-pin (DNS-rebinding
+  resistance); per-hop redirect re-validation with a small cap; no credential/
+  header forwarding; timeout + max-body-size + content-type allowlist; per-run
+  egress log. Decide default allowed domains (docs sites) and the log format.
 - **SM4-3 (curator default provider):** confirm a non-reviewer OAuth provider can
   run the Curator without colliding with the host session; pick the default.
 
