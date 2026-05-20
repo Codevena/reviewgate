@@ -5,7 +5,7 @@ import type { ReviewgateConfig } from '../config/define-config.ts';
 import { ReportWriter } from './report-writer.ts';
 import type { StateStore } from './state-store.ts';
 import type { Orchestrator } from './orchestrator.ts';
-import { decisionsPath, dirtyFlagPath } from '../utils/paths.ts';
+import { decisionsPath, dirtyFlagPath, pendingJsonPath } from '../utils/paths.ts';
 import { ReviewgateStateSchema } from '../schemas/state.ts';
 
 export interface LoopInput {
@@ -33,6 +33,22 @@ function readDirtyFlag(repoRoot: string): DirtyFlag | null {
     return JSON.parse(readFileSync(p, 'utf8')) as DirtyFlag;
   } catch {
     return null;
+  }
+}
+
+// The finding IDs (e.g. "F-001") that the previous iteration reported. These
+// live in pending.json — NOT in signature_history, which stores sha256
+// signatures used for stuck-loop detection. Claude's decisions file is keyed
+// by finding_id, so the decisions-gate must compare against these IDs.
+function previousFindingIds(repoRoot: string): string[] {
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return [];
+  try {
+    const report = JSON.parse(readFileSync(p, 'utf8')) as { findings?: Array<{ id?: string }> };
+    if (!Array.isArray(report.findings)) return [];
+    return report.findings.map((f) => f.id).filter((id): id is string => typeof id === 'string');
+  } catch {
+    return [];
   }
 }
 
@@ -88,8 +104,8 @@ export class LoopDriver {
 
     // If a prior iter exists and decisions are required, check they exist.
     if (state.iteration > 0) {
-      const lastSigs = state.signature_history[state.signature_history.length - 1] ?? [];
-      if (lastSigs.length > 0 && !allDecisionsAddressed(this.i.repoRoot, state.iteration, lastSigs)) {
+      const requiredIds = previousFindingIds(this.i.repoRoot);
+      if (requiredIds.length > 0 && !allDecisionsAddressed(this.i.repoRoot, state.iteration, requiredIds)) {
         return {
           kind: 'block',
           reason: `Iteration ${state.iteration} findings are not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,

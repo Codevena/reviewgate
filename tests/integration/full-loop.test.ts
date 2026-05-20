@@ -71,11 +71,13 @@ describe('full loop integration', () => {
       sandboxModeOverride: 'off',
     });
 
-    // 4. Second Stop hook with decisions present: gate may PASS or FAIL again
-    //    depending on whether fake-codex produces a new FAIL. With fake-codex
-    //    always emitting one WARN, the second pass should also BLOCK; but the
-    //    important assertion is that the gate accepts decisions/1.jsonl and
-    //    increments the iteration counter.
+    // 4. Second Stop hook with decisions present: the decisions-gate must
+    //    ACCEPT decisions/1.jsonl (which covers finding F-001) and proceed to
+    //    run a NEW iteration (iter 2). fake-codex always emits one CRITICAL,
+    //    so iter 2 also FAILs and blocks — but the key proof is that the gate
+    //    did NOT block on the decisions-check: iteration advanced to 2.
+    //    (Regression guard: an earlier bug compared signatures against
+    //    finding_id and would have blocked here, leaving iteration at 1.)
     const secondStop = await runGate({
       repoRoot: repo,
       hook: 'stop',
@@ -85,6 +87,6 @@ describe('full loop integration', () => {
     });
     expect(secondStop.exitCode).toBe(0);
     const state = JSON.parse(readFileSync(join(repo, '.reviewgate', 'state.json'), 'utf8'));
-    expect(state.iteration).toBeGreaterThanOrEqual(1);
+    expect(state.iteration).toBe(2);
   });
 });
