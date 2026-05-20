@@ -145,9 +145,9 @@ export default defineConfig({
     openrouter: {
       enabled: true,
       auth: "openrouter",
-      model: "google/gemini-3.5-flash",   // any OpenRouter model slug
+      model: "deepseek/deepseek-v4-pro",   // ← any OpenRouter model slug (see below)
       apiKeyEnv: "OPENROUTER_API_KEY",
-      costPerMTokensUsd: 0.075,            // fed into loop costCapUsd tracking
+      costPerMTokensUsd: 0.075,            // optional; fed into loop costCapUsd tracking
       timeoutMs: 120_000,
     },
   },
@@ -157,6 +157,7 @@ export default defineConfig({
         { provider: "codex",       persona: "security" },
         { provider: "gemini",      persona: "security" },
         { provider: "claude-code", persona: "adversarial" },
+        { provider: "openrouter",  persona: "security" },
       ],
     },
     critic: { provider: "openrouter", persona: "critic" },
@@ -170,6 +171,28 @@ export default defineConfig({
 ```
 
 Anything you omit falls back to the defaults. The config is zod-validated.
+
+### Choosing the OpenRouter model
+
+The OpenRouter reviewer can target **any model OpenRouter hosts** — just set the
+`model` field to its slug. Examples that work today:
+
+```
+deepseek/deepseek-v4-pro        deepseek/deepseek-v4-flash:free
+google/gemini-2.0-flash-001     openai/gpt-4o-mini
+anthropic/claude-sonnet-4.5     meta-llama/llama-3.3-70b-instruct
+```
+
+Browse and copy exact slugs from <https://openrouter.ai/models>. An invalid slug
+returns a 404 (`ModelNotFoundError`) and the reviewer reports `status: error`
+(fail-closed — never a silent pass). Set your key once in the shell:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...   # e.g. in ~/.zshrc
+```
+
+Reviewgate sends a strict JSON schema via OpenRouter's `response_format`; models
+that ignore it are still recovered by the tolerant parser.
 
 ---
 
