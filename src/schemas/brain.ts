@@ -1,0 +1,88 @@
+// src/schemas/brain.ts
+import { z } from "zod";
+
+export const BrainEntryType = z.enum([
+  "convention",
+  "anti-pattern",
+  "external-knowledge",
+  "research-cache",
+  "disagreement",
+]);
+
+export const BrainEntryStatus = z.enum(["candidate", "active", "stale", "archived"]);
+export type BrainEntryStatus = z.infer<typeof BrainEntryStatus>;
+
+export const EvidenceItemSchema = z
+  .object({
+    kind: z.enum(["reviewer-finding", "web-fetch", "deterministic", "reviewer-observation"]),
+    source_url: z.string().url().optional(),
+    body_sha256: z.string().length(64).optional(),
+    fetched_at: z.string().optional(),
+    run_id: z.string().optional(),
+    reviewer_id: z.string().optional(),
+    from_diff: z
+      .object({ file: z.string(), line_start: z.number().int(), line_end: z.number().int() })
+      .optional(),
+    snippet: z.string().max(200).optional(),
+  })
+  .superRefine((e, ctx) => {
+    if (e.kind === "web-fetch" && (!e.source_url || !e.body_sha256 || !e.fetched_at)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "web-fetch evidence needs source_url+body_sha256+fetched_at",
+      });
+    }
+    if (
+      (e.kind === "reviewer-finding" || e.kind === "reviewer-observation") &&
+      (!e.run_id || !e.reviewer_id)
+    ) {
+      ctx.addIssue({ code: "custom", message: "reviewer evidence needs run_id+reviewer_id" });
+    }
+  });
+export type EvidenceItem = z.infer<typeof EvidenceItemSchema>;
+
+// Reviewer-submitted proposal (pre-enrichment). source_url citations are allowed
+// on non-web-fetch evidence; Reviewgate enriches them into web-fetch records.
+export const MemoryProposalSchema = z.object({
+  type: BrainEntryType,
+  scope: z.string(),
+  title: z.string().max(80),
+  body: z.string().max(500),
+  evidence: z.array(EvidenceItemSchema).min(1),
+  confidence: z.number().min(0).max(1),
+  tags: z.array(z.string()),
+});
+export type MemoryProposal = z.infer<typeof MemoryProposalSchema>;
+
+export const BrainEntrySchema = z.object({
+  id: z.string(),
+  type: BrainEntryType,
+  scope: z.string(),
+  title: z.string().max(80),
+  body: z.string().max(500),
+  tags: z.array(z.string()),
+  file_globs: z.array(z.string()),
+  status: BrainEntryStatus.default("candidate"),
+  referenced_count: z.number().int().nonnegative().default(1),
+  referencing_reviewers: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1),
+  embedding: z.array(z.number()).nullable().default(null),
+  evidence: z.array(EvidenceItemSchema),
+  provenance: z.enum(["diff-derived"]).optional(),
+  created_at: z.string(),
+  last_referenced_at: z.string().optional(),
+  source_run_id: z.string(),
+});
+export type BrainEntry = z.infer<typeof BrainEntrySchema>;
+
+export const CuratorDecisionSchema = z.object({
+  schema: z.literal("reviewgate.curator.v1"),
+  run_id: z.string(),
+  proposal_title: z.string(),
+  decision: z.enum(["promoted", "rejected", "queued", "merged-duplicate"]),
+  rule_failed: z.string().optional(),
+  entry_id: z.string().optional(),
+  provider: z.string(),
+  ts: z.string(),
+});
+export type CuratorDecision = z.infer<typeof CuratorDecisionSchema>;

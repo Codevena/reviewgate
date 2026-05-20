@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "citty": "^0.1.6",
+    "minimatch": "^10.2.5",
     "tree-sitter-python": "^0.25.0",
     "tree-sitter-typescript": "^0.23.2",
     "ulid": "^2.3.0",
