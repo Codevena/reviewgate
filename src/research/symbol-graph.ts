@@ -41,7 +41,20 @@ const FN_QUERY =
 const CALL_QUERY =
   "(call_expression function: [(identifier) @c (member_expression property:(property_identifier) @c)])";
 
+// Per-run memo: a file is parsed at most once per process. enclosingSymbol (one
+// call per finding) and buildSymbolGraph otherwise re-parse the same file many
+// times. Files don't change mid-run, so caching by path is safe.
+const parseCache = new Map<string, { symbols: SymbolInfo[] } | null>();
+
 async function parseFile(file: string): Promise<{ symbols: SymbolInfo[] } | null> {
+  const cached = parseCache.get(file);
+  if (cached !== undefined) return cached;
+  const result = await parseFileUncached(file);
+  parseCache.set(file, result);
+  return result;
+}
+
+async function parseFileUncached(file: string): Promise<{ symbols: SymbolInfo[] } | null> {
   const g = grammarForFile(file);
   if (!g) return null;
   const lang = await getLanguage(g.wasmFile);
