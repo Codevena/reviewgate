@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "bun run src/cli/index.ts",
-    "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate",
+    "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate && mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/*.wasm node_modules/tree-sitter-python/*.wasm dist/grammars/ 2>/dev/null || true",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",

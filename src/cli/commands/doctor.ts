@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { resolveGrammarWasm } from "../../research/grammars.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 
@@ -75,6 +76,16 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     name: "OPENROUTER_API_KEY",
     status: process.env.OPENROUTER_API_KEY ? "ok" : "warn",
     detail: process.env.OPENROUTER_API_KEY ? "set" : "unset (only needed for openrouter reviewers)",
+  });
+
+  const rg = checkBinary("rg", "ripgrep (optional)");
+  checks.push({ ...rg, status: rg.status === "fail" ? "warn" : rg.status });
+
+  const grammar = resolveGrammarWasm("tree-sitter-typescript.wasm");
+  checks.push({
+    name: "tree-sitter grammars",
+    status: grammar ? "ok" : "warn",
+    detail: grammar ? grammar : "no grammar wasm found (symbol graph disabled; reviews still run)",
   });
 
   if (!input.capture) {
