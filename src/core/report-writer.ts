@@ -29,6 +29,22 @@ function fmtFinding(f: Finding): string {
 }
 
 function renderMd(r: PendingReport): string {
+  // Coverage warning: any reviewer that didn't finish OK (timeout/error/etc.)
+  // reduces how many independent reviewers actually saw this diff. Surface it
+  // prominently — a silently degraded panel could let a PASS through with less
+  // scrutiny than configured.
+  const degraded = r.reviewers.filter((x) => x.status !== "ok");
+  const coverageBanner =
+    degraded.length > 0
+      ? [
+          `> ⚠ **Reduced coverage:** ${degraded.length} of ${r.reviewers.length} reviewers did not complete (${degraded
+            .map((x) => `${x.id}: ${x.status}`)
+            .join(
+              ", ",
+            )}). This verdict is based on the ${r.reviewers.length - degraded.length} reviewer(s) that finished.`,
+          "",
+        ]
+      : [];
   const head = [
     `# Reviewgate Report — iteration ${r.iter} of ${r.max_iter}`,
     "",
@@ -36,6 +52,7 @@ function renderMd(r: PendingReport): string {
     `**Reviewers:** ${r.reviewers.map((x) => `${x.id} (${x.status})`).join(" · ")}`,
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
+    ...coverageBanner,
     "## Required actions",
     "",
     `For each finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\`:`,

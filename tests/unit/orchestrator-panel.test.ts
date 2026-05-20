@@ -113,9 +113,14 @@ describe("Orchestrator panel", () => {
       repoRoot: repo,
       config,
       adapters: {
-        // DIFFERENT signatures → two distinct findings, each numbered F-001 by its reviewer
-        codex: stub("codex", [f("sigCodex", "codex", "security")]),
-        gemini: stub("gemini", [f("sigGemini", "gemini", "architecture")]),
+        // Two findings at DIFFERENT locations (different files) → distinct bugs,
+        // each numbered F-001 by its own reviewer → must get unique merged ids.
+        codex: stub("codex", [
+          { ...f("sigCodex", "codex", "security"), file: "a.ts", line_start: 1, line_end: 1 },
+        ]),
+        gemini: stub("gemini", [
+          { ...f("sigGemini", "gemini", "architecture"), file: "b.ts", line_start: 1, line_end: 1 },
+        ]),
       },
       sandboxMode: "off",
       hostTier: "opus",

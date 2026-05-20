@@ -28,24 +28,47 @@ function computeConsensus(flagged: number, total: number): Consensus {
   return "singleton";
 }
 
+const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 1, INFO: 0 };
+
+// Semantic dedup key — deliberately EXCLUDES rule_id (different reviewers name
+// the same bug differently, e.g. "sql-injection" vs "sqli-risk", which would
+// otherwise yield distinct signatures and force the user to disposition the same
+// bug N times). Groups by file + category + a 5-line window, so the same issue
+// reported by multiple reviewers collapses to one finding, while genuinely
+// separate issues (>5 lines apart or different category) stay distinct.
+function dedupKey(f: Finding): string {
+  return `${f.file}|${f.category}|${Math.floor((f.line_start - 1) / 5)}`;
+}
+
 export function aggregate(input: AggregateInput): AggregateResult {
-  // Group by signature.
-  const bySig = new Map<string, { sample: Finding; reviewers: string[] }>();
+  const groups = new Map<string, { sample: Finding; reviewers: string[]; messages: string[] }>();
   for (const f of input.findings) {
-    const key = f.signature;
-    const entry = bySig.get(key);
+    const key = dedupKey(f);
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
+    const entry = groups.get(key);
     if (entry) {
       if (!entry.reviewers.includes(reviewerKey)) entry.reviewers.push(reviewerKey);
+      if (!entry.messages.includes(f.message)) entry.messages.push(f.message);
+      // Representative = highest severity (most conservative); ties keep the first.
+      if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[entry.sample.severity]) entry.sample = f;
     } else {
-      bySig.set(key, { sample: f, reviewers: [reviewerKey] });
+      groups.set(key, { sample: f, reviewers: [reviewerKey], messages: [f.message] });
     }
   }
 
   const deduped: Finding[] = [];
-  for (const { sample, reviewers } of bySig.values()) {
+  for (const { sample, reviewers, messages } of groups.values()) {
     const consensus = computeConsensus(reviewers.length, input.reviewersTotal);
-    deduped.push({ ...sample, confirmed_by: reviewers, consensus });
+    // Preserve every reviewer's wording so nothing is lost when findings merge.
+    const others = messages.filter((m) => m !== sample.message);
+    const details =
+      others.length > 0
+        ? `${sample.details}\n\nAlso reported by other reviewers:\n${others.map((m) => `- ${m}`).join("\n")}`.slice(
+            0,
+            2000,
+          )
+        : sample.details;
+    deduped.push({ ...sample, details, confirmed_by: reviewers, consensus });
   }
 
   const critic = input.critic;
