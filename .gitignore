@@ -1,0 +1,29 @@
+# Bun
+node_modules
+.DS_Store
+*.log
+
+# Build
+dist
+*.tsbuildinfo
+
+# Reviewgate runtime artifacts (we are reviewgate but still want these gitignored in our own repo)
+.reviewgate/audit/
+.reviewgate/cassettes/
+!.reviewgate/cassettes/golden/
+.reviewgate/reports/
+.reviewgate/pending.*
+.reviewgate/decisions/
+.reviewgate/state.json
+.reviewgate/research.md
+.reviewgate/dirty.flag
+.reviewgate/ESCALATION.md
+.reviewgate/.lock
+.reviewgate/cache/
+
+# Spike artifacts
+/tmp/reviewgate-spike-*
+
+# Editor
+.vscode/
+.idea/
