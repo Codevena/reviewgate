@@ -48,6 +48,24 @@ Claude, or any OpenRouter model). You may see two extra fields on findings in
 The response protocol (read `pending.md`, write `decisions/<iter>.jsonl`) is
 unchanged regardless of how many reviewers ran.
 
+## Adaptive pipeline (M3)
+
+From M3 onwards Reviewgate applies triage and research before running the panel:
+
+- **Trivial diffs may pass without a review.** If the diff touches only
+  documentation or non-executable files, Reviewgate issues an automatic PASS at
+  $0 and your turn is allowed to end immediately — no reviewer spawned.
+- **Finding signatures are now symbol-relative.** The `file:line` in a finding
+  references the changed function or method name, not an absolute line number.
+  This makes finding IDs more stable across edits: if you refactor surrounding
+  lines the finding still points to the right place.
+- **`research.md` is written before reviewers run.** If you see
+  `.reviewgate/research.md` in the repo, it contains the symbol-graph context
+  each reviewer received. You do not need to read or edit it; it is informational.
+
+The response protocol (read `pending.md`, write `decisions/<iter>.jsonl`) is
+unchanged.
+
 ---
 
 ## Your response protocol

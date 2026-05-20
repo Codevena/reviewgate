@@ -14,8 +14,9 @@ Claude Pro/Max, ChatGPT Plus/Pro and Gemini Advanced pay **$0 per review** withi
 their subscription quotas (OAuth-first). OpenRouter reviewers use an API key and
 can target any hosted model by name.
 
-> **Status: M2 (Multi-Reviewer Panel).** Ships Codex + Gemini + Claude + OpenRouter
-> reviewers, a parallel panel, an adversarial critic phase, and cost tracking.
+> **Status: M3 (Adaptive Pipeline).** Ships Codex + Gemini + Claude + OpenRouter
+> reviewers, a parallel panel, an adversarial critic phase, cost tracking, adaptive
+> triage, tree-sitter symbol graph, research context, and review cache.
 > See [Scope & limitations](#scope--limitations).
 
 ---
@@ -211,6 +212,56 @@ treated as a pass.
 
 ---
 
+## Adaptive pipeline (M3)
+
+M3 adds four stages that run before the reviewer panel, making the gate faster
+and more precise without changing any external protocols:
+
+### Triage
+
+Before spawning any reviewer, Reviewgate classifies the diff:
+
+- **Doc-only diffs** (changes confined to Markdown, comments, or other
+  non-executable files) are **skipped at $0** — they get an automatic PASS
+  verdict without touching the reviewer panel.
+- **Sensitive-path diffs** (auth, crypto, payment, admin) receive an expanded
+  review budget (more iterations, higher cost cap).
+
+### Research context
+
+For every non-trivial diff Reviewgate builds a `research.md` context file and
+injects it into each reviewer's prompt. The context includes:
+
+- A summary of which files changed and why.
+- **Symbol graph** callers/callees (see below).
+- Any relevant entries from the per-repo learning brain (M4+).
+
+Every reviewer reads this context, so findings reference stable symbol names
+rather than raw line numbers.
+
+### Tree-sitter symbol graph
+
+Reviewgate uses `web-tree-sitter` + grammar WASM files to extract the call
+graph around the changed symbols. Supported languages: TypeScript, TSX,
+JavaScript, JSX, Python.
+
+The symbol graph needs [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`)
+to find callers efficiently. If `rg` is absent, the symbol graph degrades
+gracefully (callers list is empty; reviews still run). If no grammar WASM can
+be found the symbol graph is disabled entirely but reviews are unaffected.
+
+Grammar WASM files are bundled into `dist/grammars/` by `bun run build` so the
+compiled binary works without `node_modules`. Run `reviewgate doctor` to confirm
+both `rg` and the grammars are available.
+
+### Review cache
+
+When the diff is byte-for-byte identical to a previous run (same content hash),
+Reviewgate returns the cached verdict without spawning any reviewer. This makes
+repeated stop-hooks instantaneous after a trivially clean re-run.
+
+---
+
 ## Security
 
 - **Author ≠ reviewer.** The host Claude session never reviews its own work; the
@@ -263,8 +314,13 @@ parallel panel execution · adversarial critic phase · `confirmed_by` consensus
 tracking across reviewers · OpenRouter API-key cost tracking against `costCapUsd` ·
 `google/gemini-3.5-flash` and any other OpenRouter model by slug.
 
-**Not yet (M3–M6):** adaptive triage & research phase · symbol-graph via
-tree-sitter · per-repo learning "brain" & curator · false-positive ledger ·
+**In M3:** adaptive triage (doc-only diffs skip review at $0; sensitive paths get
+expanded budget) · `research.md` context injected into every reviewer · tree-sitter
+symbol graph (TS/JS/TSX/Python; needs ripgrep for callers; degrades gracefully) ·
+review cache (identical diff → cached verdict, no reviewer spawn) · grammar WASM
+bundled into `dist/grammars/` by `bun run build`.
+
+**Not yet (M4–M6):** per-repo learning "brain" & curator · false-positive ledger ·
 cassette replay & weekly reports · native sandbox isolation (pending
 `@anthropic-ai/sandbox-runtime` v1).
 
