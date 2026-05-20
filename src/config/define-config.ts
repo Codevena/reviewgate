@@ -45,6 +45,7 @@ export const ConfigSchema = z.object({
   research: z
     .object({ languages: z.array(z.string()) })
     .default({ languages: ["typescript", "tsx", "python"] }),
+  notify: z.object({ desktop: z.boolean() }).default({ desktop: false }),
   loop: z.object({
     maxIterations: z.number().int().positive(),
     costCapUsd: z.number().nonnegative(),

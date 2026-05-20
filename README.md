@@ -174,6 +174,26 @@ export default {
 
 Anything you omit falls back to the defaults. The config is zod-validated.
 
+### Completion signal
+
+A passing review used to be silent (the Stop hook just exits 0). Now the gate
+always writes a one-line summary to **stderr** on completion — e.g.
+`Reviewgate: DONE — Reviewgate PASS on iteration 1.` or `Reviewgate: BLOCK — …` —
+so "green" is distinguishable from "the gate didn't run". Set `notify.desktop: true`
+to also fire a macOS/Linux desktop notification when a review finishes:
+
+```ts
+export default {
+  // ...providers, phases...
+  notify: { desktop: true },   // osascript (macOS) / notify-send (Linux)
+};
+```
+
+Note: by hook architecture, an AI agent can only be *interrupted* on a blocking
+(FAIL) verdict — on PASS its turn simply ends. The stderr line and desktop
+notification are the human-facing signal; an agent confirms a pass by reading
+`.reviewgate/state.json` / `pending.md`.
+
 ### Choosing the OpenRouter model
 
 The OpenRouter reviewer can target **any model OpenRouter hosts** — just set the

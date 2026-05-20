@@ -12,6 +12,7 @@ import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import { type ProviderId, createAdapter } from "../../providers/registry.ts";
 import { collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
+import { notifyDesktop } from "../../utils/notify.ts";
 import { auditDir } from "../../utils/paths.ts";
 
 export interface GateInput {
@@ -101,13 +102,22 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   });
   const decision = await driver.run();
 
+  // Completion signal — so a passing review is no longer SILENT (the agent
+  // can't be pinged on allow_stop by the hook architecture, but the human can):
+  //  - always write a one-line summary to stderr (surfaced in the hook output),
+  //  - optionally fire a desktop notification when notify.desktop is enabled.
+  const signal = `Reviewgate: ${decision.kind === "block" ? "BLOCK" : "DONE"} — ${decision.reason}`;
+  if (cfg.notify.desktop) {
+    notifyDesktop("Reviewgate", decision.reason);
+  }
+
   if (decision.kind === "block") {
     return {
       exitCode: 0,
       stdout: JSON.stringify({ decision: "block", reason: decision.reason }),
-      stderr: "",
+      stderr: signal,
     };
   }
-  // allow_stop: print empty body; exit 0.
-  return { exitCode: 0, stdout: "", stderr: "" };
+  // allow_stop: exit 0. The summary still goes to stderr so "green" is visible.
+  return { exitCode: 0, stdout: "", stderr: signal };
 }

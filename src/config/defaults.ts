@@ -44,6 +44,10 @@ export const defaultConfig = {
   },
   cache: { enabled: true, reviewTtlDays: 7 },
   research: { languages: ["typescript", "tsx", "python"] },
+  // Completion signal: the gate always writes a one-line summary to stderr; set
+  // notify.desktop=true to also fire a macOS/Linux desktop notification when a
+  // review finishes (so "green" isn't silent).
+  notify: { desktop: false },
   loop: {
     maxIterations: 3,
     costCapUsd: 1.5,
