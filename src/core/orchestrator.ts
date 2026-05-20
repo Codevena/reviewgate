@@ -31,6 +31,22 @@ export class Orchestrator {
 
   async runIteration(opts: { runId: string; iter: number }): Promise<IterationResult> {
     const start = Date.now();
+
+    // Fail closed on sandboxing. M1 ships without @anthropic-ai/sandbox-runtime
+    // (unpublished at v1), so it cannot isolate the reviewer subprocess. Rather
+    // than silently run the reviewer unisolated while the config claims a
+    // sandbox, refuse any mode other than the explicit opt-out 'off'. The user
+    // must consciously accept unisolated execution (trusted local dev only).
+    if (this.input.sandboxMode !== "off") {
+      await this.writeErrorReport(opts, start, "error");
+      return {
+        verdict: "ERROR",
+        costUsd: 0,
+        durationMs: Date.now() - start,
+        signaturesThisIter: [],
+      };
+    }
+
     const runDir = mkdtempSync(join(tmpdir(), `rg-iter-${opts.iter}-`));
     const promptFile = join(runDir, "prompt.txt");
     const findingsPath = join(runDir, "findings.md");
@@ -70,6 +86,20 @@ export class Orchestrator {
       diffPath,
     });
 
+    // A reviewer that errored, timed out, or hit a quota gives us NO signal.
+    // Treating its empty findings as PASS would let any reviewer hiccup silently
+    // green-light the turn — the exact fail-open the gate exists to prevent.
+    // Surface it as ERROR so the loop blocks (and eventually escalates).
+    if (review.status !== "ok") {
+      await this.writeErrorReport(opts, start, review.status, review, reviewerCfg.model);
+      return {
+        verdict: "ERROR",
+        costUsd: review.usage.costUsd,
+        durationMs: Date.now() - start,
+        signaturesThisIter: [],
+      };
+    }
+
     const agg = aggregate({ findings: review.findings, reviewersTotal: 1 });
 
     const writer = new ReportWriter(this.input.repoRoot);
@@ -107,5 +137,48 @@ export class Orchestrator {
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
     };
+  }
+
+  // Writes a FAIL pending report for a non-reviewable iteration (sandbox
+  // unavailable or reviewer failure). pending.json's verdict enum has no
+  // 'ERROR', so the report records FAIL with the reviewer's real status; the
+  // IterationResult carries 'ERROR' so the LoopDriver emits an error-specific
+  // block reason rather than a normal findings-to-address message.
+  private async writeErrorReport(
+    opts: { runId: string; iter: number },
+    start: number,
+    status: ReviewResult["status"],
+    review?: ReviewResult,
+    model?: string,
+  ): Promise<void> {
+    const writer = new ReportWriter(this.input.repoRoot);
+    await writer.write({
+      schema: "reviewgate.pending.v1",
+      run_id: opts.runId,
+      iter: opts.iter,
+      max_iter: this.input.config.loop.maxIterations,
+      verdict: "FAIL",
+      counts: { critical: 0, warn: 0, info: 0 },
+      reviewers: [
+        {
+          id: review?.reviewerId ?? "codex-security",
+          provider: "codex",
+          model: model ?? this.input.config.providers.codex.model,
+          persona: "security",
+          status,
+          cost_usd: review?.usage.costUsd ?? 0,
+          duration_ms: review?.durationMs ?? Date.now() - start,
+        },
+      ],
+      findings: [],
+      cost_usd_total: review?.usage.costUsd ?? 0,
+      duration_ms_total: Date.now() - start,
+      generated_at: new Date().toISOString(),
+      git: {
+        sha: process.env.GIT_SHA ?? "0".repeat(40),
+        branch: process.env.GIT_BRANCH ?? "main",
+        dirty_files: [],
+      },
+    });
   }
 }

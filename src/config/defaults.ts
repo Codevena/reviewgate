@@ -21,7 +21,12 @@ export const defaultConfig = {
     softPassPolicy: "allow" as const,
   },
   sandbox: {
-    mode: "strict" as const,
+    // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished
+    // at v1 and M1 cannot actually isolate the reviewer subprocess. 'off' is
+    // honest: it runs the reviewer unisolated (acceptable for trusted local
+    // dev). Setting 'strict'/'permissive' fails closed (Orchestrator refuses to
+    // review) until sandbox-runtime support lands — never silently unisolated.
+    mode: "off" as const,
     writablePaths: [".reviewgate/"],
     deniedReads: ["~/.ssh", "~/.aws", "~/.config", ".env*", "*.pem", "*.key"],
   },

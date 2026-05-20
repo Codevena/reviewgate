@@ -95,6 +95,30 @@ export class LoopDriver {
       return { kind: "allow_stop", reason: "No code changes detected since last review." };
     }
 
+    // Escalation precondition: cost cap reached (apikey/openrouter mode only;
+    // OAuth mode cost is 0 so this never fires there).
+    if (
+      this.i.config.loop.costCapUsd > 0 &&
+      state.cost_usd_so_far >= this.i.config.loop.costCapUsd
+    ) {
+      await this.escalate(
+        state.session_id,
+        state.iteration,
+        "cost-cap",
+        `Cost $${state.cost_usd_so_far.toFixed(2)} reached the cap of $${this.i.config.loop.costCapUsd.toFixed(2)}.`,
+        state.signature_history,
+      );
+      try {
+        unlinkSync(dirtyFlagPath(this.i.repoRoot));
+      } catch {
+        /* noop */
+      }
+      return {
+        kind: "allow_stop",
+        reason: "Reviewgate escalated: cost cap reached. See .reviewgate/ESCALATION.md.",
+      };
+    }
+
     // Escalation precondition: iter cap reached before this iteration.
     if (state.iteration >= this.i.config.loop.maxIterations) {
       await this.escalate(
@@ -185,6 +209,18 @@ export class LoopDriver {
       return {
         kind: "allow_stop",
         reason: `Reviewgate ${result.verdict} on iteration ${nextIter}.`,
+      };
+    }
+
+    // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
+    // Block — Reviewgate must never pass a turn it could not actually review —
+    // but with a reason that points at the reviewer, not at fixing findings.
+    // Repeated errors increment the iteration and eventually hit the iter-cap
+    // escalation, so this cannot loop forever.
+    if (result.verdict === "ERROR") {
+      return {
+        kind: "block",
+        reason: `Reviewgate could not complete a review on iteration ${nextIter} (reviewer did not run successfully). Run \`reviewgate doctor\` to diagnose, fix the reviewer, then continue. Reviewgate will not pass a turn it could not review.`,
       };
     }
 
