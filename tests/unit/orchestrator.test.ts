@@ -22,7 +22,7 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator({
       repoRoot: repo,
       config: defaultConfig,
-      providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxMode: "off",
       hostTier: "opus",
       diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,1 @@\n-function compare(a, b) { return a == b; }\n+function compare(a, b) { return a === b; }\n",
@@ -39,7 +39,7 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator({
       repoRoot: repo,
       config: defaultConfig,
-      providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX_ERROR }) },
+      adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX_ERROR }) },
       sandboxMode: "off",
       hostTier: "opus",
       diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
@@ -62,7 +62,7 @@ describe("Orchestrator", () => {
     const orch = new Orchestrator({
       repoRoot: repo,
       config: defaultConfig,
-      providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxMode: "strict",
       hostTier: "opus",
       diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",

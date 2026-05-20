@@ -1,18 +1,21 @@
 // src/core/orchestrator.ts
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
+import type { ProviderId } from "../providers/registry.ts";
 import type { HostTier } from "../utils/host-model.ts";
+import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { aggregate } from "./aggregator.ts";
+import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
 import { ReportWriter } from "./report-writer.ts";
 
 export interface OrchestratorInput {
   repoRoot: string;
   config: ReviewgateConfig;
-  providers: { codex: ProviderAdapter };
+  adapters: Partial<Record<ProviderId, ProviderAdapter>>;
   sandboxMode: "strict" | "permissive" | "off";
   hostTier: HostTier;
   diff: string;
@@ -26,19 +29,30 @@ export interface IterationResult {
   signaturesThisIter: string[];
 }
 
+const PERSONA_REAFFIRM: Record<string, string> = {
+  security:
+    "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.",
+  architecture: "You are a senior software architect. Judge design, coupling, and maintainability.",
+  adversarial: "You are an adversarial critic. Attack assumptions; find what others miss.",
+};
+
+interface ReviewerRun {
+  res: ReviewResult;
+  provider: ProviderId;
+  persona: string;
+  model: string;
+}
+
 export class Orchestrator {
   constructor(private readonly input: OrchestratorInput) {}
 
   async runIteration(opts: { runId: string; iter: number }): Promise<IterationResult> {
     const start = Date.now();
 
-    // Fail closed on sandboxing. M1 ships without @anthropic-ai/sandbox-runtime
-    // (unpublished at v1), so it cannot isolate the reviewer subprocess. Rather
-    // than silently run the reviewer unisolated while the config claims a
-    // sandbox, refuse any mode other than the explicit opt-out 'off'. The user
-    // must consciously accept unisolated execution (trusted local dev only).
+    // Fail closed on sandboxing: M1/M2 cannot isolate the reviewer subprocess
+    // (sandbox-runtime unpublished). Refuse any mode other than 'off'.
     if (this.input.sandboxMode !== "off") {
-      await this.writeErrorReport(opts, start, "error");
+      await this.writeReport(opts, start, [], [], "ERROR");
       return {
         verdict: "ERROR",
         costUsd: 0,
@@ -47,131 +61,156 @@ export class Orchestrator {
       };
     }
 
-    const runDir = mkdtempSync(join(tmpdir(), `rg-iter-${opts.iter}-`));
-    const promptFile = join(runDir, "prompt.txt");
-    const findingsPath = join(runDir, "findings.md");
-    const diffPath = join(runDir, "diff.patch");
+    const reviewers = this.input.config.phases.review.reviewers;
+    const tasks = reviewers.map(async (r): Promise<ReviewerRun | null> => {
+      const adapter = this.input.adapters[r.provider];
+      const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
+      if (!adapter || !providerCfg || !providerCfg.enabled) return null;
 
-    // Persona for M1: only security.
-    const personaReaffirm =
-      "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.";
-    const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm });
-    writeFileSync(
-      promptFile,
-      [
-        "Review the diff for security and correctness issues. Output a JSON object matching the Finding schema you were given.",
-        "",
-        sanitised.text,
-      ].join("\n"),
-    );
-    writeFileSync(diffPath, this.input.diff);
+      let model = r.model ?? providerCfg.model;
+      if (r.provider === "claude-code") {
+        const tier = reviewerTierFor(this.input.hostTier);
+        if (tier === "disabled") return null; // host is haiku → no smaller claude tier
+        model = modelIdForTier(tier) ?? model;
+      }
 
-    const raw = this.input.config.providers.codex;
-    const reviewerCfg: ProviderConfig = {
-      enabled: raw.enabled,
-      auth: raw.auth,
-      model: raw.model,
-      timeoutMs: raw.timeoutMs,
-      ...(raw.apiKeyEnv !== undefined && { apiKeyEnv: raw.apiKeyEnv }),
-      ...(raw.reasoningEffort !== undefined && { reasoningEffort: raw.reasoningEffort }),
-      ...(raw.maxTokens !== undefined && { maxTokens: raw.maxTokens }),
-    };
-    const review: ReviewResult = await this.input.providers.codex.review({
-      cfg: reviewerCfg,
-      reviewerId: "codex-security",
-      promptFile,
-      workingDir: this.input.repoRoot,
-      findingsPath,
-      persona: "security",
-      diffPath,
+      const reaffirm =
+        PERSONA_REAFFIRM[r.persona] ??
+        "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.";
+      const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
+      const runDir = mkdtempSync(join(tmpdir(), `rg-rev-${r.provider}-`));
+      const promptFile = join(runDir, "prompt.txt");
+      const findingsPath = join(runDir, "findings.md");
+      const diffPath = join(runDir, "diff.patch");
+      writeFileSync(
+        promptFile,
+        [
+          "Review the diff for issues. Output a JSON object matching the review schema you were given.",
+          "",
+          sanitised.text,
+        ].join("\n"),
+      );
+      writeFileSync(diffPath, this.input.diff);
+      const res = await adapter.review({
+        cfg: { ...providerCfg, model },
+        reviewerId: `${r.provider}-${r.persona}`,
+        promptFile,
+        workingDir: this.input.repoRoot,
+        findingsPath,
+        persona: r.persona,
+        diffPath,
+      });
+      return { res, provider: r.provider, persona: r.persona, model };
     });
 
-    // A reviewer that errored, timed out, or hit a quota gives us NO signal.
-    // Treating its empty findings as PASS would let any reviewer hiccup silently
-    // green-light the turn — the exact fail-open the gate exists to prevent.
-    // Surface it as ERROR so the loop blocks (and eventually escalates).
-    if (review.status !== "ok") {
-      await this.writeErrorReport(opts, start, review.status, review, reviewerCfg.model);
+    const settled = (await Promise.all(tasks)).filter((x): x is ReviewerRun => x !== null);
+    const okRuns = settled.filter((s) => s.res.status === "ok");
+
+    // Fail closed: at least one reviewer attempted but none succeeded.
+    if (settled.length > 0 && okRuns.length === 0) {
+      await this.writeReport(opts, start, settled, [], "ERROR");
       return {
         verdict: "ERROR",
-        costUsd: review.usage.costUsd,
+        costUsd: 0,
         durationMs: Date.now() - start,
         signaturesThisIter: [],
       };
     }
 
-    const agg = aggregate({ findings: review.findings, reviewersTotal: 1 });
+    const allFindings = okRuns.flatMap((s) => s.res.findings);
 
-    const writer = new ReportWriter(this.input.repoRoot);
-    const now = new Date().toISOString();
-    const branch = process.env.GIT_BRANCH ?? "main";
-    const sha = process.env.GIT_SHA ?? "0".repeat(40);
-    await writer.write({
-      schema: "reviewgate.pending.v1",
-      run_id: opts.runId,
-      iter: opts.iter,
-      max_iter: this.input.config.loop.maxIterations,
-      verdict: agg.verdict,
-      counts: agg.counts,
-      reviewers: [
-        {
-          id: review.reviewerId,
-          provider: "codex",
-          model: reviewerCfg.model,
-          persona: "security",
-          status: review.status,
-          cost_usd: review.usage.costUsd,
-          duration_ms: review.durationMs,
-        },
-      ],
-      findings: agg.dedupedFindings,
-      cost_usd_total: review.usage.costUsd,
-      duration_ms_total: Date.now() - start,
-      generated_at: now,
-      git: { sha, branch, dirty_files: [] },
+    // Optional critic phase (demote-only).
+    let criticMap: Map<string, CriticVerdict> | undefined;
+    const criticCfg = this.input.config.phases.critic;
+    if (criticCfg && allFindings.length > 0) {
+      const criticAdapter = this.input.adapters[criticCfg.provider];
+      const cProviderCfg = this.input.config.providers[criticCfg.provider] as
+        | ProviderConfig
+        | undefined;
+      if (criticAdapter && cProviderCfg) {
+        const cRun = mkdtempSync(join(tmpdir(), "rg-critic-"));
+        const cPrompt = join(cRun, "prompt.txt");
+        writeFileSync(cPrompt, buildCriticPrompt(allFindings));
+        const cRes = await criticAdapter.review({
+          cfg: { ...cProviderCfg, ...(criticCfg.model ? { model: criticCfg.model } : {}) },
+          reviewerId: `critic-${criticCfg.provider}`,
+          promptFile: cPrompt,
+          workingDir: this.input.repoRoot,
+          findingsPath: join(cRun, "f.md"),
+          persona: criticCfg.persona,
+          diffPath: join(cRun, "d.patch"),
+        });
+        let criticText = "";
+        try {
+          criticText = cRes.rawEventsPath ? readFileSync(cRes.rawEventsPath, "utf8") : "";
+        } catch {
+          criticText = "";
+        }
+        if (criticText) criticMap = parseCriticOutput(criticText);
+      }
+    }
+
+    const agg = aggregate({
+      findings: allFindings,
+      reviewersTotal: okRuns.length,
+      ...(criticMap ? { critic: criticMap } : {}),
     });
+
+    await this.writeReport(opts, start, settled, agg.dedupedFindings, agg.verdict, agg.counts);
 
     return {
       verdict: agg.verdict,
-      costUsd: review.usage.costUsd,
+      costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
     };
   }
 
-  // Writes a FAIL pending report for a non-reviewable iteration (sandbox
-  // unavailable or reviewer failure). pending.json's verdict enum has no
-  // 'ERROR', so the report records FAIL with the reviewer's real status; the
-  // IterationResult carries 'ERROR' so the LoopDriver emits an error-specific
-  // block reason rather than a normal findings-to-address message.
-  private async writeErrorReport(
+  // Writes pending.md + pending.json. For ERROR verdicts the report records FAIL
+  // (the PendingReport verdict enum has no ERROR) with the reviewers' real
+  // statuses; the IterationResult carries ERROR so the LoopDriver blocks with an
+  // error-specific reason.
+  private async writeReport(
     opts: { runId: string; iter: number },
     start: number,
-    status: ReviewResult["status"],
-    review?: ReviewResult,
-    model?: string,
+    runs: ReviewerRun[],
+    findings: import("../schemas/finding.ts").Finding[],
+    verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR",
+    counts: { critical: number; warn: number; info: number } = { critical: 0, warn: 0, info: 0 },
   ): Promise<void> {
     const writer = new ReportWriter(this.input.repoRoot);
+    const reviewers =
+      runs.length > 0
+        ? runs.map((r) => ({
+            id: r.res.reviewerId,
+            provider: r.provider,
+            model: r.model,
+            persona: r.persona,
+            status: r.res.status,
+            cost_usd: r.res.usage.costUsd,
+            duration_ms: r.res.durationMs,
+          }))
+        : [
+            {
+              id: "reviewgate",
+              provider: "codex" as ProviderId,
+              model: this.input.config.providers.codex.model,
+              persona: "security",
+              status: "error" as const,
+              cost_usd: 0,
+              duration_ms: Date.now() - start,
+            },
+          ];
     await writer.write({
       schema: "reviewgate.pending.v1",
       run_id: opts.runId,
       iter: opts.iter,
       max_iter: this.input.config.loop.maxIterations,
-      verdict: "FAIL",
-      counts: { critical: 0, warn: 0, info: 0 },
-      reviewers: [
-        {
-          id: review?.reviewerId ?? "codex-security",
-          provider: "codex",
-          model: model ?? this.input.config.providers.codex.model,
-          persona: "security",
-          status,
-          cost_usd: review?.usage.costUsd ?? 0,
-          duration_ms: review?.durationMs ?? Date.now() - start,
-        },
-      ],
-      findings: [],
-      cost_usd_total: review?.usage.costUsd ?? 0,
+      verdict: verdict === "ERROR" ? "FAIL" : verdict,
+      counts,
+      reviewers,
+      findings,
+      cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
       duration_ms_total: Date.now() - start,
       generated_at: new Date().toISOString(),
       git: {

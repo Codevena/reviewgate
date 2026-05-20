@@ -37,7 +37,7 @@ describe("LoopDriver", () => {
       orchestrator: new Orchestrator({
         repoRoot: repo,
         config: defaultConfig,
-        providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
         sandboxMode: "off",
         hostTier: "opus",
         diff: "",
@@ -62,7 +62,7 @@ describe("LoopDriver", () => {
       orchestrator: new Orchestrator({
         repoRoot: repo,
         config: defaultConfig,
-        providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
         sandboxMode: "off",
         hostTier: "opus",
         diff: "",
@@ -98,7 +98,7 @@ describe("LoopDriver", () => {
       orchestrator: new Orchestrator({
         repoRoot: repo,
         config: defaultConfig,
-        providers: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
         sandboxMode: "off",
         hostTier: "opus",
         diff: "",
