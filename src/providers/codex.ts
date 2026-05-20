@@ -1,9 +1,8 @@
 // src/providers/codex.ts
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
-import { computeSignature } from "../diff/signature.ts";
-import { type Finding, type FindingCategory, FindingSchema } from "../schemas/finding.ts";
+import { join } from "node:path";
+import type { Finding } from "../schemas/finding.ts";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
   Preflight,
@@ -13,70 +12,11 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
-
-// The JSON Schema codex must emit via --output-schema. OpenAI strict structured
-// output requires EVERY property to appear in `required` and
-// additionalProperties:false at each level — otherwise codex returns a 400
-// invalid_json_schema. This is the codex-native review shape (one line per
-// finding); extractFindings maps it into the richer Reviewgate Finding.
-const REVIEW_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["verdict", "findings"],
-  properties: {
-    verdict: { type: "string", enum: ["PASS", "FAIL"] },
-    findings: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: [
-          "severity",
-          "category",
-          "rule_id",
-          "file",
-          "line",
-          "message",
-          "details",
-          "confidence",
-        ],
-        properties: {
-          severity: { type: "string", enum: ["CRITICAL", "WARN", "INFO"] },
-          category: {
-            type: "string",
-            enum: [
-              "security",
-              "correctness",
-              "quality",
-              "architecture",
-              "performance",
-              "testing",
-              "docs",
-            ],
-          },
-          rule_id: { type: "string" },
-          file: { type: "string" },
-          line: { type: "integer" },
-          message: { type: "string" },
-          details: { type: "string" },
-          confidence: { type: "number" },
-        },
-      },
-    },
-  },
-} as const;
-
-// One finding as codex emits it under REVIEW_OUTPUT_SCHEMA.
-interface CodexFinding {
-  severity: "CRITICAL" | "WARN" | "INFO";
-  category: string;
-  rule_id: string;
-  file: string;
-  line: number;
-  message: string;
-  details: string;
-  confidence: number;
-}
+import {
+  REVIEW_OUTPUT_SCHEMA,
+  mapReviewOutputToFindings,
+  parseReviewOutput,
+} from "./review-output.ts";
 
 export interface CodexAdapterOptions {
   binPath?: string;
@@ -247,10 +187,8 @@ export class CodexAdapter implements ProviderAdapter {
     };
   }
 
-  // Maps codex's review-schema output (severity/category/rule_id/file/line/
-  // message/details/confidence) into the richer Reviewgate Finding: assigns a
-  // stable F-NNN id, computes the canonical signature, relativizes the file
-  // path, and pins the reviewer block. Malformed entries are dropped.
+  // Maps codex's review-schema output into the richer Reviewgate Finding via
+  // the shared review-output module. Malformed entries are dropped.
   private extractFindings(
     lastMsgFile: string,
     model: string,
@@ -263,59 +201,8 @@ export class CodexAdapter implements ProviderAdapter {
     } catch {
       return [];
     }
-    let parsed: { findings?: unknown[] };
-    try {
-      parsed = JSON.parse(raw) as { findings?: unknown[] };
-    } catch {
-      // Codex returned non-JSON; M1 treats this as zero findings (M3+ may parse markdown).
-      return [];
-    }
-    if (!Array.isArray(parsed.findings)) return [];
-    const out: Finding[] = [];
-    let n = 0;
-    for (const raw of parsed.findings) {
-      const cf = raw as Partial<CodexFinding>;
-      if (
-        typeof cf.severity !== "string" ||
-        typeof cf.category !== "string" ||
-        typeof cf.file !== "string" ||
-        typeof cf.line !== "number" ||
-        typeof cf.message !== "string"
-      ) {
-        continue; // not the expected shape — drop
-      }
-      n += 1;
-      const id = `F-${String(n).padStart(3, "0")}`;
-      const file = isAbsolute(cf.file) ? relative(workingDir, cf.file) || cf.file : cf.file;
-      const line = Math.max(1, Math.trunc(cf.line));
-      const candidate = {
-        id,
-        signature: computeSignature({
-          file,
-          ruleId: cf.rule_id ?? cf.severity,
-          // Cast is safe: an invalid category fails FindingSchema.safeParse below
-          // and the finding is dropped, so a bogus signature never escapes.
-          category: cf.category as FindingCategory,
-          lineStart: line,
-          lineEnd: line,
-        }),
-        severity: cf.severity,
-        category: cf.category,
-        rule_id: cf.rule_id && cf.rule_id.length > 0 ? cf.rule_id : "unspecified",
-        file,
-        line_start: line,
-        line_end: line,
-        message: cf.message.slice(0, 200),
-        details: (cf.details ?? cf.message).slice(0, 2000),
-        reviewer: { provider: "codex", model, persona },
-        confidence:
-          typeof cf.confidence === "number" ? Math.min(1, Math.max(0, cf.confidence)) : 0.7,
-        consensus: "singleton" as const,
-      };
-      // FindingSchema validates enums (severity/category) and bounds; drop on failure.
-      const result = FindingSchema.safeParse(candidate);
-      if (result.success) out.push(result.data);
-    }
-    return out;
+    const out = parseReviewOutput(raw);
+    if (!out) return [];
+    return mapReviewOutputToFindings(out, { provider: "codex", model, persona, workingDir });
   }
 }
