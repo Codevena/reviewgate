@@ -113,12 +113,15 @@ reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 
 ## Configuration — `reviewgate.config.ts`
 
+`reviewgate.config.ts` is a **plain default-export object** (no import needed).
+Reviewgate deep-merges it over the defaults and validates it. Do **not** write
+`import { defineConfig } from "reviewgate"` — that package isn't installed in your
+project, so the import would fail and Reviewgate would silently use defaults.
+
 Minimal single-reviewer setup (Codex only, OAuth, $0):
 
 ```ts
-import { defineConfig } from "reviewgate";
-
-export default defineConfig({
+export default {
   providers: {
     codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
   },
@@ -130,15 +133,13 @@ export default defineConfig({
   sandbox: {
     mode: "off",
   },
-});
+};
 ```
 
-Multi-reviewer panel with an OpenRouter critic (M2):
+Multi-reviewer panel with an OpenRouter critic:
 
 ```ts
-import { defineConfig } from "reviewgate";
-
-export default defineConfig({
+export default {
   providers: {
     codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
     gemini: { enabled: true, auth: "oauth", model: "gemini-2.5-flash", timeoutMs: 300_000 },
@@ -168,7 +169,7 @@ export default defineConfig({
     costCapUsd: 2.0,
     softPassPolicy: "allow",
   },
-});
+};
 ```
 
 Anything you omit falls back to the defaults. The config is zod-validated.
