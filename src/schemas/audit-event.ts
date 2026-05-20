@@ -16,6 +16,9 @@ export const EventType = z.enum([
   "gate.decision",
   "escalation",
   "decision.applied",
+  "curator.start",
+  "curator.complete",
+  "brain.egress",
 ]);
 export type EventType = z.infer<typeof EventType>;
 
