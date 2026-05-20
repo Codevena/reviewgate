@@ -2,7 +2,15 @@ export const defaultConfig = {
   version: 1 as const,
   providers: {
     codex: { enabled: true, auth: "oauth" as const, model: "gpt-5.4", timeoutMs: 300_000 },
-    gemini: { enabled: false, auth: "oauth" as const, model: "gemini-3-pro", timeoutMs: 300_000 },
+    gemini: {
+      enabled: false,
+      auth: "oauth" as const,
+      // A FAST flash model by default: pro/reasoning tiers (e.g.
+      // gemini-3.1-pro-preview) can take minutes per review. Set to any model
+      // your `gemini` CLI account can access; an unknown id yields a 404.
+      model: "gemini-2.5-flash",
+      timeoutMs: 300_000,
+    },
     "claude-code": {
       enabled: false,
       auth: "oauth" as const,

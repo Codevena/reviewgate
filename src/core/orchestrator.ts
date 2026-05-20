@@ -29,6 +29,21 @@ export interface IterationResult {
   signaturesThisIter: string[];
 }
 
+// Spell out the exact output shape in the prompt. Codex (--output-schema) and
+// OpenRouter (response_format) get a machine-enforced schema, but Gemini and
+// Claude get ONLY this text — so the shape must be explicit here or they emit
+// prose / a different JSON shape that the parser drops (→ silent zero findings).
+const REVIEW_PROMPT_PREAMBLE = [
+  "You are reviewing a code diff. Output ONLY a single JSON object — no prose, no",
+  "markdown fences — of exactly this shape:",
+  '{"verdict":"PASS|FAIL","findings":[{"severity":"CRITICAL|WARN|INFO",',
+  '"category":"security|correctness|quality|architecture|performance|testing|docs",',
+  '"rule_id":"<short-kebab-id>","file":"<repo-relative path>","line":<integer>,',
+  '"message":"<one line>","details":"<explanation>","confidence":<number 0..1>}]}',
+  "Report every real issue you find. Use verdict PASS with an empty findings array",
+  "only if there are genuinely no issues.",
+].join("\n");
+
 const PERSONA_REAFFIRM: Record<string, string> = {
   security:
     "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.",
@@ -82,14 +97,7 @@ export class Orchestrator {
       const promptFile = join(runDir, "prompt.txt");
       const findingsPath = join(runDir, "findings.md");
       const diffPath = join(runDir, "diff.patch");
-      writeFileSync(
-        promptFile,
-        [
-          "Review the diff for issues. Output a JSON object matching the review schema you were given.",
-          "",
-          sanitised.text,
-        ].join("\n"),
-      );
+      writeFileSync(promptFile, [REVIEW_PROMPT_PREAMBLE, "", sanitised.text].join("\n"));
       writeFileSync(diffPath, this.input.diff);
       const res = await adapter.review({
         cfg: { ...providerCfg, model },

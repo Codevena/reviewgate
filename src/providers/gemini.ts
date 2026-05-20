@@ -66,6 +66,9 @@ export class GeminiAdapter implements ProviderAdapter {
     const run = mkdtempSync(join(tmpdir(), "rg-gem-run-"));
     const outFile = join(run, "out.json");
     const errFile = join(run, "err.log");
+    // No --include-directories: the diff is supplied in the prompt, so the
+    // reviewer needs no repo tree. Including the workspace makes Gemini enter a
+    // file-scanning/agentic loop that can run for minutes.
     const args = [
       "-p",
       readFileSync(input.promptFile, "utf8"),
@@ -75,8 +78,6 @@ export class GeminiAdapter implements ProviderAdapter {
       "json",
       "--approval-mode",
       "plan",
-      "--include-directories",
-      input.workingDir,
     ];
     const env = { ...process.env, GEMINI_CLI_TRUST_WORKSPACE: "true" } as Record<string, string>;
     if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
