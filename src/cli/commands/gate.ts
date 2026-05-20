@@ -1,6 +1,5 @@
-import { spawnSync } from "node:child_process";
 // src/cli/commands/gate.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
@@ -11,6 +10,7 @@ import { StateStore } from "../../core/state-store.ts";
 import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import { type ProviderId, createAdapter } from "../../providers/registry.ts";
+import { collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { auditDir } from "../../utils/paths.ts";
 
@@ -39,12 +39,6 @@ async function loadEffectiveConfig(repoRoot: string): Promise<ReviewgateConfig> 
     }
   }
   return loadConfig(null);
-}
-
-function readDiff(repoRoot: string): string {
-  // Use git to get the working-tree diff against HEAD.
-  const r = spawnSync("git", ["diff", "--no-color", "HEAD"], { cwd: repoRoot, encoding: "utf8" });
-  return r.status === 0 ? r.stdout : "";
 }
 
 function stopHookActiveFlag(parsed: unknown): boolean {
@@ -92,7 +86,8 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     adapters,
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
-    diff: readDiff(input.repoRoot),
+    diff: collectDiff(input.repoRoot),
+    gitInfo: collectGitInfo(input.repoRoot),
     reasonOnFailEnabled: true,
   });
 

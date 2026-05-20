@@ -29,6 +29,9 @@ export interface OrchestratorInput {
   sandboxMode: "strict" | "permissive" | "off";
   hostTier: HostTier;
   diff: string;
+  // Real git metadata for the report. Optional so tests can omit it (falls back
+  // to env vars / placeholders). The gate always supplies it.
+  gitInfo?: { sha: string; branch: string; dirtyFiles: string[] };
   reasonOnFailEnabled: boolean;
 }
 
@@ -328,9 +331,9 @@ export class Orchestrator {
       duration_ms_total: Date.now() - start,
       generated_at: new Date().toISOString(),
       git: {
-        sha: process.env.GIT_SHA ?? "0".repeat(40),
-        branch: process.env.GIT_BRANCH ?? "main",
-        dirty_files: [],
+        sha: this.input.gitInfo?.sha ?? process.env.GIT_SHA ?? "0".repeat(40),
+        branch: this.input.gitInfo?.branch ?? process.env.GIT_BRANCH ?? "main",
+        dirty_files: this.input.gitInfo?.dirtyFiles ?? [],
       },
     });
   }

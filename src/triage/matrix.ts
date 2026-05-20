@@ -2,6 +2,14 @@
 import type { DiffFacts } from "../research/diff-facts.ts";
 import type { TriageDecision } from "../schemas/triage.ts";
 
+// reviewerHint semantics: an EMPTY hint means "run every reviewer the user
+// configured" (the orchestrator falls back to the full configured panel). A
+// non-empty hint NARROWS to those providers. We deliberately keep the hint
+// empty for all review-running tiers so triage never SILENTLY DROPS a reviewer
+// the user explicitly enabled (e.g. an OpenRouter/DeepSeek reviewer) — only the
+// risk class, budget, and loop cap differ. Narrowing by provider id is reserved
+// for a future per-risk policy.
+
 export function triageFromFacts(facts: DiffFacts): TriageDecision {
   const base = { schema: "reviewgate.triage.v1" as const };
   if (facts.docOnly) {
@@ -22,7 +30,7 @@ export function triageFromFacts(facts: DiffFacts): TriageDecision {
       runReview: true,
       budgetTier: "expanded",
       loopCap: 5,
-      reviewerHint: ["codex", "gemini", "claude-code", "openrouter"],
+      reviewerHint: [],
       justification: `Sensitive paths: ${facts.sensitivityTags.join(", ")}.`,
     };
   }
@@ -33,7 +41,7 @@ export function triageFromFacts(facts: DiffFacts): TriageDecision {
       runReview: true,
       budgetTier: "minimal",
       loopCap: 2,
-      reviewerHint: ["codex"],
+      reviewerHint: [],
       justification: "Tests-only diff.",
     };
   }
@@ -43,7 +51,7 @@ export function triageFromFacts(facts: DiffFacts): TriageDecision {
     runReview: true,
     budgetTier: "standard",
     loopCap: 3,
-    reviewerHint: ["codex", "gemini", "claude-code"],
+    reviewerHint: [],
     justification: "Default code change.",
   };
 }
