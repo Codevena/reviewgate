@@ -81,6 +81,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
       input.providerOverrides?.[cfg.phases.critic.provider] ??
       createAdapter(cfg.phases.critic.provider);
   }
+  const gitInfo = collectGitInfo(input.repoRoot);
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,
@@ -88,7 +89,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
     diff: collectDiff(input.repoRoot),
-    gitInfo: collectGitInfo(input.repoRoot),
+    gitInfo,
     reasonOnFailEnabled: true,
   });
 
@@ -99,6 +100,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     audit,
     orchestrator,
     stopHookActive: stopHookActiveFlag(parsedStdin),
+    headSha: gitInfo.sha,
   });
   const decision = await driver.run();
 

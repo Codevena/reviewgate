@@ -3,7 +3,7 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
-import { ReviewgateStateSchema } from "../schemas/state.ts";
+import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
 import { decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
 import type { Orchestrator } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
@@ -16,6 +16,9 @@ export interface LoopInput {
   audit: AuditLogger;
   orchestrator: Orchestrator;
   stopHookActive: boolean;
+  // Current HEAD sha. When it differs from the last reviewed sha, a commit
+  // landed and the gate re-arms (fresh budget for the next batch).
+  headSha?: string;
 }
 
 export type LoopDecision =
@@ -90,11 +93,41 @@ export class LoopDriver {
     // bounded below by escalating once a forced continuation leaves findings
     // unaddressed.
     const flag = readDirtyFlag(this.i.repoRoot);
-    const state = await this.i.state.load();
+    let state = await this.i.state.load();
 
     // No dirty.flag since last PASS → nothing to review.
     if (!flag) {
       return { kind: "allow_stop", reason: "No code changes detected since last review." };
+    }
+
+    // Re-arm on commit, but ONLY to recover an escalated gate. If HEAD moved
+    // while the gate was ESCALATED, the human has taken over and committed; reset
+    // the budget so the next batch is gated again instead of staying gated-off.
+    // We deliberately do NOT re-arm on a HEAD move while mid-FAIL (not escalated):
+    // committing must never bypass the pending-decisions gate, or an agent could
+    // land unaddressed findings by committing them. On first sight (null baseline,
+    // e.g. a state.json from before this field existed) we only RECORD the sha so
+    // a later commit is detectable. A clean PASS re-arms separately (see below).
+    const headSha = this.i.headSha ?? null;
+    if (headSha !== null && state.last_reviewed_head_sha !== headSha) {
+      const headMovedWhileEscalated = state.last_reviewed_head_sha !== null && state.escalated;
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          ...(headMovedWhileEscalated
+            ? {
+                iteration: 0,
+                cost_usd_so_far: 0,
+                signature_history: [],
+                escalated: false,
+                escalation_reason: null,
+                escalation_announced: false,
+              }
+            : {}),
+          last_reviewed_head_sha: headSha,
+        }),
+      );
+      state = await this.i.state.load();
     }
 
     // Escalation precondition: cost cap reached (apikey/openrouter mode only;
@@ -103,42 +136,20 @@ export class LoopDriver {
       this.i.config.loop.costCapUsd > 0 &&
       state.cost_usd_so_far >= this.i.config.loop.costCapUsd
     ) {
-      await this.escalate(
-        state.session_id,
-        state.iteration,
+      return this.escalateAndDecide(
+        state,
         "cost-cap",
         `Cost $${state.cost_usd_so_far.toFixed(2)} reached the cap of $${this.i.config.loop.costCapUsd.toFixed(2)}.`,
-        state.signature_history,
       );
-      try {
-        unlinkSync(dirtyFlagPath(this.i.repoRoot));
-      } catch {
-        /* noop */
-      }
-      return {
-        kind: "allow_stop",
-        reason: "Reviewgate escalated: cost cap reached. See .reviewgate/ESCALATION.md.",
-      };
     }
 
     // Escalation precondition: iter cap reached before this iteration.
     if (state.iteration >= this.i.config.loop.maxIterations) {
-      await this.escalate(
-        state.session_id,
-        state.iteration,
+      return this.escalateAndDecide(
+        state,
         "max-iterations",
         `Reached ${state.iteration} iterations without convergence.`,
-        state.signature_history,
       );
-      try {
-        unlinkSync(dirtyFlagPath(this.i.repoRoot));
-      } catch {
-        /* noop */
-      }
-      return {
-        kind: "allow_stop",
-        reason: `Reviewgate escalated after ${state.iteration} iterations. See .reviewgate/ESCALATION.md.`,
-      };
     }
 
     // Stuck-loop: same signatures two iters in a row.
@@ -146,23 +157,11 @@ export class LoopDriver {
     const last = state.signature_history[lastIdx];
     const prev = state.signature_history[lastIdx - 1];
     if (last && prev && last.join(",") === prev.join(",")) {
-      await this.escalate(
-        state.session_id,
-        state.iteration,
+      return this.escalateAndDecide(
+        state,
         "stuck-signatures",
         "Findings unchanged across 2 iterations.",
-        state.signature_history,
       );
-      try {
-        unlinkSync(dirtyFlagPath(this.i.repoRoot));
-      } catch {
-        /* noop */
-      }
-      return {
-        kind: "allow_stop",
-        reason:
-          "Reviewgate escalated: no progress across 2 iterations. See .reviewgate/ESCALATION.md.",
-      };
     }
 
     // If a prior iter exists and decisions are required, check they exist.
@@ -179,22 +178,11 @@ export class LoopDriver {
         // ended another turn without doing so — escalate to the human instead
         // of nagging indefinitely. On a fresh user-initiated stop, just block.
         if (this.i.stopHookActive) {
-          await this.escalate(
-            state.session_id,
-            state.iteration,
+          return this.escalateAndDecide(
+            state,
             "decisions-unaddressed",
             `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.`,
-            state.signature_history,
           );
-          try {
-            unlinkSync(dirtyFlagPath(this.i.repoRoot));
-          } catch {
-            /* noop */
-          }
-          return {
-            kind: "allow_stop",
-            reason: `Reviewgate escalated: iteration ${state.iteration} findings were never addressed. See .reviewgate/ESCALATION.md.`,
-          };
         }
         return {
           kind: "block",
@@ -210,12 +198,21 @@ export class LoopDriver {
       iter: nextIter,
     });
 
+    // A clean PASS means this change-set converged → re-arm the budget so the
+    // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
+    // advances the counter toward the iter-cap escalation. Either way, record the
+    // HEAD sha so a later commit can be detected and re-armed on.
+    const passed = result.verdict === "PASS" || result.verdict === "SOFT-PASS";
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
-        iteration: nextIter,
-        cost_usd_so_far: cur.cost_usd_so_far + result.costUsd,
-        signature_history: [...cur.signature_history, result.signaturesThisIter],
+        iteration: passed ? 0 : nextIter,
+        cost_usd_so_far: passed ? 0 : cur.cost_usd_so_far + result.costUsd,
+        signature_history: passed ? [] : [...cur.signature_history, result.signaturesThisIter],
+        escalated: passed ? false : cur.escalated,
+        escalation_reason: passed ? null : cur.escalation_reason,
+        escalation_announced: passed ? false : cur.escalation_announced,
+        last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
         last_stop_ts: new Date().toISOString(),
       }),
     );
@@ -264,6 +261,52 @@ export class LoopDriver {
     return {
       kind: "block",
       reason: `Reviewgate FAIL — iteration ${nextIter} of ${this.i.config.loop.maxIterations}. See .reviewgate/pending.md. Append per-finding decisions to .reviewgate/decisions/${nextIter}.jsonl.`,
+    };
+  }
+
+  // Escalate, then decide whether to BLOCK (to surface it to the agent) or
+  // allow the stop. The gate blocks ONCE per escalation so the agent learns it
+  // has stopped gating — an allow_stop alone is silent and indistinguishable
+  // from "clean". After announcing, it allows; the dirty flag is consumed so the
+  // re-stop terminates. Re-arm (commit or PASS) clears escalation_announced.
+  private async escalateAndDecide(
+    state: ReviewgateState,
+    reasonCode:
+      | "max-iterations"
+      | "cost-cap"
+      | "stuck-signatures"
+      | "reject-rate-high"
+      | "decisions-unaddressed",
+    summary: string,
+  ): Promise<LoopDecision> {
+    const firstAnnounce = !state.escalation_announced;
+    // Only write ESCALATION.md + the audit entry + state on the first announce.
+    // Re-stops (with a fresh dirty flag) would otherwise churn the file and spam
+    // the audit log without changing the already-escalated state.
+    if (firstAnnounce) {
+      await this.escalate(
+        state.session_id,
+        state.iteration,
+        reasonCode,
+        summary,
+        state.signature_history,
+      );
+      await this.i.state.update((cur) => ({ ...cur, escalation_announced: true }));
+    }
+    try {
+      unlinkSync(dirtyFlagPath(this.i.repoRoot));
+    } catch {
+      /* noop */
+    }
+    if (firstAnnounce) {
+      return {
+        kind: "block",
+        reason: `⚠ Reviewgate ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is NO LONGER reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.`,
+      };
+    }
+    return {
+      kind: "allow_stop",
+      reason: `Reviewgate escalated (${reasonCode}); not gating. See .reviewgate/ESCALATION.md.`,
     };
   }
 

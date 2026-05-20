@@ -6,9 +6,11 @@ export const defaultConfig = {
       enabled: false,
       auth: "oauth" as const,
       // A FAST flash model by default: pro/reasoning tiers (e.g.
-      // gemini-3.1-pro-preview) can take minutes per review. Set to any model
-      // your `gemini` CLI account can access; an unknown id yields a 404.
-      model: "gemini-2.5-flash",
+      // gemini-3-pro-preview) can take minutes per review. Set to any model your
+      // `gemini` CLI account can access; an unknown id yields a ModelNotFoundError
+      // and the reviewer errors out (reduced coverage). Verified working on
+      // gemini CLI 0.40.1 — note `gemini-flash-latest` is NOT a valid id there.
+      model: "gemini-3-flash-preview",
       timeoutMs: 300_000,
     },
     "claude-code": {

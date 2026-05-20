@@ -30,9 +30,15 @@ export const ReviewgateStateSchema = z.object({
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
+  // HEAD sha at the last review. Used to detect a commit (HEAD moved) between
+  // stops, which re-arms the gate for the next batch of uncommitted changes.
+  last_reviewed_head_sha: z.string().nullable().default(null),
   started_at: z.string(),
   escalated: z.boolean(),
   escalation_reason: EscalationReason.nullable(),
+  // Whether the current escalation has already been surfaced to the agent via a
+  // one-time block. Prevents the escalation block from looping; cleared on re-arm.
+  escalation_announced: z.boolean().default(false),
   recovered_from: z.enum(["crash", "corruption"]).optional(),
 });
 
@@ -50,8 +56,10 @@ export function initialState(sessionId: string): ReviewgateState {
     last_diff_hash: null,
     last_stop_ts: null,
     last_pass_diff_hash: null,
+    last_reviewed_head_sha: null,
     started_at: new Date().toISOString(),
     escalated: false,
     escalation_reason: null,
+    escalation_announced: false,
   };
 }
