@@ -38,6 +38,21 @@ describe("collectDiff", () => {
     expect(diff).not.toContain("diff --git a/ignored.ts b/ignored.ts");
     expect(diff).not.toContain("SHOULD_NOT_APPEAR");
   });
+
+  it("never reviews Reviewgate's own managed files (no self-review loop)", () => {
+    const { mkdirSync } = require("node:fs") as typeof import("node:fs");
+    const dir = repo();
+    // Reviewgate scaffolding that sits permanently in the working tree:
+    writeFileSync(join(dir, "reviewgate.config.ts"), "export default { providers: {} };\n");
+    mkdirSync(join(dir, ".reviewgate", "bin"), { recursive: true });
+    writeFileSync(join(dir, ".reviewgate", "bin", "gate"), "#!/usr/bin/env bash\n");
+    // A real user file that MUST still be reviewed:
+    writeFileSync(join(dir, "real.ts"), "export const x = 1;\n");
+    const diff = collectDiff(dir);
+    expect(diff).toContain("diff --git a/real.ts b/real.ts"); // real file reviewed
+    expect(diff).not.toContain("reviewgate.config.ts"); // own config excluded
+    expect(diff).not.toContain(".reviewgate/bin/gate"); // own scaffolding excluded
+  });
 });
 
 describe("collectGitInfo", () => {

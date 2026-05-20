@@ -25,7 +25,7 @@ describe("Orchestrator", () => {
       adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxMode: "off",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,1 @@\n-function compare(a, b) { return a == b; }\n+function compare(a, b) { return a === b; }\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,1 @@\n-function compare(a, b) { return a == b; }\n+function compare(a, b) { return a === b; }\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "01HXQTEST", iter: 1 });
@@ -42,7 +42,7 @@ describe("Orchestrator", () => {
       adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX_ERROR }) },
       sandboxMode: "off",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "01HXQERR", iter: 1 });
@@ -65,7 +65,7 @@ describe("Orchestrator", () => {
       adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxMode: "strict",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "01HXQSB", iter: 1 });

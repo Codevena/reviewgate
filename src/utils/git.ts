@@ -12,14 +12,34 @@ function git(repoRoot: string, args: string[]): { status: number | null; stdout:
   return { status: r.status, stdout: r.stdout ?? "" };
 }
 
+// Reviewgate's OWN managed files must never be reviewed: they sit permanently in
+// the working tree (until the user commits them), which would (a) make the gate
+// review itself forever — an escalation loop — and (b) emit false positives on
+// the tool's own config/scaffolding (e.g. flagging `apiKeyEnv: "X"` as a leaked
+// secret). Excluded: reviewgate.config.ts and everything under .reviewgate/.
+function isReviewgateManaged(path: string): boolean {
+  return (
+    path === "reviewgate.config.ts" || path === ".reviewgate" || path.startsWith(".reviewgate/")
+  );
+}
+
 // The working-tree diff Reviewgate reviews. Includes BOTH tracked modifications
 // (`git diff HEAD`) AND untracked new files — the latter via `git diff
 // --no-index`, because a brand-new module is the most common review case yet
 // `git diff HEAD` omits it entirely. Non-mutating (never touches the index).
-// .gitignored files are excluded (--exclude-standard), so `.reviewgate/` etc.
-// are never reviewed.
+// .gitignored files are excluded (--exclude-standard); Reviewgate's own managed
+// files are excluded explicitly (they aren't all gitignored, e.g. .reviewgate/bin).
 export function collectDiff(repoRoot: string): string {
-  const tracked = git(repoRoot, ["diff", "--no-color", "HEAD"]);
+  const tracked = git(repoRoot, [
+    "diff",
+    "--no-color",
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude)reviewgate.config.ts",
+    ":(exclude).reviewgate",
+    ":(exclude).reviewgate/**",
+  ]);
   let out = tracked.status === 0 ? tracked.stdout : "";
 
   const untracked = git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
@@ -27,7 +47,7 @@ export function collectDiff(repoRoot: string): string {
     for (const file of untracked.stdout
       .split("\n")
       .map((s) => s.trim())
-      .filter((s) => s.length > 0)) {
+      .filter((s) => s.length > 0 && !isReviewgateManaged(s))) {
       // --no-index exits 1 when differences exist (always true for a new file) —
       // that is expected, not an error; read stdout regardless.
       const d = git(repoRoot, ["diff", "--no-color", "--no-index", "/dev/null", file]);

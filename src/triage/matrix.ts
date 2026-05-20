@@ -12,6 +12,19 @@ import type { TriageDecision } from "../schemas/triage.ts";
 
 export function triageFromFacts(facts: DiffFacts): TriageDecision {
   const base = { schema: "reviewgate.triage.v1" as const };
+  if (facts.files.length === 0) {
+    // Nothing to review (empty diff, or everything was Reviewgate-managed and
+    // excluded). Skip the panel entirely instead of spawning reviewers on noise.
+    return {
+      ...base,
+      riskClass: "trivial",
+      runReview: false,
+      budgetTier: "trivial",
+      loopCap: 1,
+      reviewerHint: [],
+      justification: "No reviewable changes in the diff.",
+    };
+  }
   if (facts.docOnly) {
     return {
       ...base,

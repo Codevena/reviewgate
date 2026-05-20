@@ -78,7 +78,7 @@ describe("Orchestrator panel", () => {
       },
       sandboxMode: "off",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "RUN", iter: 1 });
@@ -124,7 +124,7 @@ describe("Orchestrator panel", () => {
       },
       sandboxMode: "off",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     await orch.runIteration({ runId: "RUN", iter: 1 });
@@ -162,7 +162,7 @@ describe("Orchestrator panel", () => {
       },
       sandboxMode: "off",
       hostTier: "opus",
-      diff: "--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "RUN", iter: 1 });
