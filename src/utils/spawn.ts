@@ -37,7 +37,15 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessByStdio<Writable, Readable, Readable>;
 
-    if (stdinStream && child.stdin) stdinStream.pipe(child.stdin);
+    if (stdinStream && child.stdin) {
+      stdinStream.pipe(child.stdin);
+    } else if (child.stdin) {
+      // No stdin payload: close it so the child receives EOF immediately.
+      // `codex exec` (and many CLIs) block on "Reading additional input from
+      // stdin..." until EOF even when the prompt is passed as an argument —
+      // leaving the pipe open hangs the reviewer until the walltime timeout.
+      child.stdin.end();
+    }
     const out = createWriteStream(input.stdoutFile);
     const err = createWriteStream(input.stderrFile);
     // Swallow stream errors (e.g. EPIPE when piping stdin to a SIGKILLed child,
