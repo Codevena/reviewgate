@@ -1,0 +1,138 @@
+// src/providers/openrouter.ts
+import { readFileSync } from "node:fs";
+import type { Finding } from "../schemas/finding.ts";
+import type {
+  Preflight,
+  ProviderAdapter,
+  ProviderConfig,
+  ReviewInput,
+  ReviewResult,
+} from "./adapter-base.ts";
+import {
+  REVIEW_OUTPUT_SCHEMA,
+  mapReviewOutputToFindings,
+  parseReviewOutput,
+} from "./review-output.ts";
+
+const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+
+export interface OpenRouterAdapterOptions {
+  fetchImpl?: typeof fetch;
+}
+
+interface ChatResponse {
+  choices?: Array<{ message?: { content?: string } }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  error?: { message?: string };
+}
+
+export function estimateCostUsd(
+  inputTokens: number,
+  outputTokens: number,
+  pricePerMTokensUsd: number | undefined,
+): number {
+  if (!pricePerMTokensUsd || pricePerMTokensUsd <= 0) return 0;
+  return ((inputTokens + outputTokens) / 1_000_000) * pricePerMTokensUsd;
+}
+
+export class OpenRouterAdapter implements ProviderAdapter {
+  readonly id = "openrouter" as const;
+  private readonly fetchImpl: typeof fetch;
+  constructor(opts: OpenRouterAdapterOptions = {}) {
+    this.fetchImpl = opts.fetchImpl ?? fetch;
+  }
+
+  async preflight(cfg: ProviderConfig): Promise<Preflight> {
+    const key = cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv] : undefined;
+    if (!key)
+      return {
+        available: false,
+        version: null,
+        authMode: "openrouter",
+        error: `env ${cfg.apiKeyEnv} not set`,
+      };
+    return { available: true, version: "openrouter-v1", authMode: "openrouter", error: null };
+  }
+
+  async review(
+    input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
+  ): Promise<ReviewResult> {
+    const start = Date.now();
+    const key = input.cfg.apiKeyEnv ? process.env[input.cfg.apiKeyEnv] : undefined;
+    const errorResult = (detail: string): ReviewResult => ({
+      reviewerId: input.reviewerId,
+      verdict: "ERROR",
+      findings: [],
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+      durationMs: Date.now() - start,
+      exitCode: -1,
+      rawEventsPath: "",
+      status: "error",
+      statusDetail: detail.slice(0, 1000),
+    });
+    if (!key) return errorResult(`OpenRouter API key env '${input.cfg.apiKeyEnv}' is not set`);
+
+    const prompt = readFileSync(input.promptFile, "utf8");
+    const body = {
+      model: input.cfg.model,
+      messages: [{ role: "user", content: prompt }],
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "review", strict: true, schema: REVIEW_OUTPUT_SCHEMA },
+      },
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), input.cfg.timeoutMs);
+    let json: ChatResponse;
+    try {
+      const resp = await this.fetchImpl(ENDPOINT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!resp.ok)
+        return errorResult(`OpenRouter HTTP ${resp.status}: ${(await resp.text()).slice(0, 500)}`);
+      json = (await resp.json()) as ChatResponse;
+    } catch (err) {
+      return errorResult(`OpenRouter request failed: ${(err as Error).message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (json.error?.message) return errorResult(`OpenRouter error: ${json.error.message}`);
+
+    const content = json.choices?.[0]?.message?.content ?? "";
+    const out = parseReviewOutput(content);
+    const findings: Finding[] = out
+      ? mapReviewOutputToFindings(out, {
+          provider: "openrouter",
+          model: input.cfg.model,
+          persona: input.persona,
+          workingDir: input.workingDir,
+        })
+      : [];
+    const inputTokens = json.usage?.prompt_tokens ?? 0;
+    const outputTokens = json.usage?.completion_tokens ?? 0;
+    return {
+      reviewerId: input.reviewerId,
+      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+        ? "FAIL"
+        : "PASS",
+      findings,
+      usage: {
+        inputTokens,
+        outputTokens,
+        costUsd: estimateCostUsd(
+          inputTokens,
+          outputTokens,
+          (input.cfg as { costPerMTokensUsd?: number }).costPerMTokensUsd,
+        ),
+        quotaUsedPct: null,
+      },
+      durationMs: Date.now() - start,
+      exitCode: 0,
+      rawEventsPath: "",
+      status: "ok",
+    };
+  }
+}

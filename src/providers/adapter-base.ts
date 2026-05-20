@@ -49,7 +49,7 @@ export interface ReviewResult {
 }
 
 export interface ProviderAdapter {
-  readonly id: "codex" | "claude-code" | "gemini" | "opencode";
+  readonly id: "codex" | "claude-code" | "gemini" | "openrouter";
   preflight(cfg: ProviderConfig): Promise<Preflight>;
   review(input: ReviewInput & { cfg: ProviderConfig; reviewerId: string }): Promise<ReviewResult>;
 }
