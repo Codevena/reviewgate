@@ -1,10 +1,12 @@
 // src/core/aggregator.ts
 import type { Consensus, Finding } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
+import type { CriticVerdict } from "./critic.ts";
 
 export interface AggregateInput {
   findings: Finding[];
   reviewersTotal: number;
+  critic?: Map<string, CriticVerdict>;
 }
 
 export interface AggregateResult {
@@ -12,6 +14,12 @@ export interface AggregateResult {
   dedupedFindings: Finding[];
   counts: { critical: number; warn: number; info: number };
 }
+
+const DEMOTE: Record<Finding["severity"], Finding["severity"] | "drop"> = {
+  CRITICAL: "WARN",
+  WARN: "INFO",
+  INFO: "drop",
+};
 
 function computeConsensus(flagged: number, total: number): Consensus {
   if (total >= 3 && flagged === total) return "unanimous";
@@ -40,12 +48,37 @@ export function aggregate(input: AggregateInput): AggregateResult {
     deduped.push({ ...sample, confirmed_by: reviewers, consensus });
   }
 
+  const critic = input.critic;
+  const survivors: Finding[] = [];
+  for (const f of deduped) {
+    const cv = critic?.get(f.signature);
+    if (cv?.verdict === "likely_fp") {
+      const isCriticalSecurity =
+        f.severity === "CRITICAL" && (f.category === "security" || f.category === "correctness");
+      const isUnanimous = f.consensus === "unanimous";
+      if (!isCriticalSecurity && !isUnanimous) {
+        const next = DEMOTE[f.severity];
+        if (next === "drop") continue; // INFO likely_fp dropped entirely
+        survivors.push({
+          ...f,
+          severity: next,
+          critic_verdict: "likely_fp",
+          ...(cv.reason ? { critic_reason: cv.reason } : {}),
+        });
+        continue;
+      }
+      survivors.push({ ...f, critic_verdict: "keep" });
+      continue;
+    }
+    survivors.push(f);
+  }
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of deduped) {
+  for (const f of survivors) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (f.category === "security" || f.category === "correctness") {
@@ -68,5 +101,5 @@ export function aggregate(input: AggregateInput): AggregateResult {
   else if (warn > 0) verdict = "SOFT-PASS";
   else verdict = "PASS";
 
-  return { verdict, dedupedFindings: deduped, counts: { critical, warn, info } };
+  return { verdict, dedupedFindings: survivors, counts: { critical, warn, info } };
 }
