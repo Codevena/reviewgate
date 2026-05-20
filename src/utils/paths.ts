@@ -36,3 +36,28 @@ export function escalationMdPath(repoRoot: string): string {
 export function auditDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "audit");
 }
+
+export function brainDir(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "brain");
+}
+export function brainJsonPath(repoRoot: string): string {
+  return join(brainDir(repoRoot), "brain.json");
+}
+export function brainMdPath(repoRoot: string): string {
+  return join(brainDir(repoRoot), "brain.md");
+}
+export function brainSourcesPath(repoRoot: string): string {
+  return join(brainDir(repoRoot), "sources.jsonl");
+}
+export function brainArchivePath(repoRoot: string): string {
+  return join(brainDir(repoRoot), "archive.md");
+}
+export function brainLockPath(repoRoot: string): string {
+  return join(brainDir(repoRoot), ".lock");
+}
+export function brainSnapshotsDir(repoRoot: string): string {
+  return join(brainDir(repoRoot), "snapshots");
+}
+export function curatorDecisionsPath(repoRoot: string, runId: string): string {
+  return join(brainDir(repoRoot), "proposals", "curator-decisions", `${runId}.jsonl`);
+}
