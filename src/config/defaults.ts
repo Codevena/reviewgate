@@ -37,7 +37,13 @@ export const defaultConfig = {
       model?: string;
       persona: string;
     },
+    triage: null as null | {
+      provider: "codex" | "gemini" | "claude-code" | "openrouter";
+      model?: string;
+    },
   },
+  cache: { enabled: true, reviewTtlDays: 7 },
+  research: { languages: ["typescript", "tsx", "python"] },
   loop: {
     maxIterations: 3,
     costCapUsd: 1.5,

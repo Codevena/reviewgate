@@ -66,6 +66,7 @@ describe("Orchestrator panel", () => {
           ],
         },
         critic: null,
+        triage: null,
       },
     };
     const orch = new Orchestrator({
@@ -105,6 +106,7 @@ describe("Orchestrator panel", () => {
           ],
         },
         critic: null,
+        triage: null,
       },
     };
     const orch = new Orchestrator({
@@ -143,6 +145,7 @@ describe("Orchestrator panel", () => {
       phases: {
         review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
         critic: { provider: "gemini" as const, persona: "fp-filter" },
+        triage: null,
       },
     };
     const orch = new Orchestrator({

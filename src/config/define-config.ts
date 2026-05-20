@@ -34,7 +34,17 @@ export const ConfigSchema = z.object({
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
       .nullable()
       .default(null),
+    triage: z
+      .object({ provider: ProviderId, model: z.string().optional() })
+      .nullable()
+      .default(null),
   }),
+  cache: z
+    .object({ enabled: z.boolean(), reviewTtlDays: z.number().int().positive() })
+    .default({ enabled: true, reviewTtlDays: 7 }),
+  research: z
+    .object({ languages: z.array(z.string()) })
+    .default({ languages: ["typescript", "tsx", "python"] }),
   loop: z.object({
     maxIterations: z.number().int().positive(),
     costCapUsd: z.number().nonnegative(),
