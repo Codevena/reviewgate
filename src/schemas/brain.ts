@@ -72,14 +72,25 @@ export const BrainEntrySchema = z.object({
 });
 export type BrainEntry = z.infer<typeof BrainEntrySchema>;
 
-export const CuratorDecisionSchema = z.object({
-  schema: z.literal("reviewgate.curator.v1"),
-  run_id: z.string(),
-  proposal_title: z.string(),
-  decision: z.enum(["promoted", "rejected", "queued", "merged-duplicate"]),
-  rule_failed: z.string().optional(),
-  entry_id: z.string().optional(),
-  provider: z.string(),
-  ts: z.string(),
-});
+export const CuratorDecisionSchema = z
+  .object({
+    schema: z.literal("reviewgate.curator.v1"),
+    run_id: z.string(),
+    proposal_title: z.string(),
+    decision: z.enum(["promoted", "rejected", "queued", "merged-duplicate"]),
+    rule_failed: z.string().optional(),
+    entry_id: z.string().optional(),
+    provider: z.string(),
+    ts: z.string(),
+  })
+  .superRefine((d, ctx) => {
+    // A promoted proposal MUST reference the brain entry it created.
+    if (d.decision === "promoted" && (!d.entry_id || d.entry_id.length === 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["entry_id"],
+        message: "a 'promoted' curator decision requires entry_id",
+      });
+    }
+  });
 export type CuratorDecision = z.infer<typeof CuratorDecisionSchema>;

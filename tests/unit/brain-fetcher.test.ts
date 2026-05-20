@@ -1,87 +1,88 @@
 // tests/unit/brain-fetcher.test.ts
 import { describe, expect, it } from "bun:test";
-import {
-  ALLOWED_HOSTS,
-  SafeFetchError,
-  isBlockedIp,
-  safeFetch,
-} from "../../src/core/brain/fetcher.ts";
+import { type SafeFetchOpts, isBlockedIp, safeFetch } from "../../src/core/brain/fetcher.ts";
+
+const allow = ["docs.example.com"];
+
+const okFetch = (async () =>
+  new Response("hello docs", {
+    status: 200,
+    headers: { "content-type": "text/html" },
+  })) as unknown as typeof fetch;
+
+function opts(over: Partial<SafeFetchOpts> = {}): SafeFetchOpts {
+  return {
+    allow,
+    fetchImpl: okFetch,
+    resolve: async () => ["93.184.216.34"],
+    ...over,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Gate 1: HTTPS-only
 // ---------------------------------------------------------------------------
 describe("safeFetch — Gate 1: HTTPS only", () => {
-  it("rejects http:// URLs", async () => {
-    await expect(safeFetch("http://docs.anthropic.com/page")).rejects.toBeInstanceOf(
-      SafeFetchError,
-    );
+  it("rejects http:// URLs (never throws)", async () => {
+    const r = await safeFetch("http://docs.example.com/x", opts());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("non-https");
   });
 
   it("rejects ftp:// URLs", async () => {
-    await expect(safeFetch("ftp://docs.anthropic.com/page")).rejects.toBeInstanceOf(SafeFetchError);
+    const r = await safeFetch("ftp://docs.example.com/x", opts());
+    expect(r.ok).toBe(false);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Gate 2: Final-host allowlist
+// Gate 2: host allowlist (injected, not hardcoded)
 // ---------------------------------------------------------------------------
 describe("safeFetch — Gate 2: host allowlist", () => {
-  it("ALLOWED_HOSTS is a non-empty array of strings", () => {
-    expect(Array.isArray(ALLOWED_HOSTS)).toBe(true);
-    expect(ALLOWED_HOSTS.length).toBeGreaterThan(0);
-    for (const h of ALLOWED_HOSTS) {
-      expect(typeof h).toBe("string");
-    }
-  });
-
-  it("rejects a host not on the allowlist", async () => {
-    await expect(safeFetch("https://evil.example.com/page")).rejects.toBeInstanceOf(SafeFetchError);
-  });
-
-  it("accepts the first allowlisted host (mocked network would be needed for full flow)", async () => {
-    // We only verify the URL-shape check passes; the DNS step will fail in the test env, which is fine.
-    const host = ALLOWED_HOSTS[0];
-    const err = await safeFetch(`https://${host}/some-doc-page`).catch((e: unknown) => e);
-    // Either a SafeFetchError (e.g. DNS in sandbox) or a network error — NOT a SafeFetchError from
-    // the allowlist or scheme gate. If it IS a SafeFetchError it must not be SCHEME or HOST.
-    if (err instanceof SafeFetchError) {
-      expect(err.code).not.toBe("SCHEME");
-      expect(err.code).not.toBe("HOST");
-    }
-    // else: real network error from DNS/TLS — acceptable in unit test environment
+  it("rejects a host not on the injected allowlist", async () => {
+    const r = await safeFetch("https://evil.com/x", opts());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("host not allowlisted");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Gate 3: Private / metadata IP blocking
+// Gate 5: IP blocking (incl. IPv4-mapped IPv6, 0.0.0.0, reserved)
 // ---------------------------------------------------------------------------
 describe("isBlockedIp", () => {
-  // loopback
+  // loopback / private / link-local / metadata / CGNAT (existing coverage)
   it("blocks 127.0.0.1", () => expect(isBlockedIp("127.0.0.1")).toBe(true));
   it("blocks ::1", () => expect(isBlockedIp("::1")).toBe(true));
   it("blocks 127.99.0.1", () => expect(isBlockedIp("127.99.0.1")).toBe(true));
-
-  // private RFC-1918
   it("blocks 10.0.0.1", () => expect(isBlockedIp("10.0.0.1")).toBe(true));
   it("blocks 172.16.0.1", () => expect(isBlockedIp("172.16.0.1")).toBe(true));
   it("blocks 172.31.255.255", () => expect(isBlockedIp("172.31.255.255")).toBe(true));
   it("blocks 192.168.1.1", () => expect(isBlockedIp("192.168.1.1")).toBe(true));
-
-  // link-local
-  it("blocks 169.254.0.1 (link-local / metadata)", () =>
-    expect(isBlockedIp("169.254.0.1")).toBe(true));
+  it("blocks 169.254.0.1 (link-local)", () => expect(isBlockedIp("169.254.0.1")).toBe(true));
   it("blocks 169.254.169.254 (AWS metadata)", () =>
     expect(isBlockedIp("169.254.169.254")).toBe(true));
   it("blocks fe80::1 (IPv6 link-local)", () => expect(isBlockedIp("fe80::1")).toBe(true));
-
-  // CGNAT
   it("blocks 100.64.0.1 (CGNAT)", () => expect(isBlockedIp("100.64.0.1")).toBe(true));
   it("blocks 100.127.255.255 (CGNAT)", () => expect(isBlockedIp("100.127.255.255")).toBe(true));
-
-  // unique-local IPv6
   it("blocks fc00::1 (unique-local)", () => expect(isBlockedIp("fc00::1")).toBe(true));
   it("blocks fd12:3456:789a::1 (unique-local)", () =>
     expect(isBlockedIp("fd12:3456:789a::1")).toBe(true));
+
+  // NEW: IPv4-mapped IPv6 bypass
+  it("blocks ::ffff:127.0.0.1 (mapped loopback)", () =>
+    expect(isBlockedIp("::ffff:127.0.0.1")).toBe(true));
+  it("blocks ::ffff:10.0.0.1 (mapped private)", () =>
+    expect(isBlockedIp("::ffff:10.0.0.1")).toBe(true));
+  it("blocks ::FFFF:169.254.169.254 (mapped metadata, case-insensitive)", () =>
+    expect(isBlockedIp("::FFFF:169.254.169.254")).toBe(true));
+  it("blocks a mapped PUBLIC ip routed through v4 rules but still public → false", () =>
+    expect(isBlockedIp("::ffff:8.8.8.8")).toBe(false));
+
+  // NEW: 0.0.0.0/8 + reserved 240/4 + broadcast
+  it("blocks 0.0.0.0 (this-host)", () => expect(isBlockedIp("0.0.0.0")).toBe(true));
+  it("blocks 0.1.2.3 (0.0.0.0/8)", () => expect(isBlockedIp("0.1.2.3")).toBe(true));
+  it("blocks 255.255.255.255 (broadcast)", () => expect(isBlockedIp("255.255.255.255")).toBe(true));
+  it("blocks 240.0.0.1 (reserved 240/4)", () => expect(isBlockedIp("240.0.0.1")).toBe(true));
 
   // public IPs should NOT be blocked
   it("does not block 1.1.1.1", () => expect(isBlockedIp("1.1.1.1")).toBe(false));
@@ -90,65 +91,163 @@ describe("isBlockedIp", () => {
     expect(isBlockedIp("2606:4700::6810:84e5")).toBe(false));
 });
 
-// ---------------------------------------------------------------------------
-// Gate 4: Query-string stripping
-// ---------------------------------------------------------------------------
-describe("safeFetch — Gate 4: query strip", () => {
-  it("rejects URLs with a query string", async () => {
-    // Use a non-allowlisted host so we get HOST error, OR an allowlisted host so we see QUERY error
-    const host = ALLOWED_HOSTS[0];
-    const err = await safeFetch(`https://${host}/page?secret=exfil`).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(SafeFetchError);
-    if (err instanceof SafeFetchError) {
-      expect(err.code).toBe("QUERY");
+describe("safeFetch — Gate 5: DNS resolves to a blocked IP", () => {
+  it("denies for private/metadata/mapped IPs", async () => {
+    for (const ip of [
+      "127.0.0.1",
+      "10.0.0.5",
+      "169.254.169.254",
+      "192.168.1.1",
+      "::1",
+      "::ffff:127.0.0.1",
+      "0.0.0.0",
+    ]) {
+      const r = await safeFetch("https://docs.example.com/x", opts({ resolve: async () => [ip] }));
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.reason).toBe("resolves to blocked ip");
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// Gate 5: URL length cap
+// Gate 3 + 4: query strip + length cap, happy path returns sha256
 // ---------------------------------------------------------------------------
-describe("safeFetch — Gate 5: URL length cap", () => {
-  it("rejects URLs exceeding the max length", async () => {
-    const host = ALLOWED_HOSTS[0];
-    const longPath = "/a".repeat(1000);
-    const err = await safeFetch(`https://${host}${longPath}`).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(SafeFetchError);
-    if (err instanceof SafeFetchError) {
-      expect(err.code).toBe("URL_TOO_LONG");
+describe("safeFetch — happy path", () => {
+  it("strips query, fetches an allowed public host, returns sha256", async () => {
+    const r = await safeFetch("https://docs.example.com/page?leak=secret", opts());
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.finalUrl).toBe("https://docs.example.com/page"); // query stripped
+      expect(r.sha256).toHaveLength(64);
+      expect(r.body).toContain("hello docs");
+      expect(r.log.decision).toBe("allow");
+      expect(r.log.resolved_ip).toBe("93.184.216.34");
     }
   });
-});
 
-// ---------------------------------------------------------------------------
-// Gate 6: Oversize body + content-type allowlist (mocked via Response)
-// ---------------------------------------------------------------------------
-describe("safeFetch — Gate 6: oversize / content-type (unit-level validators)", () => {
-  it("SafeFetchError carries a machine-readable code", () => {
-    const e = new SafeFetchError("OVERSIZE", "body too large");
-    expect(e.code).toBe("OVERSIZE");
-    expect(e.message).toBe("body too large");
-    expect(e).toBeInstanceOf(Error);
-  });
-
-  it("SafeFetchError has CONTENT_TYPE code variant", () => {
-    const e = new SafeFetchError("CONTENT_TYPE", "disallowed content-type");
-    expect(e.code).toBe("CONTENT_TYPE");
+  it("rejects an over-length URL", async () => {
+    const r = await safeFetch(`https://docs.example.com/${"a".repeat(600)}`, opts());
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("url too long");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Gate 7: No credential / auth-header forwarding — structural check
+// Gate 7: oversize / disallowed content-type
 // ---------------------------------------------------------------------------
-describe("safeFetch — Gate 7: no credential forwarding", () => {
-  it("safeFetch accepts only a URL string (no RequestInit with credentials)", async () => {
-    // The function signature must be (url: string, opts?: SafeFetchOptions) where SafeFetchOptions
-    // does NOT expose headers/credentials/cookies to the caller.
-    // We verify by checking the function only takes a URL and optional internal opts.
-    expect(typeof safeFetch).toBe("function");
-    // Calling with just a URL must not throw a TypeError about signature.
-    const p = safeFetch("https://evil.example.com/");
-    await p.catch(() => {}); // suppress — we just verify it returns a promise
-    expect(p).toBeInstanceOf(Promise);
+describe("safeFetch — Gate 7: body limits + content-type", () => {
+  it("rejects an oversize body", async () => {
+    const big = (async () =>
+      new Response("x".repeat(10_000), {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      })) as unknown as typeof fetch;
+    const r = await safeFetch(
+      "https://docs.example.com/x",
+      opts({ fetchImpl: big, maxBytes: 1000 }),
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects a disallowed content-type", async () => {
+    const xml = (async () =>
+      new Response("<x/>", {
+        status: 200,
+        headers: { "content-type": "application/xml" },
+      })) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", opts({ fetchImpl: xml }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("content-type");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 6: redirects
+// ---------------------------------------------------------------------------
+describe("safeFetch — Gate 6: redirects", () => {
+  const redirectTo = (location: string): typeof fetch =>
+    (async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location },
+      })) as unknown as typeof fetch;
+
+  it("denies any 3xx by default (maxRedirects=0)", async () => {
+    const r = await safeFetch(
+      "https://docs.example.com/x",
+      opts({ fetchImpl: redirectTo("https://docs.example.com/y") }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("too many redirects");
+  });
+
+  it("denies too-many-redirects when the chain exceeds maxRedirects", async () => {
+    // Always 302 → never reaches a final response: with maxRedirects=1 the
+    // second hop is refused.
+    const r = await safeFetch(
+      "https://docs.example.com/a",
+      opts({ fetchImpl: redirectTo("https://docs.example.com/b"), maxRedirects: 1 }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("too many redirects");
+  });
+
+  it("denies a redirect to a non-allowlisted host", async () => {
+    const r = await safeFetch(
+      "https://docs.example.com/x",
+      opts({ fetchImpl: redirectTo("https://evil.com/x"), maxRedirects: 3 }),
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toContain("redirect blocked");
+  });
+
+  it("denies a redirect whose host resolves to a private IP", async () => {
+    // Allowlist a second host; the redirect target is allowlisted but its DNS
+    // resolves to a private IP → must be re-checked and denied.
+    const fetchImpl = (async (url: string | URL) => {
+      const s = String(url);
+      if (s === "https://docs.example.com/x") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://inner.example/x" },
+        });
+      }
+      return new Response("ok", { status: 200, headers: { "content-type": "text/html" } });
+    }) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", {
+      allow: ["docs.example.com", "inner.example"],
+      fetchImpl,
+      maxRedirects: 3,
+      resolve: async (h) => (h === "inner.example" ? ["10.0.0.5"] : ["93.184.216.34"]),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("resolves to blocked ip");
+  });
+
+  it("follows one allowed redirect to a public host when maxRedirects permits", async () => {
+    const fetchImpl = (async (url: string | URL) => {
+      const s = String(url);
+      if (s === "https://docs.example.com/x") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "https://inner.example/final" },
+        });
+      }
+      return new Response("final body", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", {
+      allow: ["docs.example.com", "inner.example"],
+      fetchImpl,
+      maxRedirects: 3,
+      resolve: async () => ["93.184.216.34"],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.finalUrl).toBe("https://inner.example/final");
+      expect(r.body).toContain("final body");
+    }
   });
 });

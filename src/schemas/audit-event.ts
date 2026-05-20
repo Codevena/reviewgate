@@ -39,6 +39,22 @@ const Reviewer = z.object({
   iter_attempt: z.number().int().positive(),
 });
 
+/**
+ * Structured payload for `brain.egress` events: the actionable details of a
+ * single web-fetch attempt made by the SSRF-resistant fetcher. Optional and
+ * backward-compatible — events that do not carry egress data simply omit it.
+ */
+const Egress = z.object({
+  url: z.string(),
+  final_url: z.string().optional(),
+  resolved_ip: z.string().optional(),
+  status: z.number().int().optional(),
+  bytes: z.number().int().nonnegative().optional(),
+  sha256: z.string().optional(),
+  decision: z.enum(["allow", "deny"]),
+  reason: z.string().optional(),
+});
+
 const GenAi = z.object({
   "provider.name": z.string(),
   "request.model": z.string(),
@@ -63,6 +79,7 @@ export const AuditEventSchema = z.object({
   trigger: Trigger,
   reviewer: Reviewer.optional(),
   gen_ai: GenAi.optional(),
+  egress: Egress.optional(),
   prompt_sha256: z.string().optional(),
   response_sha256: z.string().optional(),
   prompt_ref: z.string().optional(),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   BrainEntrySchema,
+  CuratorDecisionSchema,
   EvidenceItemSchema,
   MemoryProposalSchema,
 } from "../../src/schemas/brain.ts";
@@ -52,5 +53,25 @@ describe("brain schemas", () => {
         tags: [],
       }),
     ).toThrow();
+  });
+
+  it("requires entry_id on a 'promoted' curator decision", () => {
+    const base = {
+      schema: "reviewgate.curator.v1" as const,
+      run_id: "r1",
+      proposal_title: "t",
+      provider: "openrouter",
+      ts: "2026-05-21T00:00:00Z",
+    };
+    // promoted WITHOUT entry_id → reject
+    expect(() => CuratorDecisionSchema.parse({ ...base, decision: "promoted" })).toThrow();
+    // promoted WITH entry_id → ok
+    expect(
+      CuratorDecisionSchema.parse({ ...base, decision: "promoted", entry_id: "B-001" }).entry_id,
+    ).toBe("B-001");
+    // rejected WITHOUT entry_id → still ok (entry_id only required when promoted)
+    expect(CuratorDecisionSchema.parse({ ...base, decision: "rejected" }).decision).toBe(
+      "rejected",
+    );
   });
 });

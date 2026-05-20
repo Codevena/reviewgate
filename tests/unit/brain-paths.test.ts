@@ -25,4 +25,21 @@ describe("brain paths", () => {
       "/repo/.reviewgate/brain/proposals/curator-decisions/RUN1.jsonl",
     );
   });
+
+  it("sanitizes a malicious runId so it cannot escape the curator-decisions dir", () => {
+    const r = "/repo";
+    const base = "/repo/.reviewgate/brain/proposals/curator-decisions";
+    // path-traversal + separators are stripped to the allowed [A-Za-z0-9_-] set.
+    const p = curatorDecisionsPath(r, "../../../../etc/passwd");
+    expect(p.startsWith(`${base}/`)).toBe(true);
+    expect(p.includes("..")).toBe(false);
+    expect(p).toBe(`${base}/etcpasswd.jsonl`);
+
+    // forward + back slashes and dots are stripped, keeping the file in-dir.
+    expect(curatorDecisionsPath(r, "a/b\\c.d")).toBe(`${base}/abcd.jsonl`);
+
+    // a runId that sanitizes to empty is rejected outright.
+    expect(() => curatorDecisionsPath(r, "../../")).toThrow();
+    expect(() => curatorDecisionsPath(r, "/")).toThrow();
+  });
 });

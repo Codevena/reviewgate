@@ -58,6 +58,18 @@ export function brainLockPath(repoRoot: string): string {
 export function brainSnapshotsDir(repoRoot: string): string {
   return join(brainDir(repoRoot), "snapshots");
 }
+/**
+ * Path to a run's curator-decisions JSONL file.
+ *
+ * `runId` is sanitized to `[A-Za-z0-9_-]` so a malicious/crafted run id cannot
+ * inject path separators or `..` traversal segments and escape the
+ * curator-decisions directory. Any disallowed character is stripped; a runId
+ * that sanitizes to empty is rejected.
+ */
 export function curatorDecisionsPath(repoRoot: string, runId: string): string {
-  return join(brainDir(repoRoot), "proposals", "curator-decisions", `${runId}.jsonl`);
+  const safe = runId.replace(/[^A-Za-z0-9_-]/g, "");
+  if (safe.length === 0) {
+    throw new Error(`curatorDecisionsPath: runId sanitizes to empty: ${JSON.stringify(runId)}`);
+  }
+  return join(brainDir(repoRoot), "proposals", "curator-decisions", `${safe}.jsonl`);
 }

@@ -34,6 +34,8 @@ export interface EmbedOptions {
   apiKeyEnv: string;
   /** Embedding model identifier (e.g. "text-embedding-3-small"). */
   model: string;
+  /** Request timeout in ms (defaults applied by the adapter). */
+  timeoutMs?: number;
 }
 
 /**

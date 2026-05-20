@@ -85,4 +85,25 @@ describe("OpenRouterAdapter.embed (mocked fetch)", () => {
       adapter.embed("hello", { apiKeyEnv: "OPENROUTER_API_KEY", model: "text-embedding-3-small" }),
     ).rejects.toThrow();
   });
+
+  it("aborts (does not hang) when the endpoint stalls past timeoutMs", async () => {
+    // A fetch that never resolves unless its AbortSignal fires — proves the
+    // adapter wires an AbortController + timeout into the embeddings request.
+    const hangingFetch = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        const signal = init.signal;
+        if (signal) {
+          signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        }
+      })) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl: hangingFetch });
+    process.env.OPENROUTER_API_KEY = "test-key";
+    await expect(
+      adapter.embed("hello", {
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "text-embedding-3-small",
+        timeoutMs: 20,
+      }),
+    ).rejects.toThrow();
+  });
 });
