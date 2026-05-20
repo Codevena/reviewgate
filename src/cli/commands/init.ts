@@ -135,12 +135,37 @@ export async function runInit(input: InitInput): Promise<void> {
     writeFileSync(giPath, `${existingGi + sep + toAppend.join("\n")}\n`);
   }
 
-  // 4. Write a starter reviewgate.config.ts if none exists
+  // 4. Write a starter reviewgate.config.ts if none exists.
+  // A PLAIN default-export object (NOT `defineConfig` from a bare "reviewgate"
+  // import — that package isn't installed in your project and would fail to
+  // resolve, causing Reviewgate to silently fall back to defaults). Reviewgate
+  // deep-merges this object over its defaults and validates it.
   const cfgPath = join(input.repoRoot, "reviewgate.config.ts");
   if (!existsSync(cfgPath)) {
-    writeFileSync(
-      cfgPath,
-      `import { defineConfig } from 'reviewgate';\n\nexport default defineConfig({\n  // M1 defaults are fine for most users; see docs for the full schema.\n});\n`,
-    );
+    const starter = [
+      "// Reviewgate config. A plain object, deep-merged over defaults + validated.",
+      "// Uncomment / edit to enable more reviewers. Models & OAuth-vs-OpenRouter",
+      "// are entirely your choice. Slugs: https://openrouter.ai/models",
+      "export default {",
+      "  providers: {",
+      '    codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },',
+      '    // gemini: { enabled: true, auth: "oauth", model: "gemini-2.5-flash", timeoutMs: 300_000 },',
+      '    // "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300_000 },',
+      '    // openrouter: { enabled: true, auth: "openrouter", model: "deepseek/deepseek-v4-pro", apiKeyEnv: "OPENROUTER_API_KEY", timeoutMs: 300_000 },',
+      "  },",
+      "  phases: {",
+      "    review: {",
+      "      reviewers: [",
+      '        { provider: "codex", persona: "security" },',
+      '        // { provider: "openrouter", persona: "security" },',
+      '        // { provider: "gemini", persona: "architecture" },',
+      '        // { provider: "claude-code", persona: "adversarial" },',
+      "      ],",
+      "    },",
+      "  },",
+      "};",
+      "",
+    ].join("\n");
+    writeFileSync(cfgPath, starter);
   }
 }
