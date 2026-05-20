@@ -1,16 +1,16 @@
 // src/schemas/state.ts
-import { z } from 'zod';
+import { z } from "zod";
 
 export const EscalationReason = z.enum([
-  'max-iterations',
-  'cost-cap',
-  'stuck-signatures',
-  'reject-rate-high',
+  "max-iterations",
+  "cost-cap",
+  "stuck-signatures",
+  "reject-rate-high",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 
 export const ReviewgateStateSchema = z.object({
-  schema: z.literal('reviewgate.state.v1'),
+  schema: z.literal("reviewgate.state.v1"),
   session_id: z.string(),
   iteration: z.number().int().nonnegative(),
   cost_usd_so_far: z.number().nonnegative(),
@@ -32,14 +32,14 @@ export const ReviewgateStateSchema = z.object({
   started_at: z.string(),
   escalated: z.boolean(),
   escalation_reason: EscalationReason.nullable(),
-  recovered_from: z.enum(['crash', 'corruption']).optional(),
+  recovered_from: z.enum(["crash", "corruption"]).optional(),
 });
 
 export type ReviewgateState = z.infer<typeof ReviewgateStateSchema>;
 
 export function initialState(sessionId: string): ReviewgateState {
   return {
-    schema: 'reviewgate.state.v1',
+    schema: "reviewgate.state.v1",
     session_id: sessionId,
     iteration: 0,
     cost_usd_so_far: 0,

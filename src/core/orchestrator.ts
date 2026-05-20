@@ -1,26 +1,26 @@
 // src/core/orchestrator.ts
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { sanitizeDiff } from '../diff/sanitizer.ts';
-import type { ProviderAdapter, ProviderConfig, ReviewResult } from '../providers/adapter-base.ts';
-import { aggregate } from './aggregator.ts';
-import { ReportWriter } from './report-writer.ts';
-import type { ReviewgateConfig } from '../config/define-config.ts';
-import type { HostTier } from '../utils/host-model.ts';
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ReviewgateConfig } from "../config/define-config.ts";
+import { sanitizeDiff } from "../diff/sanitizer.ts";
+import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
+import type { HostTier } from "../utils/host-model.ts";
+import { aggregate } from "./aggregator.ts";
+import { ReportWriter } from "./report-writer.ts";
 
 export interface OrchestratorInput {
   repoRoot: string;
   config: ReviewgateConfig;
   providers: { codex: ProviderAdapter };
-  sandboxMode: 'strict' | 'permissive' | 'off';
+  sandboxMode: "strict" | "permissive" | "off";
   hostTier: HostTier;
   diff: string;
   reasonOnFailEnabled: boolean;
 }
 
 export interface IterationResult {
-  verdict: 'PASS' | 'SOFT-PASS' | 'FAIL' | 'ERROR';
+  verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR";
   costUsd: number;
   durationMs: number;
   signaturesThisIter: string[];
@@ -32,18 +32,22 @@ export class Orchestrator {
   async runIteration(opts: { runId: string; iter: number }): Promise<IterationResult> {
     const start = Date.now();
     const runDir = mkdtempSync(join(tmpdir(), `rg-iter-${opts.iter}-`));
-    const promptFile = join(runDir, 'prompt.txt');
-    const findingsPath = join(runDir, 'findings.md');
-    const diffPath = join(runDir, 'diff.patch');
+    const promptFile = join(runDir, "prompt.txt");
+    const findingsPath = join(runDir, "findings.md");
+    const diffPath = join(runDir, "diff.patch");
 
     // Persona for M1: only security.
-    const personaReaffirm = 'You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.';
+    const personaReaffirm =
+      "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.";
     const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm });
-    writeFileSync(promptFile, [
-      'Review the diff for security and correctness issues. Output a JSON object matching the Finding schema you were given.',
-      '',
-      sanitised.text,
-    ].join('\n'));
+    writeFileSync(
+      promptFile,
+      [
+        "Review the diff for security and correctness issues. Output a JSON object matching the Finding schema you were given.",
+        "",
+        sanitised.text,
+      ].join("\n"),
+    );
     writeFileSync(diffPath, this.input.diff);
 
     const raw = this.input.config.providers.codex;
@@ -58,11 +62,11 @@ export class Orchestrator {
     };
     const review: ReviewResult = await this.input.providers.codex.review({
       cfg: reviewerCfg,
-      reviewerId: 'codex-security',
+      reviewerId: "codex-security",
       promptFile,
       workingDir: this.input.repoRoot,
       findingsPath,
-      persona: 'security',
+      persona: "security",
       diffPath,
     });
 
@@ -70,10 +74,10 @@ export class Orchestrator {
 
     const writer = new ReportWriter(this.input.repoRoot);
     const now = new Date().toISOString();
-    const branch = process.env['GIT_BRANCH'] ?? 'main';
-    const sha = process.env['GIT_SHA'] ?? '0'.repeat(40);
+    const branch = process.env.GIT_BRANCH ?? "main";
+    const sha = process.env.GIT_SHA ?? "0".repeat(40);
     await writer.write({
-      schema: 'reviewgate.pending.v1',
+      schema: "reviewgate.pending.v1",
       run_id: opts.runId,
       iter: opts.iter,
       max_iter: this.input.config.loop.maxIterations,
@@ -82,9 +86,9 @@ export class Orchestrator {
       reviewers: [
         {
           id: review.reviewerId,
-          provider: 'codex',
+          provider: "codex",
           model: reviewerCfg.model,
-          persona: 'security',
+          persona: "security",
           status: review.status,
           cost_usd: review.usage.costUsd,
           duration_ms: review.durationMs,

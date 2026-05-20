@@ -1,6 +1,6 @@
 // src/cli/commands/audit.ts
-import { existsSync } from 'node:fs';
-import { verifyChain } from '../../audit/verifier.ts';
+import { existsSync } from "node:fs";
+import { verifyChain } from "../../audit/verifier.ts";
 
 export interface AuditVerifyInput {
   file: string;
@@ -8,7 +8,7 @@ export interface AuditVerifyInput {
 
 export async function runAuditVerify(input: AuditVerifyInput): Promise<number> {
   if (!input.file) {
-    process.stderr.write('audit verify: --file <path> is required\n');
+    process.stderr.write("audit verify: --file <path> is required\n");
     return 2;
   }
   if (!existsSync(input.file)) {

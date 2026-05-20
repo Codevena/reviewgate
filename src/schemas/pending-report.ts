@@ -1,16 +1,16 @@
-import { z } from 'zod';
-import { FindingSchema } from './finding.ts';
+import { z } from "zod";
+import { FindingSchema } from "./finding.ts";
 
-export const ReviewerStatus = z.enum(['ok', 'error', 'abstain', 'timeout', 'quota-exhausted']);
+export const ReviewerStatus = z.enum(["ok", "error", "abstain", "timeout", "quota-exhausted"]);
 export type ReviewerStatus = z.infer<typeof ReviewerStatus>;
 
 // pending.json is NOT written on ESCALATE — ESCALATION.md is authoritative there.
 // See spec §5.5 schemas section.
-export const Verdict = z.enum(['PASS', 'SOFT-PASS', 'FAIL']);
+export const Verdict = z.enum(["PASS", "SOFT-PASS", "FAIL"]);
 export type Verdict = z.infer<typeof Verdict>;
 
 export const PendingReportSchema = z.object({
-  schema: z.literal('reviewgate.pending.v1'),
+  schema: z.literal("reviewgate.pending.v1"),
   run_id: z.string(),
   iter: z.number().int().nonnegative(),
   max_iter: z.number().int().positive(),

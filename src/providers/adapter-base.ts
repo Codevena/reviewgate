@@ -1,12 +1,12 @@
 // src/providers/adapter-base.ts
-import type { Finding } from '../schemas/finding.ts';
+import type { Finding } from "../schemas/finding.ts";
 
 export interface ProviderConfig {
   enabled: boolean;
-  auth: 'oauth' | 'apikey' | 'openrouter';
+  auth: "oauth" | "apikey" | "openrouter";
   apiKeyEnv?: string;
   model: string;
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  reasoningEffort?: "low" | "medium" | "high";
   maxTokens?: number;
   timeoutMs: number;
 }
@@ -14,7 +14,7 @@ export interface ProviderConfig {
 export interface Preflight {
   available: boolean;
   version: string | null;
-  authMode: 'oauth' | 'apikey' | 'openrouter';
+  authMode: "oauth" | "apikey" | "openrouter";
   error: string | null;
 }
 
@@ -27,11 +27,11 @@ export interface ReviewInput {
   schemaPath?: string;
 }
 
-export type ReviewStatus = 'ok' | 'error' | 'abstain' | 'timeout' | 'quota-exhausted';
+export type ReviewStatus = "ok" | "error" | "abstain" | "timeout" | "quota-exhausted";
 
 export interface ReviewResult {
   reviewerId: string;
-  verdict: 'PASS' | 'FAIL' | 'ERROR';
+  verdict: "PASS" | "FAIL" | "ERROR";
   findings: Finding[];
   usage: {
     inputTokens: number;
@@ -49,7 +49,7 @@ export interface ReviewResult {
 }
 
 export interface ProviderAdapter {
-  readonly id: 'codex' | 'claude-code' | 'gemini' | 'opencode';
+  readonly id: "codex" | "claude-code" | "gemini" | "opencode";
   preflight(cfg: ProviderConfig): Promise<Preflight>;
   review(input: ReviewInput & { cfg: ProviderConfig; reviewerId: string }): Promise<ReviewResult>;
 }

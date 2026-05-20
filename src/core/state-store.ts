@@ -1,9 +1,9 @@
 // src/core/state-store.ts
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { flock } from '../utils/flock.ts';
-import { lockPath, reviewgateDir, stateJsonPath } from '../utils/paths.ts';
-import { ReviewgateStateSchema, initialState, type ReviewgateState } from '../schemas/state.ts';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { type ReviewgateState, ReviewgateStateSchema, initialState } from "../schemas/state.ts";
+import { flock } from "../utils/flock.ts";
+import { lockPath, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
 
 export class StateStore {
   constructor(private readonly repoRoot: string) {}
@@ -22,7 +22,7 @@ export class StateStore {
 
   async load(): Promise<ReviewgateState> {
     const p = stateJsonPath(this.repoRoot);
-    const raw = readFileSync(p, 'utf8');
+    const raw = readFileSync(p, "utf8");
     return ReviewgateStateSchema.parse(JSON.parse(raw));
   }
 
@@ -33,11 +33,11 @@ export class StateStore {
       return await this.load();
     } catch (err) {
       // Back up the corrupt file with timestamp; re-initialise.
-      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
       const backup = `${p}.corrupt.${ts}.json`;
       renameSync(p, backup);
       const fresh = initialState(sessionId);
-      fresh.recovered_from = 'corruption';
+      fresh.recovered_from = "corruption";
       await this.writeAtomic(fresh);
       return fresh;
     }

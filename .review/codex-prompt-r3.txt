@@ -1,0 +1,43 @@
+You returned VERDICT: FAIL on the second pass with these remaining issues:
+
+- PARTIAL: C1 (Claude --tools restriction), C3 (§5.1 Windows desc),
+  W1 (§5.1 phases 0-5), W3+W4 (Gemini/OpenCode parse contract),
+  W11 (§5.8 spawn unsandboxed line), W12 (§9 OAuth headers),
+  I1 (§3.2 step 8 wrote decisions/2.jsonl on iter 1)
+- UNRESOLVED: W5 (Codex --provider openrouter still in auth matrix)
+- NEW: §3.2 step 7 mentioned additionalContext, §5.4/§12 Q5 Gemini
+  --approval-mode plan
+
+The author has revised the spec to address every one of these.
+
+# Your task — final review
+
+Read docs/superpowers/specs/2026-05-20-reviewgate-design.md and for each
+prior remaining issue determine RESOLVED | PARTIAL | UNRESOLVED.
+Then scan for any NEW issues introduced.
+
+Output to .review/codex-findings-r3.md with this format:
+
+## FINAL DELTA REVIEW
+
+### Remaining from prior pass
+- [C1 Claude --tools] RESOLVED | PARTIAL | UNRESOLVED — explanation
+- [C3 §5.1 Windows desc] ...
+- [W1 §5.1 phases 0-5] ...
+- [W3 Gemini parse contract] ...
+- [W4 OpenCode parse contract] ...
+- [W5 Codex OpenRouter] ...
+- [W11 §5.8 unsandboxed] ...
+- [W12 §9 OAuth headers] ...
+- [I1 §3.2 decisions indexing] ...
+- [NEW1 §3.2 additionalContext] ...
+- [NEW2 Gemini --approval-mode plan] ...
+
+### Any new issues
+- [SEVERITY] description
+
+## VERDICT
+PASS | FAIL
+
+PASS requires zero remaining UNRESOLVED of severity ≥ WARN and zero new
+findings of severity ≥ WARN. Be specific. Be concise.

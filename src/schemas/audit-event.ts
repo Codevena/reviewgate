@@ -1,25 +1,25 @@
 // src/schemas/audit-event.ts
-import { z } from 'zod';
+import { z } from "zod";
 
 export const EventType = z.enum([
-  'session.start',
-  'session.end',
-  'run.start',
-  'run.complete',
-  'phase.start',
-  'phase.complete',
-  'reviewer.start',
-  'reviewer.complete',
-  'reviewer.error',
-  'aggregator.complete',
-  'verdict.computed',
-  'gate.decision',
-  'escalation',
-  'decision.applied',
+  "session.start",
+  "session.end",
+  "run.start",
+  "run.complete",
+  "phase.start",
+  "phase.complete",
+  "reviewer.start",
+  "reviewer.complete",
+  "reviewer.error",
+  "aggregator.complete",
+  "verdict.computed",
+  "gate.decision",
+  "escalation",
+  "decision.applied",
 ]);
 export type EventType = z.infer<typeof EventType>;
 
-export const Trigger = z.enum(['stop-hook', 'post-tool-use', 'manual', 'session-start']);
+export const Trigger = z.enum(["stop-hook", "post-tool-use", "manual", "session-start"]);
 export type Trigger = z.infer<typeof Trigger>;
 
 const Git = z.object({
@@ -32,26 +32,26 @@ const Git = z.object({
 
 const Reviewer = z.object({
   id: z.string(),
-  role: z.enum(['review', 'triage', 'critic', 'curator']),
+  role: z.enum(["review", "triage", "critic", "curator"]),
   iter_attempt: z.number().int().positive(),
 });
 
 const GenAi = z.object({
-  'provider.name': z.string(),
-  'request.model': z.string(),
-  'response.model': z.string().optional(),
-  'operation.name': z.string(),
-  'request.temperature': z.number().optional(),
-  'request.seed': z.number().int().optional(),
-  'usage.input_tokens': z.number().int().nonnegative(),
-  'usage.output_tokens': z.number().int().nonnegative(),
-  'usage.cached_input_tokens': z.number().int().nonnegative().optional(),
-  'usage.reasoning_tokens': z.number().int().nonnegative().optional(),
-  'response.finish_reasons': z.array(z.string()).optional(),
+  "provider.name": z.string(),
+  "request.model": z.string(),
+  "response.model": z.string().optional(),
+  "operation.name": z.string(),
+  "request.temperature": z.number().optional(),
+  "request.seed": z.number().int().optional(),
+  "usage.input_tokens": z.number().int().nonnegative(),
+  "usage.output_tokens": z.number().int().nonnegative(),
+  "usage.cached_input_tokens": z.number().int().nonnegative().optional(),
+  "usage.reasoning_tokens": z.number().int().nonnegative().optional(),
+  "response.finish_reasons": z.array(z.string()).optional(),
 });
 
 export const AuditEventSchema = z.object({
-  schema: z.literal('reviewgate.audit.v1'),
+  schema: z.literal("reviewgate.audit.v1"),
   ts: z.string(),
   run_id: z.string(),
   iter: z.number().int().nonnegative(),
@@ -67,7 +67,7 @@ export const AuditEventSchema = z.object({
   files_read: z.array(z.string()).optional(),
   latency_ms: z.number().nonnegative().optional(),
   cost_usd: z.number().nonnegative().optional(),
-  auth_mode: z.enum(['oauth', 'apikey', 'openrouter']).optional(),
+  auth_mode: z.enum(["oauth", "apikey", "openrouter"]).optional(),
   quota_used_pct: z.number().min(0).max(100).nullable().optional(),
   exit_code: z.number().int().optional(),
   finding_count: z.number().int().nonnegative().optional(),

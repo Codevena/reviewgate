@@ -1,74 +1,76 @@
 // tests/integration/full-loop.test.ts
-import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { runInit } from '../../src/cli/commands/init.ts';
-import { runGate } from '../../src/cli/commands/gate.ts';
-import { CodexAdapter } from '../../src/providers/codex.ts';
+import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runGate } from "../../src/cli/commands/gate.ts";
+import { runInit } from "../../src/cli/commands/init.ts";
+import { CodexAdapter } from "../../src/providers/codex.ts";
 
-const FAKE_CODEX = join(process.cwd(), 'tests/fixtures/fake-codex.sh');
+const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 
 function tmpRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'rg-loop-it-'));
-  spawnSync('git', ['init', '-q'], { cwd: dir });
-  writeFileSync(join(dir, 'foo.ts'), 'function compare(a, b) { return a == b; }');
-  spawnSync('git', ['add', 'foo.ts'], { cwd: dir });
-  spawnSync('git', ['-c', 'user.email=x@x', '-c', 'user.name=x', 'commit', '-q', '-m', 'init'], { cwd: dir });
+  const dir = mkdtempSync(join(tmpdir(), "rg-loop-it-"));
+  spawnSync("git", ["init", "-q"], { cwd: dir });
+  writeFileSync(join(dir, "foo.ts"), "function compare(a, b) { return a == b; }");
+  spawnSync("git", ["add", "foo.ts"], { cwd: dir });
+  spawnSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", "commit", "-q", "-m", "init"], {
+    cwd: dir,
+  });
   return dir;
 }
 
-describe('full loop integration', () => {
-  it('init → trigger → gate (block) → decisions → gate (pass)', async () => {
+describe("full loop integration", () => {
+  it("init → trigger → gate (block) → decisions → gate (pass)", async () => {
     const repo = tmpRepo();
-    await runInit({ repoRoot: repo, mode: 'agent-loop' });
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
 
     // 1. Simulate PostToolUse: write a dirty.flag.
     const triggerOut = await runGate({
       repoRoot: repo,
-      hook: 'trigger',
-      hookStdinRaw: JSON.stringify({ tool: { name: 'Edit', path: 'foo.ts' } }),
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({ tool: { name: "Edit", path: "foo.ts" } }),
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
-      sandboxModeOverride: 'off',
+      sandboxModeOverride: "off",
     });
     expect(triggerOut.exitCode).toBe(0);
 
     // 2. First Stop hook: should BLOCK because findings exist and no decisions yet.
     const firstStop = await runGate({
       repoRoot: repo,
-      hook: 'stop',
-      hookStdinRaw: '{}',
+      hook: "stop",
+      hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
-      sandboxModeOverride: 'off',
+      sandboxModeOverride: "off",
     });
     expect(firstStop.exitCode).toBe(0);
     const firstDecision = JSON.parse(firstStop.stdout);
-    expect(firstDecision.decision).toBe('block');
-    expect(existsSync(join(repo, '.reviewgate', 'pending.md'))).toBe(true);
+    expect(firstDecision.decision).toBe("block");
+    expect(existsSync(join(repo, ".reviewgate", "pending.md"))).toBe(true);
 
     // 3. Claude "fixes" the issue and writes decisions/1.jsonl (using the F-001 ID
     //    emitted by fake-codex.sh).
-    const decisionsDir = join(repo, '.reviewgate', 'decisions');
-    spawnSync('mkdir', ['-p', decisionsDir]);
+    const decisionsDir = join(repo, ".reviewgate", "decisions");
+    spawnSync("mkdir", ["-p", decisionsDir]);
     writeFileSync(
-      join(decisionsDir, '1.jsonl'),
-      JSON.stringify({
-        schema: 'reviewgate.decision.v1',
-        finding_id: 'F-001',
-        verdict: 'accepted',
-        action: 'fixed',
-        files_touched: ['foo.ts'],
-      }) + '\n',
+      join(decisionsDir, "1.jsonl"),
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "fixed",
+        files_touched: ["foo.ts"],
+      })}\n`,
     );
 
     // Touch the dirty.flag again to simulate a follow-up edit.
     await runGate({
       repoRoot: repo,
-      hook: 'trigger',
-      hookStdinRaw: JSON.stringify({ tool: { name: 'Edit', path: 'foo.ts' } }),
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({ tool: { name: "Edit", path: "foo.ts" } }),
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
-      sandboxModeOverride: 'off',
+      sandboxModeOverride: "off",
     });
 
     // 4. Second Stop hook with decisions present: the decisions-gate must
@@ -80,13 +82,13 @@ describe('full loop integration', () => {
     //    finding_id and would have blocked here, leaving iteration at 1.)
     const secondStop = await runGate({
       repoRoot: repo,
-      hook: 'stop',
-      hookStdinRaw: '{}',
+      hook: "stop",
+      hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
-      sandboxModeOverride: 'off',
+      sandboxModeOverride: "off",
     });
     expect(secondStop.exitCode).toBe(0);
-    const state = JSON.parse(readFileSync(join(repo, '.reviewgate', 'state.json'), 'utf8'));
+    const state = JSON.parse(readFileSync(join(repo, ".reviewgate", "state.json"), "utf8"));
     expect(state.iteration).toBe(2);
   });
 });

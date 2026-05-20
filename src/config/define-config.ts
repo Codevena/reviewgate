@@ -1,12 +1,12 @@
-import { z } from 'zod';
-import { defaultConfig } from './defaults.ts';
+import { z } from "zod";
+import { defaultConfig } from "./defaults.ts";
 
 export const ProviderConfigSchema = z.object({
   enabled: z.boolean(),
-  auth: z.enum(['oauth', 'apikey', 'openrouter']),
+  auth: z.enum(["oauth", "apikey", "openrouter"]),
   apiKeyEnv: z.string().optional(),
   model: z.string(),
-  reasoningEffort: z.enum(['low', 'medium', 'high']).optional(),
+  reasoningEffort: z.enum(["low", "medium", "high"]).optional(),
   maxTokens: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive(),
 });
@@ -19,7 +19,7 @@ export const ConfigSchema = z.object({
       reviewers: z
         .array(
           z.object({
-            provider: z.enum(['codex', 'claude-code', 'gemini', 'opencode']),
+            provider: z.enum(["codex", "claude-code", "gemini", "opencode"]),
             persona: z.string(),
           }),
         )
@@ -31,10 +31,10 @@ export const ConfigSchema = z.object({
     costCapUsd: z.number().nonnegative(),
     stuckThreshold: z.number().int().positive(),
     rejectRateEscalation: z.number().min(0).max(1),
-    softPassPolicy: z.enum(['allow', 'block', 'ask-once']),
+    softPassPolicy: z.enum(["allow", "block", "ask-once"]),
   }),
   sandbox: z.object({
-    mode: z.enum(['strict', 'permissive', 'off']),
+    mode: z.enum(["strict", "permissive", "off"]),
     writablePaths: z.array(z.string()),
     deniedReads: z.array(z.string()),
   }),
@@ -57,7 +57,7 @@ function deepMerge<T>(base: T, override: DeepPartial<T>): T {
   const out = Array.isArray(base) ? [...(base as unknown[])] : { ...(base as object) };
   for (const k of Object.keys(override) as Array<keyof T>) {
     const v = override[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
       (out as Record<string, unknown>)[k as string] = deepMerge(
         (base as Record<string, unknown>)[k as string],
         v as DeepPartial<unknown>,

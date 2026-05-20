@@ -1,20 +1,20 @@
-import { z } from 'zod';
+import { z } from "zod";
 
-export const Severity = z.enum(['CRITICAL', 'WARN', 'INFO']);
+export const Severity = z.enum(["CRITICAL", "WARN", "INFO"]);
 export type Severity = z.infer<typeof Severity>;
 
 export const FindingCategory = z.enum([
-  'security',
-  'correctness',
-  'quality',
-  'architecture',
-  'performance',
-  'testing',
-  'docs',
+  "security",
+  "correctness",
+  "quality",
+  "architecture",
+  "performance",
+  "testing",
+  "docs",
 ]);
 export type FindingCategory = z.infer<typeof FindingCategory>;
 
-export const Consensus = z.enum(['unanimous', 'majority', 'minority', 'singleton']);
+export const Consensus = z.enum(["unanimous", "majority", "minority", "singleton"]);
 export type Consensus = z.infer<typeof Consensus>;
 
 export const FindingSchema = z.object({
@@ -38,7 +38,7 @@ export const FindingSchema = z.object({
   confidence: z.number().min(0).max(1),
   confirmed_by: z.array(z.string()).optional(),
   consensus: Consensus,
-  critic_verdict: z.enum(['keep', 'likely_fp']).optional(),
+  critic_verdict: z.enum(["keep", "likely_fp"]).optional(),
   critic_reason: z.string().optional(),
   fp_ledger_match: z
     .object({

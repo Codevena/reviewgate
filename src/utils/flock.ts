@@ -1,7 +1,7 @@
+import { existsSync, mkdirSync } from "node:fs";
 // src/utils/flock.ts
-import { open } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { open } from "node:fs/promises";
+import { dirname } from "node:path";
 
 export interface FileLock {
   release(): Promise<void>;
@@ -16,18 +16,18 @@ export async function flock(path: string, timeoutMs = 30_000): Promise<FileLock>
   let delay = 25;
   for (;;) {
     try {
-      const handle = await open(path, 'wx');
+      const handle = await open(path, "wx");
       await handle.writeFile(`pid=${process.pid}\nts=${new Date().toISOString()}\n`);
       await handle.close();
       return {
         async release() {
-          const { unlink } = await import('node:fs/promises');
+          const { unlink } = await import("node:fs/promises");
           await unlink(path).catch(() => undefined);
         },
       };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw err;
+      if (code !== "EEXIST") throw err;
       if (Date.now() - start > timeoutMs) {
         throw new Error(`flock: timed out acquiring ${path} after ${timeoutMs}ms`);
       }

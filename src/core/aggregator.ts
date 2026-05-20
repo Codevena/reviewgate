@@ -1,6 +1,6 @@
 // src/core/aggregator.ts
-import type { Finding, Consensus } from '../schemas/finding.ts';
-import type { Verdict } from '../schemas/pending-report.ts';
+import type { Consensus, Finding } from "../schemas/finding.ts";
+import type { Verdict } from "../schemas/pending-report.ts";
 
 export interface AggregateInput {
   findings: Finding[];
@@ -14,10 +14,10 @@ export interface AggregateResult {
 }
 
 function computeConsensus(flagged: number, total: number): Consensus {
-  if (total >= 3 && flagged === total) return 'unanimous';
-  if (flagged >= 2) return 'majority';
-  if (total >= 3) return 'minority';
-  return 'singleton';
+  if (total >= 3 && flagged === total) return "unanimous";
+  if (flagged >= 2) return "majority";
+  if (total >= 3) return "minority";
+  return "singleton";
 }
 
 export function aggregate(input: AggregateInput): AggregateResult {
@@ -46,16 +46,16 @@ export function aggregate(input: AggregateInput): AggregateResult {
   let fail = false;
   let warnFail = false;
   for (const f of deduped) {
-    if (f.severity === 'CRITICAL') {
+    if (f.severity === "CRITICAL") {
       critical++;
-      if (f.category === 'security' || f.category === 'correctness') {
+      if (f.category === "security" || f.category === "correctness") {
         fail = true;
-      } else if (f.consensus === 'unanimous' || f.consensus === 'majority') {
+      } else if (f.consensus === "unanimous" || f.consensus === "majority") {
         fail = true;
       }
-    } else if (f.severity === 'WARN') {
+    } else if (f.severity === "WARN") {
       warn++;
-      if (f.consensus === 'unanimous' || f.consensus === 'majority') {
+      if (f.consensus === "unanimous" || f.consensus === "majority") {
         warnFail = true;
       }
     } else {
@@ -64,9 +64,9 @@ export function aggregate(input: AggregateInput): AggregateResult {
   }
 
   let verdict: Verdict;
-  if (fail || warnFail) verdict = 'FAIL';
-  else if (warn > 0) verdict = 'SOFT-PASS';
-  else verdict = 'PASS';
+  if (fail || warnFail) verdict = "FAIL";
+  else if (warn > 0) verdict = "SOFT-PASS";
+  else verdict = "PASS";
 
   return { verdict, dedupedFindings: deduped, counts: { critical, warn, info } };
 }

@@ -3,14 +3,14 @@ export const defaultConfig = {
   providers: {
     codex: {
       enabled: true,
-      auth: 'oauth' as const,
-      model: 'gpt-5.4',
+      auth: "oauth" as const,
+      model: "gpt-5.4",
       timeoutMs: 300_000,
     },
   },
   phases: {
     review: {
-      reviewers: [{ provider: 'codex' as const, persona: 'security' }],
+      reviewers: [{ provider: "codex" as const, persona: "security" }],
     },
   },
   loop: {
@@ -18,12 +18,12 @@ export const defaultConfig = {
     costCapUsd: 1.5,
     stuckThreshold: 2,
     rejectRateEscalation: 0.8,
-    softPassPolicy: 'allow' as const,
+    softPassPolicy: "allow" as const,
   },
   sandbox: {
-    mode: 'strict' as const,
-    writablePaths: ['.reviewgate/'],
-    deniedReads: ['~/.ssh', '~/.aws', '~/.config', '.env*', '*.pem', '*.key'],
+    mode: "strict" as const,
+    writablePaths: [".reviewgate/"],
+    deniedReads: ["~/.ssh", "~/.aws", "~/.config", ".env*", "*.pem", "*.key"],
   },
   audit: {
     retentionDays: 180,
@@ -31,8 +31,8 @@ export const defaultConfig = {
     remoteExporter: null as string | null,
   },
   output: {
-    pendingPath: '.reviewgate/pending.md',
-    pendingJsonPath: '.reviewgate/pending.json',
+    pendingPath: ".reviewgate/pending.md",
+    pendingJsonPath: ".reviewgate/pending.json",
   },
 };
 

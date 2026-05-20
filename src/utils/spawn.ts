@@ -1,7 +1,7 @@
 // src/utils/spawn.ts
-import { spawn as nodeSpawn, type ChildProcessByStdio } from 'node:child_process';
-import { createReadStream, createWriteStream } from 'node:fs';
-import type { Writable, Readable } from 'node:stream';
+import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
+import { createReadStream, createWriteStream } from "node:fs";
+import type { Readable, Writable } from "node:stream";
 
 export interface SpawnInput {
   command: string;
@@ -34,18 +34,18 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
     const child = nodeSpawn(input.command, input.args, {
       env: input.env,
       cwd: input.cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessByStdio<Writable, Readable, Readable>;
 
     if (stdinStream && child.stdin) stdinStream.pipe(child.stdin);
     const out = createWriteStream(input.stdoutFile);
     const err = createWriteStream(input.stderrFile);
     let lastOutputAt = Date.now();
-    child.stdout.on('data', (d: Buffer) => {
+    child.stdout.on("data", (d: Buffer) => {
       lastOutputAt = Date.now();
       out.write(d);
     });
-    child.stderr.on('data', (d: Buffer) => {
+    child.stderr.on("data", (d: Buffer) => {
       lastOutputAt = Date.now();
       err.write(d);
     });
@@ -55,16 +55,16 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       if (idle > (input.zeroByteWatchdogMs ?? 60_000)) {
         killedByWatchdog = true;
         clearInterval(watchdog);
-        child.kill('SIGKILL');
+        child.kill("SIGKILL");
       }
     }, 5_000);
 
     const timeout = setTimeout(() => {
       killedByTimeout = true;
-      child.kill('SIGKILL');
+      child.kill("SIGKILL");
     }, input.timeoutMs);
 
-    child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+    child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
       clearInterval(watchdog);
       clearTimeout(timeout);
       out.end();
@@ -77,6 +77,6 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
         killedByTimeout,
       });
     });
-    child.on('error', reject);
+    child.on("error", reject);
   });
 }

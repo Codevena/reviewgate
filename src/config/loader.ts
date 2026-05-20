@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { defaultConfig } from './defaults.ts';
-import { ConfigSchema, type ReviewgateConfig } from './define-config.ts';
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { defaultConfig } from "./defaults.ts";
+import { ConfigSchema, type ReviewgateConfig } from "./define-config.ts";
 
 export async function loadConfig(path: string | null): Promise<ReviewgateConfig> {
   if (!path) return ConfigSchema.parse(defaultConfig);
@@ -19,5 +19,5 @@ export async function loadConfig(path: string | null): Promise<ReviewgateConfig>
 }
 
 export function defaultConfigPath(cwd: string): string {
-  return resolve(cwd, 'reviewgate.config.ts');
+  return resolve(cwd, "reviewgate.config.ts");
 }

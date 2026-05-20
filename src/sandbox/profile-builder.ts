@@ -1,33 +1,33 @@
-export type ProviderId = 'codex' | 'claude-code' | 'gemini' | 'opencode';
+export type ProviderId = "codex" | "claude-code" | "gemini" | "opencode";
 
 const CREDENTIAL_PATHS: Record<ProviderId, string[]> = {
-  codex: ['~/.codex', '~/.config/codex', '~/.openai'],
-  'claude-code': ['~/.claude', '~/.config/claude'],
-  gemini: ['~/.config/gemini', '~/.gemini'],
-  opencode: ['~/.config/opencode'],
+  codex: ["~/.codex", "~/.config/codex", "~/.openai"],
+  "claude-code": ["~/.claude", "~/.config/claude"],
+  gemini: ["~/.config/gemini", "~/.gemini"],
+  opencode: ["~/.config/opencode"],
 };
 
 const NETWORK_ALLOW: Record<ProviderId, string[]> = {
-  codex: ['api.openai.com', 'chatgpt.com'],
-  'claude-code': ['api.anthropic.com', 'claude.ai'],
-  gemini: ['generativelanguage.googleapis.com', 'aiplatform.googleapis.com'],
-  opencode: ['openrouter.ai'],
+  codex: ["api.openai.com", "chatgpt.com"],
+  "claude-code": ["api.anthropic.com", "claude.ai"],
+  gemini: ["generativelanguage.googleapis.com", "aiplatform.googleapis.com"],
+  opencode: ["openrouter.ai"],
 };
 
 const SECRETS_DENY = [
-  '~/.ssh',
-  '~/.aws',
-  '~/.gnupg',
-  '.env',
-  '.env.local',
-  '.env.production',
-  '*.pem',
-  '*.key',
-  '*.p12',
-  '*.pfx',
+  "~/.ssh",
+  "~/.aws",
+  "~/.gnupg",
+  ".env",
+  ".env.local",
+  ".env.production",
+  "*.pem",
+  "*.key",
+  "*.p12",
+  "*.pfx",
 ];
 
-const BROAD_DENY = ['/Users', '/home', '/Volumes', '/tmp'];
+const BROAD_DENY = ["/Users", "/home", "/Volumes", "/tmp"];
 
 export interface SandboxProfile {
   sandboxRequested: boolean;
@@ -42,7 +42,7 @@ export interface SandboxProfile {
 
 export interface BuildInput {
   providerId: ProviderId;
-  mode: 'strict' | 'permissive' | 'off';
+  mode: "strict" | "permissive" | "off";
   workingDir: string;
   findingsPath: string;
   tmpDir: string;
@@ -50,7 +50,7 @@ export interface BuildInput {
 }
 
 export function buildSandboxProfile(input: BuildInput): SandboxProfile {
-  if (input.mode === 'off') {
+  if (input.mode === "off") {
     return {
       sandboxRequested: false,
       fs: { readAllow: [], readDeny: [], writeAllow: [] },

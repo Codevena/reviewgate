@@ -1,9 +1,10 @@
 // src/providers/codex.ts
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { FindingSchema } from '../schemas/finding.ts';
-import { computeSignature } from '../diff/signature.ts';
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { computeSignature } from "../diff/signature.ts";
+import { FindingSchema } from "../schemas/finding.ts";
+import { spawnSafely } from "../utils/spawn.ts";
 import type {
   Preflight,
   ProviderAdapter,
@@ -11,37 +12,41 @@ import type {
   ReviewInput,
   ReviewResult,
   ReviewStatus,
-} from './adapter-base.ts';
-import { spawnSafely } from '../utils/spawn.ts';
+} from "./adapter-base.ts";
 
 export interface CodexAdapterOptions {
   binPath?: string;
 }
 
 export class CodexAdapter implements ProviderAdapter {
-  readonly id = 'codex' as const;
+  readonly id = "codex" as const;
   private readonly binPath: string;
 
   constructor(opts: CodexAdapterOptions = {}) {
-    this.binPath = opts.binPath ?? 'codex';
+    this.binPath = opts.binPath ?? "codex";
   }
 
   async preflight(cfg: ProviderConfig): Promise<Preflight> {
-    const tmp = mkdtempSync(join(tmpdir(), 'rg-codex-pf-'));
-    const stdoutFile = join(tmp, 'out.log');
-    const stderrFile = join(tmp, 'err.log');
+    const tmp = mkdtempSync(join(tmpdir(), "rg-codex-pf-"));
+    const stdoutFile = join(tmp, "out.log");
+    const stderrFile = join(tmp, "err.log");
     try {
       const res = await spawnSafely({
         command: this.binPath,
-        args: ['--version'],
+        args: ["--version"],
         stdoutFile,
         stderrFile,
         timeoutMs: 5_000,
       });
       if (res.exitCode !== 0) {
-        return { available: false, version: null, authMode: cfg.auth, error: `codex --version exit=${res.exitCode}` };
+        return {
+          available: false,
+          version: null,
+          authMode: cfg.auth,
+          error: `codex --version exit=${res.exitCode}`,
+        };
       }
-      const version = readFileSync(stdoutFile, 'utf8').trim();
+      const version = readFileSync(stdoutFile, "utf8").trim();
       return { available: true, version, authMode: cfg.auth, error: null };
     } catch (err) {
       return { available: false, version: null, authMode: cfg.auth, error: (err as Error).message };
@@ -51,26 +56,30 @@ export class CodexAdapter implements ProviderAdapter {
   async review(
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
-    const run = mkdtempSync(join(tmpdir(), 'rg-codex-run-'));
-    const lastMsgFile = join(run, 'last.md');
-    const eventsFile = join(run, 'events.jsonl');
-    const stderrFile = join(run, 'stderr.log');
+    const run = mkdtempSync(join(tmpdir(), "rg-codex-run-"));
+    const lastMsgFile = join(run, "last.md");
+    const eventsFile = join(run, "events.jsonl");
+    const stderrFile = join(run, "stderr.log");
 
     const args = [
-      'exec',
-      '--sandbox', 'read-only',
-      '--json',
-      '--output-last-message', lastMsgFile,
-      '--cd', input.workingDir,
-      '--model', input.cfg.model,
+      "exec",
+      "--sandbox",
+      "read-only",
+      "--json",
+      "--output-last-message",
+      lastMsgFile,
+      "--cd",
+      input.workingDir,
+      "--model",
+      input.cfg.model,
     ];
-    if (input.schemaPath) args.push('--output-schema', input.schemaPath);
-    args.push(readFileSync(input.promptFile, 'utf8'));
+    if (input.schemaPath) args.push("--output-schema", input.schemaPath);
+    args.push(readFileSync(input.promptFile, "utf8"));
 
     const env = { ...process.env } as Record<string, string>;
-    if (input.cfg.auth === 'apikey' && input.cfg.apiKeyEnv) {
+    if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
       const key = process.env[input.cfg.apiKeyEnv];
-      if (key) env['OPENAI_API_KEY'] = key;
+      if (key) env.OPENAI_API_KEY = key;
     }
     // OAuth mode relies on codex's own credential store; no env change.
 
@@ -85,48 +94,55 @@ export class CodexAdapter implements ProviderAdapter {
     });
 
     const status: ReviewStatus = res.killedByTimeout
-      ? 'timeout'
+      ? "timeout"
       : res.killedByWatchdog
-        ? 'timeout'
+        ? "timeout"
         : res.exitCode === 0
-          ? 'ok'
-          : 'error';
+          ? "ok"
+          : "error";
 
-    if (status !== 'ok') {
+    if (status !== "ok") {
       return {
         reviewerId: input.reviewerId,
-        verdict: 'ERROR',
+        verdict: "ERROR",
         findings: [],
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
         durationMs: res.durationMs,
         exitCode: res.exitCode,
         rawEventsPath: eventsFile,
         status,
-        statusDetail: readFileSync(stderrFile, 'utf8').slice(0, 1000),
+        statusDetail: readFileSync(stderrFile, "utf8").slice(0, 1000),
       };
     }
 
     const usage = this.extractUsage(eventsFile);
-    const findings = this.extractFindings(lastMsgFile, input.reviewerId, input.cfg.model, input.persona);
+    const findings = this.extractFindings(
+      lastMsgFile,
+      input.reviewerId,
+      input.cfg.model,
+      input.persona,
+    );
     return {
       reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === 'CRITICAL' || f.severity === 'WARN') ? 'FAIL' : 'PASS',
+      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+        ? "FAIL"
+        : "PASS",
       findings,
       usage,
       durationMs: res.durationMs,
       exitCode: 0,
       rawEventsPath: eventsFile,
-      status: 'ok',
+      status: "ok",
     };
   }
 
-  private extractUsage(eventsFile: string): ReviewResult['usage'] {
+  private extractUsage(eventsFile: string): ReviewResult["usage"] {
     let input_tokens = 0;
     let output_tokens = 0;
     let cached = 0;
     try {
-      const raw = readFileSync(eventsFile, 'utf8');
-      for (const line of raw.split('\n')) {
+      const raw = readFileSync(eventsFile, "utf8");
+      for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
         const ev = JSON.parse(line) as {
           event?: string;
@@ -136,7 +152,7 @@ export class CodexAdapter implements ProviderAdapter {
             cached_input_tokens?: number;
           };
         };
-        if (ev.event === 'turn.completed' && ev.usage) {
+        if (ev.event === "turn.completed" && ev.usage) {
           input_tokens += ev.usage.input_tokens ?? 0;
           output_tokens += ev.usage.output_tokens ?? 0;
           cached += ev.usage.cached_input_tokens ?? 0;
@@ -159,10 +175,10 @@ export class CodexAdapter implements ProviderAdapter {
     reviewerId: string,
     model: string,
     persona: string,
-  ): ReviewResult['findings'] {
+  ): ReviewResult["findings"] {
     let raw: string;
     try {
-      raw = readFileSync(lastMsgFile, 'utf8');
+      raw = readFileSync(lastMsgFile, "utf8");
     } catch {
       return [];
     }
@@ -174,11 +190,11 @@ export class CodexAdapter implements ProviderAdapter {
       return [];
     }
     if (!Array.isArray(parsed.findings)) return [];
-    const out: ReviewResult['findings'] = [];
+    const out: ReviewResult["findings"] = [];
     for (const f of parsed.findings) {
       try {
         const obj = f as Record<string, unknown>;
-        obj['reviewer'] = obj['reviewer'] ?? { provider: 'codex', model, persona };
+        obj.reviewer = obj.reviewer ?? { provider: "codex", model, persona };
         const fin = FindingSchema.parse(obj);
         // Override signature with our canonical computation to ignore whatever the model emitted.
         fin.signature = computeSignature({
@@ -189,7 +205,7 @@ export class CodexAdapter implements ProviderAdapter {
           lineEnd: fin.line_end,
         });
         // Force reviewer block to known truth.
-        fin.reviewer = { provider: 'codex', model, persona };
+        fin.reviewer = { provider: "codex", model, persona };
         out.push(fin);
       } catch {
         // Drop hallucinated/malformed findings; counted by caller as hallucination.

@@ -1,9 +1,9 @@
-import { platform } from 'node:os';
-import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import type { SandboxProfile } from './profile-builder.ts';
+import { spawn } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { platform } from "node:os";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { SandboxProfile } from "./profile-builder.ts";
 
 export interface SandboxRunInput {
   command: string[];
@@ -23,7 +23,7 @@ export interface SandboxRunResult {
 export class SandboxUnavailableError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'SandboxUnavailableError';
+    this.name = "SandboxUnavailableError";
   }
 }
 
@@ -36,17 +36,19 @@ export class SandboxUnavailableError extends Error {
 export class SandboxManager {
   async run(input: SandboxRunInput): Promise<SandboxRunResult> {
     if (input.profile.sandboxRequested) {
-      if (platform() === 'win32') {
+      if (platform() === "win32") {
         throw new SandboxUnavailableError(
-          'Windows is not supported by sandbox-runtime. Use WSL2, or set sandbox.mode=\'off\' explicitly (only for trusted local dev).',
+          "Windows is not supported by sandbox-runtime. Use WSL2, or set sandbox.mode='off' explicitly (only for trusted local dev).",
         );
       }
       // Attempt dynamic import; package is not installed in M1.
       try {
         // eslint-disable-next-line @typescript-eslint/ban-ts-comment
         // @ts-ignore — package not installed in M1; dynamic import fails at runtime, caught below
-        const mod = (await import('@anthropic-ai/sandbox-runtime')) as {
-          runInSandbox: (opts: unknown) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+        const mod = (await import("@anthropic-ai/sandbox-runtime")) as {
+          runInSandbox: (
+            opts: unknown,
+          ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
         };
         return await this.runInside(mod.runInSandbox, input);
       } catch (err) {
@@ -64,9 +66,9 @@ export class SandboxManager {
     runInSandbox: (opts: unknown) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
     input: SandboxRunInput,
   ): Promise<SandboxRunResult> {
-    const dir = mkdtempSync(join(tmpdir(), 'rg-sb-'));
-    const stdoutFile = join(dir, 'stdout.log');
-    const stderrFile = join(dir, 'stderr.log');
+    const dir = mkdtempSync(join(tmpdir(), "rg-sb-"));
+    const stdoutFile = join(dir, "stdout.log");
+    const stderrFile = join(dir, "stderr.log");
     const start = Date.now();
     let killedByWatchdog = false;
     const timer = setTimeout(() => {
@@ -84,7 +86,7 @@ export class SandboxManager {
         },
         network: { allowList: input.profile.net.allow },
       };
-      if (input.stdinFile) opts['stdinFile'] = input.stdinFile;
+      if (input.stdinFile) opts.stdinFile = input.stdinFile;
       const res = await runInSandbox(opts);
       writeFileSync(stdoutFile, res.stdout);
       writeFileSync(stderrFile, res.stderr);
@@ -101,28 +103,32 @@ export class SandboxManager {
   }
 
   private async runPlain(input: SandboxRunInput): Promise<SandboxRunResult> {
-    const dir = mkdtempSync(join(tmpdir(), 'rg-sb-off-'));
-    const stdoutFile = join(dir, 'stdout.log');
-    const stderrFile = join(dir, 'stderr.log');
+    const dir = mkdtempSync(join(tmpdir(), "rg-sb-off-"));
+    const stdoutFile = join(dir, "stdout.log");
+    const stderrFile = join(dir, "stderr.log");
     const start = Date.now();
     let killedByWatchdog = false;
 
     return await new Promise<SandboxRunResult>((resolve, reject) => {
       const [cmd, ...args] = input.command;
       if (!cmd) {
-        reject(new Error('SandboxManager.run: empty command'));
+        reject(new Error("SandboxManager.run: empty command"));
         return;
       }
-      const child = spawn(cmd, args, { env: input.env, stdio: ['ignore', 'pipe', 'pipe'] });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-      child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+      const child = spawn(cmd, args, { env: input.env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d: Buffer) => {
+        stdout += d.toString();
+      });
+      child.stderr.on("data", (d: Buffer) => {
+        stderr += d.toString();
+      });
       const timer = setTimeout(() => {
         killedByWatchdog = true;
-        child.kill('SIGKILL');
+        child.kill("SIGKILL");
       }, input.profile.budget.walltimeMs);
-      child.on('exit', (code: number | null) => {
+      child.on("exit", (code: number | null) => {
         clearTimeout(timer);
         writeFileSync(stdoutFile, stdout);
         writeFileSync(stderrFile, stderr);
@@ -134,7 +140,7 @@ export class SandboxManager {
           killedByWatchdog,
         });
       });
-      child.on('error', (err: Error) => {
+      child.on("error", (err: Error) => {
         clearTimeout(timer);
         reject(err);
       });
