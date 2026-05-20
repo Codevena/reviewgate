@@ -6,7 +6,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HOOKS_TEMPLATE = {
@@ -76,10 +76,14 @@ export async function runInit(input: InitInput): Promise<void> {
   const binDir = join(input.repoRoot, ".reviewgate", "bin");
   if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
   const here = fileURLToPath(import.meta.url);
-  // The bin-templates ship alongside the binary; resolve relative to the package root.
-  // When running via `bun run dev`, ../../.. lands at the repo root; when compiled,
-  // bun build --compile bundles bin-templates as resources under {assetsDir}.
+  // Resolve bin-templates across all run modes:
+  //  - `bun run dev`: ../../../../bin-templates lands at the repo root.
+  //  - compiled binary: `bun build --compile` does NOT bundle them, so the build
+  //    copies them to dist/bin-templates next to the executable → resolve via
+  //    dirname(process.execPath).
+  //  - running from the repo root: process.cwd()/bin-templates.
   const candidates = [
+    join(dirname(process.execPath), "bin-templates"),
     join(here, "..", "..", "..", "..", "bin-templates"),
     join(process.cwd(), "bin-templates"),
   ];
