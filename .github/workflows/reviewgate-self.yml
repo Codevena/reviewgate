@@ -1,0 +1,29 @@
+name: reviewgate-self
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      REVIEWGATE_E2E: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: oven-sh/setup-bun@v3
+      - run: bun install --frozen-lockfile
+      - name: Install Codex CLI
+        run: npm i -g @openai/codex
+      - name: Authenticate Codex (CI key)
+        env: { OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }} }
+        run: echo "OPENAI_API_KEY set: ${OPENAI_API_KEY:+yes}"
+      - name: Run reviewgate self-review
+        run: bun run self-review
+      - name: Upload pending.md if it exists
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reviewgate-pending
+          path: |
+            .reviewgate/pending.md
+            .reviewgate/pending.json

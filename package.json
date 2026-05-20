@@ -14,7 +14,8 @@
     "test:integration": "bun test tests/integration",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
-    "format": "biome format --write src tests"
+    "format": "biome format --write src tests",
+    "self-review": "bun run dev init && bun run dev gate --hook trigger </dev/null && bun run dev gate --hook stop </dev/null"
   },
   "dependencies": {
     "citty": "^0.1.6",
