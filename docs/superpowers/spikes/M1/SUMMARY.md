@@ -8,7 +8,7 @@ pending, with the implementation's fallback behavior noted.
 
 | Spike | Question | Status | Outcome |
 |---|---|---|---|
-| S1 | Does Stop-hook `decision:"block"` actually force Claude to keep working? | ⏳ PENDING (user-driven) | Requires a fresh Claude Code session in `/tmp/reviewgate-spike-s1`. The whole gate design assumes this works; the plan's Pre-flight S1 has the exact bash. M1 ships the disk-only `{decision:"block", reason}` path which is the documented Stop surface. |
+| S1 | Does Stop-hook `decision:"block"` actually force Claude to keep working? | ✅ PASS (2026-05-20) | Verified in a fresh Claude Code session in `/tmp/reviewgate-spike-s1`. A Stop hook returning `{"decision":"block","reason":"…read marker.txt…"}` blocked the turn; Claude read `marker.txt` on its own and reported the verbatim contents (`GEHEIMES-WORT-S1-OK`) before being allowed to stop. ~3 Stop-hook invocations fired, then a single-block guard (flag file) allowed termination — no infinite loop. Confirms the core gate mechanism: `decision:"block"` + `reason` forces continued work and Claude follows the reason text. |
 | S2 | Is `hookSpecificOutput.additionalContext` honored on Stop? | ⏳ PENDING (user-driven) | M1 does NOT depend on it — findings always live on disk (`pending.md`/`pending.json`). If S2 later confirms support, it's an optional optimization (inline top-3 findings) for a later milestone. |
 | S3 | Which env/stdin field carries the host model? | ⏳ PENDING (user-driven) | `src/utils/host-model.ts` implements the full fallback chain (`REVIEWGATE_HOST_MODEL` → `CLAUDE_MODEL` → hook-stdin `session.model` → assume-opus). The assume-opus fallback is fail-safe by construction, so M1 is correct regardless of S3's outcome. `reviewgate doctor` reports which source is active (currently `fallback:assume-opus` on this machine — warns the user to set `REVIEWGATE_HOST_MODEL`). |
 | S4 | Is Codex `--output-schema` + `--output-last-message` reliable (≥9/10)? | ◑ DEFERRED (graceful fallback shipped) | Not run as a 10-trial empirical test (would spend real Codex tokens). `CodexAdapter.extractFindings` parses `last.md` as JSON and, on parse failure or non-array `findings`, returns zero findings rather than crashing — the exact fallback the spike's "if flaky" branch prescribes. Codex CLI 0.130.0 is installed and the adapter passes `--output-schema` through when a schema path is supplied. |
@@ -22,13 +22,16 @@ pending, with the implementation's fallback behavior noted.
 - ◯ INFORMATIONAL / N/A — out of M1 scope (M2+) or not applicable under current M1 constraints
 
 ## Net effect on M1
-None of the pending spikes block M1 functionality:
-- S1 is the one true external dependency; if Stop-hook blocking has changed in
-  the installed Claude Code, the gate mechanism would need redesign — run S1
-  before relying on Reviewgate in anger.
-- S2/S3/S4/S5/S6/S7 all have correct, conservative fallbacks already in code.
+- **S1 (the one true external dependency) is confirmed PASS** — the Stop-hook
+  block mechanism that the entire gate relies on works in the installed Claude
+  Code version. S4 is also empirically confirmed (codex honors `--output-schema`
+  reliably; see [[S4]] notes and the real-Codex e2e).
+- S2/S3 remain optional/informational — both have correct, conservative
+  fallbacks already in code and do not gate M1.
+- S5/S6 are blocked only by the unpublished `@anthropic-ai/sandbox-runtime`;
+  M1 fails closed for sandboxed modes and ships `mode:'off'` by default.
 
-## How to run the pending spikes (S1–S3)
+## How to run the remaining optional spikes (S2, S3)
 See the **Pre-flight: Spikes** section of
 `docs/superpowers/plans/2026-05-20-reviewgate-m1-minimum-viable-loop.md` for the
 exact bash. Each writes its result to `docs/superpowers/spikes/M1/SX-*.md`.
