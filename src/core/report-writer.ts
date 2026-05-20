@@ -79,7 +79,12 @@ export interface EscalationInput {
   runId: string;
   iter: number;
   maxIter: number;
-  reasonCode: "max-iterations" | "cost-cap" | "stuck-signatures" | "reject-rate-high";
+  reasonCode:
+    | "max-iterations"
+    | "cost-cap"
+    | "stuck-signatures"
+    | "reject-rate-high"
+    | "decisions-unaddressed";
   summary: string;
   perIter: Array<{
     iter: number;

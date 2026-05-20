@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
+import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { ReviewgateStateSchema } from "../schemas/state.ts";
 import { decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
 import type { Orchestrator } from "./orchestrator.ts";
@@ -60,12 +61,17 @@ function allDecisionsAddressed(repoRoot: string, iter: number, requiredIds: stri
     .filter((l) => l.trim().length > 0);
   const seen = new Set<string>();
   for (const l of lines) {
+    let parsed: unknown;
     try {
-      const obj = JSON.parse(l) as { finding_id?: string };
-      if (obj.finding_id) seen.add(obj.finding_id);
+      parsed = JSON.parse(l);
     } catch {
-      // ignore parse failures; treated as missing decisions
+      continue; // not JSON → treated as missing decision (fail-closed)
     }
+    // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
+    // rejection with a too-short reason must NOT satisfy the gate — otherwise
+    // the gate is trivially bypassable with malformed lines.
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (res.success) seen.add(res.data.finding_id);
   }
   return requiredIds.every((id) => seen.has(id));
 }
@@ -74,19 +80,15 @@ export class LoopDriver {
   constructor(private readonly i: LoopInput) {}
 
   async run(): Promise<LoopDecision> {
-    if (this.i.stopHookActive) {
-      await this.i.audit.append({
-        event: "gate.decision",
-        run_id: "pending",
-        iter: 0,
-        trigger: "stop-hook",
-      });
-      return {
-        kind: "allow_stop",
-        reason: "stop_hook_active=true; allowing the parent loop to terminate.",
-      };
-    }
-
+    // NOTE: we deliberately do NOT short-circuit on stop_hook_active here. Real
+    // Claude Code marks every stop inside a hook-forced continuation as
+    // stop_hook_active=true, so a blanket short-circuit would skip the
+    // re-review of the agent's fix and let it stop with an unverified diff. The
+    // FAIL→fix→re-review→PASS loop must run in-chain. Termination is guaranteed
+    // without it: review rounds advance `iteration` toward the iter-cap
+    // escalation, and the decisions-gate (which does NOT advance the counter) is
+    // bounded below by escalating once a forced continuation leaves findings
+    // unaddressed.
     const flag = readDirtyFlag(this.i.repoRoot);
     const state = await this.i.state.load();
 
@@ -170,6 +172,30 @@ export class LoopDriver {
         requiredIds.length > 0 &&
         !allDecisionsAddressed(this.i.repoRoot, state.iteration, requiredIds)
       ) {
+        // The decisions-gate does not advance `iteration`, so re-blocking on a
+        // hook-forced continuation would loop forever (the iter-cap escalation
+        // can never catch it). When stop_hook_active is set, the agent has
+        // already been told to address these findings in a prior block and has
+        // ended another turn without doing so — escalate to the human instead
+        // of nagging indefinitely. On a fresh user-initiated stop, just block.
+        if (this.i.stopHookActive) {
+          await this.escalate(
+            state.session_id,
+            state.iteration,
+            "decisions-unaddressed",
+            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.`,
+            state.signature_history,
+          );
+          try {
+            unlinkSync(dirtyFlagPath(this.i.repoRoot));
+          } catch {
+            /* noop */
+          }
+          return {
+            kind: "allow_stop",
+            reason: `Reviewgate escalated: iteration ${state.iteration} findings were never addressed. See .reviewgate/ESCALATION.md.`,
+          };
+        }
         return {
           kind: "block",
           reason: `Iteration ${state.iteration} findings are not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
@@ -208,8 +234,9 @@ export class LoopDriver {
       });
       // Opt-in: block ONCE on a passing verdict so the agent is told the review
       // passed (on allow_stop the hook can't reach the agent at all). The dirty
-      // flag is already deleted, so the agent's re-stop sees no work + stop_hook_active
-      // → allow_stop. No loop. Default off (silent pass) to keep the happy path lean.
+      // flag is already deleted above, so the agent's re-stop hits the "no
+      // changes" branch and allows the stop — no loop. Default off (silent pass)
+      // to keep the happy path lean.
       if (this.i.config.loop.acknowledgePass) {
         return {
           kind: "block",
@@ -243,7 +270,12 @@ export class LoopDriver {
   private async escalate(
     runId: string,
     iter: number,
-    reasonCode: "max-iterations" | "cost-cap" | "stuck-signatures" | "reject-rate-high",
+    reasonCode:
+      | "max-iterations"
+      | "cost-cap"
+      | "stuck-signatures"
+      | "reject-rate-high"
+      | "decisions-unaddressed",
     summary: string,
     history: string[][],
   ): Promise<void> {

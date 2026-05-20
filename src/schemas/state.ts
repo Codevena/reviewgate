@@ -6,6 +6,7 @@ export const EscalationReason = z.enum([
   "cost-cap",
   "stuck-signatures",
   "reject-rate-high",
+  "decisions-unaddressed",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 

@@ -153,8 +153,9 @@ just end your turn again — Reviewgate will let you stop.
 - **PASS / SOFT-PASS** — you are allowed to stop (SOFT-PASS = only minor WARNs).
 - **FAIL** — blocked; follow the protocol above.
 - **ESCALATE** — Reviewgate gave up after repeated rounds (max iterations, no
-  progress, or cost cap). It writes `.reviewgate/ESCALATION.md` and lets you stop.
-  Surface the escalation to the human; do not silently move on.
+  progress, cost cap, or you ended a re-prompted turn without addressing the
+  findings). It writes `.reviewgate/ESCALATION.md` and lets you stop. Surface the
+  escalation to the human; do not silently move on.
 - **ERROR** — the reviewer could not run (crash/timeout, or a sandbox mode it
   cannot satisfy). You are blocked, fail-closed. Tell the human to run
   `reviewgate doctor`; do not treat this as a pass.
