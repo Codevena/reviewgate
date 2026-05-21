@@ -5,28 +5,28 @@ const FIELD_MAX = 120;
 const HEADER =
   "Known false positives in this repo — maintainers have confirmed these are NOT real issues. Do NOT re-report them:";
 
-// Control chars (incl. newlines, NUL) — kept as an escaped class so this source
-// file never contains literal control bytes (which would make git treat it as
-// binary). biome-ignore: stripping control chars is the entire purpose.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: defanging control chars is the point
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+// Disallowed = anything OUTSIDE the safe identifier/path charset. A negated
+// allowlist deliberately contains NO literal control bytes, so this source file
+// stays text (a literal control class would make git treat it as binary).
+const DISALLOWED = /[^A-Za-z0-9._/-]+/g;
 
 // Defang a ledger field before it enters TRUSTED reviewer context. The values
-// (file, rule_id, symbol) originate from prior reviewer findings on untrusted
-// diffs, so a crafted rule_id/path could carry newlines or instruction text and
-// break out of the line into injected prompt directives. Strip control chars to
-// spaces, collapse whitespace, trim, and truncate — the content stays visible
-// (defanged) on a single bounded line.
+// (file, rule_id, symbol) originate from prior reviewer findings on UNTRUSTED
+// diffs, so a crafted value could carry newlines, quotes, or instruction prose
+// and read as a directive once injected into the trusted preamble. These fields
+// are identifiers/paths, so reduce them to a safe charset (deleting everything
+// else collapses any prose into a single non-instruction token) and truncate.
 function clean(s: string): string {
-  const stripped = s.replace(CONTROL_CHARS, " ").replace(/\s+/g, " ").trim();
-  return stripped.length > FIELD_MAX ? `${stripped.slice(0, FIELD_MAX)}…` : stripped;
+  const safe = s.replace(DISALLOWED, "");
+  return safe.length > FIELD_MAX ? `${safe.slice(0, FIELD_MAX)}…` : safe;
 }
 
 // Render the changed-file-matching subset of the active/sticky FP snapshot as a
-// trusted preamble block. Pure: the orchestrator decides placement. Empty when
-// nothing matches so the caller can skip the section entirely. The returned
-// string is STRICTLY ≤ budgetBytes: each field is bounded by clean(), the tail
-// is reserved up-front, and no line is emitted past the budget.
+// trusted preamble block. Pure: the orchestrator decides placement. Returns ""
+// when nothing matches OR when not even one entry fits the budget (a contentless
+// header is worse than nothing — the reactive aggregator demote still catches
+// the FP). The result is STRICTLY ≤ budgetBytes: each field is bounded by
+// clean(), and the worst-case tail is reserved before any line is added.
 export function buildFpFewShot(input: {
   active: Map<string, FpLedgerEntry>;
   changedFiles: string[];
@@ -58,6 +58,8 @@ export function buildFpFewShot(input: {
     lines.push(line);
     used += cost;
   }
+  // No example fit → emit nothing rather than a misleading header-only block.
+  if (lines.length === 0) return "";
   const dropped = matches.length - lines.length;
   const tail = dropped > 0 ? `\n(+${dropped} more)` : "";
   return `${HEADER}${lines.join("")}${tail}`;
