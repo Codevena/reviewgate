@@ -114,6 +114,112 @@ describe("aggregate", () => {
     expect(merged.details).toContain("Also reported"); // other wordings preserved
   });
 
+  it("merges near-identically WORDED findings across different line regions/categories", () => {
+    // Same bug, different reviewers, DIFFERENT lines + categories, but very
+    // similar wording → the lexical-similarity merge collapses them.
+    const a = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "y.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "hardcoded-secret",
+      message: "hardcoded secret committed in source",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "WARN",
+      category: "quality",
+      file: "y.ts",
+      line_start: 30,
+      line_end: 30,
+      rule_id: "exposed-credential",
+      message: "hardcoded secret in source code",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1);
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(r.dedupedFindings[0]!.severity).toBe("CRITICAL");
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(r.dedupedFindings[0]!.confirmed_by?.length).toBe(2);
+  });
+
+  it("does NOT merge differently-worded findings (no masking of distinct issues)", () => {
+    const a = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "z.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "sqli",
+      message: "user input string interpolation enables injection",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "z.ts",
+      line_start: 30,
+      line_end: 30,
+      rule_id: "no-ratelimit",
+      message: "missing rate limiting allows brute force abuse",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(2); // distinct issues stay separate
+  });
+
+  it("is order-independent: shuffled input yields identical clustering", () => {
+    const fs = [
+      fin({
+        file: "a.ts",
+        line_start: 5,
+        severity: "CRITICAL",
+        category: "security",
+        rule_id: "r1",
+        message: "hardcoded secret committed in source",
+        reviewer: { provider: "codex", model: "m", persona: "security" },
+      }),
+      fin({
+        file: "a.ts",
+        line_start: 30,
+        severity: "WARN",
+        category: "quality",
+        rule_id: "r2",
+        message: "hardcoded secret in source code",
+        reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+      }),
+      fin({
+        file: "a.ts",
+        line_start: 50,
+        severity: "WARN",
+        category: "performance",
+        rule_id: "r3",
+        message: "expensive loop without memoization here",
+        reviewer: { provider: "openrouter", model: "m", persona: "security" },
+      }),
+      fin({
+        file: "b.ts",
+        line_start: 1,
+        severity: "INFO",
+        category: "docs",
+        rule_id: "r4",
+        message: "missing jsdoc on exported function",
+        reviewer: { provider: "claude-code", model: "m", persona: "adversarial" },
+      }),
+    ];
+    const forward = aggregate({ findings: fs, reviewersTotal: 4 });
+    const reversed = aggregate({ findings: [...fs].reverse(), reviewersTotal: 4 });
+    const key = (r: ReturnType<typeof aggregate>) =>
+      r.dedupedFindings
+        .map((f) => `${f.severity}|${f.message}`)
+        .sort()
+        .join(";");
+    expect(key(forward)).toBe(key(reversed));
+    expect(forward.dedupedFindings.length).toBe(reversed.dedupedFindings.length);
+  });
+
   it("keeps genuinely separate bugs (different line regions) distinct", () => {
     const sqli = fin({
       severity: "CRITICAL",
