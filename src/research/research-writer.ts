@@ -16,9 +16,9 @@ export interface ResearchInput {
   symbolGraph: SymbolGraph;
   conventions: Conventions;
   /** M6: current library docs to inject (untrusted, opt-in). */
-  contextDocs?: RenderedContextDocs;
+  contextDocs?: RenderedContextDocs | undefined;
   /** TOTAL byte cap for the rendered docs section (per-lib cap applied upstream). */
-  contextDocsBudgetBytes?: number;
+  contextDocsBudgetBytes?: number | undefined;
 }
 
 const DOCS_HEADING =

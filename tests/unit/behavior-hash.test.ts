@@ -46,4 +46,46 @@ describe("computeBehaviorHash", () => {
     });
     expect(after).not.toBe(before);
   });
+
+  it("omitting docs (or empty) keeps the brain/fp hash byte-identical (cache continuity)", () => {
+    const base = computeBehaviorHash({ brain: [{ id: "B-1", status: "active" }], fp: [] });
+    expect(
+      computeBehaviorHash({ brain: [{ id: "B-1", status: "active" }], fp: [], docs: [] }),
+    ).toBe(base);
+  });
+
+  it("appends a docs segment keyed on name@version:responseHash (sorted)", () => {
+    const h = computeBehaviorHash({
+      brain: [],
+      fp: [],
+      docs: [
+        { name: "next", version: "15.1.8", responseHash: "h2" },
+        { name: "zod", version: "3.25.0", responseHash: "h1" },
+      ],
+    });
+    expect(h).toBe("|docs:next@15.1.8:h2,zod@3.25.0:h1");
+  });
+
+  it("a docs responseHash change DOES change the hash", () => {
+    const before = computeBehaviorHash({
+      brain: [],
+      fp: [],
+      docs: [{ name: "zod", version: "3.25.0", responseHash: "h1" }],
+    });
+    const after = computeBehaviorHash({
+      brain: [],
+      fp: [],
+      docs: [{ name: "zod", version: "3.25.0", responseHash: "h2" }],
+    });
+    expect(after).not.toBe(before);
+  });
+
+  it("a null docs version renders as name@:hash", () => {
+    const h = computeBehaviorHash({
+      brain: [],
+      fp: [],
+      docs: [{ name: "left-pad", version: null, responseHash: "hh" }],
+    });
+    expect(h).toBe("|docs:left-pad@:hh");
+  });
 });

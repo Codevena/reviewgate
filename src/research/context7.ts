@@ -38,10 +38,10 @@ export interface FetchDocsOpts {
   timeoutMs: number;
   ttlDays: number;
   perLibBytes: number;
-  maxLibs?: number;
+  maxLibs?: number | undefined;
   /** Injectable for tests. */
-  fetchImpl?: typeof fetch;
-  resolve?: (host: string) => Promise<string[]>;
+  fetchImpl?: typeof fetch | undefined;
+  resolve?: ((host: string) => Promise<string[]>) | undefined;
 }
 
 export type LibOutcomeKind = "fetched" | "cache-hit" | "truncated" | `skipped:${string}`;

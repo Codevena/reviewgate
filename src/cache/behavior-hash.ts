@@ -20,19 +20,42 @@ export interface FpHashEntry {
   stage: string;
   id?: string;
 }
+// M6: the injected docs corpus identity. `libraryId` is intentionally NOT part
+// of the digest — `responseHash` already captures the fetched content and
+// `name@version` captures which lib/version was injected. A docs change (new
+// version, re-indexed content) flips `responseHash` → cache invalidation.
+export interface DocsHashEntry {
+  name: string;
+  version: string | null;
+  responseHash: string;
+}
 
 export function computeBehaviorHash(input: {
   brain: BrainHashEntry[];
   fp: FpHashEntry[];
+  docs?: DocsHashEntry[] | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
     .sort()
     .join(",");
-  if (input.fp.length === 0) return brainPart;
-  const fpPart = input.fp
-    .map((e) => `${e.signature}:${e.stage}`)
-    .sort()
-    .join(",");
-  return `${brainPart}|fp:${fpPart}`;
+  // Append fp / docs segments ONLY when non-empty, so the brain-only output stays
+  // byte-identical to the legacy format and existing cache keys are preserved when
+  // those phases are off or empty (same continuity rule across all segments).
+  let out = brainPart;
+  if (input.fp.length > 0) {
+    const fpPart = input.fp
+      .map((e) => `${e.signature}:${e.stage}`)
+      .sort()
+      .join(",");
+    out += `|fp:${fpPart}`;
+  }
+  if (input.docs && input.docs.length > 0) {
+    const docsPart = input.docs
+      .map((e) => `${e.name}@${e.version ?? ""}:${e.responseHash}`)
+      .sort()
+      .join(",");
+    out += `|docs:${docsPart}`;
+  }
+  return out;
 }

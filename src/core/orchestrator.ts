@@ -1,6 +1,6 @@
 // src/core/orchestrator.ts
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
@@ -12,8 +12,10 @@ import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
+import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
 import { computeDiffFacts } from "../research/diff-facts.ts";
+import { extractImportedLibs } from "../research/imports.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
@@ -112,6 +114,38 @@ const PERSONA_REAFFIRM: Record<string, string> = {
 const DEFAULT_REAFFIRM = PERSONA_REAFFIRM.security as string;
 
 const RG_VERSION = "0.1.0-m1";
+
+// M6: per-request timeout for a single Context7 search/context call (NOT the
+// cache ttlDays). Best-effort — a slow API never stalls a review.
+const DOCS_REQUEST_TIMEOUT_MS = 15_000;
+
+// M6: best-effort diagnostic — per-lib docs outcomes for "why no docs". Written
+// under .reviewgate/ (excluded from the reviewed diff). Never throws.
+function writeDocsDebugArtifact(repoRoot: string, docs: RenderedContextDocs): void {
+  try {
+    const dir = join(repoRoot, ".reviewgate", "cache", "docs");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "last-run.json"),
+      JSON.stringify(
+        {
+          ts: new Date().toISOString(),
+          libs: docs.libs.map((l) => ({ name: l.name, outcome: l.outcome })),
+          corpus: docs.corpus.map((c) => ({
+            name: c.name,
+            libraryId: c.libraryId,
+            version: c.version,
+          })),
+        },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    );
+  } catch {
+    // diagnostic only — ignore failures
+  }
+}
 
 type RawEvidenceItem = {
   kind: string;
@@ -241,11 +275,46 @@ export class Orchestrator {
     // the ledger is read exactly once.
     const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot() : undefined;
 
+    // M6: Context7 library docs. Fetched PRE-CACHE — before the behavior-hash —
+    // so the docs-corpus identity feeds the cache key (a docs change must
+    // invalidate a cached verdict; the B2a cache-bug class). This is a deliberate
+    // ordering decision: the corpus identity (responseHash) is only knowable AFTER
+    // the fetch, and the fetch is docs-cache-backed (warm runs do no `context`
+    // network — only a cheap per-lib `search`), so a cache-hit run pays a small
+    // search cost but still skips the expensive reviewer panel. Best-effort:
+    // wrapped in catch → never blocks the review. Per-lib outcomes are written to
+    // a debug artifact for "why no docs" diagnosis (the orchestrator has no audit
+    // logger; the hash-chained audit schema is not extended for this best-effort
+    // diagnostic).
+    const docsCfg = this.input.config.phases.contextDocs;
+    let contextDocs: RenderedContextDocs | undefined;
+    if (docsCfg?.enabled) {
+      contextDocs = await fetchLibraryDocs(
+        await extractImportedLibs(
+          repo,
+          facts.files.map((f) => f.path),
+        ).catch(() => []),
+        {
+          repoRoot: repo,
+          host: docsCfg.host,
+          apiKeyEnv: docsCfg.apiKeyEnv,
+          timeoutMs: DOCS_REQUEST_TIMEOUT_MS,
+          ttlDays: docsCfg.ttlDays,
+          perLibBytes: docsCfg.perLibBytes,
+          maxLibs: docsCfg.maxLibs,
+          fetchImpl: this.input.fetchOverrides?.fetchImpl,
+          resolve: this.input.fetchOverrides?.resolve,
+        },
+      ).catch(() => undefined);
+      if (contextDocs) writeDocsDebugArtifact(repo, contextDocs);
+    }
+
     // M5 Part B2a: brain + FP identities flow through ONE structured behavior-hash
     // (not an ad-hoc append). FP is keyed on {signature, stage} (the behavior-
     // affecting fields; pattern_id is cosmetic). With no FP entries the result is
     // byte-identical to the legacy brain-only `id:status` hash, so existing cache
-    // keys are preserved when fpLedger is off or has no active entries.
+    // keys are preserved when fpLedger is off or has no active entries. M6: the
+    // docs corpus identity is folded in too (only when non-empty → continuity).
     const behaviorHash = computeBehaviorHash({
       brain: brainEngine
         ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
@@ -253,6 +322,7 @@ export class Orchestrator {
       fp: fpActiveSnapshot
         ? [...fpActiveSnapshot.values()].map((e) => ({ signature: e.signature, stage: e.stage }))
         : [],
+      docs: contextDocs?.corpus,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -307,6 +377,8 @@ export class Orchestrator {
       triage,
       symbolGraph,
       conventions: loadConventions(repo),
+      contextDocs,
+      contextDocsBudgetBytes: docsCfg?.budgetBytes,
     }).catch(() => "");
     let researchText = "";
     try {
