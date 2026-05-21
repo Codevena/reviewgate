@@ -78,6 +78,16 @@ interface Cluster {
   messages: string[];
   tokens: Set<string>;
   categories: Set<string>;
+  members: NonNullable<Finding["members"]>;
+}
+
+function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
+  return {
+    signature: f.signature,
+    provider: f.reviewer.provider,
+    rule_id: f.rule_id,
+    category: f.category,
+  };
 }
 
 export function aggregate(input: AggregateInput): AggregateResult {
@@ -112,6 +122,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       if (!target.reviewers.includes(reviewerKey)) target.reviewers.push(reviewerKey);
       if (!target.messages.includes(f.message)) target.messages.push(f.message);
       target.categories.add(f.category);
+      target.members.push(memberOf(f));
       // Representative = highest severity (most conservative); ties keep the first.
       // Note: target.tokens is NOT mutated — the seed's tokens stay the cluster's
       // stable comparison anchor (mutating them would make clustering order-dependent).
@@ -125,12 +136,13 @@ export function aggregate(input: AggregateInput): AggregateResult {
         messages: [f.message],
         tokens: fTokens,
         categories: new Set([f.category]),
+        members: [memberOf(f)],
       });
     }
   }
 
   const deduped: Finding[] = [];
-  for (const { sample, reviewers, messages, categories } of clusters) {
+  for (const { sample, reviewers, messages, categories, members } of clusters) {
     const consensus = computeConsensus(reviewers.length, input.reviewersTotal);
     // Preserve every reviewer's wording so nothing is lost when findings merge.
     const others = messages.filter((m) => m !== sample.message);
@@ -149,6 +161,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       details: details.slice(0, 2000),
       confirmed_by: reviewers,
       consensus,
+      members,
     });
   }
 

@@ -43,6 +43,21 @@ export const FindingSchema = z.object({
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),
+  // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
+  // findings (possibly different rule_id/category/signature) under one
+  // representative; this records each member's own signature + trusted base
+  // provider so the FP-ledger can attribute cross-provider quorum PER signature
+  // (not to the representative's signature that some providers never emitted).
+  members: z
+    .array(
+      z.object({
+        signature: z.string(),
+        provider: z.string(),
+        rule_id: z.string(),
+        category: FindingCategory,
+      }),
+    )
+    .optional(),
   fp_ledger_match: z
     .object({
       pattern_id: z.string(),
