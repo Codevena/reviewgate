@@ -64,4 +64,44 @@ describe("FpLedgerStore lifecycle", () => {
     const active = await s.activeSnapshot();
     expect(active.has(sig)).toBe(true);
   });
+
+  it("decayPass removes a stale candidate (no new match for >90d)", async () => {
+    const s = new FpLedgerStore(repo());
+    await s.recordReject(
+      "stale",
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2025-01-01T00:00:00Z",
+    );
+    await s.decayPass("2026-05-21T00:00:00Z");
+    expect((await s.snapshot()).entries).toHaveLength(0);
+  });
+
+  it("allocates monotonic ids — a removed candidate's id is NOT reused", async () => {
+    const r = repo();
+    const s = new FpLedgerStore(r);
+    // FP-001 stale candidate, FP-002 fresh candidate.
+    await s.recordReject(
+      "sigOld",
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2025-01-01T00:00:00Z",
+    );
+    await s.recordReject(
+      "sigKeep",
+      meta,
+      { run_id: "r2", provider: "codex", reason: "x" },
+      "2026-05-21T00:00:00Z",
+    );
+    await s.decayPass("2026-05-21T00:00:00Z"); // drops sigOld (FP-001), keeps FP-002
+    await s.recordReject(
+      "sigNew",
+      meta,
+      { run_id: "r3", provider: "codex", reason: "x" },
+      "2026-05-21T00:00:00Z",
+    );
+    const ids = (await s.snapshot()).entries.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length); // no collision
+    expect(ids).toContain("FP-003"); // new id is past the high-water mark, not reused
+  });
 });

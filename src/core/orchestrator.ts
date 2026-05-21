@@ -177,12 +177,13 @@ export class Orchestrator {
     const fpCfg = this.input.config.phases.fpLedger;
     const fpStore = fpCfg?.enabled ? new FpLedgerStore(repo) : null;
     if (fpStore) {
-      await learnFromDecisions({
-        repoRoot: repo,
-        prevIter: opts.iter - 1,
-        store: fpStore,
-        nowIso: new Date().toISOString(),
-      }).catch(() => undefined); // non-blocking — never fails the gate
+      const nowIso = new Date().toISOString();
+      await learnFromDecisions({ repoRoot: repo, prevIter: opts.iter - 1, store: fpStore, nowIso })
+        // Decay AFTER learning so freshly-touched entries (last_seen = now) are
+        // never reaped; mirrors the brain curator's per-run decayPass. Both are
+        // non-blocking — a ledger error must never fail the gate.
+        .then(() => fpStore.decayPass(nowIso))
+        .catch(() => undefined);
     }
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---

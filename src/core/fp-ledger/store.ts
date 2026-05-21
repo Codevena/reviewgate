@@ -24,6 +24,20 @@ export interface RejectMeta {
 
 const EMPTY: FpLedgerIndex = { schema: "reviewgate.fpledger.v1", entries: [] };
 
+// High-water mark for id allocation. Using the array LENGTH would reuse an id
+// after decayPass() removes an entry and creates a gap (e.g. drop FP-001 while
+// FP-002 survives → next would collide on FP-002), making pin/unpin and
+// fp_ledger_match.pattern_id ambiguous. Allocate strictly above the max numeric
+// id ever present; the only reuse is when the ledger is empty (no live refs).
+function nextIdNumber(entries: FpLedgerEntry[]): number {
+  let max = 0;
+  for (const e of entries) {
+    const n = Number.parseInt(e.id.replace(/^FP-/, ""), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max;
+}
+
 function recompute(e: FpLedgerEntry, nowMs: number): FpLedgerEntry {
   if (e.pinned_by) return { ...e, stage: "sticky" };
   const within = (days: number) =>
@@ -84,7 +98,7 @@ export class FpLedgerStore {
       let e = idx.entries.find((x) => x.signature === signature);
       if (!e) {
         e = {
-          id: `FP-${String(idx.entries.length + 1).padStart(3, "0")}`,
+          id: `FP-${String(nextIdNumber(idx.entries) + 1).padStart(3, "0")}`,
           signature,
           rule_id: meta.rule_id,
           category: meta.category,
