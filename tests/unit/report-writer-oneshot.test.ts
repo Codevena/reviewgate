@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReportWriter } from "../../src/core/report-writer.ts";
-import { pendingMdPath } from "../../src/utils/paths.ts";
 import type { PendingReport } from "../../src/schemas/pending-report.ts";
+import { pendingMdPath } from "../../src/utils/paths.ts";
 
 function report(): PendingReport {
   return {
@@ -15,7 +15,15 @@ function report(): PendingReport {
     verdict: "PASS",
     counts: { critical: 0, warn: 0, info: 0 },
     reviewers: [
-      { id: "codex-plan", provider: "codex", model: "gpt-5.4", persona: "plan", status: "ok", cost_usd: 0, duration_ms: 1 },
+      {
+        id: "codex-plan",
+        provider: "codex",
+        model: "gpt-5.4",
+        persona: "plan",
+        status: "ok",
+        cost_usd: 0,
+        duration_ms: 1,
+      },
     ],
     findings: [],
     cost_usd_total: 0,

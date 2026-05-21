@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { defineConfig } from "../../src/config/define-config.ts";
 import { defaultConfig } from "../../src/config/defaults.ts";
+import { defineConfig } from "../../src/config/define-config.ts";
 
 describe("docReview config", () => {
   it("defaults to disabled with a plan persona and non-empty globs", () => {

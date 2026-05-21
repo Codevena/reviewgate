@@ -3,8 +3,8 @@ import { execSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import { runReviewPlan } from "../../src/cli/commands/review-plan.ts";
+import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 
 function gitInit(repo: string) {
   execSync("git init -q && git config user.email t@t.t && git config user.name t", {

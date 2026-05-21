@@ -51,7 +51,13 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
     };
   }
   if (facts.docOnly) {
-    if (docReview?.enabled && matchesAnyGlob(facts.files.map((f) => f.path), docReview.globs)) {
+    if (
+      docReview?.enabled &&
+      matchesAnyGlob(
+        facts.files.map((f) => f.path),
+        docReview.globs,
+      )
+    ) {
       return {
         ...base,
         riskClass: "docs",
