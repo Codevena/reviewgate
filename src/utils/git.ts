@@ -64,7 +64,7 @@ export function collectDiff(repoRoot: string): string {
 // the diff so they can verify a symbol exists before reporting it as missing — the
 // #1 source of false-positive "undefined" findings on refactors. Skips binaries
 // (read failure) and reviewgate-managed paths.
-export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000): string {
+export function collectChangedFileContents(repoRoot: string, maxBytes = 32_000): string {
   const names = new Set<string>();
   const tracked = git(repoRoot, [
     "diff",

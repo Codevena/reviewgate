@@ -233,7 +233,10 @@ export class Orchestrator {
 
     // Compute once per run: full content of every changed file, for false-positive
     // suppression. Reviewers can consult this before reporting a symbol as missing.
-    const fileContext = collectChangedFileContents(repo);
+    const fileContext = collectChangedFileContents(
+      repo,
+      this.input.config.phases.review.fileContextBudgetBytes ?? 32_000,
+    );
 
     const tasks = activeReviewers.map(async (r): Promise<ReviewerRun | null> => {
       const adapter = this.input.adapters[r.provider];

@@ -29,6 +29,10 @@ export const ConfigSchema = z.object({
           z.object({ provider: ProviderId, persona: z.string(), model: z.string().optional() }),
         )
         .min(1),
+      // Max bytes of full changed-file content fed to each reviewer alongside the
+      // diff (for symbol verification). Smaller = smaller prompts = faster reviews
+      // and fewer timeouts on slow remote models; larger = more context.
+      fileContextBudgetBytes: z.number().int().positive().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
