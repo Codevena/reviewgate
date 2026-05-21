@@ -29,6 +29,7 @@ export const PendingReportSchema = z.object({
       status: ReviewerStatus,
       cost_usd: z.number().nonnegative(),
       duration_ms: z.number().nonnegative(),
+      status_detail: z.string().optional(),
     }),
   ),
   findings: z.array(FindingSchema),

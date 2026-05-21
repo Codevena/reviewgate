@@ -544,6 +544,7 @@ export class Orchestrator {
             status: r.res.status,
             cost_usd: r.res.usage.costUsd,
             duration_ms: r.res.durationMs,
+            ...(r.res.statusDetail ? { status_detail: r.res.statusDetail } : {}),
           }))
         : [
             {
