@@ -31,6 +31,8 @@ import { enrichProposal } from "./brain/enrich.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
+import { learnFromDecisions } from "./fp-ledger/learn.ts";
+import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { ReportWriter } from "./report-writer.ts";
 
 export interface OrchestratorInput {
@@ -167,6 +169,20 @@ export class Orchestrator {
         durationMs: Date.now() - start,
         signaturesThisIter: [],
       };
+    }
+
+    // --- M5 Part B1 — FP-ledger learn (opt-in, non-blocking): fold the previous
+    // iteration's reviewer_was_wrong rejections into the signature ledger BEFORE
+    // this run's panel/aggregate, so a freshly-learned FP can demote this run. ---
+    const fpCfg = this.input.config.phases.fpLedger;
+    const fpStore = fpCfg?.enabled ? new FpLedgerStore(repo) : null;
+    if (fpStore) {
+      await learnFromDecisions({
+        repoRoot: repo,
+        prevIter: opts.iter - 1,
+        store: fpStore,
+        nowIso: new Date().toISOString(),
+      }).catch(() => undefined); // non-blocking — never fails the gate
     }
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---
@@ -425,12 +441,17 @@ export class Orchestrator {
       }
     }
 
+    const fpActive = fpStore
+      ? new Map([...(await fpStore.activeSnapshot())].map(([sig, e]) => [sig, { id: e.id }]))
+      : undefined;
+
     const agg = aggregate({
       findings: allFindings,
       reviewersTotal: okRuns.length,
       changedRanges: parseChangedRanges(this.input.diff),
       scopeToDiff: this.input.config.phases.review.scopeToDiff !== false,
       ...(criticMap ? { critic: criticMap } : {}),
+      ...(fpActive ? { fpActive } : {}),
     });
 
     const demoted = agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length;
