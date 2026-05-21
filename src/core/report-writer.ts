@@ -57,11 +57,11 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
       : [
           "## Required actions",
           "",
-          `For each finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\`:`,
+          `For each CRITICAL/WARN finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\` (Advisory findings need NO decision):`,
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
           "",
-          "Reviewgate refuses to unblock until every finding ID has a decision.",
+          "Reviewgate refuses to unblock until every CRITICAL/WARN finding ID has a decision.",
           "",
         ];
   const head = [
@@ -77,12 +77,25 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     "",
   ].join("\n");
 
+  // Advisory = INFO, or anything the aggregator demoted (scope_demoted) / the
+  // FP-ledger suppressed. These need no decision (the decisions-gate ignores
+  // them); render them in a separate section so the agent doesn't re-reject them.
+  const isAdvisory = (f: Finding) =>
+    f.severity === "INFO" || f.scope_demoted === true || f.fp_ledger_match?.suppressed === true;
+  const blocking = r.findings.filter((f) => !isAdvisory(f));
+  const advisory = r.findings.filter(isAdvisory);
+
   const sections: string[] = [];
-  const by: Record<"CRITICAL" | "WARN" | "INFO", Finding[]> = { CRITICAL: [], WARN: [], INFO: [] };
-  for (const f of r.findings) by[f.severity].push(f);
-  if (by.CRITICAL.length > 0) sections.push("## CRITICAL ●\n", ...by.CRITICAL.map(fmtFinding));
-  if (by.WARN.length > 0) sections.push("## WARN ▲\n", ...by.WARN.map(fmtFinding));
-  if (by.INFO.length > 0) sections.push("## INFO ·\n", ...by.INFO.map(fmtFinding));
+  const crit = blocking.filter((f) => f.severity === "CRITICAL");
+  const warn = blocking.filter((f) => f.severity === "WARN");
+  if (crit.length > 0) sections.push("## CRITICAL ●\n", ...crit.map(fmtFinding));
+  if (warn.length > 0) sections.push("## WARN ▲\n", ...warn.map(fmtFinding));
+  if (advisory.length > 0) {
+    sections.push(
+      "## Advisory (out of scope / known FP — no decision needed) ·\n",
+      ...advisory.map(fmtFinding),
+    );
+  }
 
   return head + sections.join("\n");
 }
