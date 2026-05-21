@@ -2,7 +2,12 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { Language, Parser, Query } from "web-tree-sitter";
-import { grammarForFile, resolveGrammarWasm } from "./grammars.ts";
+import {
+  RUNTIME_WASM,
+  grammarForFile,
+  resolveGrammarWasm,
+  resolveRuntimeWasm,
+} from "./grammars.ts";
 
 export interface SymbolInfo {
   name: string;
@@ -24,12 +29,29 @@ type LoadedLanguage = Awaited<ReturnType<typeof Language.load>>;
 let parserReady: Promise<void> | null = null;
 const langCache = new Map<string, LoadedLanguage>();
 
+// web-tree-sitter loads its engine runtime via an Emscripten `locateFile` hook.
+// The default resolves `web-tree-sitter.wasm` relative to the script, which in a
+// compiled binary is the absent `/$bunfs/root/…` → Parser.init() aborts. Point it
+// at the resolved runtime wasm (next to the grammars in the binary, or
+// node_modules in dev). Returns undefined in dev-with-no-runtime so Parser.init
+// keeps its default behavior.
+function parserInitOptions(): { locateFile: (scriptName: string) => string } | undefined {
+  const runtime = resolveRuntimeWasm();
+  if (!runtime) return undefined;
+  // Redirect ONLY the engine runtime wasm; preserve the default for any other
+  // file Emscripten's locateFile is consulted for (grammars are loaded via an
+  // explicit absolute path through Language.load, not through locateFile).
+  return {
+    locateFile: (scriptName: string) => (scriptName.endsWith(RUNTIME_WASM) ? runtime : scriptName),
+  };
+}
+
 async function getLanguage(wasmFile: string): Promise<LoadedLanguage | null> {
   const path = resolveGrammarWasm(wasmFile);
   if (!path) return null;
   const cached = langCache.get(wasmFile);
   if (cached) return cached;
-  if (!parserReady) parserReady = Parser.init();
+  if (!parserReady) parserReady = Parser.init(parserInitOptions());
   await parserReady;
   const lang = await Language.load(path);
   langCache.set(wasmFile, lang);
