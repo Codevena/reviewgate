@@ -58,4 +58,15 @@ export interface ProviderAdapter {
   readonly id: "codex" | "claude-code" | "gemini" | "openrouter" | "opencode";
   preflight(cfg: ProviderConfig): Promise<Preflight>;
   review(input: ReviewInput & { cfg: ProviderConfig; reviewerId: string }): Promise<ReviewResult>;
+  /**
+   * Optional free-form completion for LLM judges (curator accept/reject, FP↔Brain
+   * contradiction). Implementers MUST NOT impose the review output-schema (that
+   * would make a judge return review-shaped JSON instead of its verdict). Throws
+   * on error so the caller can fall back to its default. Only the OpenRouter
+   * adapter implements this today; judges no-op (use their default) when absent.
+   */
+  complete?(
+    prompt: string,
+    opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
+  ): Promise<string>;
 }

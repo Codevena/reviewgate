@@ -23,6 +23,36 @@ function fakeFetch(): typeof fetch {
     )) as unknown as typeof fetch;
 }
 
+describe("OpenRouterAdapter.complete (raw judge completion)", () => {
+  it("does a free-form chat call WITHOUT the review json_schema, returns the content", async () => {
+    process.env.OR_JUDGE_KEY = "k";
+    let capturedBody: { response_format?: unknown; messages?: { content: string }[] } = {};
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"contradicts":true,"reason":"conflicts B-1"}' } }],
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    const text = await adapter.complete("judge this", { model: "m", apiKeyEnv: "OR_JUDGE_KEY" });
+    expect(text).toBe('{"contradicts":true,"reason":"conflicts B-1"}');
+    // THE point: a judge must NOT be forced into the review output schema.
+    expect(capturedBody.response_format).toBeUndefined();
+    expect(capturedBody.messages?.[0]?.content).toBe("judge this");
+  });
+
+  it("throws on a missing API key (caller falls back to its default verdict)", async () => {
+    const adapter = new OpenRouterAdapter({ fetchImpl: fakeFetch() });
+    await expect(
+      adapter.complete("x", { model: "m", apiKeyEnv: "OR_NEVER_SET_KEY_XYZ" }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("OpenRouterAdapter (mocked fetch)", () => {
   it("sends model + schema and maps the response", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-or-"));

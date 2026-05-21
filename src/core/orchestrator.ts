@@ -594,34 +594,28 @@ export class Orchestrator {
     return async ({ fp, brainEntries }) => {
       const adapter = this.input.adapters[curatorCfg.provider];
       const pcfg = this.input.config.providers[curatorCfg.provider] as ProviderConfig | undefined;
-      if (!adapter || !pcfg) return { contradicts: false };
-      const jRun = mkdtempSync(join(tmpdir(), "rg-fpcontra-"));
-      const jPrompt = join(jRun, "prompt.txt");
-      writeFileSync(
-        jPrompt,
-        [
-          "You are a repo-memory Curator. A finding has been confirmed as a KNOWN FALSE",
-          `POSITIVE (rule "${fp.rule_id}" in ${fp.file}) — i.e. it should NOT be reported.`,
-          "Decide whether treating it as a false positive CONTRADICTS any established repo",
-          "memory below (e.g. a memory asserting this rule/file IS a real concern).",
-          'Output ONLY a single JSON object: {"contradicts":true|false,"brain_entry_id":"<id|empty>","reason":"<one line>"}.',
-          "",
-          "## Established active repo memories",
-          brainEntries.map((e) => `- [${e.id}] (${e.type}) ${e.title}: ${e.body}`).join("\n") ||
-            "(none)",
-        ].join("\n"),
-      );
-      const jRes = await adapter.review({
-        cfg: { ...pcfg, ...(curatorCfg.model ? { model: curatorCfg.model } : {}) },
-        reviewerId: `fp-contradiction-${curatorCfg.provider}`,
-        promptFile: jPrompt,
-        workingDir: repo,
-        findingsPath: join(jRun, "f.md"),
-        persona: curatorCfg.persona,
-        diffPath: join(jRun, "d.patch"),
-      });
+      // A judge needs a FREE-FORM completion: review() forces the review output
+      // schema, so the model would never return {contradicts:…}. Require complete().
+      if (!adapter || !pcfg || typeof adapter.complete !== "function") {
+        return { contradicts: false };
+      }
+      const prompt = [
+        "You are a repo-memory Curator. A finding has been confirmed as a KNOWN FALSE",
+        `POSITIVE (rule "${fp.rule_id}" in ${fp.file}) — i.e. it should NOT be reported.`,
+        "Decide whether treating it as a false positive CONTRADICTS any established repo",
+        "memory below (e.g. a memory asserting this rule/file IS a real concern).",
+        'Output ONLY a single JSON object: {"contradicts":true|false,"brain_entry_id":"<id|empty>","reason":"<one line>"}.',
+        "",
+        "## Established active repo memories",
+        brainEntries.map((e) => `- [${e.id}] (${e.type}) ${e.title}: ${e.body}`).join("\n") ||
+          "(none)",
+      ].join("\n");
       try {
-        const text = jRes.rawText ?? "";
+        const text = await adapter.complete(prompt, {
+          model: curatorCfg.model ?? pcfg.model,
+          apiKeyEnv: (pcfg as { apiKeyEnv?: string }).apiKeyEnv ?? "OPENROUTER_API_KEY",
+          timeoutMs: brainCfg.curatorTimeoutMs,
+        });
         const first = text.indexOf("{");
         const last = text.lastIndexOf("}");
         if (first < 0 || last <= first) return { contradicts: false };
@@ -720,42 +714,34 @@ export class Orchestrator {
           const pcfg = this.input.config.providers[curatorCfg.provider] as
             | ProviderConfig
             | undefined;
-          if (!adapter || !pcfg) return { accept: true };
-          const jRun = mkdtempSync(join(tmpdir(), "rg-curator-"));
-          const jPrompt = join(jRun, "prompt.txt");
+          // A judge needs a FREE-FORM completion (review() forces the review
+          // schema → the model could never return {accept:…}). Require complete().
+          if (!adapter || !pcfg || typeof adapter.complete !== "function") return { accept: true };
           const activeTitles = (await store.snapshot()).entries
             .filter((e) => e.status === "active")
             .map((e) => `- ${e.title}`)
             .join("\n");
-          writeFileSync(
-            jPrompt,
-            [
-              "You are a brain Curator. Decide whether to ACCEPT a proposed repo-memory entry.",
-              "Reject if it contradicts an existing convention (consistency) or its scope/quality",
-              'is implausible. Output ONLY a single JSON object: {"accept":true|false,"reason":"<one line>"}.',
-              "",
-              "## Existing active brain titles",
-              activeTitles || "(none)",
-              "",
-              "## Proposed entry",
-              JSON.stringify(
-                { type: prop.type, scope: prop.scope, title: prop.title, body: prop.body },
-                null,
-                2,
-              ),
-            ].join("\n"),
-          );
-          const jRes = await adapter.review({
-            cfg: { ...pcfg, ...(curatorCfg.model ? { model: curatorCfg.model } : {}) },
-            reviewerId: `curator-${curatorCfg.provider}`,
-            promptFile: jPrompt,
-            workingDir: repo,
-            findingsPath: join(jRun, "f.md"),
-            persona: curatorCfg.persona,
-            diffPath: join(jRun, "d.patch"),
-          });
+          const prompt = [
+            "You are a brain Curator. Decide whether to ACCEPT a proposed repo-memory entry.",
+            "Reject if it contradicts an existing convention (consistency) or its scope/quality",
+            'is implausible. Output ONLY a single JSON object: {"accept":true|false,"reason":"<one line>"}.',
+            "",
+            "## Existing active brain titles",
+            activeTitles || "(none)",
+            "",
+            "## Proposed entry",
+            JSON.stringify(
+              { type: prop.type, scope: prop.scope, title: prop.title, body: prop.body },
+              null,
+              2,
+            ),
+          ].join("\n");
           try {
-            const text = jRes.rawText ?? "";
+            const text = await adapter.complete(prompt, {
+              model: curatorCfg.model ?? pcfg.model,
+              apiKeyEnv: (pcfg as { apiKeyEnv?: string }).apiKeyEnv ?? "OPENROUTER_API_KEY",
+              timeoutMs: brainCfg.curatorTimeoutMs,
+            });
             const first = text.indexOf("{");
             const last = text.lastIndexOf("}");
             if (first < 0 || last <= first) return { accept: true };

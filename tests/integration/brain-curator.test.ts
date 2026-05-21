@@ -360,4 +360,94 @@ describe("brain curator integration", () => {
     expect(fp?.linked_brain_id).toBe(brain?.id as string);
     expect(brain?.linked_fp_id).toBe(fp?.id);
   });
+
+  it("B3b: a curator-judge contradiction (via complete()) FLAGS the FP instead of pairing", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3b-int-"));
+    const fpStore = new FpLedgerStore(repo);
+    const fpMeta = {
+      rule_id: "magic-number",
+      category: "quality" as const,
+      file: "src/cart.ts",
+      symbol: "",
+    };
+    const t = "2026-05-22T00:00:00Z";
+    await fpStore.recordReject(
+      "sigM",
+      fpMeta,
+      { run_id: "r1", provider: "codex", reason: "intentional constant xx" },
+      t,
+    );
+    await fpStore.recordReject(
+      "sigM",
+      fpMeta,
+      { run_id: "r2", provider: "gemini", reason: "intentional constant xx" },
+      t,
+    );
+    await fpStore.recordReject(
+      "sigM",
+      fpMeta,
+      { run_id: "r3", provider: "codex", reason: "intentional constant xx" },
+      t,
+    );
+    // A CONTRADICTING active brain anti-pattern (magic-number IS real here).
+    const bs = new BrainStore(repo);
+    await bs.add({
+      id: "B-900",
+      type: "anti-pattern",
+      scope: "this-repo",
+      title: "magic-number is always real here",
+      body: "never dismiss magic-number",
+      tags: ["magic-number"],
+      file_globs: ["src/cart.ts"],
+      status: "active",
+      referenced_count: 3,
+      referencing_reviewers: ["codex", "gemini"],
+      confidence: 0.95,
+      embedding: null,
+      evidence: [],
+      created_at: t,
+      source_run_id: "seed",
+    });
+    // Fake openrouter exposing embed() AND complete() → judge says CONTRADICTS.
+    const fake: ProviderAdapter & {
+      embed(t: string, o: { model: string; apiKeyEnv: string }): Promise<number[]>;
+      complete(p: string, o: { model: string; apiKeyEnv: string }): Promise<string>;
+    } = {
+      ...fakeOpenRouter(),
+      async complete() {
+        return '{"contradicts":true,"brain_entry_id":"B-900","reason":"anti-pattern says it is real"}';
+      },
+    };
+    const base = brainConfig();
+    const config = {
+      ...base,
+      phases: {
+        ...base.phases,
+        fpLedger: { enabled: true },
+        brain: {
+          ...base.phases.brain,
+          curator: { provider: "openrouter" as const, model: "x", persona: "fp-filter" },
+        },
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: {
+        codex: reviewer("codex", JSON.stringify({ verdict: "PASS", findings: [] })),
+        openrouter: fake,
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: CODE_DIFF,
+      reasonOnFailEnabled: true,
+    });
+    await orch.runIteration({ runId: "RUN1", iter: 1 });
+
+    const fp = (await fpStore.snapshot()).entries[0];
+    expect(fp?.contradicts_brain_id).toBe("B-900"); // flagged, NOT paired
+    expect(fp?.linked_brain_id).toBeUndefined();
+    // no NEW brain convention was created (only the seeded B-900 remains)
+    expect((await bs.snapshot()).entries).toHaveLength(1);
+  });
 });

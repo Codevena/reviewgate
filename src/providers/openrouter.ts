@@ -196,4 +196,43 @@ export class OpenRouterAdapter implements ProviderAdapter {
     }
     return vector;
   }
+
+  /**
+   * Free-form chat completion (NO review output-schema), for LLM judges (the
+   * curator accept/reject hybrid + the FP↔Brain contradiction check). review()
+   * forces the strict `review` json_schema response_format, so a judge routed
+   * through it gets review-shaped JSON instead of its own {accept|contradicts}
+   * verdict — making the judge a silent no-op. Judges MUST use this raw path.
+   * Throws on any error so callers can fall back to their default verdict.
+   */
+  async complete(prompt: string, opts: EmbedOptions): Promise<string> {
+    const key = opts.apiKeyEnv ? process.env[opts.apiKeyEnv] : undefined;
+    if (!key) {
+      throw new Error(`OpenRouter complete: API key env '${opts.apiKeyEnv}' is not set`);
+    }
+    const body = { model: opts.model, messages: [{ role: "user", content: prompt }] };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? EMBED_TIMEOUT_MS);
+    let json: ChatResponse;
+    try {
+      const resp = await this.fetchImpl(ENDPOINT, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        throw new Error(
+          `OpenRouter complete HTTP ${resp.status}: ${(await resp.text()).slice(0, 500)}`,
+        );
+      }
+      json = (await resp.json()) as ChatResponse;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (json.error?.message) {
+      throw new Error(`OpenRouter complete error: ${json.error.message}`);
+    }
+    return json.choices?.[0]?.message?.content ?? "";
+  }
 }
