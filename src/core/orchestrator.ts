@@ -79,6 +79,8 @@ const REVIEW_PROMPT_PREAMBLE = [
   "Full content of every changed file is provided after the diff for reference.",
   "Before reporting any symbol as undefined or missing, verify it against that",
   "full-file content — failure to do so produces false-positive findings.",
+  "Report issues INTRODUCED OR AFFECTED BY THIS diff. Pre-existing issues in",
+  "unchanged code (outside the changed lines) are out of scope — do not report them.",
 ].join("\n");
 
 const DOC_REVIEW_PROMPT_PREAMBLE = [
