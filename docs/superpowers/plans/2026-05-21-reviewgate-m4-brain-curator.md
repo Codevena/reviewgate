@@ -1,5 +1,28 @@
 # Reviewgate M4 — Brain + Curator Implementation Plan
 
+> ## ✅ STATUS: COMPLETE — merged to `master` via PR #1 (2026-05-21)
+> All 17 tasks shipped via subagent-driven development (parallel worktree waves +
+> two-stage + dedicated security reviews). 249 tests pass / 9 skip (gated e2e) / 0
+> fail; typecheck + lint clean; real e2e green (OpenRouter embeddings 0.924/0.588,
+> live web-fetch + sha256); binary builds. **Brain is OFF by default**
+> (`phases.brain: null`).
+>
+> **Notable deviations from this plan, made during implementation (the code is the
+> source of truth):**
+> - **Cross-provider quorum was redesigned.** The plan's per-proposal evidence
+>   quorum was bypassable (a reviewer could fake other providers' `reviewer_id`s).
+>   Final design: the orchestrator HARD-overwrites every evidence `reviewer_id`
+>   with the emitting adapter's id, and `runCurator` GROUPS similar proposals across
+>   reviewers (embedding cosine ≥0.85) and requires ≥2 distinct *emitting* providers
+>   per group. (Found CRITICAL in final review → fixed → re-review PASS.)
+> - **Triage tags** come from `facts.sensitivityTags` (TriageDecision has no `tags`);
+>   changed files via `facts.files.map(f => f.path)`.
+> - **SSRF fetcher** hardened beyond the plan over 3 review rounds (IPv4-mapped/compat
+>   IPv6 in hex+dotted form, 0.0.0.0/reserved, userinfo strip).
+> - `memory_proposals` added to `REVIEW_OUTPUT_SCHEMA` (else OpenRouter strips it);
+>   `BrainStore.addAllocatingId` mints ids inside the lock (no TOCTOU).
+> - Default embedding model resolved by SM4-1 = `baai/bge-base-en-v1.5`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give Reviewgate a committed, self-curating per-repo memory ("brain"): reviewers read relevant brain entries before reviewing, may propose new entries, and a non-blocking Curator phase validates proposals against seven hard rules before any enter the brain.
