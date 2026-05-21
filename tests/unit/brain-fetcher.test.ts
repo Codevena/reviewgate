@@ -78,6 +78,31 @@ describe("isBlockedIp", () => {
   it("blocks a mapped PUBLIC ip routed through v4 rules but still public → false", () =>
     expect(isBlockedIp("::ffff:8.8.8.8")).toBe(false));
 
+  // NEW: hex-form IPv4-mapped IPv6 bypass (::ffff:HHHH:HHHH)
+  it("blocks ::ffff:7f00:1 (hex mapped loopback 127.0.0.1)", () =>
+    expect(isBlockedIp("::ffff:7f00:1")).toBe(true));
+  it("blocks ::ffff:c0a8:101 (hex mapped 192.168.1.1)", () =>
+    expect(isBlockedIp("::ffff:c0a8:101")).toBe(true));
+  it("blocks ::ffff:a00:1 (hex mapped 10.0.0.1)", () =>
+    expect(isBlockedIp("::ffff:a00:1")).toBe(true));
+  it("blocks ::ffff:6440:101 (hex mapped 100.64.1.1 CGNAT)", () =>
+    expect(isBlockedIp("::ffff:6440:101")).toBe(true));
+  it("blocks ::FFFF:7F00:1 (uppercase hex mapped loopback)", () =>
+    expect(isBlockedIp("::FFFF:7F00:1")).toBe(true));
+  it("blocks ::ffff:7f00:0001 (leading-zero hex group)", () =>
+    expect(isBlockedIp("::ffff:7f00:0001")).toBe(true));
+  it("blocks 0:0:0:0:0:ffff:7f00:1 (uncompressed hex mapped loopback)", () =>
+    expect(isBlockedIp("0:0:0:0:0:ffff:7f00:1")).toBe(true));
+  it("does not block ::ffff:808:808 (hex mapped public 8.8.8.8)", () =>
+    expect(isBlockedIp("::ffff:808:808")).toBe(false));
+
+  // NEW: IPv4-compatible (deprecated ::a.b.c.d / ::HHHH:HHHH)
+  it("blocks ::127.0.0.1 (compat dotted loopback)", () =>
+    expect(isBlockedIp("::127.0.0.1")).toBe(true));
+  it("blocks ::7f00:1 (compat hex loopback)", () => expect(isBlockedIp("::7f00:1")).toBe(true));
+  it("blocks ::c0a8:101 (compat hex 192.168.1.1)", () =>
+    expect(isBlockedIp("::c0a8:101")).toBe(true));
+
   // NEW: 0.0.0.0/8 + reserved 240/4 + broadcast
   it("blocks 0.0.0.0 (this-host)", () => expect(isBlockedIp("0.0.0.0")).toBe(true));
   it("blocks 0.1.2.3 (0.0.0.0/8)", () => expect(isBlockedIp("0.1.2.3")).toBe(true));
@@ -129,6 +154,31 @@ describe("safeFetch — happy path", () => {
     const r = await safeFetch(`https://docs.example.com/${"a".repeat(600)}`, opts());
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("url too long");
+  });
+
+  it("strips embedded user:pass@ credentials and never forwards them", async () => {
+    let requested = "";
+    const spy = (async (url: string | URL) => {
+      requested = String(url);
+      return new Response("hello docs", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+    const r = await safeFetch(
+      "https://attacker:secret@docs.example.com/page",
+      opts({ fetchImpl: spy }),
+    );
+    expect(r.ok).toBe(true);
+    // Credentials must not appear in the fetched URL or the final URL.
+    expect(requested).not.toContain("attacker");
+    expect(requested).not.toContain("secret");
+    expect(requested).not.toContain("@");
+    expect(requested).toBe("https://docs.example.com/page");
+    if (r.ok) {
+      expect(r.finalUrl).toBe("https://docs.example.com/page");
+      expect(r.log.url).not.toContain("secret");
+    }
   });
 });
 

@@ -112,26 +112,89 @@ function isBlockedIpv4(ip: string): boolean {
 }
 
 /**
+ * Extract an IPv4 address embedded in an IPv6 literal, in any of the forms an
+ * attacker might use to smuggle a private/loopback v4 target past the IPv6
+ * checks. Returns a dotted-quad string, or null if no embedded v4 is present.
+ *
+ * Handles, case-insensitively and tolerant of leading zeros / `::` compression:
+ *   - IPv4-mapped, dotted:   ::ffff:127.0.0.1
+ *   - IPv4-mapped, hex:      ::ffff:7f00:1   /  0:0:0:0:0:ffff:7f00:0001
+ *   - IPv4-compatible (dep.) ::127.0.0.1     /  ::7f00:1
+ *
+ * The two trailing 16-bit groups (each up to 4 hex digits) decode to the four
+ * octets a.b.c.d:  group1 = (a<<8)|b,  group2 = (c<<8)|d.
+ */
+function extractEmbeddedIpv4(lowerIp: string): string | null {
+  // Form 1: trailing dotted-quad literal (mapped or compatible).
+  // e.g. ::ffff:127.0.0.1, ::127.0.0.1, 0:0:0:0:0:ffff:127.0.0.1
+  const dotted = lowerIp.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dotted?.[1]) return dotted[1];
+
+  // Normalize the `::` compression so we can read the final groups reliably.
+  // Split on "::" (at most one occurrence in a valid address).
+  const dblIdx = lowerIp.indexOf("::");
+  let groups: string[];
+  if (dblIdx >= 0) {
+    const head = lowerIp
+      .slice(0, dblIdx)
+      .split(":")
+      .filter((g) => g !== "");
+    const tail = lowerIp
+      .slice(dblIdx + 2)
+      .split(":")
+      .filter((g) => g !== "");
+    const missing = 8 - head.length - tail.length;
+    if (missing < 0) return null; // malformed
+    groups = [...head, ...Array(missing).fill("0"), ...tail];
+  } else {
+    groups = lowerIp.split(":");
+  }
+  if (groups.length !== 8) return null; // not a full 8-group v6 → no hex v4
+
+  // Each group must be ≤ 4 hex digits.
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+  }
+
+  const g0 = Number.parseInt(groups[0] as string, 16);
+  const g1 = Number.parseInt(groups[1] as string, 16);
+  const g2 = Number.parseInt(groups[2] as string, 16);
+  const g3 = Number.parseInt(groups[3] as string, 16);
+  const g4 = Number.parseInt(groups[4] as string, 16);
+  const g5 = Number.parseInt(groups[5] as string, 16);
+  const hi = Number.parseInt(groups[6] as string, 16);
+  const lo = Number.parseInt(groups[7] as string, 16);
+
+  // IPv4-mapped: 0:0:0:0:0:ffff:HHHH:HHHH
+  const isMapped = g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff;
+  // IPv4-compatible (deprecated): 0:0:0:0:0:0:HHHH:HHHH (but not :: / ::1).
+  const isCompat =
+    g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && (hi !== 0 || lo > 1);
+
+  if (isMapped || isCompat) {
+    const a = (hi >> 8) & 0xff;
+    const b = hi & 0xff;
+    const c = (lo >> 8) & 0xff;
+    const d = lo & 0xff;
+    return `${a}.${b}.${c}.${d}`;
+  }
+  return null;
+}
+
+/**
  * Returns true if the IP string (IPv4 or IPv6) falls in a blocked range.
- * Handles IPv4-mapped IPv6 (::ffff:127.0.0.1) by extracting the embedded
- * IPv4 literal and applying the IPv4 rules.
+ * Handles IPv4-mapped/-compatible IPv6 in BOTH dotted (::ffff:127.0.0.1) and
+ * pure-hex (::ffff:7f00:1, ::7f00:1) forms by extracting the embedded IPv4
+ * literal and applying the IPv4 rules.
  */
 export function isBlockedIp(ip: string): boolean {
   // --- IPv6 ---
   if (ip.includes(":")) {
     const lower = ip.toLowerCase();
 
-    // IPv4-mapped IPv6: ::ffff:127.0.0.1 — the trailing token is a dotted-quad.
-    const mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (mapped?.[1]) {
-      return isBlockedIpv4(mapped[1]);
-    }
-    // IPv4-compatible / any embedded dotted-quad that the matcher missed but
-    // still contains a v4 literal — fail-closed by routing through v4 rules.
-    const embedded = lower.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (embedded?.[1] && lower.includes("::ffff:")) {
-      return isBlockedIpv4(embedded[1]);
-    }
+    // Embedded IPv4 (mapped or compatible, dotted or hex) → IPv4 rules.
+    const embedded = extractEmbeddedIpv4(lower);
+    if (embedded) return isBlockedIpv4(embedded);
 
     // Loopback ::1
     if (lower === "::1") return true;
@@ -185,6 +248,11 @@ function validateUrl(
   u.search = "";
   u.hash = "";
 
+  // Strip userinfo — never forward embedded credentials (user:pass@host) to
+  // the server. An attacker-controlled source_url must not smuggle auth.
+  u.username = "";
+  u.password = "";
+
   // Re-check length after canonicalization.
   if (u.toString().length > MAX_URL) return { ok: false, reason: "url too long" };
 
@@ -203,10 +271,24 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 
+  // Sanitized form of the requested URL for logging — never persist embedded
+  // credentials (user:pass@host) into the egress log.
+  let logUrl = rawUrl;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.username || parsed.password) {
+      parsed.username = "";
+      parsed.password = "";
+      logUrl = parsed.toString();
+    }
+  } catch {
+    // Unparseable URLs can't carry structured userinfo; log as-is.
+  }
+
   const deny = (reason: string): SafeFetchResult => ({
     ok: false,
     reason,
-    log: { url: rawUrl, decision: "deny", reason },
+    log: { url: logUrl, decision: "deny", reason },
   });
 
   // Gates 1, 2, 3, 4 — URL shape (initial hop).
@@ -300,7 +382,7 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
         sha256,
         finalUrl,
         log: {
-          url: rawUrl,
+          url: logUrl,
           final_url: finalUrl,
           resolved_ip: pinnedIp,
           status: resp.status,
