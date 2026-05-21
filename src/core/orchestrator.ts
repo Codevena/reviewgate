@@ -9,16 +9,25 @@ import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
 import type { ProviderId } from "../providers/registry.ts";
+import { parseReviewOutput } from "../providers/review-output.ts";
 import { loadConventions } from "../research/conventions.ts";
 import { computeDiffFacts } from "../research/diff-facts.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
+import type { MemoryProposal } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
 import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
+import { withTimeout } from "../utils/with-timeout.ts";
 import { aggregate } from "./aggregator.ts";
+import { runCurator } from "./brain/curator.ts";
+import type { Embedder } from "./brain/embeddings.ts";
+import { BrainEngine } from "./brain/engine.ts";
+import { enrichProposal } from "./brain/enrich.ts";
+import { decayPass } from "./brain/lifecycle.ts";
+import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
 import { ReportWriter } from "./report-writer.ts";
 
@@ -107,12 +116,43 @@ export class Orchestrator {
       };
     }
 
+    // --- Brain read path: pin an immutable snapshot once per run, compute the
+    // token-budgeted injection text (tags = diff sensitivity tags, changedFiles =
+    // the diff's file paths). The pinned snapshot's active-entry identity also
+    // feeds the cache key below, so brain mutations deterministically invalidate
+    // previously-cached verdicts. Curator mutations land after this pin and are
+    // only visible to the NEXT run. ---
+    const brainCfg = this.input.config.phases.brain;
+    let brainText = "";
+    let brainEngine: BrainEngine | undefined;
+    if (brainCfg?.enabled) {
+      brainEngine = new BrainEngine(new BrainStore(repo), { maxTokens: brainCfg.maxPromptTokens });
+      await brainEngine.pin();
+      brainText = brainEngine.inject({
+        tags: facts.sensitivityTags,
+        changedFiles: facts.files.map((file) => file.path),
+        categories: [],
+      });
+    }
+    // Deterministic identity of the pinned brain: id+status per eligible entry,
+    // sorted, joined. Empty when brain is off → cache key unchanged from M3.
+    const brainActiveHash = brainEngine
+      ? brainEngine
+          .snapshotEntries()
+          .map((e) => `${e.id}:${e.status}`)
+          .sort()
+          .join(",")
+      : "";
+
     // --- Cache short-circuit (only for previously-passing verdicts) ---
     const cacheEnabled = this.input.config.cache.enabled;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
-      providerVersions: "", // M3: not queried; cache invalidates on config/version/schema change
+      // M3: provider versions not queried; cache invalidates on config/version/
+      // schema change. M4: the pinned brain identity is folded in here so any
+      // brain change re-runs the panel deterministically.
+      providerVersions: brainActiveHash,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -178,6 +218,7 @@ export class Orchestrator {
       // research.md goes BEFORE the untrusted-diff fence (trusted context).
       const promptParts = [REVIEW_PROMPT_PREAMBLE, ""];
       if (researchText) promptParts.push("## Research context", researchText, "");
+      if (brainText) promptParts.push("## Brain context", brainText, "");
       promptParts.push(sanitised.text);
       writeFileSync(promptFile, promptParts.join("\n"));
       writeFileSync(diffPath, this.input.diff);
@@ -200,6 +241,37 @@ export class Orchestrator {
       .map((o) => (o.status === "fulfilled" ? o.value : null))
       .filter((x): x is ReviewerRun => x !== null);
     const okRuns = settled.filter((s) => s.res.status === "ok");
+
+    // --- Brain write path (collect): parse memory_proposals from each OK
+    // reviewer's rawText, stamp evidence with this run + reviewer id, and drop
+    // anything below the 0.5 confidence floor. Curation happens post-verdict. ---
+    const proposals: MemoryProposal[] = [];
+    if (brainCfg?.enabled) {
+      for (const run of okRuns) {
+        const parsed = run.res.rawText ? parseReviewOutput(run.res.rawText) : null;
+        for (const raw of parsed?.memory_proposals ?? []) {
+          if (typeof raw.confidence !== "number" || raw.confidence < 0.5) continue;
+          proposals.push({
+            type: raw.type as MemoryProposal["type"],
+            scope: raw.scope,
+            title: raw.title,
+            body: raw.body,
+            confidence: raw.confidence,
+            tags: Array.isArray(raw.tags) ? raw.tags : [],
+            evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).map((ev) => ({
+              kind: ev.kind as MemoryProposal["evidence"][number]["kind"],
+              run_id: opts.runId,
+              // Preserve a reviewer-cited corroborating id (cross-provider quorum);
+              // otherwise stamp the emitting reviewer (single-provider default).
+              reviewer_id: ev.reviewer_id ?? run.res.reviewerId,
+              ...(ev.source_url != null ? { source_url: ev.source_url } : {}),
+              ...(ev.snippet != null ? { snippet: ev.snippet } : {}),
+              ...(ev.from_diff != null ? { from_diff: ev.from_diff } : {}),
+            })) as MemoryProposal["evidence"],
+          });
+        }
+      }
+    }
 
     // Fail closed: at least one reviewer attempted but none succeeded.
     if (settled.length > 0 && okRuns.length === 0) {
@@ -251,6 +323,14 @@ export class Orchestrator {
 
     await this.writeReport(opts, start, settled, agg.dedupedFindings, agg.verdict, agg.counts);
 
+    // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
+    // Runs AFTER the verdict + report are committed and NEVER throws into / changes
+    // the already-computed verdict. Validates collected proposals against the
+    // deterministic 7 rules (+ an optional LLM judge), then writes promotions. ---
+    if (brainCfg?.enabled && proposals.length > 0) {
+      await this.runCuratorPhase(repo, opts.runId, brainCfg, proposals).catch(() => undefined);
+    }
+
     // --- Cache store (only passing verdicts; FAIL must re-run to surface findings) ---
     if (cacheEnabled && (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")) {
       await putCachedReview(repo, cacheKey, { verdict: agg.verdict, counts: agg.counts }).catch(
@@ -290,6 +370,140 @@ export class Orchestrator {
       out.push({ ...f, signature });
     }
     return out;
+  }
+
+  // Non-blocking Curator phase. Best-effort: any failure (timeout, missing
+  // embedder, enrichment error) is swallowed by the caller's `.catch()` and the
+  // already-committed verdict is untouched. Pinned-snapshot mutations land in
+  // brain.json and are only visible to the next run.
+  private async runCuratorPhase(
+    repo: string,
+    runId: string,
+    brainCfg: NonNullable<ReviewgateConfig["phases"]["brain"]>,
+    proposals: MemoryProposal[],
+  ): Promise<void> {
+    const store = new BrainStore(repo);
+    await decayPass(store, repo, new Date().toISOString());
+
+    // The embedder is the OpenRouter adapter the panel already built. Its
+    // adapter.embed() is single-text → number[]; the curator's Embedder wants
+    // batch → number[][], so wrap it. Absent adapter → skip curation entirely
+    // (dedup would be undeduplicatable; fail-closed by not promoting).
+    const orAdapter = this.input.adapters.openrouter;
+    if (!orAdapter || typeof (orAdapter as { embed?: unknown }).embed !== "function") return;
+    const orEmbed = orAdapter as unknown as {
+      embed(
+        text: string,
+        opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
+      ): Promise<number[]>;
+    };
+    const embedder: Embedder = {
+      embed: async (texts, cfg) =>
+        Promise.all(
+          texts.map((t) =>
+            orEmbed.embed(t, {
+              model: cfg?.model ?? brainCfg.embeddings.model,
+              apiKeyEnv: cfg?.apiKeyEnv ?? brainCfg.embeddings.apiKeyEnv,
+              ...(cfg?.timeoutMs != null ? { timeoutMs: cfg.timeoutMs } : {}),
+            }),
+          ),
+        ),
+    };
+
+    // Enrich citation evidence (best-effort; failures drop the citation).
+    const enriched: MemoryProposal[] = [];
+    for (const p of proposals) {
+      try {
+        const { enriched: e } = await enrichProposal(repo, p, { allow: brainCfg.egressAllowlist });
+        enriched.push(e);
+      } catch {
+        enriched.push(p);
+      }
+    }
+
+    // Hybrid: build the optional LLM judge only when phases.brain.curator is set.
+    // It calls the configured non-reviewer provider via the critic-phase
+    // invocation pattern and parses {"accept":bool,"reason":"..."}; defaults to
+    // accept on parse failure or missing adapter (the deterministic gates already
+    // passed by the time the judge runs).
+    const curatorCfg = brainCfg.curator;
+    const judge = curatorCfg
+      ? async (prop: MemoryProposal): Promise<{ accept: boolean; reason?: string }> => {
+          const adapter = this.input.adapters[curatorCfg.provider];
+          const pcfg = this.input.config.providers[curatorCfg.provider] as
+            | ProviderConfig
+            | undefined;
+          if (!adapter || !pcfg) return { accept: true };
+          const jRun = mkdtempSync(join(tmpdir(), "rg-curator-"));
+          const jPrompt = join(jRun, "prompt.txt");
+          const activeTitles = (await store.snapshot()).entries
+            .filter((e) => e.status === "active")
+            .map((e) => `- ${e.title}`)
+            .join("\n");
+          writeFileSync(
+            jPrompt,
+            [
+              "You are a brain Curator. Decide whether to ACCEPT a proposed repo-memory entry.",
+              "Reject if it contradicts an existing convention (consistency) or its scope/quality",
+              'is implausible. Output ONLY a single JSON object: {"accept":true|false,"reason":"<one line>"}.',
+              "",
+              "## Existing active brain titles",
+              activeTitles || "(none)",
+              "",
+              "## Proposed entry",
+              JSON.stringify(
+                { type: prop.type, scope: prop.scope, title: prop.title, body: prop.body },
+                null,
+                2,
+              ),
+            ].join("\n"),
+          );
+          const jRes = await adapter.review({
+            cfg: { ...pcfg, ...(curatorCfg.model ? { model: curatorCfg.model } : {}) },
+            reviewerId: `curator-${curatorCfg.provider}`,
+            promptFile: jPrompt,
+            workingDir: repo,
+            findingsPath: join(jRun, "f.md"),
+            persona: curatorCfg.persona,
+            diffPath: join(jRun, "d.patch"),
+          });
+          try {
+            const text = jRes.rawText ?? "";
+            const first = text.indexOf("{");
+            const last = text.lastIndexOf("}");
+            if (first < 0 || last <= first) return { accept: true };
+            const obj = JSON.parse(text.slice(first, last + 1)) as {
+              accept?: unknown;
+              reason?: unknown;
+            };
+            return {
+              accept: obj.accept !== false,
+              ...(typeof obj.reason === "string" ? { reason: obj.reason } : {}),
+            };
+          } catch {
+            return { accept: true };
+          }
+        }
+      : undefined;
+
+    await withTimeout(
+      runCurator({
+        repoRoot: repo,
+        runId,
+        proposals: enriched,
+        store,
+        embedder,
+        embedCfg: {
+          model: brainCfg.embeddings.model,
+          apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
+          timeoutMs: brainCfg.curatorTimeoutMs,
+        },
+        nowIso: new Date().toISOString(),
+        ...(judge ? { judge } : {}),
+      }),
+      brainCfg.curatorTimeoutMs,
+      "curator",
+    ).catch(() => undefined);
   }
 
   private async writeReport(

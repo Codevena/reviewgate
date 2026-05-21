@@ -74,6 +74,11 @@ export interface RawProposal {
     kind: string;
     source_url?: string;
     snippet?: string;
+    // A reviewer MAY cite which reviewer(s) corroborated an observation. When
+    // present this is preserved (enabling the cross-provider quorum); when absent
+    // the orchestrator stamps the emitting reviewer's id (collapsing to a single
+    // provider — the anti-collusion default).
+    reviewer_id?: string;
     from_diff?: { file: string; line_start: number; line_end: number };
   }>;
 }
