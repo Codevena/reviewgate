@@ -1,4 +1,5 @@
 // src/core/aggregator.ts
+import { type Range, rangeOverlapsChanged } from "../diff/hunks.ts";
 import type { Consensus, Finding } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
 import type { CriticVerdict } from "./critic.ts";
@@ -7,6 +8,10 @@ export interface AggregateInput {
   findings: Finding[];
   reviewersTotal: number;
   critic?: Map<string, CriticVerdict>;
+  // M5 Part A: per-file changed new-file line ranges. When provided and
+  // scopeToDiff !== false, findings outside the changed hunks are demoted to INFO.
+  changedRanges?: Map<string, Range[]>;
+  scopeToDiff?: boolean;
 }
 
 export interface AggregateResult {
@@ -172,12 +177,33 @@ export function aggregate(input: AggregateInput): AggregateResult {
     survivors.push(f);
   }
 
+  // M5 Part A — diff-scoping: demote findings outside the changed hunks to INFO
+  // (advisory, never dropped). Cross-impact stays visible; only the BLOCKING
+  // weight is removed. Range intersection (not line_start alone) keeps a finding
+  // anchored to a declaration above the edit whose range overlaps the change.
+  const scoped: Finding[] =
+    input.scopeToDiff !== false && input.changedRanges
+      ? survivors.map((f) => {
+          if (!f.line_start) return f; // no usable line → keep (conservative)
+          const ranges = input.changedRanges?.get(f.file);
+          if (!ranges) return f; // file not in diff → keep (conservative)
+          if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
+          if (f.severity === "INFO") return { ...f, scope_demoted: true };
+          return {
+            ...f,
+            severity: "INFO" as const,
+            scope_demoted: true,
+            details: `${f.details}\n\n↓ outside the changed lines — advisory only.`,
+          };
+        })
+      : survivors;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of survivors) {
+  for (const f of scoped) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (f.category === "security" || f.category === "correctness") {
@@ -204,7 +230,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = survivors.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
+  const renumbered = scoped.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
 
   return { verdict, dedupedFindings: renumbered, counts: { critical, warn, info } };
 }
