@@ -1,5 +1,7 @@
-// src/utils/git.ts
 import { spawnSync } from "node:child_process";
+// src/utils/git.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface GitInfo {
   sha: string;
@@ -53,6 +55,57 @@ export function collectDiff(repoRoot: string): string {
       const d = git(repoRoot, ["diff", "--no-color", "--no-index", "/dev/null", file]);
       if (d.stdout) out += `${out.length > 0 && !out.endsWith("\n") ? "\n" : ""}${d.stdout}`;
     }
+  }
+  return out;
+}
+
+// The full current content of every changed (non-reviewgate, non-deleted) file,
+// labeled per file and capped by a total byte budget. Reviewers get this ALONGSIDE
+// the diff so they can verify a symbol exists before reporting it as missing — the
+// #1 source of false-positive "undefined" findings on refactors. Skips binaries
+// (read failure) and reviewgate-managed paths.
+export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000): string {
+  const names = new Set<string>();
+  const tracked = git(repoRoot, [
+    "diff",
+    "--name-only",
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude)reviewgate.config.ts",
+    ":(exclude).reviewgate",
+    ":(exclude).reviewgate/**",
+  ]);
+  if (tracked.status === 0) {
+    for (const f of tracked.stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0))
+      names.add(f);
+  }
+  const untracked = git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+  for (const f of untracked.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0))
+    names.add(f);
+  let out = "";
+  let used = 0;
+  for (const f of [...names].sort()) {
+    if (isReviewgateManaged(f)) continue;
+    let content: string;
+    try {
+      content = readFileSync(join(repoRoot, f), "utf8");
+    } catch {
+      continue; // deleted or binary
+    }
+    const block = `### ${f}\n\`\`\`\n${content}\n\`\`\`\n`;
+    if (used + block.length > maxBytes) {
+      out += `### ${f}\n(omitted — context budget exceeded)\n`;
+      continue;
+    }
+    used += block.length;
+    out += block;
   }
   return out;
 }
