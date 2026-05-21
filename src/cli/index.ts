@@ -3,6 +3,7 @@ import { defineCommand, runMain } from "citty";
 import { runAuditVerify } from "./commands/audit.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
+import { runFpAudit, runFpList, runFpPin, runFpShow, runFpUnpin } from "./commands/fp.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
@@ -116,9 +117,67 @@ const brain = defineCommand({
   },
 });
 
+const fp = defineCommand({
+  meta: { name: "fp", description: "FP-ledger (known false positives) management" },
+  subCommands: {
+    list: defineCommand({
+      meta: { name: "list" },
+      args: { filter: { type: "string" } },
+      async run({ args }) {
+        const filter = typeof args.filter === "string" ? args.filter : undefined;
+        process.exit(
+          await runFpList({ repoRoot: process.cwd(), ...(filter !== undefined ? { filter } : {}) }),
+        );
+      },
+    }),
+    show: defineCommand({
+      meta: { name: "show" },
+      args: { id: { type: "string" } },
+      async run({ args }) {
+        if (!args.id) {
+          process.stderr.write("fp show: --id <id> is required\n");
+          process.exit(2);
+        }
+        process.exit(await runFpShow({ repoRoot: process.cwd(), id: args.id as string }));
+      },
+    }),
+    pin: defineCommand({
+      meta: { name: "pin" },
+      args: { id: { type: "string" }, signature: { type: "string" }, by: { type: "string" } },
+      async run({ args }) {
+        process.exit(
+          await runFpPin({
+            repoRoot: process.cwd(),
+            ...(typeof args.id === "string" ? { id: args.id } : {}),
+            ...(typeof args.signature === "string" ? { signature: args.signature } : {}),
+            ...(typeof args.by === "string" ? { by: args.by } : {}),
+          }),
+        );
+      },
+    }),
+    unpin: defineCommand({
+      meta: { name: "unpin" },
+      args: { id: { type: "string" } },
+      async run({ args }) {
+        if (!args.id) {
+          process.stderr.write("fp unpin: --id <id> is required\n");
+          process.exit(2);
+        }
+        process.exit(await runFpUnpin({ repoRoot: process.cwd(), id: args.id as string }));
+      },
+    }),
+    audit: defineCommand({
+      meta: { name: "audit" },
+      async run() {
+        process.exit(await runFpAudit({ repoRoot: process.cwd() }));
+      },
+    }),
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain },
+  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp },
 });
 
 void runMain(main);
