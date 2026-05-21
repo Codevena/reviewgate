@@ -3,9 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Embedder } from "../../src/core/brain/embeddings.ts";
-import { pairActiveFpEntries } from "../../src/core/brain/fp-coupling.ts";
+import { type ContradictionJudge, pairActiveFpEntries } from "../../src/core/brain/fp-coupling.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import { FpLedgerStore } from "../../src/core/fp-ledger/store.ts";
+import { BrainEntrySchema } from "../../src/schemas/brain.ts";
 
 const fakeEmbedder = (vec: number[]): Embedder => ({ embed: async (t) => t.map(() => vec) });
 const meta = { rule_id: "sql-injection", category: "security" as const, file: "a.ts", symbol: "" };
@@ -108,5 +109,108 @@ describe("pairActiveFpEntries", () => {
     });
     expect(res.paired).toBe(0);
     expect((await fpStore.snapshot()).entries[0]?.linked_brain_id).toBeUndefined();
+  });
+
+  // --- B3b: contradiction check ---
+  async function seedActiveBrain(repo: string): Promise<BrainStore> {
+    const bs = new BrainStore(repo);
+    await bs.add(
+      BrainEntrySchema.parse({
+        id: "B-001",
+        type: "anti-pattern",
+        scope: "this-repo",
+        title: "sql-injection is always a real bug here",
+        body: "Never dismiss sql-injection findings in this repo.",
+        tags: ["sql-injection"],
+        file_globs: ["a.ts"],
+        status: "active",
+        confidence: 0.9,
+        evidence: [],
+        created_at: "t",
+        source_run_id: "seed",
+      }),
+    );
+    return bs;
+  }
+  const yesJudge: ContradictionJudge = async () => ({
+    contradicts: true,
+    brain_entry_id: "B-001",
+    reason: "anti-pattern asserts this rule is real",
+  });
+  const noJudge: ContradictionJudge = async () => ({ contradicts: false });
+
+  it("B3b: skips pairing + flags contradicts_brain_id when the judge finds a contradiction", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3b-yes-"));
+    const fpStore = await seedActive(repo);
+    const brainStore = await seedActiveBrain(repo);
+    const res = await pairActiveFpEntries({
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run1",
+      nowIso: "2026-05-21T00:00:00Z",
+      judge: yesJudge,
+    });
+    expect(res.paired).toBe(0);
+    expect(res.contradictions).toBe(1);
+    const fp = (await fpStore.snapshot()).entries[0];
+    expect(fp?.contradicts_brain_id).toBe("B-001");
+    expect(fp?.linked_brain_id).toBeUndefined();
+    // no NEW brain entry was created (only the seeded B-001 remains)
+    expect((await brainStore.snapshot()).entries).toHaveLength(1);
+  });
+
+  it("B3b: pairs normally when the judge finds NO contradiction", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3b-no-"));
+    const fpStore = await seedActive(repo);
+    const brainStore = await seedActiveBrain(repo);
+    const res = await pairActiveFpEntries({
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run1",
+      nowIso: "2026-05-21T00:00:00Z",
+      judge: noJudge,
+    });
+    expect(res.paired).toBe(1);
+    expect(res.contradictions).toBe(0);
+    expect((await fpStore.snapshot()).entries[0]?.linked_brain_id).toBeDefined();
+  });
+
+  it("B3b: a judge error fails OPEN (pairs anyway)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3b-err-"));
+    const fpStore = await seedActive(repo);
+    const brainStore = await seedActiveBrain(repo);
+    const throwingJudge: ContradictionJudge = async () => {
+      throw new Error("judge down");
+    };
+    const res = await pairActiveFpEntries({
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run1",
+      nowIso: "2026-05-21T00:00:00Z",
+      judge: throwingJudge,
+    });
+    expect(res.paired).toBe(1);
+    expect((await fpStore.snapshot()).entries[0]?.linked_brain_id).toBeDefined();
+  });
+
+  it("B3b: a contradiction-flagged entry is not re-checked on a later run", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3b-idem-"));
+    const fpStore = await seedActive(repo);
+    const brainStore = await seedActiveBrain(repo);
+    const args = {
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run1",
+      nowIso: "2026-05-21T00:00:00Z",
+      judge: yesJudge,
+    };
+    await pairActiveFpEntries(args);
+    const res2 = await pairActiveFpEntries(args);
+    expect(res2.paired).toBe(0);
+    expect(res2.contradictions).toBe(0); // already flagged → not re-checked
   });
 });

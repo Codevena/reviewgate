@@ -29,7 +29,7 @@ import { runCurator } from "./brain/curator.ts";
 import type { Embedder } from "./brain/embeddings.ts";
 import { BrainEngine } from "./brain/engine.ts";
 import { enrichProposal } from "./brain/enrich.ts";
-import { pairActiveFpEntries } from "./brain/fp-coupling.ts";
+import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-coupling.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
@@ -522,6 +522,7 @@ export class Orchestrator {
     if (brainCfg?.enabled && fpStore) {
       const embedder = this.buildEmbedder(brainCfg);
       if (embedder) {
+        const judge = this.buildContradictionJudge(repo, brainCfg);
         await pairActiveFpEntries({
           fpStore,
           brainStore: new BrainStore(repo),
@@ -533,6 +534,7 @@ export class Orchestrator {
           },
           runId: opts.runId,
           nowIso: new Date().toISOString(),
+          ...(judge ? { judge } : {}),
         }).catch(() => undefined);
       }
     }
@@ -576,6 +578,69 @@ export class Orchestrator {
       out.push({ ...f, signature });
     }
     return out;
+  }
+
+  // M5 Phase B3b — build the FP↔Brain contradiction judge from the curator
+  // provider (only when phases.brain.curator is set). Asks whether treating an FP
+  // as a known false positive contradicts an existing active brain memory. Any
+  // adapter/parse problem → {contradicts:false} (fail OPEN: never lose a pairing
+  // over a judge hiccup; pairActiveFpEntries also catches throws).
+  private buildContradictionJudge(
+    repo: string,
+    brainCfg: NonNullable<ReviewgateConfig["phases"]["brain"]>,
+  ): ContradictionJudge | undefined {
+    const curatorCfg = brainCfg.curator;
+    if (!curatorCfg) return undefined;
+    return async ({ fp, brainEntries }) => {
+      const adapter = this.input.adapters[curatorCfg.provider];
+      const pcfg = this.input.config.providers[curatorCfg.provider] as ProviderConfig | undefined;
+      if (!adapter || !pcfg) return { contradicts: false };
+      const jRun = mkdtempSync(join(tmpdir(), "rg-fpcontra-"));
+      const jPrompt = join(jRun, "prompt.txt");
+      writeFileSync(
+        jPrompt,
+        [
+          "You are a repo-memory Curator. A finding has been confirmed as a KNOWN FALSE",
+          `POSITIVE (rule "${fp.rule_id}" in ${fp.file}) — i.e. it should NOT be reported.`,
+          "Decide whether treating it as a false positive CONTRADICTS any established repo",
+          "memory below (e.g. a memory asserting this rule/file IS a real concern).",
+          'Output ONLY a single JSON object: {"contradicts":true|false,"brain_entry_id":"<id|empty>","reason":"<one line>"}.',
+          "",
+          "## Established active repo memories",
+          brainEntries.map((e) => `- [${e.id}] (${e.type}) ${e.title}: ${e.body}`).join("\n") ||
+            "(none)",
+        ].join("\n"),
+      );
+      const jRes = await adapter.review({
+        cfg: { ...pcfg, ...(curatorCfg.model ? { model: curatorCfg.model } : {}) },
+        reviewerId: `fp-contradiction-${curatorCfg.provider}`,
+        promptFile: jPrompt,
+        workingDir: repo,
+        findingsPath: join(jRun, "f.md"),
+        persona: curatorCfg.persona,
+        diffPath: join(jRun, "d.patch"),
+      });
+      try {
+        const text = jRes.rawText ?? "";
+        const first = text.indexOf("{");
+        const last = text.lastIndexOf("}");
+        if (first < 0 || last <= first) return { contradicts: false };
+        const obj = JSON.parse(text.slice(first, last + 1)) as {
+          contradicts?: unknown;
+          brain_entry_id?: unknown;
+          reason?: unknown;
+        };
+        return {
+          contradicts: obj.contradicts === true,
+          ...(typeof obj.brain_entry_id === "string" && obj.brain_entry_id.length > 0
+            ? { brain_entry_id: obj.brain_entry_id }
+            : {}),
+          ...(typeof obj.reason === "string" ? { reason: obj.reason } : {}),
+        };
+      } catch {
+        return { contradicts: false };
+      }
+    };
   }
 
   // Wrap the panel's OpenRouter adapter (single-text embed → number[]) as the

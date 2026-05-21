@@ -65,6 +65,9 @@ export async function runFpShow(input: FpShowInput): Promise<number> {
   out(`Category:   ${e.category}\n`);
   out(`File:       ${e.file}\n`);
   out(`Providers:  ${e.distinct_providers.join(", ") || "(none)"}\n`);
+  if (e.linked_brain_id) out(`Brain:      paired ${e.linked_brain_id}\n`);
+  if (e.contradicts_brain_id)
+    out(`⚠ Conflict:  contradicts brain entry ${e.contradicts_brain_id} — needs human review\n`);
   out(`First seen: ${e.first_seen_at}\n`);
   out(`Last seen:  ${e.last_seen_at}\n`);
   out(`Rejects (${e.rejects.length}):\n`);

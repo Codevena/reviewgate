@@ -26,6 +26,10 @@ export const FpLedgerEntrySchema = z.object({
   last_seen_at: z.string(),
   pinned_by: z.string().optional(),
   linked_brain_id: z.string().optional(), // Phase B3
+  // Phase B3b: set when the curator judge found this known-FP CONTRADICTS an
+  // existing active brain entry. Records the conflicting entry for human review
+  // and doubles as a "don't re-pair / don't re-check" marker.
+  contradicts_brain_id: z.string().optional(),
   created_at: z.string(),
 });
 export type FpLedgerEntry = z.infer<typeof FpLedgerEntrySchema>;
