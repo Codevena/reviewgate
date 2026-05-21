@@ -57,7 +57,13 @@ export async function enrichProposal(
     egress.push(res.log);
 
     if (!res.ok) {
-      // Drop the citation — the Curator falls back to reviewer-quorum rule.
+      // Keep the un-fetched citation as plain reviewer evidence rather than
+      // dropping it. Dropping could empty a proposal whose ONLY evidence was a
+      // citation (e.g. egress disabled → every fetch fails) → it would then be
+      // rejected at the curator's evidence.min(1) gate instead of reaching the
+      // reviewer-quorum rule. The item still counts as reviewer evidence (its
+      // kind is unchanged); it simply isn't a verified web-fetch source.
+      evidence.push(item);
       continue;
     }
 

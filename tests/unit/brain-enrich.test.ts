@@ -45,7 +45,12 @@ describe("enrichProposal", () => {
     expect(existsSync(join(repo, ".reviewgate/brain/snapshots", `${web?.body_sha256}`))).toBe(true);
   });
 
-  it("drops the citation when the fetch is denied", async () => {
+  it("keeps the citation as plain reviewer evidence when the fetch is denied (does not drop to empty)", async () => {
+    // Previously a failed fetch DROPPED the citation. If it was the proposal's only
+    // evidence, the proposal then arrived at the curator with zero evidence and was
+    // rejected as rule_failed:"schema"[evidence] — it never reached the reviewer-
+    // quorum rule the drop comment claimed to fall back to. Keep the original item
+    // (it counts as reviewer evidence, just not a verified web-fetch source).
     const repo = mkdtempSync(join(tmpdir(), "rg-enr2-"));
     const p = proposal();
     const ev = p.evidence[0];
@@ -55,6 +60,8 @@ describe("enrichProposal", () => {
       fetchImpl: okFetch,
       resolve: async () => ["1.2.3.4"],
     });
-    expect(enriched.evidence.some((e) => e.kind === "web-fetch")).toBe(false);
+    expect(enriched.evidence.some((e) => e.kind === "web-fetch")).toBe(false); // fetch failed
+    expect(enriched.evidence).toHaveLength(1); // kept, not dropped to empty
+    expect(enriched.evidence[0]?.kind).toBe("reviewer-observation");
   });
 });
