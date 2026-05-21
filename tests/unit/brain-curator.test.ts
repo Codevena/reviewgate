@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { providerOf, runCurator } from "../../src/core/brain/curator.ts";
+import { normalizeProposal, providerOf, runCurator } from "../../src/core/brain/curator.ts";
 import type { Embedder } from "../../src/core/brain/embeddings.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { MemoryProposal } from "../../src/schemas/brain.ts";
@@ -285,6 +285,187 @@ describe("runCurator", () => {
       nowIso: "t",
     });
     expect(res.promoted).toBe(1);
+  });
+});
+
+describe("normalizeProposal", () => {
+  // --- (a) overlong title + body normalised, valid 2-provider quorum group → PROMOTED ---
+  it("(a) normalises 120-char title and 800-char body so the proposal reaches quorum and is PROMOTED", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-norm-a-"));
+    const store = new BrainStore(repo);
+
+    // Two proposals from distinct providers with identical semantic content
+    // (same vec) and the same overlong title — they will be grouped, merged
+    // evidence will span 2 providers (codex + gemini) with 3+ reviewer items.
+    const longTitle = "A".repeat(120); // 40 chars over the 80-char limit
+    const longBody = "B".repeat(800); // 300 chars over the 500-char limit
+
+    const proposalA = {
+      type: "convention",
+      scope: "this-repo",
+      title: longTitle,
+      body: longBody,
+      confidence: 0.9,
+      tags: [],
+      evidence: [
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" },
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" },
+      ],
+    };
+    const proposalB = {
+      type: "convention",
+      scope: "this-repo",
+      title: longTitle,
+      body: longBody,
+      confidence: 0.85,
+      tags: [],
+      evidence: [
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "gemini-architecture" },
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "gemini-architecture" },
+      ],
+    };
+
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      // Pass as unknown — simulates raw reviewer output bypassing TS typing
+      proposals: [proposalA, proposalB] as unknown as MemoryProposal[],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+
+    // Normalisation should have truncated title/body; quorum is met across 2 providers.
+    expect(res.promoted).toBe(1);
+    expect(res.rejected).toBe(0);
+    const entry = (await store.snapshot()).entries[0];
+    expect(entry?.title.length).toBeLessThanOrEqual(80);
+    expect((entry?.body ?? "").length).toBeLessThanOrEqual(500);
+  });
+
+  // --- (b) one bad-kind evidence item is dropped; proposal survives on valid items ---
+  it("(b) drops evidence items with invalid kind but promotes when valid items remain", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-norm-b-"));
+    const store = new BrainStore(repo);
+
+    const proposalA = {
+      type: "convention",
+      scope: "this-repo",
+      title: "t",
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: [
+        { kind: "INVALID_KIND", run_id: "r", reviewer_id: "codex-security" }, // bad — dropped
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }, // valid
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }, // valid
+      ],
+    };
+    const proposalB = {
+      type: "convention",
+      scope: "this-repo",
+      title: "t",
+      body: "b",
+      confidence: 0.75,
+      tags: [],
+      evidence: [
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "gemini-architecture" },
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "gemini-architecture" },
+      ],
+    };
+
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [proposalA, proposalB] as unknown as MemoryProposal[],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+
+    // Bad evidence item was dropped; remaining valid items form quorum across 2 providers.
+    expect(res.promoted).toBe(1);
+    expect(res.rejected).toBe(0);
+  });
+
+  // --- (c) irreparable proposals are rejected as schema ---
+  it("(c-i) rejects a proposal whose title is not a string", () => {
+    const result = normalizeProposal({
+      type: "convention",
+      scope: "this-repo",
+      title: 42, // not a string
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }],
+    });
+    expect(result).toBeNull();
+  });
+
+  it("(c-ii) rejects a proposal with an unknown type", () => {
+    const result = normalizeProposal({
+      type: "totally-made-up-type", // not a valid BrainEntryType
+      scope: "this-repo",
+      title: "valid title",
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }],
+    });
+    expect(result).toBeNull();
+  });
+
+  it("(c-iii) rejects a proposal with NO valid evidence items", () => {
+    const result = normalizeProposal({
+      type: "convention",
+      scope: "this-repo",
+      title: "valid title",
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: [
+        { kind: "GARBAGE_KIND" }, // invalid kind
+        { kind: 12345 }, // not a string kind
+      ],
+    });
+    expect(result).toBeNull();
+  });
+
+  it("normalises defaults: missing scope → 'this-repo', non-number confidence → 0.5, non-array tags → []", () => {
+    const result = normalizeProposal({
+      type: "convention",
+      title: "  hello  ", // leading/trailing spaces
+      body: "body text",
+      // scope, confidence, tags all missing/wrong type
+      confidence: "not-a-number",
+      tags: "oops-a-string",
+      evidence: [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-x" }],
+    });
+    expect(result).not.toBeNull();
+    expect(result?.title).toBe("hello"); // trimmed
+    expect(result?.scope).toBe("this-repo");
+    expect(result?.confidence).toBe(0.5);
+    expect(result?.tags).toEqual([]);
+  });
+
+  it("clamps confidence to [0,1]", () => {
+    const high = normalizeProposal({
+      type: "convention",
+      title: "t",
+      body: "",
+      confidence: 9999,
+      evidence: [{ kind: "deterministic" }],
+    });
+    expect(high?.confidence).toBe(1);
+
+    const low = normalizeProposal({
+      type: "convention",
+      title: "t",
+      body: "",
+      confidence: -5,
+      evidence: [{ kind: "deterministic" }],
+    });
+    expect(low?.confidence).toBe(0);
   });
 });
 
