@@ -362,13 +362,22 @@ git commit -m "test(triage): lock docs class survival through refineTriage"
 
 ### Task 5: Orchestrator — `forcePersona`, persona/preamble override, `plan` reaffirm
 
-**Files:**
-- Modify: `src/core/orchestrator.ts:25-62` (input type, preamble, reaffirm map)
-- Modify: `src/core/orchestrator.ts:90-103` (triage call + forced skip guard)
-- Modify: `src/core/orchestrator.ts:147-189` (persona/preamble override in reviewer loop)
-- Modify: `src/core/orchestrator.ts:290-339` (writeReport passes reportMode)
+**Files:** (line numbers updated for the post-M4 orchestrator, 578 lines)
+- Modify: `src/core/orchestrator.ts:34-80` (input type, preamble, reaffirm map)
+- Modify: `src/core/orchestrator.ts:110-114` (triage call + forced skip guard)
+- Modify: `src/core/orchestrator.ts:216-238` (persona/preamble override in reviewer loop)
+- Modify: `src/core/orchestrator.ts:528-560` (writeReport passes reportMode)
 - Create: `.reviewgate/personas/plan.md`
 - Test: `tests/unit/orchestrator-docreview.test.ts` (create)
+
+> **M4 coexistence note:** After the M4 Brain merge, the reviewer loop also injects
+> `if (brainText) promptParts.push("## Brain context", brainText, "");` (around
+> line 225) right after the `promptParts = [REVIEW_PROMPT_PREAMBLE, ""]` line we
+> edit. That injection is additive and orthogonal — leave it untouched; only swap
+> the preamble constant in the `promptParts` initializer. The cache key
+> (`computeCacheKey`, ~line 153) now also folds in the Brain snapshot; our config
+> hash already includes `docReview`, so cache invalidation still works — no change
+> needed there. Match by the exact code strings below, not by line number.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -459,7 +468,7 @@ Expected: FAIL — `forcePersona` is not a known input (TS error) and/or the rev
 
 - [ ] **Step 3: Add the input fields, doc preamble, and `plan` reaffirm**
 
-In `src/core/orchestrator.ts`, add two optional fields to `OrchestratorInput` (after `reasonOnFailEnabled: boolean;` at line 35):
+In `src/core/orchestrator.ts`, add two optional fields to `OrchestratorInput` (immediately after the `reasonOnFailEnabled: boolean;` field):
 
 ```ts
   // Doc/plan review hooks. forcePersona (set by the `review-plan` CLI) forces a
@@ -469,7 +478,7 @@ In `src/core/orchestrator.ts`, add two optional fields to `OrchestratorInput` (a
   reportMode?: "gate" | "one-shot";
 ```
 
-Add the doc-oriented preamble right after the `REVIEW_PROMPT_PREAMBLE` constant (after line 54). It keeps the IDENTICAL JSON output shape so parsing is unchanged — only the framing differs:
+Add the doc-oriented preamble immediately after the `REVIEW_PROMPT_PREAMBLE` constant definition. It keeps the IDENTICAL JSON output shape so parsing is unchanged — only the framing differs:
 
 ```ts
 const DOC_REVIEW_PROMPT_PREAMBLE = [
@@ -487,7 +496,7 @@ const DOC_REVIEW_PROMPT_PREAMBLE = [
 ].join("\n");
 ```
 
-Add a `plan` entry to `PERSONA_REAFFIRM` (inside the object at lines 56-61):
+Add a `plan` entry to `PERSONA_REAFFIRM` (inside the existing object literal):
 
 ```ts
   plan: "You are a meticulous staff engineer reviewing an implementation plan. Find gaps, contradictions, untestable steps, and unstated assumptions before code is written.",
@@ -495,7 +504,7 @@ Add a `plan` entry to `PERSONA_REAFFIRM` (inside the object at lines 56-61):
 
 - [ ] **Step 4: Pass the policy to triage and guard the skip with `forcePersona`**
 
-In `runIteration`, change the triage call (line 92) to pass the policy:
+In `runIteration`, change the triage call (the line `const triage = await refineTriage(triageFromFacts(facts), { llm: null });`) to pass the policy:
 
 ```ts
     const triage = await refineTriage(triageFromFacts(facts, this.input.config.docReview), {
@@ -511,7 +520,7 @@ Immediately after that line, compute the doc persona:
       (triage.riskClass === "docs" ? this.input.config.docReview.persona : null);
 ```
 
-Change the skip guard (line 94) from `if (!triage.runReview) {` to:
+Change the skip guard `if (!triage.runReview) {` to:
 
 ```ts
     if (!triage.runReview && !this.input.forcePersona) {
@@ -519,9 +528,9 @@ Change the skip guard (line 94) from `if (!triage.runReview) {` to:
 
 - [ ] **Step 5: Override persona + preamble in the reviewer loop**
 
-In the `activeReviewers.map(async (r) => { … })` callback (around lines 155-189), make the persona and preamble doc-aware.
+In the `activeReviewers.map(async (r) => { … })` callback, make the persona and preamble doc-aware.
 
-Replace the reaffirm/sanitize/prompt lines (167-177) so they use a local `persona` and the right preamble:
+Replace the reaffirm/sanitize/prompt-setup lines (from `const reaffirm = PERSONA_REAFFIRM[r.persona] …` down to `const promptParts = [REVIEW_PROMPT_PREAMBLE, ""];`) so they use a local `persona` and the right preamble. **Do not** remove the subsequent `if (brainText) promptParts.push("## Brain context", …)` line that M4 added right after — it stays:
 
 ```ts
       const persona = docPersona ?? r.persona;
@@ -551,7 +560,7 @@ Then in the `adapter.review({ … })` call and the returned object, replace `per
 
 - [ ] **Step 6: Thread `reportMode` through `writeReport`**
 
-In `writeReport` (line 321), change the `writer.write({ … })` call so it passes the mode. Change:
+In the `writeReport` method, change the `writer.write({ … })` call so it passes the mode. Change:
 
 ```ts
     await writer.write({
@@ -564,7 +573,7 @@ to capture the report object and pass options:
       {
 ```
 
-and at the end of the `write({...})` object (after the closing `},` of the `git` field, line 337), close with the options arg:
+and at the end of the `write({...})` object (after the closing `},` of the `git` field), close with the options arg:
 
 ```ts
       },
@@ -1026,10 +1035,10 @@ const reviewPlan = defineCommand({
 });
 ```
 
-Add it to `subCommands` (line 62):
+Add it to the main `subCommands` object (post-M4 this line reads `subCommands: { init, gate, doctor, audit, brain },`):
 
 ```ts
-  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit },
+  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain },
 ```
 
 - [ ] **Step 6: Verify the command is wired (smoke test)**
