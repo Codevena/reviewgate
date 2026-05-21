@@ -25,11 +25,10 @@ A code-review gate inside Claude Code's Stop hook: a heterogeneous LLM reviewer 
 ## flashbuddy config (`/Users/markus/Developer/flashbuddy/reviewgate.config.ts`)
 Plain object (NO `import` line). 4 reviewers (codex/security, openrouter[deepseek-v4-pro, 600s timeout]/security, gemini[gemini-3-flash-preview]/architecture, claude-code[sonnet-4-6]/adversarial). **critic = opencode/`default`/adversarial** (MiniMax Token Plan, genuine non-reviewer). brain enabled (embeddings `baai/bge-base-en-v1.5` via openrouter, egressAllowlist `[]`, no curator-LLM). loop.acknowledgePass true, notify.desktop true. opencode provider added (auth oauth, model `default`). OPENROUTER_API_KEY is set in flashbuddy's env (used by deepseek reviewer + brain embeddings).
 
-## PENDING — the immediate next task: flashbuddy re-test ("Test A")
-This run validates the OpenCode/MiniMax critic + improved dedup + critic-observability together. The binary is rebuilt; flashbuddy must be **restarted** to pick up the new config + binary.
-1. Restart Claude Code in flashbuddy.
-2. Tell the flashbuddy agent: *"Erstelle `src/lib/token-store.ts` mit (1) einem echten kritischen Fehler (hardcodiertes Secret `sk_live_…`), (2) zwei Stil-Nits — Magic Number `setTimeout(x, 3600000)` und `==` statt `===`. Turn beenden. Wenn das Gate blockt: zuerst `cp .reviewgate/pending.json /tmp/m2-final.json`, dann normal beheben (Datei löschen + decisions) und erneut beenden."*
-3. Then inspect `/tmp/m2-final.json`: **critic** field (`status` should be `"ran"` with `verdicts>0` now that `-m` is gone — previously `"empty"` due to billing), any `critic_verdict: likely_fp` demotions of the style nits, **fewer duplicate findings** (magic-number/`==` should no longer appear twice across WARN+INFO), and all 4 reviewers `ok`.
+## PENDING — the immediate next task: run the FULL test series in flashbuddy
+The complete, systematic series is in **`TEST_PLAN.md`** (Layer 1 automated → Layer 2 gated real e2e → Layer 3 flashbuddy end-to-end T1–T13). The binary is rebuilt; **restart Claude Code in flashbuddy** first (loads latest config + binary + resets state).
+
+Already validated in prior runs: T1 (M1 loop, audit chain), T2 (M2 panel/confirmed_by). NOT yet run with the latest fixes: **T3** (OpenCode/MiniMax critic via `default` — should now be `status:"ran"` instead of the earlier `"empty"` billing failure), **T4–T13**. Each Layer-3 test: tell the flashbuddy agent the Prompt from TEST_PLAN.md, have it `cp .reviewgate/pending.json /tmp/<id>.json` on the block before resolving, then inspect the snapshot here.
 
 ## Roadmap not yet built
 - **M5** FP-Ledger (false-positive learning loop). **M6** cassette replay, weekly reports, `reviewgate stats`, live persona-bias detector, native sandbox (blocked on `@anthropic-ai/sandbox-runtime`).
