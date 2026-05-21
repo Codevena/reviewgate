@@ -2,11 +2,19 @@ import { describe, expect, it } from "bun:test";
 import { FindingSchema } from "../../src/schemas/finding.ts";
 
 const base = {
-  id: "F-001", signature: "s", severity: "INFO", category: "quality",
-  rule_id: "r", file: "a.ts", line_start: 1, line_end: 1,
-  message: "m", details: "d",
+  id: "F-001",
+  signature: "s",
+  severity: "INFO",
+  category: "quality",
+  rule_id: "r",
+  file: "a.ts",
+  line_start: 1,
+  line_end: 1,
+  message: "m",
+  details: "d",
   reviewer: { provider: "codex", model: "x", persona: "security" },
-  confidence: 0.5, consensus: "singleton",
+  confidence: 0.5,
+  consensus: "singleton",
 };
 
 describe("FindingSchema scope_demoted", () => {
