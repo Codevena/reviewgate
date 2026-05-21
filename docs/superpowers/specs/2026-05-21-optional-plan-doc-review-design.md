@@ -177,7 +177,9 @@ auto path; anything else can be reviewed explicitly via `review-plan`.
 
 - `src/config/defaults.ts` — new `docReview` block (default off)
 - `src/config/define-config.ts` — `docReview` in the validated config type
-- `src/schemas/triage.ts` — `RiskClass` gains `"docs"`, matching `budgetTier`
+- `src/schemas/triage.ts` — `RiskClass` gains `"docs"` (the doc path reuses the
+  existing `"minimal"` budgetTier; no new tier, so `triage-engine.ts` TIER_RANK is
+  untouched)
 - `src/triage/matrix.ts` — doc-only branch: glob match → `riskClass:"docs"`,
   `runReview:true`; else skip as today
 - `src/triage/triage-engine.ts` — ensure the `"docs"` class survives `refineTriage`
@@ -208,6 +210,9 @@ auto path; anything else can be reviewed explicitly via `review-plan`.
 - **review-plan CLI:** path normalization (absolute → repo-relative), diff synthesis
   parses through `diff-facts.ts`, PASS/FAIL exit codes, missing-file error, binary
   rejection.
+- **one-shot state isolation:** a one-shot write lands in `plan-review.md`/`.json`
+  and leaves the gate's `pending.md`/`.json` untouched; gate mode still writes
+  `pending.*` (regression guard for the clobber bug).
 - **schema:** `RiskClass:"docs"` validates; config with `docReview` validates.
 - **Real end-to-end (no mocks):** `reviewgate review-plan` against a real sample
   spec with the real codex reviewer — must produce a real verdict. (Per project
