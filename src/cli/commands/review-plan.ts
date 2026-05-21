@@ -10,7 +10,7 @@ import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import { type ProviderId, createAdapter } from "../../providers/registry.ts";
 import { collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
-import { pendingMdPath } from "../../utils/paths.ts";
+import { planReviewMdPath } from "../../utils/paths.ts";
 
 export interface ReviewPlanInput {
   repoRoot: string;
@@ -114,7 +114,7 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
 
   let report = "";
   try {
-    report = readFileSync(pendingMdPath(input.repoRoot), "utf8");
+    report = readFileSync(planReviewMdPath(input.repoRoot), "utf8");
   } catch {
     report = "";
   }

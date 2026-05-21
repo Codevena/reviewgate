@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReportWriter } from "../../src/core/report-writer.ts";
@@ -33,20 +34,20 @@ function report(): PendingReport {
   };
 }
 
-describe("ReportWriter one-shot mode", () => {
-  it("gate mode (default) keeps the decisions-loop instructions", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "rg-rep1-"));
-    await new ReportWriter(repo).write(report());
-    const md = readFileSync(pendingMdPath(repo), "utf8");
-    expect(md).toContain("Required actions");
+describe("one-shot report path isolation", () => {
+  it("one-shot writes plan-review.md and does NOT touch the gate's pending.md", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-osp-"));
+    await new ReportWriter(repo).write(report(), { mode: "one-shot" });
+    expect(existsSync(planReviewMdPath(repo))).toBe(true);
+    expect(readFileSync(planReviewMdPath(repo), "utf8")).toContain("Reviewgate Report");
+    // The gate's report path must remain untouched by a one-shot review.
+    expect(existsSync(pendingMdPath(repo))).toBe(false);
   });
 
-  it("one-shot mode omits the decisions-loop instructions", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "rg-rep2-"));
-    await new ReportWriter(repo).write(report(), { mode: "one-shot" });
-    const md = readFileSync(planReviewMdPath(repo), "utf8");
-    expect(md).not.toContain("Required actions");
-    expect(md).not.toContain("decisions/");
-    expect(md).toContain("Reviewgate Report");
+  it("gate mode still writes pending.md (default)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-osp2-"));
+    await new ReportWriter(repo).write(report());
+    expect(existsSync(pendingMdPath(repo))).toBe(true);
+    expect(existsSync(planReviewMdPath(repo))).toBe(false);
   });
 });

@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
 import type { PendingReport } from "../schemas/pending-report.ts";
-import { escalationMdPath, pendingJsonPath, pendingMdPath } from "../utils/paths.ts";
+import {
+  escalationMdPath,
+  pendingJsonPath,
+  pendingMdPath,
+  planReviewJsonPath,
+  planReviewMdPath,
+} from "../utils/paths.ts";
 
 function ensureDir(p: string): void {
   const d = dirname(p);
@@ -108,10 +114,14 @@ export class ReportWriter {
   constructor(private readonly repoRoot: string) {}
 
   async write(report: PendingReport, opts?: { mode?: "gate" | "one-shot" }): Promise<void> {
-    const md = pendingMdPath(this.repoRoot);
-    const json = pendingJsonPath(this.repoRoot);
+    const mode = opts?.mode ?? "gate";
+    // One-shot reviews write to their OWN files so they never clobber the gate's
+    // pending.md/json (which the Stop-hook decisions loop reads).
+    const md = mode === "one-shot" ? planReviewMdPath(this.repoRoot) : pendingMdPath(this.repoRoot);
+    const json =
+      mode === "one-shot" ? planReviewJsonPath(this.repoRoot) : pendingJsonPath(this.repoRoot);
     ensureDir(md);
-    writeFileSync(md, renderMd(report, opts?.mode ?? "gate"), { mode: 0o600 });
+    writeFileSync(md, renderMd(report, mode), { mode: 0o600 });
     writeFileSync(json, JSON.stringify(report, null, 2), { mode: 0o600 });
   }
 
