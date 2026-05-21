@@ -350,6 +350,12 @@ export class Orchestrator {
 
     // --- Optional critic phase (demote-only) ---
     let criticMap: Map<string, CriticVerdict> | undefined;
+    // Observability: record whether the critic actually ran + produced verdicts,
+    // so a configured-but-silent critic (e.g. unparseable output) is visible in
+    // pending.json instead of being indistinguishable from "no critic".
+    let criticInfo:
+      | { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number }
+      | undefined;
     const criticCfg = this.input.config.phases.critic;
     if (criticCfg && allFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
@@ -370,7 +376,20 @@ export class Orchestrator {
           diffPath: join(cRun, "d.patch"),
         });
         const criticText = cRes.rawText ?? "";
-        if (criticText) criticMap = parseCriticOutput(criticText);
+        if (cRes.status !== "ok") {
+          criticInfo = { provider: criticCfg.provider, status: "error", verdicts: 0 };
+        } else if (!criticText) {
+          criticInfo = { provider: criticCfg.provider, status: "empty", verdicts: 0 };
+        } else {
+          criticMap = parseCriticOutput(criticText);
+          criticInfo = {
+            provider: criticCfg.provider,
+            status: criticMap.size > 0 ? "ran" : "empty",
+            verdicts: criticMap.size,
+          };
+        }
+      } else {
+        criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
       }
     }
 
@@ -380,7 +399,16 @@ export class Orchestrator {
       ...(criticMap ? { critic: criticMap } : {}),
     });
 
-    await this.writeReport(opts, start, settled, agg.dedupedFindings, agg.verdict, agg.counts);
+    const demoted = agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length;
+    await this.writeReport(
+      opts,
+      start,
+      settled,
+      agg.dedupedFindings,
+      agg.verdict,
+      agg.counts,
+      criticInfo ? { ...criticInfo, demoted } : undefined,
+    );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
     // Runs AFTER the verdict + report are committed and NEVER throws into / changes
@@ -579,6 +607,12 @@ export class Orchestrator {
     findings: Finding[],
     verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR",
     counts: { critical: number; warn: number; info: number } = { critical: 0, warn: 0, info: 0 },
+    critic?: {
+      provider: string;
+      status: "ran" | "error" | "empty" | "misconfigured";
+      verdicts: number;
+      demoted: number;
+    },
   ): Promise<void> {
     const writer = new ReportWriter(this.input.repoRoot);
     const reviewers =
@@ -614,6 +648,7 @@ export class Orchestrator {
         counts,
         reviewers,
         findings,
+        ...(critic ? { critic } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),
