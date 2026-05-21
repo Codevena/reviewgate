@@ -47,6 +47,19 @@ export function escalationMdPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "ESCALATION.md");
 }
 
+// M5 Part B1 — FP-ledger storage. A single JSON document (one FpLedgerIndex)
+// despite the `.jsonl` name kept from the design spec; mirrors BrainStore's
+// flock + atomic-write pattern.
+export function learningsDir(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "learnings");
+}
+export function knownFpPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), "known_fp.jsonl");
+}
+export function fpLedgerLockPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), ".lock");
+}
+
 export function auditDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "audit");
 }
