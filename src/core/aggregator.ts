@@ -40,24 +40,73 @@ function dedupKey(f: Finding): string {
   return `${f.file}|${f.category}|${Math.floor((f.line_start - 1) / 5)}`;
 }
 
+// Significant-word set of a message (lowercased, punctuation→space, drop short
+// tokens). Used for a CONSERVATIVE lexical-similarity merge so the SAME bug
+// described in similar words by different reviewers — even at a different
+// category/line/rule_id — collapses to one finding.
+function normTokens(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const t of s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")) {
+    if (t.length > 3) out.add(t);
+  }
+  return out;
+}
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+// Deliberately HIGH: only near-identical wording merges. Genuinely distinct
+// issues stay separate — over-merging would mask a real finding behind another's
+// single decision (a security risk), so we err toward keeping findings apart.
+const SIM_THRESHOLD = 0.6;
+
+interface Cluster {
+  sample: Finding;
+  reviewers: string[];
+  messages: string[];
+  tokens: Set<string>;
+}
+
 export function aggregate(input: AggregateInput): AggregateResult {
-  const groups = new Map<string, { sample: Finding; reviewers: string[]; messages: string[] }>();
+  const clusters: Cluster[] = [];
   for (const f of input.findings) {
-    const key = dedupKey(f);
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
-    const entry = groups.get(key);
-    if (entry) {
-      if (!entry.reviewers.includes(reviewerKey)) entry.reviewers.push(reviewerKey);
-      if (!entry.messages.includes(f.message)) entry.messages.push(f.message);
+    const fTokens = normTokens(f.message);
+    // Merge into an existing cluster (same file) when EITHER the original
+    // file|category|5-line region matches OR the wording is highly similar.
+    let target: Cluster | undefined;
+    for (const c of clusters) {
+      if (c.sample.file !== f.file) continue;
+      if (dedupKey(c.sample) === dedupKey(f) || jaccard(c.tokens, fTokens) >= SIM_THRESHOLD) {
+        target = c;
+        break;
+      }
+    }
+    if (target) {
+      if (!target.reviewers.includes(reviewerKey)) target.reviewers.push(reviewerKey);
+      if (!target.messages.includes(f.message)) target.messages.push(f.message);
       // Representative = highest severity (most conservative); ties keep the first.
-      if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[entry.sample.severity]) entry.sample = f;
+      if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[target.sample.severity]) {
+        target.sample = f;
+        target.tokens = fTokens;
+      }
     } else {
-      groups.set(key, { sample: f, reviewers: [reviewerKey], messages: [f.message] });
+      clusters.push({
+        sample: f,
+        reviewers: [reviewerKey],
+        messages: [f.message],
+        tokens: fTokens,
+      });
     }
   }
 
   const deduped: Finding[] = [];
-  for (const { sample, reviewers, messages } of groups.values()) {
+  for (const { sample, reviewers, messages } of clusters) {
     const consensus = computeConsensus(reviewers.length, input.reviewersTotal);
     // Preserve every reviewer's wording so nothing is lost when findings merge.
     const others = messages.filter((m) => m !== sample.message);

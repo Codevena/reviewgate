@@ -114,6 +114,62 @@ describe("aggregate", () => {
     expect(merged.details).toContain("Also reported"); // other wordings preserved
   });
 
+  it("merges near-identically WORDED findings across different line regions/categories", () => {
+    // Same bug, different reviewers, DIFFERENT lines + categories, but very
+    // similar wording → the lexical-similarity merge collapses them.
+    const a = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "y.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "hardcoded-secret",
+      message: "hardcoded secret committed in source",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "WARN",
+      category: "quality",
+      file: "y.ts",
+      line_start: 30,
+      line_end: 30,
+      rule_id: "exposed-credential",
+      message: "hardcoded secret in source code",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1);
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(r.dedupedFindings[0]!.severity).toBe("CRITICAL");
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(r.dedupedFindings[0]!.confirmed_by?.length).toBe(2);
+  });
+
+  it("does NOT merge differently-worded findings (no masking of distinct issues)", () => {
+    const a = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "z.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "sqli",
+      message: "user input string interpolation enables injection",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "z.ts",
+      line_start: 30,
+      line_end: 30,
+      rule_id: "no-ratelimit",
+      message: "missing rate limiting allows brute force abuse",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(2); // distinct issues stay separate
+  });
+
   it("keeps genuinely separate bugs (different line regions) distinct", () => {
     const sqli = fin({
       severity: "CRITICAL",
