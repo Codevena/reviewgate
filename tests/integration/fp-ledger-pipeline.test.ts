@@ -84,6 +84,9 @@ async function seedActive(repo: string): Promise<string> {
   return snap.entries[0]?.id as string;
 }
 
+// A WARN singleton → SOFT-PASS, which IS cached. Same signature/file as `finding`.
+const warnFinding: Finding = { ...finding, severity: "WARN" };
+
 describe("FP-ledger pipeline (opt-in)", () => {
   it("demotes a finding matching an active FP entry to INFO (CRITICAL→INFO, FAIL→PASS)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-fppipe-"));
@@ -122,5 +125,31 @@ describe("FP-ledger pipeline (opt-in)", () => {
     const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
     expect(report.findings[0].severity).toBe("CRITICAL");
     expect(report.findings[0].fp_ledger_match ?? null).toBeNull();
+  });
+
+  it("a cached SOFT-PASS is NOT served once an FP entry becomes active (cache key folds in the ledger)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-fppipe-cache-"));
+    const mk = () =>
+      new Orchestrator({
+        repoRoot: repo,
+        config: configWithFpLedger(true),
+        adapters: { codex: stub("codex", [warnFinding]) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DIFF,
+        reasonOnFailEnabled: true,
+      });
+    // Run 1: ledger empty → WARN stays → SOFT-PASS, which gets cached.
+    const r1 = await mk().runIteration({ runId: "RUN", iter: 1 });
+    expect(r1.verdict).toBe("SOFT-PASS");
+    // The ledger now gains an active entry matching the finding's signature.
+    const fpId = await seedActive(repo);
+    // Run 2 (same diff/config): if the active-ledger identity did not feed the
+    // cache key, the cached SOFT-PASS would be returned and the demote skipped.
+    const r2 = await mk().runIteration({ runId: "RUN", iter: 1 });
+    expect(r2.verdict).toBe("PASS");
+    const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
+    expect(report.findings[0].severity).toBe("INFO");
+    expect(report.findings[0].fp_ledger_match.pattern_id).toBe(fpId);
   });
 });

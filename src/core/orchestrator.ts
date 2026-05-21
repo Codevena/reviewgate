@@ -239,6 +239,22 @@ export class Orchestrator {
           .join(",")
       : "";
 
+    // M5 Part B1: the active/sticky FP-ledger snapshot decides which findings get
+    // demoted, so its identity must invalidate the cache exactly like the brain's.
+    // Without this a cached PASS/SOFT-PASS could be served BEFORE the reactive
+    // demote runs, leaving a now-active FP blocking (e.g. a SOFT-PASS under a
+    // block/ask-once soft-pass policy). Read post-learn/decay so a freshly
+    // promoted entry deterministically forces a re-review. Reused below so the
+    // aggregate stage does not read the ledger a second time.
+    const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot() : undefined;
+    const fpActiveHash =
+      fpActiveSnapshot && fpActiveSnapshot.size > 0
+        ? [...fpActiveSnapshot.values()]
+            .map((e) => `${e.signature}:${e.id}:${e.stage}`)
+            .sort()
+            .join(",")
+        : "";
+
     // --- Cache short-circuit (only for previously-passing verdicts) ---
     const cacheEnabled = this.input.config.cache.enabled;
     const cacheKey = computeCacheKey({
@@ -246,8 +262,10 @@ export class Orchestrator {
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
       // M3: provider versions not queried; cache invalidates on config/version/
       // schema change. M4: the pinned brain identity is folded in here so any
-      // brain change re-runs the panel deterministically.
-      providerVersions: brainActiveHash,
+      // brain change re-runs the panel deterministically. M5 B1: the active FP
+      // ledger identity is appended (only when non-empty → existing keys are
+      // unchanged when fpLedger is off or has no active entries).
+      providerVersions: fpActiveHash ? `${brainActiveHash}|fp:${fpActiveHash}` : brainActiveHash,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -446,8 +464,8 @@ export class Orchestrator {
       }
     }
 
-    const fpActive = fpStore
-      ? new Map([...(await fpStore.activeSnapshot())].map(([sig, e]) => [sig, { id: e.id }]))
+    const fpActive = fpActiveSnapshot
+      ? new Map([...fpActiveSnapshot].map(([sig, e]) => [sig, { id: e.id }]))
       : undefined;
 
     const agg = aggregate({
