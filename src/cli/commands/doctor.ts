@@ -2,15 +2,43 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import type { ReviewgateConfig } from "../../config/define-config.ts";
+import { loadConfig } from "../../config/loader.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 
-interface Check {
+export interface Check {
   name: string;
   status: "ok" | "warn" | "fail";
   detail: string;
   hint?: string;
+}
+
+// A reviewer must be BOTH listed in phases.review.reviewers AND enabled in
+// providers.<id> (only codex is enabled by default). If it is listed but not
+// enabled the panel produces zero runs — the gate now fails CLOSED (ERROR) rather
+// than silently passing, but the cause is non-obvious, so warn about it here.
+export function reviewersEnabledCheck(cfg: ReviewgateConfig): Check {
+  const name = "reviewer providers enabled";
+  const disabled = [
+    ...new Set(
+      cfg.phases.review.reviewers.map((r) => r.provider).filter((p) => !cfg.providers[p]?.enabled),
+    ),
+  ];
+  if (disabled.length === 0) {
+    return {
+      name,
+      status: "ok",
+      detail: `${cfg.phases.review.reviewers.length} reviewer(s) configured + enabled`,
+    };
+  }
+  return {
+    name,
+    status: "warn",
+    detail: `configured but NOT enabled in providers: ${disabled.join(", ")} → the gate cannot review and will ERROR`,
+    hint: `Set providers.${disabled[0]}.enabled = true in reviewgate.config.ts (a reviewer must be listed in phases.review.reviewers AND enabled in providers).`,
+  };
 }
 
 function checkBinary(bin: string, name: string): Check {
@@ -56,12 +84,27 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
       : {}),
   });
 
-  const cfgExists = existsSync(join(input.repoRoot, "reviewgate.config.ts"));
+  const cfgPath = join(input.repoRoot, "reviewgate.config.ts");
+  const cfgExists = existsSync(cfgPath);
   checks.push({
     name: "reviewgate.config.ts",
     status: cfgExists ? "ok" : "warn",
     detail: cfgExists ? "present" : "missing (defaults will apply)",
   });
+
+  // Inspect the effective config: warn if a configured reviewer is not enabled in
+  // providers (else the panel runs 0 reviewers → the gate ERRORs with no obvious
+  // cause). A config that fails to load is surfaced as a warn rather than crashing.
+  try {
+    const cfg = await loadConfig(cfgExists ? cfgPath : null);
+    checks.push(reviewersEnabledCheck(cfg));
+  } catch (e) {
+    checks.push({
+      name: "reviewgate.config.ts load",
+      status: "warn",
+      detail: `failed to load — defaults will apply: ${(e as Error).message}`,
+    });
+  }
 
   // Optional reviewer CLIs (M2). These are only needed if enabled in config;
   // report as warn (not fail) when absent so codex-only setups stay green.
