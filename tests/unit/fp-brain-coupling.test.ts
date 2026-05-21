@@ -92,6 +92,44 @@ describe("pairActiveFpEntries", () => {
     expect(res.paired).toBe(0);
   });
 
+  it("re-links an ORPHAN brain entry instead of creating a duplicate (partial-write recovery)", async () => {
+    // Simulate a prior run that created the paired brain entry but crashed BEFORE
+    // writing linked_brain_id back to the FP entry. The FP is still unlinked, but
+    // a brain entry with linked_fp_id == the FP id already exists. The next pairing
+    // must RE-LINK (not create a second brain entry).
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3-orphan-"));
+    const fpStore = await seedActive(repo);
+    const fpId = (await fpStore.snapshot()).entries[0]?.id as string;
+    const brainStore = new BrainStore(repo);
+    const orphanId = await brainStore.addAllocatingId((id) =>
+      BrainEntrySchema.parse({
+        id,
+        type: "convention",
+        scope: "this-repo",
+        title: "Known false positive: sql-injection in a.ts",
+        body: "prior run",
+        tags: ["false-positive", "sql-injection"],
+        file_globs: ["a.ts"],
+        status: "candidate",
+        confidence: 0.9,
+        evidence: [],
+        created_at: "t",
+        source_run_id: "prior",
+        linked_fp_id: fpId,
+      }),
+    );
+    const res = await pairActiveFpEntries({
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run2",
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    expect(res.paired).toBe(1);
+    expect((await brainStore.snapshot()).entries).toHaveLength(1); // no duplicate
+    expect((await fpStore.snapshot()).entries[0]?.linked_brain_id).toBe(orphanId);
+  });
+
   it("is non-blocking on embed failure (returns paired:0, no throw)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-b3-embfail-"));
     const fpStore = await seedActive(repo);

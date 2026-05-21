@@ -40,10 +40,17 @@ export async function pairActiveFpEntries(input: {
   );
   if (toPair.length === 0) return { paired: 0, contradictions: 0 };
 
-  // Pre-existing active brain entries for the B3b contradiction check (snapshot
-  // ONCE, before we add any of this run's pairings).
+  // Snapshot the brain ONCE up front: for the B3b contradiction check (active
+  // entries) AND to recover orphans — a prior run may have created the paired
+  // brain entry but crashed before writing linked_brain_id back to the FP, so an
+  // entry with linked_fp_id == the FP id can already exist. Re-link it instead of
+  // creating a duplicate.
+  const brainEntries = (await input.brainStore.snapshot()).entries;
+  const orphanByFp = new Map(
+    brainEntries.filter((e) => e.linked_fp_id).map((e) => [e.linked_fp_id as string, e.id]),
+  );
   const activeBrain = input.judge
-    ? (await input.brainStore.snapshot()).entries
+    ? brainEntries
         .filter((e) => e.status === "active")
         .map((e) => ({ id: e.id, title: e.title, body: e.body, type: e.type as string }))
     : [];
@@ -99,6 +106,19 @@ export async function pairActiveFpEntries(input: {
         contradictions++;
         continue; // do NOT create a brain note that contradicts an existing memory
       }
+    }
+
+    // Orphan recovery: a prior run already created the paired brain entry but
+    // failed to back-link it. Re-link instead of creating a duplicate.
+    const orphan = orphanByFp.get(e.id);
+    if (orphan) {
+      await input.fpStore.mutate((idx) => {
+        const t = idx.entries.find((x) => x.id === e.id);
+        if (t) t.linked_brain_id = orphan;
+        return { next: idx, result: undefined };
+      });
+      paired++;
+      continue;
     }
 
     try {
