@@ -100,7 +100,14 @@ export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000):
       // could point outside the repo (e.g. ~/.ssh/id_rsa); reading its target
       // would leak that file's content into the reviewer prompt. Only ever read
       // regular files; skip symlinks/dirs/special files.
-      if (!lstatSync(abs).isFile()) continue;
+      const st = lstatSync(abs);
+      if (!st.isFile()) continue;
+      // Size-guard BEFORE reading: never load a file that can't fit the remaining
+      // budget into memory just to omit its block later (avoids a huge-file stall).
+      if (st.size > maxBytes - used) {
+        out += `### ${f}\n(omitted — context budget exceeded)\n`;
+        continue;
+      }
       content = readFileSync(abs, "utf8");
     } catch {
       continue; // deleted or binary
