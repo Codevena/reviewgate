@@ -40,6 +40,9 @@ export const FindingSchema = z.object({
   consensus: Consensus,
   critic_verdict: z.enum(["keep", "likely_fp"]).optional(),
   critic_reason: z.string().optional(),
+  // M5 Part A: set true when the aggregator demoted this finding to INFO because
+  // its range falls outside the changed hunks (advisory, non-blocking).
+  scope_demoted: z.boolean().optional(),
   fp_ledger_match: z
     .object({
       pattern_id: z.string(),
