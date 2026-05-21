@@ -47,6 +47,53 @@ export const REVIEW_OUTPUT_SCHEMA = {
         },
       },
     },
+    // OPTIONAL repo-knowledge proposals. Listed here (with the parent object's
+    // additionalProperties:false) so OpenRouter's strict json_schema mode does
+    // NOT silently strip them. Mirrors RawProposal. Evidence's reviewer_id/run_id
+    // are deliberately omitted: the orchestrator stamps the emitting adapter's
+    // identity and discards any LLM-supplied provider signal (anti-collusion).
+    memory_proposals: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "scope", "title", "body", "confidence", "tags", "evidence"],
+        properties: {
+          type: {
+            type: "string",
+            enum: ["convention", "anti-pattern", "external-knowledge", "disagreement"],
+          },
+          scope: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          confidence: { type: "number" },
+          tags: { type: "array", items: { type: "string" } },
+          evidence: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["kind"],
+              properties: {
+                kind: { type: "string" },
+                source_url: { type: "string" },
+                snippet: { type: "string" },
+                from_diff: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["file", "line_start", "line_end"],
+                  properties: {
+                    file: { type: "string" },
+                    line_start: { type: "integer" },
+                    line_end: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 
@@ -61,19 +108,46 @@ export interface ReviewFinding {
   confidence: number;
 }
 
+// Reviewer-submitted (pre-enrichment) proposal shape. Mirrors MemoryProposalSchema
+// but is kept loose here so review-output.ts has no dep on brain schemas.
+export interface RawProposal {
+  type: string;
+  scope: string;
+  title: string;
+  body: string;
+  confidence: number;
+  tags: string[];
+  evidence: Array<{
+    kind: string;
+    source_url?: string;
+    snippet?: string;
+    // A reviewer MAY cite which reviewer(s) corroborated an observation. When
+    // present this is preserved (enabling the cross-provider quorum); when absent
+    // the orchestrator stamps the emitting reviewer's id (collapsing to a single
+    // provider — the anti-collusion default).
+    reviewer_id?: string;
+    from_diff?: { file: string; line_start: number; line_end: number };
+  }>;
+}
+
 export interface ReviewOutput {
   verdict: "PASS" | "FAIL";
   findings: ReviewFinding[];
+  memory_proposals?: RawProposal[];
 }
 
 export function parseReviewOutput(text: string): ReviewOutput | null {
   const tryParse = (s: string): ReviewOutput | null => {
     try {
-      const o = JSON.parse(s) as Partial<ReviewOutput>;
+      const o = JSON.parse(s) as Record<string, unknown>;
       if (Array.isArray(o.findings)) {
+        const mp = Array.isArray(o.memory_proposals)
+          ? (o.memory_proposals as RawProposal[])
+          : undefined;
         return {
           verdict: o.verdict === "PASS" ? "PASS" : "FAIL",
           findings: o.findings as ReviewFinding[],
+          ...(mp !== undefined ? { memory_proposals: mp } : {}),
         };
       }
     } catch {

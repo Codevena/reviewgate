@@ -1,5 +1,6 @@
 // src/providers/openrouter.ts
 import { readFileSync } from "node:fs";
+import type { EmbedOptions } from "../core/brain/embeddings.ts";
 import type { Finding } from "../schemas/finding.ts";
 import type {
   Preflight,
@@ -15,6 +16,10 @@ import {
 } from "./review-output.ts";
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+export const EMBEDDINGS_ENDPOINT = "https://openrouter.ai/api/v1/embeddings";
+
+/** Default embeddings request timeout (ms) when EmbedOptions.timeoutMs is unset. */
+const EMBED_TIMEOUT_MS = 30_000;
 
 export interface OpenRouterAdapterOptions {
   fetchImpl?: typeof fetch;
@@ -135,5 +140,60 @@ export class OpenRouterAdapter implements ProviderAdapter {
       rawText: content,
       status: "ok",
     };
+  }
+
+  /**
+   * Produce an embedding vector for `text` via the OpenRouter embeddings API.
+   * Fails-closed: throws on any error, missing key, HTTP failure, or empty vector
+   * so callers can treat any exception as "dedup check unavailable".
+   */
+  async embed(text: string, opts: EmbedOptions): Promise<number[]> {
+    const key = opts.apiKeyEnv ? process.env[opts.apiKeyEnv] : undefined;
+    if (!key) {
+      throw new Error(`OpenRouter embed: API key env '${opts.apiKeyEnv}' is not set`);
+    }
+
+    const body = {
+      model: opts.model,
+      input: text,
+    };
+
+    interface EmbedResponse {
+      data?: Array<{ embedding?: number[]; index?: number }>;
+      error?: { message?: string };
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? EMBED_TIMEOUT_MS);
+    let json: EmbedResponse;
+    try {
+      const resp = await this.fetchImpl(EMBEDDINGS_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!resp.ok) {
+        const errText = (await resp.text()).slice(0, 500);
+        throw new Error(`OpenRouter embed HTTP ${resp.status}: ${errText}`);
+      }
+
+      json = (await resp.json()) as EmbedResponse;
+    } finally {
+      clearTimeout(timer);
+    }
+    if (json.error?.message) {
+      throw new Error(`OpenRouter embed error: ${json.error.message}`);
+    }
+
+    const vector = json.data?.[0]?.embedding;
+    if (!vector || vector.length === 0) {
+      throw new Error("OpenRouter embed: received empty or missing embedding vector");
+    }
+    return vector;
   }
 }
