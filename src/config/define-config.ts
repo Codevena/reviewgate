@@ -86,6 +86,17 @@ export const ConfigSchema = z.object({
     pendingPath: z.string(),
     pendingJsonPath: z.string(),
   }),
+  docReview: z
+    .object({
+      enabled: z.boolean(),
+      globs: z.array(z.string()),
+      persona: z.string(),
+    })
+    .default({
+      enabled: false,
+      globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
+      persona: "plan",
+    }),
 });
 
 export type ReviewgateConfig = z.infer<typeof ConfigSchema>;
