@@ -38,28 +38,30 @@ describe("docs cache", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-dcache-"));
     const key = docsCacheKey("/colinhacks/zod", "3.25.0");
     const entry = sampleEntry();
-    await putCachedDocs(repo, key, entry, 30);
-    const got = await getCachedDocs(repo, key);
+    await putCachedDocs(repo, key, entry);
+    const got = await getCachedDocs(repo, key, 30);
     expect(got).toEqual(entry);
   });
 
   it("returns null for a missing key", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-dcache2-"));
-    expect(await getCachedDocs(repo, docsCacheKey("/x/y", "1.0.0"))).toBeNull();
+    expect(await getCachedDocs(repo, docsCacheKey("/x/y", "1.0.0"), 30)).toBeNull();
   });
 
-  it("returns null after the TTL expires", async () => {
+  it("applies the TTL at READ time (current ttlDays), not a value stored at write", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-dcache3-"));
     const key = docsCacheKey("/colinhacks/zod", "3.25.0");
-    const entry = { ...sampleEntry(), fetchedAt: Date.now() - 2 * 24 * 60 * 60 * 1000 };
-    await putCachedDocs(repo, key, entry, 1); // ttl 1 day, written 2 days "ago"
-    expect(await getCachedDocs(repo, key)).toBeNull();
+    const entry = { ...sampleEntry(), fetchedAt: Date.now() - 2 * 24 * 60 * 60 * 1000 }; // 2 days old
+    await putCachedDocs(repo, key, entry);
+    // a 30-day TTL still considers it fresh; lowering to 1 day expires it immediately
+    expect(await getCachedDocs(repo, key, 30)).not.toBeNull();
+    expect(await getCachedDocs(repo, key, 1)).toBeNull();
   });
 
   it("writes with mode 0o600 under .reviewgate/cache/docs", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-dcache4-"));
     const key = docsCacheKey("/colinhacks/zod", "3.25.0");
-    await putCachedDocs(repo, key, sampleEntry(), 30);
+    await putCachedDocs(repo, key, sampleEntry());
     const p = join(repo, ".reviewgate", "cache", "docs", `${key}.json`);
     // file exists + is JSON
     expect(() => JSON.parse(readFileSync(p, "utf8"))).not.toThrow();

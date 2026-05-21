@@ -37,12 +37,20 @@ function docsCachePath(repoRoot: string, key: string): string {
   return join(docsCacheDir(repoRoot), `${key}.json`);
 }
 
-export async function getCachedDocs(repoRoot: string, key: string): Promise<CachedDocs | null> {
+// TTL is a READ-TIME policy: freshness is judged against the CURRENT `ttlDays`
+// (from config) using the entry's `fetchedAt`, NOT a value frozen at write time.
+// This way lowering ttlDays (or wanting fresher docs) takes effect immediately
+// on existing entries instead of waiting out a stale stored TTL.
+export async function getCachedDocs(
+  repoRoot: string,
+  key: string,
+  ttlDays: number,
+): Promise<CachedDocs | null> {
   const p = docsCachePath(repoRoot, key);
   if (!existsSync(p)) return null;
   try {
-    const o = JSON.parse(readFileSync(p, "utf8")) as { ttlDays: number; entry: CachedDocs };
-    const ttlMs = o.ttlDays * 24 * 60 * 60 * 1000;
+    const o = JSON.parse(readFileSync(p, "utf8")) as { entry: CachedDocs };
+    const ttlMs = ttlDays * 24 * 60 * 60 * 1000;
     if (Date.now() - o.entry.fetchedAt > ttlMs) return null;
     return o.entry;
   } catch {
@@ -54,12 +62,11 @@ export async function putCachedDocs(
   repoRoot: string,
   key: string,
   entry: CachedDocs,
-  ttlDays: number,
 ): Promise<void> {
   const dir = docsCacheDir(repoRoot);
   mkdirSync(dir, { recursive: true });
   const p = docsCachePath(repoRoot, key);
   const tmp = `${p}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ ttlDays, entry }), { mode: 0o600 });
+  writeFileSync(tmp, JSON.stringify({ entry }), { mode: 0o600 });
   renameSync(tmp, p);
 }

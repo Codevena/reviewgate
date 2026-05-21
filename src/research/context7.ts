@@ -162,7 +162,7 @@ export async function fetchLibraryDocs(
 
       // 2) cache check — keyed by libraryId + the REQUESTED version (stable across runs).
       const key = docsCacheKey(libraryId, lib.version);
-      const cached = await getCachedDocs(opts.repoRoot, key);
+      const cached = await getCachedDocs(opts.repoRoot, key, opts.ttlDays);
       if (cached) {
         outcomes.push({ name: lib.name, outcome: "cache-hit", text: cached.docs });
         corpus.push({
@@ -220,7 +220,7 @@ export async function fetchLibraryDocs(
         responseHash,
         docs: text,
       };
-      await putCachedDocs(opts.repoRoot, key, entry, opts.ttlDays);
+      await putCachedDocs(opts.repoRoot, key, entry);
 
       outcomes.push({ name: lib.name, outcome: truncated ? "truncated" : "fetched", text });
       corpus.push({ name: lib.name, libraryId, version: usedVersion, responseHash });
