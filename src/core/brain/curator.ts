@@ -11,6 +11,84 @@ import { curatorDecisionsPath } from "../../utils/paths.ts";
 import { type Embedder, cosineSimilarity } from "./embeddings.ts";
 import type { BrainStore } from "./store.ts";
 
+// Valid evidence kinds — mirrors EvidenceItemSchema's enum.
+const VALID_EVIDENCE_KINDS = new Set([
+  "reviewer-finding",
+  "web-fetch",
+  "deterministic",
+  "reviewer-observation",
+]);
+
+// Valid BrainEntryType values — mirrors BrainEntryType enum.
+const VALID_BRAIN_ENTRY_TYPES = new Set([
+  "convention",
+  "anti-pattern",
+  "external-knowledge",
+  "disagreement",
+  "research-cache",
+]);
+
+/**
+ * normalizeProposal — coerce a raw (unknown) proposal into a valid
+ * MemoryProposal shape, tolerating common formatting variance (overlong
+ * title/body, missing/defaultable optional fields, bad evidence items) without
+ * fabricating data or weakening security rules.
+ *
+ * Returns null only when the proposal is irrecoverably malformed:
+ *   - title is not a string
+ *   - type is not one of the 5 known BrainEntryType values
+ *   - zero valid evidence items remain after dropping malformed ones
+ */
+export function normalizeProposal(p: unknown): MemoryProposal | null {
+  if (p === null || typeof p !== "object") return null;
+  const raw = p as Record<string, unknown>;
+
+  // title: must be a string; trim + truncate to 80 chars.
+  if (typeof raw.title !== "string") return null;
+  const title = raw.title.trim().slice(0, 80);
+
+  // body: must be a string (may be empty); truncate to 500 chars.
+  const body = typeof raw.body === "string" ? raw.body.slice(0, 500) : "";
+
+  // type: must be one of the 5 known values — cannot be guessed.
+  if (typeof raw.type !== "string" || !VALID_BRAIN_ENTRY_TYPES.has(raw.type)) return null;
+  const type = raw.type as MemoryProposal["type"];
+
+  // scope: if non-empty string keep; else default to "this-repo".
+  const scope = typeof raw.scope === "string" && raw.scope.length > 0 ? raw.scope : "this-repo";
+
+  // confidence: coerce to number, clamp [0,1]; default 0.5.
+  let confidence = 0.5;
+  if (typeof raw.confidence === "number" && !Number.isNaN(raw.confidence)) {
+    confidence = Math.min(1, Math.max(0, raw.confidence));
+  } else if (typeof raw.confidence === "string") {
+    const parsed = Number(raw.confidence);
+    if (!Number.isNaN(parsed)) confidence = Math.min(1, Math.max(0, parsed));
+  }
+
+  // tags: keep if array of strings; else [].
+  const tags =
+    Array.isArray(raw.tags) && (raw.tags as unknown[]).every((t) => typeof t === "string")
+      ? (raw.tags as string[])
+      : [];
+
+  // evidence: keep only items with a valid `kind`; preserve all other fields.
+  const rawEvidence = Array.isArray(raw.evidence) ? (raw.evidence as unknown[]) : [];
+  const evidence = rawEvidence.filter(
+    (e) =>
+      e !== null &&
+      typeof e === "object" &&
+      VALID_EVIDENCE_KINDS.has((e as Record<string, unknown>).kind as string),
+  ) as EvidenceItem[];
+
+  // A proposal needs ≥1 valid evidence item.
+  if (evidence.length === 0) return null;
+
+  const normalized = { type, scope, title, body, evidence, confidence, tags };
+  const result = MemoryProposalSchema.safeParse(normalized);
+  return result.success ? result.data : null;
+}
+
 const DEDUP_THRESHOLD = 0.85;
 const GROUP_THRESHOLD = 0.85;
 const MAX_PROMOTIONS = 3;
@@ -129,15 +207,37 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     return res;
   }
 
+  // --- Normalize each incoming proposal (tolerate overlong title/body +
+  // imperfect evidence items) before grouping. Proposals that cannot be
+  // repaired (no string title, unknown type, zero valid evidence) are rejected
+  // here with rule_failed:"schema" — identical to the rule-1 path below.
+  // Surviving normalized proposals replace the originals for all downstream
+  // logic (grouping, dedup, promotion). ---
+  const normalizedProposals: MemoryProposal[] = [];
+  const normalizedVecs: number[][] = [];
+  for (let i = 0; i < input.proposals.length; i++) {
+    const raw = input.proposals[i] as MemoryProposal;
+    const normalized = normalizeProposal(raw);
+    if (!normalized) {
+      res.rejected++;
+      log("rejected", typeof raw.title === "string" ? raw.title : "(unknown)", {
+        rule_failed: "schema",
+      });
+      continue;
+    }
+    normalizedProposals.push(normalized);
+    normalizedVecs.push(vecs[i] as number[]);
+  }
+
   // --- Group proposals by cosine ≥ GROUP_THRESHOLD. A proposal joins an existing
   // group if it matches ANY member; otherwise it starts a new group. Grouping is
   // how real cross-provider quorum is reconstructed: similar knowledge emitted by
   // DISTINCT reviewers accretes into one group whose merged evidence spans
   // multiple providers. ---
   const groups: ProposalGroup[] = [];
-  for (let i = 0; i < input.proposals.length; i++) {
-    const proposal = input.proposals[i] as MemoryProposal;
-    const vec = vecs[i] as number[];
+  for (let i = 0; i < normalizedProposals.length; i++) {
+    const proposal = normalizedProposals[i] as MemoryProposal;
+    const vec = normalizedVecs[i] as number[];
     let target: ProposalGroup | undefined;
     for (const g of groups) {
       const matches = g.vecs.some((mv) => {
@@ -199,8 +299,8 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     }
 
     // The representative embedding (already computed above) drives dedup.
-    const repIdx = input.proposals.indexOf(rep);
-    const vec = (repIdx >= 0 ? vecs[repIdx] : group.vecs[0]) as number[];
+    const repIdx = normalizedProposals.indexOf(rep);
+    const vec = (repIdx >= 0 ? normalizedVecs[repIdx] : group.vecs[0]) as number[];
 
     const snap = await input.store.snapshot();
     // Rule 3: consistency (same title already active).

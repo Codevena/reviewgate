@@ -18,6 +18,7 @@ import type { MemoryProposal } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
+import { collectChangedFileContents } from "../utils/git.ts";
 import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
@@ -69,6 +70,9 @@ const REVIEW_PROMPT_PREAMBLE = [
   '"scope":"this-repo|language-<x>|framework-<x>","title":"<=80","body":"<=500","confidence":0..1,',
   '"tags":[...],"evidence":[{"kind":"reviewer-observation","snippet":"..."}|{"kind":"reviewer-observation","source_url":"https://..."}]}.',
   "Cite a source_url for external facts; do NOT fabricate hashes.",
+  "Full content of every changed file is provided after the diff for reference.",
+  "Before reporting any symbol as undefined or missing, verify it against that",
+  "full-file content — failure to do so produces false-positive findings.",
 ].join("\n");
 
 const PERSONA_REAFFIRM: Record<string, string> = {
@@ -201,6 +205,10 @@ export class Orchestrator {
         : configured;
     const activeReviewers = reviewers.length > 0 ? reviewers : configured;
 
+    // Compute once per run: full content of every changed file, for false-positive
+    // suppression. Reviewers can consult this before reporting a symbol as missing.
+    const fileContext = collectChangedFileContents(repo);
+
     const tasks = activeReviewers.map(async (r): Promise<ReviewerRun | null> => {
       const adapter = this.input.adapters[r.provider];
       const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
@@ -215,6 +223,9 @@ export class Orchestrator {
 
       const reaffirm = PERSONA_REAFFIRM[r.persona] ?? DEFAULT_REAFFIRM;
       const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
+      const sanitisedCtx = fileContext
+        ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
+        : "";
       const runDir = mkdtempSync(join(tmpdir(), `rg-rev-${r.provider}-`));
       const promptFile = join(runDir, "prompt.txt");
       const findingsPath = join(runDir, "findings.md");
@@ -224,6 +235,12 @@ export class Orchestrator {
       if (researchText) promptParts.push("## Research context", researchText, "");
       if (brainText) promptParts.push("## Brain context", brainText, "");
       promptParts.push(sanitised.text);
+      if (sanitisedCtx)
+        promptParts.push(
+          "",
+          "## Full content of changed files (reference only — review the DIFF above; consult this to confirm a symbol exists before reporting it undefined/missing)",
+          sanitisedCtx,
+        );
       writeFileSync(promptFile, promptParts.join("\n"));
       writeFileSync(diffPath, this.input.diff);
       const res = await adapter.review({
@@ -544,6 +561,7 @@ export class Orchestrator {
             status: r.res.status,
             cost_usd: r.res.usage.costUsd,
             duration_ms: r.res.durationMs,
+            ...(r.res.statusDetail ? { status_detail: r.res.statusDetail } : {}),
           }))
         : [
             {

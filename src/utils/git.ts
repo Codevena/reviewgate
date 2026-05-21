@@ -1,5 +1,7 @@
-// src/utils/git.ts
 import { spawnSync } from "node:child_process";
+// src/utils/git.ts
+import { lstatSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface GitInfo {
   sha: string;
@@ -53,6 +55,80 @@ export function collectDiff(repoRoot: string): string {
       const d = git(repoRoot, ["diff", "--no-color", "--no-index", "/dev/null", file]);
       if (d.stdout) out += `${out.length > 0 && !out.endsWith("\n") ? "\n" : ""}${d.stdout}`;
     }
+  }
+  return out;
+}
+
+// The full current content of every changed (non-reviewgate, non-deleted) file,
+// labeled per file and capped by a total byte budget. Reviewers get this ALONGSIDE
+// the diff so they can verify a symbol exists before reporting it as missing — the
+// #1 source of false-positive "undefined" findings on refactors. Skips binaries
+// (read failure) and reviewgate-managed paths.
+export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000): string {
+  const names = new Set<string>();
+  const tracked = git(repoRoot, [
+    "diff",
+    "--name-only",
+    "HEAD",
+    "--",
+    ".",
+    ":(exclude)reviewgate.config.ts",
+    ":(exclude).reviewgate",
+    ":(exclude).reviewgate/**",
+  ]);
+  if (tracked.status === 0) {
+    for (const f of tracked.stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0))
+      names.add(f);
+  }
+  const untracked = git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+  for (const f of untracked.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0))
+    names.add(f);
+  let out = "";
+  let used = 0;
+  // Omission markers count toward `used` too, and once the budget is spent we
+  // stop entirely — so the total output (content + markers) is hard-bounded by
+  // ~maxBytes regardless of how many oversized files the change set contains.
+  const omit = (f: string): boolean => {
+    const note = `### ${f}\n(omitted — context budget exceeded)\n`;
+    out += note;
+    used += note.length;
+    return used >= maxBytes;
+  };
+  for (const f of [...names].sort()) {
+    if (used >= maxBytes) break;
+    if (isReviewgateManaged(f)) continue;
+    const abs = join(repoRoot, f);
+    let content: string;
+    try {
+      // lstat (not stat): never FOLLOW a symlink. A changed/untracked symlink
+      // could point outside the repo (e.g. ~/.ssh/id_rsa); reading its target
+      // would leak that file's content into the reviewer prompt. Only ever read
+      // regular files; skip symlinks/dirs/special files.
+      const st = lstatSync(abs);
+      if (!st.isFile()) continue;
+      // Size-guard BEFORE reading: never load a file that can't fit the remaining
+      // budget into memory just to omit its block later (avoids a huge-file stall).
+      if (st.size > maxBytes - used) {
+        if (omit(f)) break;
+        continue;
+      }
+      content = readFileSync(abs, "utf8");
+    } catch {
+      continue; // deleted or binary
+    }
+    const block = `### ${f}\n\`\`\`\n${content}\n\`\`\`\n`;
+    if (used + block.length > maxBytes) {
+      if (omit(f)) break;
+      continue;
+    }
+    used += block.length;
+    out += block;
   }
   return out;
 }
