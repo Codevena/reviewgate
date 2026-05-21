@@ -701,4 +701,52 @@ describe("LoopDriver", () => {
     // Budget preserved (not reset to 0).
     expect((await state.load()).iteration).toBe(1);
   });
+
+  it("escalates reject-rate-high when this cycle's confirmed-FP rate exceeds the threshold", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQREJECT");
+    // iteration 2 < maxIterations(3); no equal trailing signatures (stuck won't
+    // fire); cost 0 (OAuth) so cost-cap won't fire → reject-rate is the trigger.
+    await state.update((cur) => ({ ...cur, iteration: 2 }));
+    writeDirty(repo);
+    const wrong = (id: string) => ({
+      schema: "reviewgate.decision.v1",
+      finding_id: id,
+      verdict: "rejected",
+      reason: "false positive on unchanged code xx",
+      reviewer_was_wrong: true,
+    });
+    // 4 decisions this cycle, all confirmed reviewer FPs → rate 100% ≥ 80%.
+    const d1 = decisionsPath(repo, 1);
+    mkdirSync(dirname(d1), { recursive: true });
+    writeFileSync(
+      d1,
+      `${[wrong("F-001"), wrong("F-002"), wrong("F-003")].map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
+    writeFileSync(decisionsPath(repo, 2), `${JSON.stringify(wrong("F-001"))}\n`);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("ESCALATED");
+    expect(decision.reason).toContain("reject-rate-high");
+    expect((await state.load()).escalation_reason).toBe("reject-rate-high");
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
 });

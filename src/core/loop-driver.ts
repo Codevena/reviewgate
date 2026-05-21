@@ -6,9 +6,14 @@ import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
 import { decisionsDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
+import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import type { Orchestrator } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
 import type { StateStore } from "./state-store.ts";
+
+// Minimum decisions this cycle before the reject-rate circuit-breaker can fire,
+// so a single (or couple of) reviewer_was_wrong rejection never escalates.
+const MIN_DECISIONS_FOR_REJECT_RATE = 4;
 
 export interface LoopInput {
   repoRoot: string;
@@ -229,6 +234,23 @@ export class LoopDriver {
         "stuck-signatures",
         "Findings unchanged across 2 iterations.",
       );
+    }
+
+    // Escalation precondition: reviewers are producing a high rate of confirmed
+    // false positives this cycle → stop nagging and surface to the human. Guarded
+    // by a minimum sample so a single reviewer_was_wrong rejection never escalates.
+    if (state.iteration > 0 && this.i.config.loop.rejectRateEscalation > 0) {
+      const rr = computeRejectRate(this.i.repoRoot, state.iteration);
+      if (
+        rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
+        rr.rate >= this.i.config.loop.rejectRateEscalation
+      ) {
+        return this.escalateAndDecide(
+          state,
+          "reject-rate-high",
+          `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
+        );
+      }
     }
 
     // If a prior iter exists and decisions are required, check they exist.
