@@ -13,6 +13,7 @@ dist
 !.reviewgate/cassettes/golden/
 .reviewgate/reports/
 .reviewgate/pending.*
+.reviewgate/plan-review.*
 .reviewgate/decisions/
 .reviewgate/state.json
 .reviewgate/research.md
