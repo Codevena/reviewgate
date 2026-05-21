@@ -30,14 +30,16 @@ function computeConsensus(flagged: number, total: number): Consensus {
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 1, INFO: 0 };
 
-// Semantic dedup key — deliberately EXCLUDES rule_id (different reviewers name
-// the same bug differently, e.g. "sql-injection" vs "sqli-risk", which would
-// otherwise yield distinct signatures and force the user to disposition the same
-// bug N times). Groups by file + category + a 5-line window, so the same issue
-// reported by multiple reviewers collapses to one finding, while genuinely
-// separate issues (>5 lines apart or different category) stay distinct.
+// Region dedup key — groups by file + a 5-line window. Deliberately EXCLUDES
+// BOTH rule_id AND category: different reviewers name the same bug differently
+// ("sql-injection" vs "sqli-risk") and categorize the same line differently (the
+// same magic number is "quality" to one reviewer and "performance" to another),
+// which would otherwise split one issue into several the user must disposition
+// separately. The tight 5-line window keeps genuinely separate issues (>5 lines
+// apart) distinct; representative keeps the highest severity, so a co-located
+// CRITICAL is never hidden behind a lower-severity neighbour.
 function dedupKey(f: Finding): string {
-  return `${f.file}|${f.category}|${Math.floor((f.line_start - 1) / 5)}`;
+  return `${f.file}|${Math.floor((f.line_start - 1) / 5)}`;
 }
 
 // Significant-word set of a message (lowercased, punctuation→space, drop short
