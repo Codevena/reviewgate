@@ -33,6 +33,7 @@ export const defaultConfig = {
   phases: {
     review: {
       reviewers: [{ provider: "codex" as const, persona: "security" }],
+      fileContextBudgetBytes: 32_000,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter";
