@@ -49,9 +49,18 @@ function previousFindingIds(repoRoot: string): string[] {
   const p = pendingJsonPath(repoRoot);
   if (!existsSync(p)) return [];
   try {
-    const report = JSON.parse(readFileSync(p, "utf8")) as { findings?: Array<{ id?: string }> };
+    const report = JSON.parse(readFileSync(p, "utf8")) as {
+      findings?: Array<{ id?: string; severity?: string }>;
+    };
     if (!Array.isArray(report.findings)) return [];
-    return report.findings.map((f) => f.id).filter((id): id is string => typeof id === "string");
+    // Only CRITICAL/WARN findings are blocking and therefore require a decision.
+    // INFO (incl. M5 scope_demoted / fp_ledger_match.suppressed advisories) never
+    // blocks the verdict, so demanding a decision for it would defeat the
+    // demote-to-INFO mechanism — the agent would have to re-reject every advisory.
+    return report.findings
+      .filter((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+      .map((f) => f.id)
+      .filter((id): id is string => typeof id === "string");
   } catch {
     return [];
   }

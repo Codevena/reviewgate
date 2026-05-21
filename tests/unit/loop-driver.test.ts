@@ -95,7 +95,10 @@ describe("LoopDriver", () => {
     await state.initialise("01HXQCHAIN");
     await state.update((cur) => ({ ...cur, iteration: 1 }));
     writeDirty(repo);
-    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [{ id: "F-001" }] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
     const dpath = decisionsPath(repo, 1);
     mkdirSync(dirname(dpath), { recursive: true });
     writeFileSync(
@@ -133,7 +136,10 @@ describe("LoopDriver", () => {
     await state.initialise("01HXQNODEC");
     await state.update((cur) => ({ ...cur, iteration: 1 }));
     writeDirty(repo);
-    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [{ id: "F-001" }] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
     const audit = new AuditLogger(auditDir(repo));
     const driver = new LoopDriver({
       repoRoot: repo,
@@ -166,7 +172,10 @@ describe("LoopDriver", () => {
     await state.initialise("01HXQMALF");
     await state.update((cur) => ({ ...cur, iteration: 1 }));
     writeDirty(repo);
-    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [{ id: "F-001" }] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
     const dpath = decisionsPath(repo, 1);
     mkdirSync(dirname(dpath), { recursive: true });
     writeFileSync(
@@ -203,7 +212,10 @@ describe("LoopDriver", () => {
     await state.initialise("01HXQBLOCK");
     await state.update((cur) => ({ ...cur, iteration: 1 }));
     writeDirty(repo);
-    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [{ id: "F-001" }] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
     const audit = new AuditLogger(auditDir(repo));
     const driver = new LoopDriver({
       repoRoot: repo,
@@ -390,6 +402,49 @@ describe("LoopDriver", () => {
     expect(md).toContain("Hardcoded magic number 7200000"); // findings populated
     expect(md).toContain("magic-number");
     expect(md).toContain("| 3    | FAIL    | 1    |"); // last iter CRIT = 1, not 0
+  });
+
+  it("decisions-gate ignores INFO/scope_demoted findings (only CRITICAL/WARN need decisions)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQGATEINFO");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", severity: "WARN" },
+          { id: "F-002", severity: "INFO", scope_demoted: true },
+        ],
+      }),
+    );
+    const dpath = decisionsPath(repo, 1);
+    mkdirSync(dirname(dpath), { recursive: true });
+    writeFileSync(
+      dpath,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    // F-001 (WARN) addressed; F-002 (INFO) not required → gate proceeds → PASS on DOC_DIFF.
+    expect(decision.kind).toBe("allow_stop");
   });
 
   it("PASS re-arms the budget (iteration resets to 0) so the next batch is reviewed", async () => {
@@ -617,7 +672,10 @@ describe("LoopDriver", () => {
       last_reviewed_head_sha: "0000000aaaaaaa",
     }));
     writeDirty(repo);
-    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [{ id: "F-001" }] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
     // No decisions/1.jsonl written → findings unaddressed.
     const audit = new AuditLogger(auditDir(repo));
     const driver = new LoopDriver({
