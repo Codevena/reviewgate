@@ -1,6 +1,6 @@
 // tests/unit/opencode-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpenCodeAdapter } from "../../src/providers/opencode.ts";
@@ -59,6 +59,45 @@ describe("OpenCodeAdapter (mocked binary)", () => {
     expect(result.usage.outputTokens).toBe(0);
     expect(result.usage.costUsd).toBe(0);
     expect(result.usage.quotaUsedPct).toBeNull();
+  });
+
+  it("omits -m for the 'default' model (uses opencode's configured default) but passes -m for a real id", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-args-"));
+    const argsFile = join(dir, "args.txt");
+    // Fake records its argv to $OC_ARGS_FILE, then emits valid review JSON.
+    const bin = makeFakeBin(
+      dir,
+      "fake-opencode-args.sh",
+      `#!/usr/bin/env bash\nprintf '%s ' "$@" > "$OC_ARGS_FILE"\nprintf '%s\\n' '{"verdict":"PASS","findings":[]}'\nexit 0\n`,
+    );
+    const promptFile = join(dir, "p.txt");
+    writeFileSync(promptFile, "review");
+    writeFileSync(join(dir, "d.patch"), "diff");
+    process.env.OC_ARGS_FILE = argsFile;
+    const adapter = new OpenCodeAdapter({ binPath: bin });
+    const base = {
+      reviewerId: "opencode-x",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    };
+
+    await adapter.review({
+      ...base,
+      cfg: { enabled: true, auth: "oauth", model: "default", timeoutMs: 60_000 },
+    });
+    expect(readFileSync(argsFile, "utf8")).not.toContain("-m");
+
+    await adapter.review({
+      ...base,
+      cfg: { enabled: true, auth: "oauth", model: "opencode/minimax-m2.7", timeoutMs: 60_000 },
+    });
+    const withModel = readFileSync(argsFile, "utf8");
+    expect(withModel).toContain("-m");
+    expect(withModel).toContain("opencode/minimax-m2.7");
+    process.env.OC_ARGS_FILE = undefined;
   });
 
   it("returns status=error and verdict=ERROR when opencode exits non-zero", async () => {
