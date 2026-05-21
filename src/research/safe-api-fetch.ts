@@ -20,6 +20,7 @@
 import { lookup } from "node:dns/promises";
 // Reuse the brain's IP-block policy — ONE shared SSRF rule set, not a copy.
 import { isBlockedIp } from "../core/brain/fetcher.ts";
+import { withTimeout } from "../utils/with-timeout.ts";
 
 export interface SafeApiFetchOpts {
   /** Single exact-match host allowlist (the only host egress is permitted to). */
@@ -50,9 +51,11 @@ export async function safeApiFetch<T = unknown>(url: string, opts: SafeApiFetchO
   }
 
   // SSRF: resolve + block private/loopback/link-local IPs (same policy as brain).
+  // Node's DNS lookup has no built-in timeout, so bound it explicitly — a stalled
+  // resolver must NOT hang the (best-effort, pre-cache) docs fetch indefinitely.
   const resolve =
     opts.resolve ?? (async (h: string) => (await lookup(h, { all: true })).map((a) => a.address));
-  const ips = await resolve(u.hostname);
+  const ips = await withTimeout(resolve(u.hostname), opts.timeoutMs, "safeApiFetch dns");
   if (ips.length === 0 || ips.some((ip) => isBlockedIp(ip))) {
     throw new Error(`safeApiFetch: ${u.hostname} resolves to a blocked/empty address`);
   }

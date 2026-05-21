@@ -118,6 +118,9 @@ const RG_VERSION = "0.1.0-m1";
 // M6: per-request timeout for a single Context7 search/context call (NOT the
 // cache ttlDays). Best-effort — a slow API never stalls a review.
 const DOCS_REQUEST_TIMEOUT_MS = 15_000;
+// M6: overall deadline for the WHOLE docs phase (extraction + every per-lib
+// fetch), so a pre-cache stall can never block the review regardless of lib count.
+const DOCS_TOTAL_TIMEOUT_MS = 30_000;
 
 // M6: best-effort diagnostic — per-lib docs outcomes for "why no docs". Written
 // under .reviewgate/ (excluded from the reviewed diff). Never throws.
@@ -289,22 +292,29 @@ export class Orchestrator {
     const docsCfg = this.input.config.phases.contextDocs;
     let contextDocs: RenderedContextDocs | undefined;
     if (docsCfg?.enabled) {
-      contextDocs = await fetchLibraryDocs(
-        await extractImportedLibs(
-          repo,
-          facts.files.map((f) => f.path),
-        ).catch(() => []),
-        {
-          repoRoot: repo,
-          host: docsCfg.host,
-          apiKeyEnv: docsCfg.apiKeyEnv,
-          timeoutMs: DOCS_REQUEST_TIMEOUT_MS,
-          ttlDays: docsCfg.ttlDays,
-          perLibBytes: docsCfg.perLibBytes,
-          maxLibs: docsCfg.maxLibs,
-          fetchImpl: this.input.fetchOverrides?.fetchImpl,
-          resolve: this.input.fetchOverrides?.resolve,
-        },
+      // Bound the ENTIRE docs phase (extraction + all per-lib fetches) by one
+      // overall deadline, on top of the per-request timeout, so the pre-cache
+      // docs step can never block the review regardless of lib count / a stall.
+      contextDocs = await withTimeout(
+        (async () => {
+          const libs = await extractImportedLibs(
+            repo,
+            facts.files.map((f) => f.path),
+          ).catch(() => []);
+          return fetchLibraryDocs(libs, {
+            repoRoot: repo,
+            host: docsCfg.host,
+            apiKeyEnv: docsCfg.apiKeyEnv,
+            timeoutMs: DOCS_REQUEST_TIMEOUT_MS,
+            ttlDays: docsCfg.ttlDays,
+            perLibBytes: docsCfg.perLibBytes,
+            maxLibs: docsCfg.maxLibs,
+            fetchImpl: this.input.fetchOverrides?.fetchImpl,
+            resolve: this.input.fetchOverrides?.resolve,
+          });
+        })(),
+        DOCS_TOTAL_TIMEOUT_MS,
+        "context-docs",
       ).catch(() => undefined);
       if (contextDocs) writeDocsDebugArtifact(repo, contextDocs);
     }

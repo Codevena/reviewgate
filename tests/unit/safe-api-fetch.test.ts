@@ -71,6 +71,18 @@ describe("safeApiFetch", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects (does not hang) when DNS resolution stalls past the timeout", async () => {
+    const start = Date.now();
+    await expect(
+      safeApiFetch("https://context7.com/api", {
+        allowHost: "context7.com",
+        timeoutMs: 50,
+        resolve: () => new Promise<string[]>(() => {}), // never settles
+      }),
+    ).rejects.toThrow();
+    expect(Date.now() - start).toBeLessThan(2000); // bounded, not hung
+  });
+
   it("rejects non-HTTPS", async () => {
     await expect(
       safeApiFetch("http://context7.com/api", { allowHost: "context7.com", timeoutMs: 100 }),
