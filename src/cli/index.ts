@@ -1,6 +1,7 @@
 // src/cli/index.ts
 import { defineCommand, runMain } from "citty";
 import { runAuditVerify } from "./commands/audit.ts";
+import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
@@ -57,9 +58,51 @@ const audit = defineCommand({
   },
 });
 
+const brain = defineCommand({
+  meta: { name: "brain", description: "Brain entry management" },
+  subCommands: {
+    list: defineCommand({
+      meta: { name: "list" },
+      args: { filter: { type: "string" } },
+      async run({ args }) {
+        const filter = typeof args.filter === "string" ? args.filter : undefined;
+        const exitCode = await runBrainList({
+          repoRoot: process.cwd(),
+          ...(filter !== undefined ? { filter } : {}),
+        });
+        process.exit(exitCode);
+      },
+    }),
+    show: defineCommand({
+      meta: { name: "show" },
+      args: { id: { type: "string" } },
+      async run({ args }) {
+        if (!args.id) {
+          process.stderr.write("brain show: --id <entry-id> is required\n");
+          process.exit(2);
+        }
+        const exitCode = await runBrainShow({ repoRoot: process.cwd(), id: args.id as string });
+        process.exit(exitCode);
+      },
+    }),
+    revoke: defineCommand({
+      meta: { name: "revoke" },
+      args: { id: { type: "string" } },
+      async run({ args }) {
+        if (!args.id) {
+          process.stderr.write("brain revoke: --id <entry-id> is required\n");
+          process.exit(2);
+        }
+        const exitCode = await runBrainRevoke({ repoRoot: process.cwd(), id: args.id as string });
+        process.exit(exitCode);
+      },
+    }),
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, doctor, audit },
+  subCommands: { init, gate, doctor, audit, brain },
 });
 
 void runMain(main);
