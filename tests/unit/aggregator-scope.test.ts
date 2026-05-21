@@ -67,4 +67,19 @@ describe("aggregate scopeToDiff", () => {
     });
     expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
+
+  it("keeps demoted details within the 2000-char FindingSchema cap", async () => {
+    const { FindingSchema } = await import("../../src/schemas/finding.ts");
+    const r = aggregate({
+      findings: [f({ line_start: 50, line_end: 50, details: "x".repeat(2000) })],
+      reviewersTotal: 1,
+      changedRanges,
+      scopeToDiff: true,
+    });
+    const demoted = r.dedupedFindings[0];
+    expect(demoted?.scope_demoted).toBe(true);
+    expect((demoted?.details ?? "").length).toBeLessThanOrEqual(2000);
+    expect(demoted?.details ?? "").toContain("advisory only");
+    expect(FindingSchema.safeParse(demoted).success).toBe(true);
+  });
 });

@@ -189,12 +189,12 @@ export function aggregate(input: AggregateInput): AggregateResult {
           if (!ranges) return f; // file not in diff → keep (conservative)
           if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
           if (f.severity === "INFO") return { ...f, scope_demoted: true };
-          return {
-            ...f,
-            severity: "INFO" as const,
-            scope_demoted: true,
-            details: `${f.details}\n\n↓ outside the changed lines — advisory only.`,
-          };
+          // Keep details within FindingSchema's 2000-char cap (truncate the
+          // original, never the note) — appending blindly can overflow a finding
+          // whose details are already at the limit → schema-invalid pending.json.
+          const note = "\n\n↓ outside the changed lines — advisory only.";
+          const details = `${f.details.slice(0, 2000 - note.length)}${note}`;
+          return { ...f, severity: "INFO" as const, scope_demoted: true, details };
         })
       : survivors;
 
