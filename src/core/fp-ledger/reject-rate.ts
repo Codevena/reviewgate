@@ -8,35 +8,43 @@ export interface RejectRate {
   rate: number;
 }
 
-// Reject rate across the CURRENT cycle's decisions (iterations 1..throughIter):
-// (rejected & reviewer_was_wrong) / (all valid decisions). A panel-noise
-// circuit-breaker — independent of the FP-ledger opt-in.
-export function computeRejectRate(repoRoot: string, throughIter: number): RejectRate {
+const EMPTY: RejectRate = { total: 0, wrongRejects: 0, rate: 0 };
+
+// Reject rate over the iteration's decisions for the REAL blocking findings only:
+// (rejected & reviewer_was_wrong) / (decisions addressing an expected id).
+// `expectedIds` is the set of CRITICAL/WARN finding ids the reviewers actually
+// raised (from pending.json) — NOT agent-authored. Restricting to it (plus
+// per-finding dedup) means the agent, which authors the decisions file, cannot
+// pad duplicate or unrelated reviewer_was_wrong lines to manufacture this
+// escape-hatch escalation; it can only move the rate by rejecting REAL findings,
+// which is exactly the panel-noise signal this circuit-breaker is meant to catch.
+export function computeRejectRate(
+  repoRoot: string,
+  iter: number,
+  expectedIds: Iterable<string>,
+): RejectRate {
+  const allowed = new Set(expectedIds);
+  const p = decisionsPath(repoRoot, iter);
+  if (allowed.size === 0 || !existsSync(p)) return EMPTY;
+
+  const seen = new Set<string>();
   let total = 0;
   let wrongRejects = 0;
-  for (let iter = 1; iter <= throughIter; iter++) {
-    const p = decisionsPath(repoRoot, iter);
-    if (!existsSync(p)) continue;
-    // Dedup by finding_id WITHIN the iteration: the agent authors this file, so
-    // counting raw lines would let it pad duplicate reviewer_was_wrong entries to
-    // inflate the rate and force an escape-hatch escalation. Each finding_id
-    // contributes at most one decision per iteration (first valid line wins).
-    const seen = new Set<string>();
-    for (const line of readFileSync(p, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const res = DecisionEntrySchema.safeParse(parsed);
-      if (!res.success) continue;
-      if (seen.has(res.data.finding_id)) continue;
-      seen.add(res.data.finding_id);
-      total++;
-      if (res.data.verdict === "rejected" && res.data.reviewer_was_wrong === true) wrongRejects++;
+  for (const line of readFileSync(p, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
     }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    const id = res.data.finding_id;
+    if (!allowed.has(id) || seen.has(id)) continue; // real findings only, once each
+    seen.add(id);
+    total++;
+    if (res.data.verdict === "rejected" && res.data.reviewer_was_wrong === true) wrongRejects++;
   }
   return { total, wrongRejects, rate: total === 0 ? 0 : wrongRejects / total };
 }

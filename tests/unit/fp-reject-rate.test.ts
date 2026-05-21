@@ -25,14 +25,13 @@ const accepted = (id: string) => ({
 });
 
 describe("computeRejectRate", () => {
-  it("returns rate + total across the cycle's decisions", () => {
+  it("rate + total over the iteration's decisions for expected (real) findings", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr-"));
-    writeDecisions(repo, 1, [rejected("F-001"), rejected("F-002"), accepted("F-003")]);
-    writeDecisions(repo, 2, [rejected("F-001")]);
-    const r = computeRejectRate(repo, 2);
-    expect(r.total).toBe(4);
-    expect(r.wrongRejects).toBe(3);
-    expect(r.rate).toBeCloseTo(0.75, 5);
+    writeDecisions(repo, 2, [rejected("F-001"), rejected("F-002"), accepted("F-003")]);
+    const r = computeRejectRate(repo, 2, ["F-001", "F-002", "F-003"]);
+    expect(r.total).toBe(3);
+    expect(r.wrongRejects).toBe(2);
+    expect(r.rate).toBeCloseTo(0.6667, 3);
   });
 
   it("ignores rejections without reviewer_was_wrong", () => {
@@ -46,38 +45,42 @@ describe("computeRejectRate", () => {
       },
       accepted("F-002"),
     ]);
-    const r = computeRejectRate(repo, 1);
+    const r = computeRejectRate(repo, 1, ["F-001", "F-002"]);
     expect(r.total).toBe(2);
     expect(r.wrongRejects).toBe(0);
     expect(r.rate).toBe(0);
   });
 
-  it("is zero for no decisions", () => {
+  it("is zero when there are no expected ids or no decisions file", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr3-"));
-    const r = computeRejectRate(repo, 3);
-    expect(r).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
+    expect(computeRejectRate(repo, 1, [])).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
+    expect(computeRejectRate(repo, 9, ["F-001"])).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
   });
 
-  it("dedups duplicate finding_ids WITHIN an iteration (cannot pad the count)", () => {
+  it("dedups duplicate finding_ids (cannot pad the count with repeated lines)", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr4-"));
-    // Four lines, all the SAME finding_id → counts as ONE decision, not four.
     writeDecisions(repo, 1, [
       rejected("F-001"),
       rejected("F-001"),
       rejected("F-001"),
       rejected("F-001"),
     ]);
-    const r = computeRejectRate(repo, 1);
+    const r = computeRejectRate(repo, 1, ["F-001"]);
     expect(r.total).toBe(1);
     expect(r.wrongRejects).toBe(1);
   });
 
-  it("counts the same finding_id once PER iteration (legitimate re-review)", () => {
+  it("ignores decisions for ids that were NOT real findings (cannot pad with fake ids)", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr5-"));
-    writeDecisions(repo, 1, [rejected("F-001"), accepted("F-002")]);
-    writeDecisions(repo, 2, [rejected("F-001")]); // re-raised + re-rejected next iter
-    const r = computeRejectRate(repo, 2);
-    expect(r.total).toBe(3); // (F-001,F-002 in iter1) + (F-001 in iter2)
-    expect(r.wrongRejects).toBe(2);
+    // One real finding rejected; three fabricated reviewer_was_wrong ids appended.
+    writeDecisions(repo, 1, [
+      rejected("F-001"),
+      rejected("F-901"),
+      rejected("F-902"),
+      rejected("F-903"),
+    ]);
+    const r = computeRejectRate(repo, 1, ["F-001"]); // only F-001 was a real finding
+    expect(r.total).toBe(1); // fabricated ids filtered out → below the min-sample guard
+    expect(r.wrongRejects).toBe(1);
   });
 });

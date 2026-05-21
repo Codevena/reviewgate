@@ -717,14 +717,25 @@ describe("LoopDriver", () => {
       reason: "false positive on unchanged code xx",
       reviewer_was_wrong: true,
     });
-    // 4 decisions this cycle, all confirmed reviewer FPs → rate 100% ≥ 80%.
-    const d1 = decisionsPath(repo, 1);
-    mkdirSync(dirname(d1), { recursive: true });
+    // 4 REAL blocking findings, all rejected as confirmed reviewer FPs → the
+    // decisions-gate is satisfied (each addressed) and rate = 4/4 = 100% ≥ 80%.
     writeFileSync(
-      d1,
-      `${[wrong("F-001"), wrong("F-002"), wrong("F-003")].map((l) => JSON.stringify(l)).join("\n")}\n`,
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", severity: "CRITICAL" },
+          { id: "F-002", severity: "CRITICAL" },
+          { id: "F-003", severity: "WARN" },
+          { id: "F-004", severity: "WARN" },
+        ],
+      }),
     );
-    writeFileSync(decisionsPath(repo, 2), `${JSON.stringify(wrong("F-001"))}\n`);
+    const dp = decisionsPath(repo, 2);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[wrong("F-001"), wrong("F-002"), wrong("F-003"), wrong("F-004")].map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
     const audit = new AuditLogger(auditDir(repo));
     const driver = new LoopDriver({
       repoRoot: repo,

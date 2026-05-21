@@ -271,7 +271,11 @@ export class LoopDriver {
     // so the agent (which authors the decisions files) cannot pad duplicate
     // reviewer_was_wrong lines to manufacture this escape-hatch escalation.
     if (state.iteration > 0 && this.i.config.loop.rejectRateEscalation > 0) {
-      const rr = computeRejectRate(this.i.repoRoot, state.iteration);
+      const rr = computeRejectRate(
+        this.i.repoRoot,
+        state.iteration,
+        previousFindingIds(this.i.repoRoot),
+      );
       if (
         rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
         rr.rate >= this.i.config.loop.rejectRateEscalation
