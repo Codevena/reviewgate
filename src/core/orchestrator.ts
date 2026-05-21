@@ -414,12 +414,17 @@ export class Orchestrator {
       }
     }
 
-    // Fail closed: at least one reviewer attempted but none succeeded.
-    if (settled.length > 0 && okRuns.length === 0) {
+    // Fail CLOSED: zero reviewers produced a usable result — whether they
+    // returned an error, THREW (0 settled runs), or none were enabled/available.
+    // Past triage we expected to review, so an empty findings list here is
+    // "could not review", NOT "clean". Emitting PASS would let a capped /
+    // unavailable / misconfigured panel silently pass every turn (Finding A).
+    // ERROR makes the LoopDriver block with a reviewer-error message.
+    if (okRuns.length === 0) {
       await this.writeReport(opts, start, settled, [], "ERROR");
       return {
         verdict: "ERROR",
-        costUsd: 0,
+        costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
       };
