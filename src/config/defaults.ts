@@ -44,6 +44,7 @@ export const defaultConfig = {
     review: {
       reviewers: [{ provider: "codex" as const, persona: "security" }],
       fileContextBudgetBytes: 32_000,
+      scopeToDiff: true,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

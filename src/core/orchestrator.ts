@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
+import { parseChangedRanges } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
@@ -425,6 +426,8 @@ export class Orchestrator {
     const agg = aggregate({
       findings: allFindings,
       reviewersTotal: okRuns.length,
+      changedRanges: parseChangedRanges(this.input.diff),
+      scopeToDiff: this.input.config.phases.review.scopeToDiff !== false,
       ...(criticMap ? { critic: criticMap } : {}),
     });
 

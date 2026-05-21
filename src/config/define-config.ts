@@ -34,6 +34,9 @@ export const ConfigSchema = z.object({
       // diff (for symbol verification). Smaller = smaller prompts = faster reviews
       // and fewer timeouts on slow remote models; larger = more context.
       fileContextBudgetBytes: z.number().int().positive().optional(),
+      // M5 Part A: demote findings outside the changed hunks to INFO (advisory).
+      // Default ON via defaults.ts (deep-merged) — the gate primarily reviews the change.
+      scopeToDiff: z.boolean().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
