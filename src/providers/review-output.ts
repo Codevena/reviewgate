@@ -61,19 +61,41 @@ export interface ReviewFinding {
   confidence: number;
 }
 
+// Reviewer-submitted (pre-enrichment) proposal shape. Mirrors MemoryProposalSchema
+// but is kept loose here so review-output.ts has no dep on brain schemas.
+export interface RawProposal {
+  type: string;
+  scope: string;
+  title: string;
+  body: string;
+  confidence: number;
+  tags: string[];
+  evidence: Array<{
+    kind: string;
+    source_url?: string;
+    snippet?: string;
+    from_diff?: { file: string; line_start: number; line_end: number };
+  }>;
+}
+
 export interface ReviewOutput {
   verdict: "PASS" | "FAIL";
   findings: ReviewFinding[];
+  memory_proposals?: RawProposal[];
 }
 
 export function parseReviewOutput(text: string): ReviewOutput | null {
   const tryParse = (s: string): ReviewOutput | null => {
     try {
-      const o = JSON.parse(s) as Partial<ReviewOutput>;
+      const o = JSON.parse(s) as Record<string, unknown>;
       if (Array.isArray(o.findings)) {
+        const mp = Array.isArray(o.memory_proposals)
+          ? (o.memory_proposals as RawProposal[])
+          : undefined;
         return {
           verdict: o.verdict === "PASS" ? "PASS" : "FAIL",
           findings: o.findings as ReviewFinding[],
+          ...(mp !== undefined ? { memory_proposals: mp } : {}),
         };
       }
     } catch {

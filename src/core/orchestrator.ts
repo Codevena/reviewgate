@@ -51,6 +51,11 @@ const REVIEW_PROMPT_PREAMBLE = [
   '"message":"<one line>","details":"<explanation>","confidence":<number 0..1>}]}',
   "Report every real issue you find. Use verdict PASS with an empty findings array",
   "only if there are genuinely no issues.",
+  'You MAY also include an optional "memory_proposals" array of repo-knowledge you',
+  'are confident about (≥0.5). Each: {"type":"convention|anti-pattern|external-knowledge|disagreement",',
+  '"scope":"this-repo|language-<x>|framework-<x>","title":"<=80","body":"<=500","confidence":0..1,',
+  '"tags":[...],"evidence":[{"kind":"reviewer-observation","snippet":"..."}|{"kind":"reviewer-observation","source_url":"https://..."}]}.',
+  "Cite a source_url for external facts; do NOT fabricate hashes.",
 ].join("\n");
 
 const PERSONA_REAFFIRM: Record<string, string> = {
