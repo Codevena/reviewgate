@@ -18,6 +18,17 @@ const EMPTY: RejectRate = { total: 0, wrongRejects: 0, rate: 0 };
 // pad duplicate or unrelated reviewer_was_wrong lines to manufacture this
 // escape-hatch escalation; it can only move the rate by rejecting REAL findings,
 // which is exactly the panel-noise signal this circuit-breaker is meant to catch.
+//
+// SCOPE — single iteration (deliberate, design-approved): the rate is computed
+// over the CURRENT iteration's decisions, not accumulated across the whole cycle.
+// A fabrication-proof cross-iteration rate would require persisting each past
+// iteration's real-finding-id set (pending.json is overwritten every iteration),
+// which is disproportionate machinery for a circuit-breaker that `max-iterations`
+// already backstops: confirmed FPs that accumulate below this iteration's sample
+// still drive the loop to the iteration cap and escalate there (as
+// `max-iterations` rather than `reject-rate-high`). Security (no fabricated-id
+// padding) was chosen over spec-literal cross-iteration accumulation. See the
+// M5 design spec, Part B / Phase B2b note.
 export function computeRejectRate(
   repoRoot: string,
   iter: number,
