@@ -64,6 +64,8 @@ export const ConfigSchema = z.object({
       .nullable()
       .default(null)
       .optional(),
+    // M5 Part B1: FP-ledger (signature-keyed false-positive learning). Opt-in.
+    fpLedger: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
   }),
   cache: z
     .object({ enabled: z.boolean(), reviewTtlDays: z.number().int().positive() })
