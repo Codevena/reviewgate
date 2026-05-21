@@ -218,15 +218,24 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // signature (or any merged member signature) matches an active/sticky FP entry
   // is demoted to INFO + tagged. Never dropped — stays visible in the advisory
   // section, and the decisions-gate already ignores INFO.
-  const fpScoped: Finding[] = input.fpActive
+  const fpActive = input.fpActive;
+  const fpScoped: Finding[] = fpActive
     ? scoped.map((f) => {
-        const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
-        const hit = sigs.map((s) => input.fpActive?.get(s)).find((x) => x);
-        if (!hit) return f;
+        // Representative first, then members; dedup so a member equal to the
+        // representative is not double-counted.
+        const sigs = [...new Set([f.signature, ...(f.members?.map((m) => m.signature) ?? [])])];
+        const matched = sigs.filter((s) => fpActive.has(s));
+        if (matched.length === 0) return f;
+        // pattern_id = the first matching signature's entry (deterministic order).
+        const hit = fpActive.get(matched[0] as string);
         const base = f.severity === "INFO" ? f : { ...f, severity: "INFO" as const };
         return {
           ...base,
-          fp_ledger_match: { pattern_id: hit.id, matched_count: 1, suppressed: true },
+          fp_ledger_match: {
+            pattern_id: (hit as { id: string }).id,
+            matched_count: matched.length,
+            suppressed: true,
+          },
         };
       })
     : scoped;

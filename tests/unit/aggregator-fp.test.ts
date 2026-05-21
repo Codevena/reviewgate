@@ -41,4 +41,30 @@ describe("aggregate fp-ledger demote", () => {
     });
     expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
+
+  it("matched_count reflects how many of the cluster's signatures matched", () => {
+    // Two findings at the same location cluster into one — the merged finding's
+    // members carry BOTH signatures; both are active FPs → matched_count 2.
+    const r = aggregate({
+      findings: [
+        f({ signature: "sigX", rule_id: "a-rule", message: "alpha issue", line_start: 1 }),
+        f({
+          signature: "sigY",
+          rule_id: "b-rule",
+          message: "beta issue",
+          line_start: 1,
+          reviewer: { provider: "gemini", model: "x", persona: "architecture" },
+        }),
+      ],
+      reviewersTotal: 2,
+      fpActive: new Map([
+        ["sigX", { id: "FP-001" }],
+        ["sigY", { id: "FP-002" }],
+      ]),
+    });
+    expect(r.dedupedFindings).toHaveLength(1); // clustered
+    expect(r.dedupedFindings[0]?.fp_ledger_match?.matched_count).toBe(2);
+    // pattern_id = the representative's matching entry (rule "a-rule" sorts first)
+    expect(r.dedupedFindings[0]?.fp_ledger_match?.pattern_id).toBe("FP-001");
+  });
 });

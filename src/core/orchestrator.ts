@@ -267,18 +267,6 @@ export class Orchestrator {
       schemaVersion: "reviewgate.pending.v1",
     });
 
-    // M5 Part B2a — proactive negative few-shot: tell the panel which findings
-    // this repo's maintainers have already confirmed as false positives for the
-    // changed files, so they are not re-reported (complements the reactive
-    // aggregator demote). Trusted context, injected before the untrusted diff
-    // fence like brain context. Derived from the same active snapshot folded into
-    // the behavior-hash, so the cache already accounts for it.
-    const fpFewShot = fpActiveSnapshot
-      ? buildFpFewShot({
-          active: fpActiveSnapshot,
-          changedFiles: facts.files.map((file) => file.path),
-        })
-      : "";
     if (cacheEnabled) {
       const cached = await getCachedReview(repo, cacheKey);
       if (cached && (cached.verdict === "PASS" || cached.verdict === "SOFT-PASS")) {
@@ -291,6 +279,20 @@ export class Orchestrator {
         };
       }
     }
+
+    // M5 Part B2a — proactive negative few-shot: tell the panel which findings
+    // this repo's maintainers have already confirmed as false positives for the
+    // changed files, so they are not re-reported (complements the reactive
+    // aggregator demote). Trusted context, injected before the untrusted diff
+    // fence like brain context. Derived from the same active snapshot folded into
+    // the behavior-hash. Built AFTER the cache short-circuit so a cache hit does
+    // no wasted work (the cache key already accounts for the active snapshot).
+    const fpFewShot = fpActiveSnapshot
+      ? buildFpFewShot({
+          active: fpActiveSnapshot,
+          changedFiles: facts.files.map((file) => file.path),
+        })
+      : "";
 
     // --- Research: symbol graph + research.md ---
     const changedAbs = facts.files.map((f) => join(repo, f.path));

@@ -236,9 +236,13 @@ export class LoopDriver {
       );
     }
 
-    // If a prior iter exists and decisions are required, check they exist.
+    // If a prior iter exists, both the decisions-gate and the reject-rate
+    // circuit-breaker need the prior iteration's blocking finding ids — read
+    // pending.json ONCE and share it.
     if (state.iteration > 0) {
       const requiredIds = previousFindingIds(this.i.repoRoot);
+
+      // Decisions-gate: every required finding must have a decision.
       if (
         requiredIds.length > 0 &&
         !allDecisionsAddressed(this.i.repoRoot, state.iteration, requiredIds)
@@ -261,30 +265,26 @@ export class LoopDriver {
           reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
         };
       }
-    }
 
-    // Escalation precondition: reviewers are producing a high rate of confirmed
-    // false positives this cycle → stop nagging and surface to the human. Runs
-    // AFTER the decisions-gate so an unaddressed-findings block always takes
-    // precedence (it must not be masked by a high reject rate). Guarded by a
-    // minimum sample, and computeRejectRate dedups by finding_id per iteration,
-    // so the agent (which authors the decisions files) cannot pad duplicate
-    // reviewer_was_wrong lines to manufacture this escape-hatch escalation.
-    if (state.iteration > 0 && this.i.config.loop.rejectRateEscalation > 0) {
-      const rr = computeRejectRate(
-        this.i.repoRoot,
-        state.iteration,
-        previousFindingIds(this.i.repoRoot),
-      );
-      if (
-        rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
-        rr.rate >= this.i.config.loop.rejectRateEscalation
-      ) {
-        return this.escalateAndDecide(
-          state,
-          "reject-rate-high",
-          `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
-        );
+      // Escalation precondition: reviewers are producing a high rate of confirmed
+      // false positives this cycle → stop nagging and surface to the human. Runs
+      // AFTER the decisions-gate so an unaddressed-findings block always takes
+      // precedence (it must not be masked by a high reject rate). Guarded by a
+      // minimum sample, and computeRejectRate dedups by finding_id + restricts to
+      // these real `requiredIds`, so the agent (which authors the decisions files)
+      // cannot pad duplicate/fabricated lines to manufacture this escape-hatch.
+      if (this.i.config.loop.rejectRateEscalation > 0) {
+        const rr = computeRejectRate(this.i.repoRoot, state.iteration, requiredIds);
+        if (
+          rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
+          rr.rate >= this.i.config.loop.rejectRateEscalation
+        ) {
+          return this.escalateAndDecide(
+            state,
+            "reject-rate-high",
+            `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
+          );
+        }
       }
     }
 
