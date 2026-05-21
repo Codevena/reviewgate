@@ -18,6 +18,20 @@ function escapeAngles(s: string): string {
   return s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * Neutralise prompt-injection markers in untrusted text by escaping the angle
+ * brackets of any matched control token. Shared policy — used both by the diff
+ * sanitiser and by the Context7 untrusted-docs renderer (research-writer) so
+ * there is ONE marker list. NFKC-normalises first to catch escaped variants.
+ */
+export function neutralizeInjectionMarkers(text: string): string {
+  let body = text.normalize("NFKC");
+  for (const re of INJECTION_MARKERS) {
+    body = body.replace(re, (m) => escapeAngles(m));
+  }
+  return body;
+}
+
 function shannonEntropy(s: string): number {
   if (s.length === 0) return 0;
   const counts: Record<string, number> = {};
