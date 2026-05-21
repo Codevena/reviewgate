@@ -35,8 +35,12 @@ export function planReviewJsonPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "plan-review.json");
 }
 
+export function decisionsDir(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "decisions");
+}
+
 export function decisionsPath(repoRoot: string, iter: number): string {
-  return join(reviewgateDir(repoRoot), "decisions", `${iter}.jsonl`);
+  return join(decisionsDir(repoRoot), `${iter}.jsonl`);
 }
 
 export function escalationMdPath(repoRoot: string): string {

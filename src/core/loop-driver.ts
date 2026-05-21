@@ -1,10 +1,10 @@
 // src/core/loop-driver.ts
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
-import { decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
+import { decisionsDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
 import type { Orchestrator } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
 import type { StateStore } from "./state-store.ts";
@@ -53,6 +53,21 @@ function previousFindingIds(repoRoot: string): string[] {
     return report.findings.map((f) => f.id).filter((id): id is string => typeof id === "string");
   } catch {
     return [];
+  }
+}
+
+// On a re-arm (clean PASS, or a commit recovering an escalated gate) the current
+// review cycle is closed. The iteration counter resets to 0 and the NEXT cycle
+// climbs through the same decisions/<iter>.jsonl filenames again. Since the
+// decisions-gate matches by finding_id only, a stale "F-001 fixed" line left over
+// from this cycle would otherwise satisfy a colliding F-001 in the next cycle
+// without the agent addressing it. Wipe the directory so each cycle starts clean,
+// exactly as the SessionStart reset does.
+function clearDecisions(repoRoot: string): void {
+  try {
+    rmSync(decisionsDir(repoRoot), { recursive: true, force: true });
+  } catch {
+    /* noop */
   }
 }
 
@@ -130,6 +145,9 @@ export class LoopDriver {
           last_reviewed_head_sha: headSha,
         }),
       );
+      // The commit closed the escalated cycle → wipe its decisions too, so a
+      // stale finding_id can't satisfy the next cycle's gate (see clearDecisions).
+      if (headMovedWhileEscalated) clearDecisions(this.i.repoRoot);
       state = await this.i.state.load();
     }
 
@@ -226,6 +244,9 @@ export class LoopDriver {
       } catch {
         /* noop */
       }
+      // Cycle closed → wipe this cycle's decisions so stale finding_ids cannot
+      // satisfy the next cycle's gate (see clearDecisions).
+      clearDecisions(this.i.repoRoot);
       await this.i.audit.append({
         event: "gate.decision",
         run_id: state.session_id,

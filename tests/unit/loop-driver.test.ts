@@ -450,6 +450,97 @@ describe("LoopDriver", () => {
     expect((await state.load()).escalated).toBe(false);
   });
 
+  it("a PASS re-arm clears prior-cycle decisions so a stale decision can't satisfy the next cycle", async () => {
+    // Bug: decisions/<iter>.jsonl files are NOT cleared on a PASS re-arm. Because
+    // the iteration counter resets to 0 and climbs again, the next cycle reuses
+    // the same filenames — and allDecisionsAddressed() matches by finding_id only.
+    // A stale "F-001 accepted/fixed" line from the prior cycle would then satisfy
+    // the next cycle's F-001 gate without the agent addressing it. Re-arm must
+    // wipe the decisions directory, exactly as the SessionStart reset does.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSTALEDEC");
+    await state.update((cur) => ({ ...cur, iteration: 2 }));
+    const stale = decisionsPath(repo, 1);
+    mkdirSync(dirname(stale), { recursive: true });
+    writeFileSync(
+      stale,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF, // doc-only → triage skip → PASS → re-arm
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+    expect((await state.load()).iteration).toBe(0); // re-armed
+    expect(existsSync(stale)).toBe(false); // stale decision wiped
+  });
+
+  it("a commit recovering an escalated gate also clears prior-cycle decisions", async () => {
+    // The other re-arm path: HEAD moved while ESCALATED → the human took over and
+    // committed → budget resets to 0. That closes the cycle too, so stale
+    // decisions must be wiped here as well, for the same reason as the PASS re-arm.
+    // Uses a CODE diff so the post-recovery iteration FAILs (panel runs) — that
+    // isolates the recovery-path clear from the PASS-branch clear.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSTALEESC");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      escalated: true,
+      escalation_reason: "max-iterations",
+      escalation_announced: true,
+      last_reviewed_head_sha: "0000000aaaaaaa",
+    }));
+    const stale = decisionsPath(repo, 1);
+    mkdirSync(dirname(stale), { recursive: true });
+    writeFileSync(
+      stale,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      headSha: "1111111bbbbbbb", // HEAD moved → a commit landed
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        // Code diff → triage runs the panel → fake codex returns FAIL, so the
+        // PASS-branch clear does NOT run; only the recovery-path clear can wipe.
+        diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-x\n+y\n",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block"); // fresh iteration 1 FAILed
+    expect((await state.load()).escalated).toBe(false); // re-armed on the commit
+    expect(existsSync(stale)).toBe(false); // stale decision wiped at recovery
+  });
+
   it("a commit while mid-FAIL (not escalated) does NOT re-arm or bypass the decisions gate", async () => {
     // Security: an agent must not be able to land unaddressed findings by
     // committing them. A HEAD move while NOT escalated must keep the budget and
