@@ -19,15 +19,26 @@ function escapeAngles(s: string): string {
 }
 
 /**
- * Neutralise prompt-injection markers in untrusted text by escaping the angle
- * brackets of any matched control token. Shared policy — used both by the diff
- * sanitiser and by the Context7 untrusted-docs renderer (research-writer) so
- * there is ONE marker list. NFKC-normalises first to catch escaped variants.
+ * Neutralise prompt-injection markers in untrusted text. Reuses the diff
+ * sanitiser's marker LIST so there is one source of truth; used by the Context7
+ * untrusted-docs renderer (research-writer). NFKC-normalises first to catch
+ * escaped variants. Angle-bracket control tokens (`<system>`, `<|im_start|>`)
+ * are escaped; purely-textual markers (`[INST]`, `Human:`, `### Instruction:`,
+ * `Reviewgate:`) — which `escapeAngles` cannot touch — are defanged by inserting
+ * a zero-width space after the first character, breaking the literal token while
+ * keeping the text visually intact. Deterministic (stable cache identity).
  */
+// U+200B zero-width space, built via fromCharCode so the source stays pure ASCII
+// (an inline literal would be an invisible byte sequence in this file).
+const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
+
 export function neutralizeInjectionMarkers(text: string): string {
   let body = text.normalize("NFKC");
   for (const re of INJECTION_MARKERS) {
-    body = body.replace(re, (m) => escapeAngles(m));
+    body = body.replace(re, (m) => {
+      if (m.includes("<") || m.includes(">")) return escapeAngles(m);
+      return m.length > 1 ? `${m[0]}${ZERO_WIDTH_SPACE}${m.slice(1)}` : m;
+    });
   }
   return body;
 }

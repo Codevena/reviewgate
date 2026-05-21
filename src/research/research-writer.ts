@@ -43,8 +43,18 @@ function renderContextDocs(docs: RenderedContextDocs, budgetBytes: number): stri
   const skipped = docs.libs.filter((l) => l.outcome.startsWith("skipped:")).length;
   const truncated = includable.filter((l) => l.outcome === "truncated").length;
 
+  // The TOTAL budget covers the WHOLE section — heading + caveat + blocks + the
+  // partial note — not just the per-lib blocks. Start `used` at the fixed
+  // heading/caveat overhead and always reserve worst-case room for the partial
+  // note, so the rendered section is guaranteed ≤ budgetBytes.
+  const headingOverhead = Buffer.byteLength([DOCS_HEADING, "", DOCS_CAVEAT, ""].join("\n"), "utf8");
+  const noteReserve = Buffer.byteLength(
+    "_(docs partial: 9999 libs included, 9999 skipped/truncated)_\n",
+    "utf8",
+  );
+
   const blocks: string[] = [];
-  let used = 0;
+  let used = headingOverhead;
   let renderedCount = 0;
   let budgetDropped = 0;
   for (const lib of includable) {
@@ -57,7 +67,7 @@ function renderContextDocs(docs: RenderedContextDocs, budgetBytes: number): stri
     // Strict TOTAL cap: drop any block that does not fit — including the first.
     // An over-budget single lib (misconfigured perLibBytes > budgetBytes, or a
     // stale oversized cache entry) yields no section rather than blowing the cap.
-    if (used + size > budgetBytes) {
+    if (used + size + noteReserve > budgetBytes) {
       budgetDropped++;
       continue;
     }

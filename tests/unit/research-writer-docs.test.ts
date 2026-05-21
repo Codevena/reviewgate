@@ -59,12 +59,16 @@ describe("writeResearch — Context7 docs section", () => {
       ],
       corpus: [],
     };
-    await writeResearch({ ...baseInput(repo), contextDocs, contextDocsBudgetBytes: 400 });
+    const BUDGET = 750;
+    await writeResearch({ ...baseInput(repo), contextDocs, contextDocsBudgetBytes: BUDGET });
     const md = readFileSync(join(repo, ".reviewgate", "research.md"), "utf8");
-    // budget 400 fits only one ~300-byte lib block → "a" in, "b" budget-dropped, "c" skipped
+    // budget fits heading+caveat + one ~300-byte block → "a" in, "b" dropped, "c" skipped
     expect(md).toContain("### a");
     expect(md).not.toContain("### b");
     expect(md).toMatch(/docs partial: \d+ libs included, \d+ skipped\/truncated/);
+    // the WHOLE docs section (heading + caveat + blocks + note) must respect the budget
+    const section = md.slice(md.indexOf("## External library docs"));
+    expect(Buffer.byteLength(section, "utf8")).toBeLessThanOrEqual(BUDGET);
   });
 
   it("renders no section when even the first lib block exceeds the total budget (strict cap)", async () => {
@@ -99,9 +103,13 @@ describe("writeResearch — Context7 docs section", () => {
     // angle-bracket control tokens are neutralized (same policy as the diff sanitizer)
     expect(md).not.toContain("<system>");
     expect(md).toContain("&lt;system&gt;");
+    // purely-textual markers are defanged with a zero-width space after the first
+    // char → the literal "Human:" token no longer appears verbatim
+    expect(md).not.toContain("Human:");
+    expect(md).toContain(`H${String.fromCharCode(0x200b)}uman:`);
     // the docs content's own ``` is collapsed so it can't escape the wrapping fence
     const section = md.slice(md.indexOf("### evil"));
     expect(section).toContain("### evil");
-    expect(section).not.toContain("```\nHuman:"); // content fence run was collapsed
+    expect(section).not.toContain("```\nHuman"); // content fence run was collapsed
   });
 });
