@@ -12,7 +12,7 @@ export const ProviderConfigSchema = z.object({
   costPerMTokensUsd: z.number().nonnegative().optional(),
 });
 
-const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter"]);
+const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
 
 export const ConfigSchema = z.object({
   version: z.literal(1),
@@ -21,6 +21,7 @@ export const ConfigSchema = z.object({
     gemini: ProviderConfigSchema.optional(),
     "claude-code": ProviderConfigSchema.optional(),
     openrouter: ProviderConfigSchema.optional(),
+    opencode: ProviderConfigSchema.optional(),
   }),
   phases: z.object({
     review: z.object({

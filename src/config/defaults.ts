@@ -29,6 +29,13 @@ export const defaultConfig = {
       model: "deepseek/deepseek-v4-pro",
       timeoutMs: 300_000,
     },
+    // opencode CLI; uses its own configured provider creds; model is provider/model format
+    opencode: {
+      enabled: false,
+      auth: "oauth" as const,
+      model: "minimax/minimax-m2.7",
+      timeoutMs: 300_000,
+    },
   },
   phases: {
     review: {
@@ -36,19 +43,19 @@ export const defaultConfig = {
       fileContextBudgetBytes: 32_000,
     },
     critic: null as null | {
-      provider: "codex" | "gemini" | "claude-code" | "openrouter";
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
       model?: string;
       persona: string;
     },
     triage: null as null | {
-      provider: "codex" | "gemini" | "claude-code" | "openrouter";
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
       model?: string;
     },
     brain: null as null | {
       enabled: boolean;
       maxPromptTokens: number;
       curator?: {
-        provider: "codex" | "gemini" | "claude-code" | "openrouter";
+        provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
         model?: string;
         persona: string;
       };
