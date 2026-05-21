@@ -66,6 +66,20 @@ export const ConfigSchema = z.object({
       .optional(),
     // M5 Part B1: FP-ledger (signature-keyed false-positive learning). Opt-in.
     fpLedger: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
+    // M6: Context7 library-docs injection into the research phase. Opt-in.
+    contextDocs: z
+      .object({
+        enabled: z.boolean(),
+        apiKeyEnv: z.string().default("CONTEXT7_API_KEY"),
+        host: z.string().default("context7.com"),
+        budgetBytes: z.number().int().positive().default(8000),
+        perLibBytes: z.number().int().positive().default(2500),
+        maxLibs: z.number().int().positive().default(5),
+        ttlDays: z.number().int().positive().default(30),
+      })
+      .nullable()
+      .default(null)
+      .optional(),
   }),
   cache: z
     .object({ enabled: z.boolean(), reviewTtlDays: z.number().int().positive() })
