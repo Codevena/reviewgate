@@ -1,18 +1,26 @@
-# Reviewgate — Session Handoff (2026-05-21, session 2)
+# Reviewgate — Session Handoff (2026-05-21, session 3)
 
-**Status:** M1–M4 shipped + live-tested (6 bugs fixed). **M5 (FP reduction) STARTED:** spec written, Phase A (diff-scoping) + Phase B0 (merge-provenance) **merged**; Phase B1 (FP-ledger core) planned, not yet executed.
-**master HEAD:** `e8d2052` (local). **origin/master is STALE at `051ac18` — 22 commits behind, NOTHING PUSHED.**
-**Runtime:** Bun (`export PATH="$HOME/.bun/bin:$PATH"`). 338 tests pass / 11 skip / 0 fail; typecheck + lint clean. Binary: `bun run build` → `dist/reviewgate`, symlinked `~/.local/bin/reviewgate`.
+**Status:** M1–M4 shipped + live-tested. **M5 (FP reduction):** spec written; Phase A (diff-scoping) + B0 (merge-provenance) + **B1 (FP-ledger core) all merged**. B2a/B2b/B3 not started.
+**master HEAD:** `2af7dfc` (local). **origin/master is STALE at `051ac18` — 33 commits behind, NOTHING PUSHED.**
+**Runtime:** Bun (`export PATH="$HOME/.bun/bin:$PATH"`). 350 tests pass / 9 skip / 0 fail; typecheck + lint clean. Binary: `bun run build` → `dist/reviewgate` (rebuilt this session, wasm grammars copied, boots OK), symlinked `~/.local/bin/reviewgate`.
 
 ## ⚠️ FIRST: unpushed commits
-`git rev-list origin/master..master` = **22 commits** (session 1 docs + 6 fixes + M5 spec/plans + Phase A + B0), all local-only per "never push without OK". `origin/master` = `051ac18`. **Ask the user before pushing.** Working tree has a pre-existing `M CLAUDE.md` (not from this session — leave it).
+`git rev-list origin/master..master` = **33 commits** (session 1–2 work + M5 Phase A/B0/B1), all local-only per "never push without OK". `origin/master` = `051ac18`. **Ask the user before pushing.** Working tree has a pre-existing `M CLAUDE.md` (NOT from sessions 2/3 — leave it).
+
+## ✅ Session 3 — M5 Phase B1 (FP-ledger core) MERGED (`88efe1d`..`2af7dfc`, 10 commits)
+Executed `docs/superpowers/plans/2026-05-21-reviewgate-m5-phase-b1-fp-ledger.md` (executing-plans, worktree-isolated, FF-merged). Signature-keyed FP learning + reactive demote, **opt-in via `phases.fpLedger` (default off)**.
+- **New:** `src/schemas/fp-ledger.ts` (FpLedgerEntry/Index), `src/core/fp-ledger/store.ts` (flock+atomic store, candidate→active@≥3rejects/60d/≥2-distinct-providers→sticky@≥5/90d|pin, decayPass, monotonic ids), `src/core/fp-ledger/learn.ts` (learn from `reviewer_was_wrong:true` rejections, per-(signature,provider) dedup). Storage: `.reviewgate/learnings/known_fp.jsonl` (single JSON doc).
+- **Modified:** `aggregator.ts` (reactive demote-to-INFO stage after scopeToDiff, never drops/escalates), `orchestrator.ts` (learn+decayPass at runIteration start — ahead of the sandbox early-return; active-ledger identity folded into the review cache key), `define-config.ts` (`phases.fpLedger`), `paths.ts`.
+- **DoD:** Codex Agent A took **4 fix-rounds** before PASS — all 5 findings were real and fixed (each TDD'd): (1) decayPass had no caller → wired per-run, mirroring brain; (2) id reuse after decay → high-water-mark allocation; (3) one decision could inflate the quorum via duplicate same-provider members → dedup by (signature,provider); (4) **literal NUL byte** in a dedup key made git treat learn.ts as binary → structured `JSON.stringify([sig,provider])` key; (5) **cached PASS/SOFT-PASS bypassed the demote** → active-ledger identity now folds into the cache key (regression test verified to fail without the fix). Claude Agent A then PASS (4 INFO only).
+- **4 advisory INFO (not blocking — candidates for B2 polish):** `distinct_providers` stored field is all-time not window-filtered (display only; gate uses windowed counts); `FpReject.run_id` holds a finding-id not a run-id (never read back); `fp_ledger_match.matched_count` hardcoded to 1 even when several members match (display only); `rejects[]` never prunes expired entries (slow unbounded growth, no practical impact at human cadence).
+- **Live e2e still OWED:** enable `phases.fpLedger` in flashbuddy, reject the same FP across ≥2 providers over runs → entry reaches `active` → demoted to INFO/advisory on the next run, no longer blocks. (Also still owed from B0/A: Phase-A scopeToDiff live check in flashbuddy.)
 
 ## 🚧 M5 — FP reduction (in progress)
 Spec: `docs/superpowers/specs/2026-05-21-reviewgate-m5-fp-ledger-design.md` (v4, Codex-reviewed). Two parts: **A** diff-scoping (out-of-diff findings → INFO, default on) + **B** FP-ledger (signature learning, opt-in). 6 phases: A → B0 → B1 → B2a → B2b → B3.
 - **Phase A — MERGED** (`f96659d`): `scopeToDiff` aggregator stage (range-intersection demote-to-INFO), decisions-gate scoped to CRITICAL/WARN (so demote-to-INFO actually unblocks), hunk parser (`src/diff/hunks.ts`, diff-state-aware), `phases.review.scopeToDiff` (default true), report-writer advisory section, tightened preamble. DoD PASS (Codex+Claude found+fixed 2 bugs: details-cap overflow, `+++` content-line misparse).
 - **Phase B0 — MERGED** (`49474dd`): `Finding.members` provenance recorded by the aggregator (each merged member's signature + trusted `reviewer.provider`) — poison-safe prerequisite for B1.
-- **Phase B1 — PLANNED, NOT STARTED:** `docs/superpowers/plans/2026-05-21-reviewgate-m5-phase-b1-fp-ledger.md` — 8 TDD tasks (schema `src/schemas/fp-ledger.ts`, store `src/core/fp-ledger/store.ts` mirroring BrainStore, learn-from-decisions per member-signature, `phases.fpLedger` opt-in, reactive aggregator demote, orchestrator wiring, DoD+merge). **Next session: execute this plan** (executing-plans or subagent-driven). Storage `.reviewgate/learnings/known_fp.jsonl`.
-- **Phases B2a/B2b/B3 — later:** proactive few-shot + cache-hash; CLI (`fp list/show/pin/unpin/audit`) + decay + reject-rate; brain↔ledger coupling.
+- **Phase B1 — MERGED** (session 3, see above). Note vs the plan: decayPass is now actually wired (per-run, in the orchestrator); the cache key folds in the active-ledger identity (was not in the plan — found by DoD review); `fp_ledger_match.matched_count` is still cosmetic.
+- **Phases B2a/B2b/B3 — NEXT, not started:** B2a proactive few-shot (inject active FP signatures into the reviewer prompt) + cache-hash already done in B1; B2b CLI (`fp list/show/pin/unpin/audit`) + decay-cron + reject-rate; B3 brain↔ledger coupling (`linked_brain_id` field already in the schema). The 4 B1 INFO items above are cheap B2 polish.
 - **Live e2e still owed:** Phase A in flashbuddy (restart → a FP on unchanged code lands as INFO/advisory, doesn't block).
 
 ## This session's 6 fixes (all on master, local; first 4 went through full Codex+Claude DoD)
