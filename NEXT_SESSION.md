@@ -61,3 +61,10 @@ Gate re-armed (T12's escalation reset properly). `brain.json` empty. Working tre
 - Never commit Claude attribution (commits authored Codevena). Never push without explicit OK.
 - DoD for big fixes: TDD → `bun test`/typecheck/lint → Codex+Claude review subagents (`.review/*.md`, PASS=0 CRIT/WARN) → fix → re-review → `rm -rf .review/` → commit → FF-merge → rebuild. **Small fixes: TDD only, no DoD** (user's call this session).
 - Memory dir: `/Users/markus/.claude/projects/-Users-markus-Developer-reviewgate/memory/` (German-speaking senior eng, milestone/subagent workflow, insists on REAL e2e — this session's 6 bugs were all source-mode-invisible, vindicating that). New memories this session: `project_reviewer_fp_unchanged_code`, `reference_compiled_binary_wasm`, `project_brain_never_promotes`.
+
+## ➡️ NEXT SESSION (M6 — ready to execute)
+**Context7 library-docs injection** — design spec + full 8-task TDD plan written, Codex design-reviewed, Context7 HTTP API live-verified:
+- Spec: `docs/superpowers/specs/2026-05-22-reviewgate-context7-docs-design.md`
+- Plan: `docs/superpowers/plans/2026-05-22-reviewgate-context7-docs.md` (safeApiFetch → tree-sitter imports+version → docs-cache → context7 client → research render → config → behavior-hash+wiring → DoD)
+- Opt-in `phases.contextDocs` (default off). Key gotchas baked in: NEW `safeApiFetch` (brain's safeFetch can't do query-params/Bearer), docs are UNTRUSTED (fenced + caveat), docs-corpus identity must feed the review behavior-hash (else cache bypass — the B2a bug class). Task 8 verifies the Context7 API against live before trusting it.
+- Execute with executing-plans or subagent-driven-development from a fresh worktree off master HEAD.
