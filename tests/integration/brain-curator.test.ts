@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../../src/config/defaults.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
+import { FpLedgerStore } from "../../src/core/fp-ledger/store.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { BrainEntry } from "../../src/schemas/brain.ts";
@@ -296,5 +297,67 @@ describe("brain curator integration", () => {
     expect(seenPrompt).toContain("## Brain context");
     expect(seenPrompt).toContain("cart null-guards");
     expect(seenPrompt).toContain("[Source: B-001");
+  });
+
+  it("B3: pairs an active FP-ledger entry to a brain convention entry through runIteration", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3-int-"));
+    // Seed an ACTIVE FP entry (≥3 rejects across 2 providers).
+    const fpStore = new FpLedgerStore(repo);
+    const fpMeta = {
+      rule_id: "sql-injection",
+      category: "security" as const,
+      file: "src/cart.ts",
+      symbol: "",
+    };
+    const t = "2026-05-21T00:00:00Z";
+    await fpStore.recordReject(
+      "sigFP",
+      fpMeta,
+      { run_id: "r1", provider: "codex", reason: "intentional demo xx" },
+      t,
+    );
+    await fpStore.recordReject(
+      "sigFP",
+      fpMeta,
+      { run_id: "r2", provider: "gemini", reason: "intentional demo xx" },
+      t,
+    );
+    await fpStore.recordReject(
+      "sigFP",
+      fpMeta,
+      { run_id: "r3", provider: "codex", reason: "intentional demo xx" },
+      t,
+    );
+    expect((await fpStore.snapshot()).entries[0]?.stage).toBe("active");
+
+    // brain + fpLedger both enabled; reviewers emit NO proposals (pairing must
+    // still fire — it is independent of the curator's proposal path).
+    const config = {
+      ...brainConfig(),
+      phases: { ...brainConfig().phases, fpLedger: { enabled: true } },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: {
+        codex: reviewer("codex", JSON.stringify({ verdict: "PASS", findings: [] })),
+        gemini: reviewer("gemini", JSON.stringify({ verdict: "PASS", findings: [] })),
+        openrouter: fakeOpenRouter(),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: CODE_DIFF,
+      reasonOnFailEnabled: true,
+    });
+    await orch.runIteration({ runId: "RUN1", iter: 1 });
+
+    const brain = (await new BrainStore(repo).snapshot()).entries.find(
+      (e) => e.linked_fp_id !== undefined,
+    );
+    expect(brain?.type).toBe("convention");
+    expect(brain?.title).toContain("sql-injection");
+    const fp = (await fpStore.snapshot()).entries[0];
+    expect(fp?.linked_brain_id).toBe(brain?.id as string);
+    expect(brain?.linked_fp_id).toBe(fp?.id);
   });
 });

@@ -29,6 +29,7 @@ import { runCurator } from "./brain/curator.ts";
 import type { Embedder } from "./brain/embeddings.ts";
 import { BrainEngine } from "./brain/engine.ts";
 import { enrichProposal } from "./brain/enrich.ts";
+import { pairActiveFpEntries } from "./brain/fp-coupling.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
@@ -514,6 +515,28 @@ export class Orchestrator {
       await this.runCuratorPhase(repo, opts.runId, brainCfg, proposals).catch(() => undefined);
     }
 
+    // M5 Phase B3 — FP↔Brain coupling: pair active FP-ledger entries to brain
+    // convention entries. Post-verdict + non-blocking, like the curator. Needs
+    // BOTH brain and the FP-ledger enabled; runs even when there were no proposals
+    // (a previously-active FP entry may still be unpaired).
+    if (brainCfg?.enabled && fpStore) {
+      const embedder = this.buildEmbedder(brainCfg);
+      if (embedder) {
+        await pairActiveFpEntries({
+          fpStore,
+          brainStore: new BrainStore(repo),
+          embedder,
+          embedCfg: {
+            model: brainCfg.embeddings.model,
+            apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
+            timeoutMs: brainCfg.curatorTimeoutMs,
+          },
+          runId: opts.runId,
+          nowIso: new Date().toISOString(),
+        }).catch(() => undefined);
+      }
+    }
+
     // --- Cache store (only passing verdicts; FAIL must re-run to surface findings) ---
     if (cacheEnabled && (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")) {
       await putCachedReview(repo, cacheKey, { verdict: agg.verdict, counts: agg.counts }).catch(
@@ -555,6 +578,34 @@ export class Orchestrator {
     return out;
   }
 
+  // Wrap the panel's OpenRouter adapter (single-text embed → number[]) as the
+  // curator's batch Embedder (number[][]). Null when no OpenRouter adapter is
+  // configured. Shared by the Curator and the B3 FP↔Brain pairing.
+  private buildEmbedder(
+    brainCfg: NonNullable<ReviewgateConfig["phases"]["brain"]>,
+  ): Embedder | null {
+    const orAdapter = this.input.adapters.openrouter;
+    if (!orAdapter || typeof (orAdapter as { embed?: unknown }).embed !== "function") return null;
+    const orEmbed = orAdapter as unknown as {
+      embed(
+        text: string,
+        opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
+      ): Promise<number[]>;
+    };
+    return {
+      embed: async (texts, cfg) =>
+        Promise.all(
+          texts.map((t) =>
+            orEmbed.embed(t, {
+              model: cfg?.model ?? brainCfg.embeddings.model,
+              apiKeyEnv: cfg?.apiKeyEnv ?? brainCfg.embeddings.apiKeyEnv,
+              ...(cfg?.timeoutMs != null ? { timeoutMs: cfg.timeoutMs } : {}),
+            }),
+          ),
+        ),
+    };
+  }
+
   // Non-blocking Curator phase. Best-effort: any failure (timeout, missing
   // embedder, enrichment error) is swallowed by the caller's `.catch()` and the
   // already-committed verdict is untouched. Pinned-snapshot mutations land in
@@ -568,30 +619,11 @@ export class Orchestrator {
     const store = new BrainStore(repo);
     await decayPass(store, repo, new Date().toISOString());
 
-    // The embedder is the OpenRouter adapter the panel already built. Its
-    // adapter.embed() is single-text → number[]; the curator's Embedder wants
-    // batch → number[][], so wrap it. Absent adapter → skip curation entirely
-    // (dedup would be undeduplicatable; fail-closed by not promoting).
-    const orAdapter = this.input.adapters.openrouter;
-    if (!orAdapter || typeof (orAdapter as { embed?: unknown }).embed !== "function") return;
-    const orEmbed = orAdapter as unknown as {
-      embed(
-        text: string,
-        opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
-      ): Promise<number[]>;
-    };
-    const embedder: Embedder = {
-      embed: async (texts, cfg) =>
-        Promise.all(
-          texts.map((t) =>
-            orEmbed.embed(t, {
-              model: cfg?.model ?? brainCfg.embeddings.model,
-              apiKeyEnv: cfg?.apiKeyEnv ?? brainCfg.embeddings.apiKeyEnv,
-              ...(cfg?.timeoutMs != null ? { timeoutMs: cfg.timeoutMs } : {}),
-            }),
-          ),
-        ),
-    };
+    // The embedder is the OpenRouter adapter the panel already built (wrapped to
+    // batch). Absent adapter → skip curation entirely (dedup would be
+    // undeduplicatable; fail-closed by not promoting).
+    const embedder = this.buildEmbedder(brainCfg);
+    if (!embedder) return;
 
     // Enrich citation evidence (best-effort; failures drop the citation).
     const fetchOpts = {
