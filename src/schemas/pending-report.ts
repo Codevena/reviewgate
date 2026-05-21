@@ -33,6 +33,21 @@ export const PendingReportSchema = z.object({
     }),
   ),
   findings: z.array(FindingSchema),
+  // Critic-phase observability (absent when no critic is configured). Lets a
+  // configured-but-silent critic be diagnosed from pending.json:
+  //  status "ran"          — produced parseable verdicts (`verdicts` of them)
+  //  status "empty"        — ran but returned nothing parseable
+  //  status "error"        — the critic adapter failed
+  //  status "misconfigured"— provider/config missing
+  //  demoted               — findings the critic actually downgraded this run
+  critic: z
+    .object({
+      provider: z.string(),
+      status: z.enum(["ran", "error", "empty", "misconfigured"]),
+      verdicts: z.number().int().nonnegative(),
+      demoted: z.number().int().nonnegative(),
+    })
+    .optional(),
   cost_usd_total: z.number().nonnegative(),
   duration_ms_total: z.number().nonnegative(),
   generated_at: z.string(),
