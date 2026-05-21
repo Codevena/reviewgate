@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 // src/utils/git.ts
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface GitInfo {
@@ -93,9 +93,15 @@ export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000):
   let used = 0;
   for (const f of [...names].sort()) {
     if (isReviewgateManaged(f)) continue;
+    const abs = join(repoRoot, f);
     let content: string;
     try {
-      content = readFileSync(join(repoRoot, f), "utf8");
+      // lstat (not stat): never FOLLOW a symlink. A changed/untracked symlink
+      // could point outside the repo (e.g. ~/.ssh/id_rsa); reading its target
+      // would leak that file's content into the reviewer prompt. Only ever read
+      // regular files; skip symlinks/dirs/special files.
+      if (!lstatSync(abs).isFile()) continue;
+      content = readFileSync(abs, "utf8");
     } catch {
       continue; // deleted or binary
     }

@@ -1,7 +1,7 @@
 // tests/unit/git-file-contents.test.ts
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectChangedFileContents } from "../../src/utils/git.ts";
@@ -72,6 +72,21 @@ describe("collectChangedFileContents", () => {
 
     expect(result).toContain("### src.ts");
     expect(result).not.toContain("reviewgate.config.ts");
+  });
+
+  it("never follows a symlink (no leaking files outside the repo into prompts)", () => {
+    const dir = repo();
+    writeFileSync(join(dir, "real.ts"), "export const x = 1;\n");
+    commit(dir);
+    // A secret outside the repo + an untracked symlink pointing at it.
+    const secret = mkdtempSync(join(tmpdir(), "rg-secret-"));
+    writeFileSync(join(secret, "id_rsa"), "SUPER_SECRET_PRIVATE_KEY\n");
+    symlinkSync(join(secret, "id_rsa"), join(dir, "leak.ts"));
+
+    const result = collectChangedFileContents(dir);
+
+    expect(result).not.toContain("SUPER_SECRET_PRIVATE_KEY");
+    expect(result).not.toContain("### leak.ts");
   });
 
   it("triggers the (omitted — context budget exceeded) note for tiny maxBytes", () => {
