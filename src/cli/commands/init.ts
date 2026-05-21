@@ -62,6 +62,8 @@ const GITIGNORE_LINES = [
   ".reviewgate/ESCALATION.md",
   ".reviewgate/.lock",
   ".reviewgate/cache/",
+  ".reviewgate/brain/proposals/",
+  ".reviewgate/brain/snapshots/",
 ];
 
 export interface InitInput {

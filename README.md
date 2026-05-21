@@ -346,9 +346,63 @@ symbol graph (TS/JS/TSX/Python; needs ripgrep for callers; degrades gracefully) 
 review cache (identical diff → cached verdict, no reviewer spawn) · grammar WASM
 bundled into `dist/grammars/` by `bun run build`.
 
-**Not yet (M4–M6):** per-repo learning "brain" & curator · false-positive ledger ·
-cassette replay & weekly reports · native sandbox isolation (pending
-`@anthropic-ai/sandbox-runtime` v1).
+**In M4:** per-repo learning brain & Curator (see [Brain & Curator (M4)](#brain--curator-m4) below) ·
+`reviewgate brain list|show|revoke` CLI.
+
+**Not yet (M5–M6):** false-positive ledger · cassette replay & weekly reports ·
+native sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1).
+
+---
+
+## Brain & Curator (M4)
+
+The brain is a **committed per-repo memory** (`reviewgate.brain.json`,
+`brain.md`, `sources.jsonl`, `archive.md` under `.reviewgate/brain/`). Every
+reviewer reads the brain entries most relevant to the current diff and may
+propose new facts. The **Curator** is a non-blocking background validator that
+applies 7 acceptance rules (uniqueness, source authority, cross-provider
+quorum, embedding dedup against existing entries, etc.) before anything enters
+the brain; proposals that fail are discarded or archived, never silently
+committed.
+
+**Committed vs. gitignored:**
+
+| Path | Committed? |
+|---|---|
+| `.reviewgate/brain/brain.json` | yes |
+| `.reviewgate/brain/brain.md` | yes |
+| `.reviewgate/brain/sources.jsonl` | yes |
+| `.reviewgate/brain/archive.md` | yes |
+| `.reviewgate/brain/proposals/` | no (gitignored) |
+| `.reviewgate/brain/snapshots/` | no (gitignored) |
+
+**Enable in `reviewgate.config.ts`:**
+
+```ts
+export default {
+  // ...providers, phases...
+  phases: {
+    brain: {
+      enabled: true,
+      embeddings: {
+        model: "baai/bge-base-en-v1.5",   // default; any sentence-transformers slug works
+      },
+      // optional: which provider runs Curator validation
+      curator: { provider: "codex" },
+      // optional: domains the brain may fetch sources from
+      egressAllowlist: ["github.com", "docs.example.com"],
+    },
+  },
+};
+```
+
+**CLI:**
+
+```bash
+reviewgate brain list          # list all committed brain entries
+reviewgate brain show <id>     # show a single entry with metadata
+reviewgate brain revoke <id>   # remove an entry (writes archive.md, re-commits)
+```
 
 ---
 
