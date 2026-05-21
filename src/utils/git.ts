@@ -91,7 +91,17 @@ export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000):
     names.add(f);
   let out = "";
   let used = 0;
+  // Omission markers count toward `used` too, and once the budget is spent we
+  // stop entirely — so the total output (content + markers) is hard-bounded by
+  // ~maxBytes regardless of how many oversized files the change set contains.
+  const omit = (f: string): boolean => {
+    const note = `### ${f}\n(omitted — context budget exceeded)\n`;
+    out += note;
+    used += note.length;
+    return used >= maxBytes;
+  };
   for (const f of [...names].sort()) {
+    if (used >= maxBytes) break;
     if (isReviewgateManaged(f)) continue;
     const abs = join(repoRoot, f);
     let content: string;
@@ -105,7 +115,7 @@ export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000):
       // Size-guard BEFORE reading: never load a file that can't fit the remaining
       // budget into memory just to omit its block later (avoids a huge-file stall).
       if (st.size > maxBytes - used) {
-        out += `### ${f}\n(omitted — context budget exceeded)\n`;
+        if (omit(f)) break;
         continue;
       }
       content = readFileSync(abs, "utf8");
@@ -114,7 +124,7 @@ export function collectChangedFileContents(repoRoot: string, maxBytes = 60_000):
     }
     const block = `### ${f}\n\`\`\`\n${content}\n\`\`\`\n`;
     if (used + block.length > maxBytes) {
-      out += `### ${f}\n(omitted — context budget exceeded)\n`;
+      if (omit(f)) break;
       continue;
     }
     used += block.length;
