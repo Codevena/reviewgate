@@ -1,12 +1,19 @@
 # Reviewgate — Session Handoff (2026-05-21, session 2)
 
-**Status:** M1–M4 shipped. Full live test series (T1–T13) run against the real consumer
-**flashbuddy** — surfaced & fixed **6 real bugs**, all only visible via real end-to-end runs.
-**master HEAD:** `b862cc7` (local). **origin/master is STALE at `051ac18` — 8 commits behind, NOTHING PUSHED.**
-**Runtime:** Bun (`export PATH="$HOME/.bun/bin:$PATH"`). 318 tests pass / 11 skip / 0 fail; typecheck + lint clean. Binary: `bun run build` → `dist/reviewgate`, symlinked `~/.local/bin/reviewgate`.
+**Status:** M1–M4 shipped + live-tested (6 bugs fixed). **M5 (FP reduction) STARTED:** spec written, Phase A (diff-scoping) + Phase B0 (merge-provenance) **merged**; Phase B1 (FP-ledger core) planned, not yet executed.
+**master HEAD:** `e8d2052` (local). **origin/master is STALE at `051ac18` — 22 commits behind, NOTHING PUSHED.**
+**Runtime:** Bun (`export PATH="$HOME/.bun/bin:$PATH"`). 338 tests pass / 11 skip / 0 fail; typecheck + lint clean. Binary: `bun run build` → `dist/reviewgate`, symlinked `~/.local/bin/reviewgate`.
 
 ## ⚠️ FIRST: unpushed commits
-`git rev-list origin/master..master` = **8 commits** (2 docs from session 1 + 6 fixes from session 2), all local-only per "never push without OK". `origin/master` = `051ac18`. **Ask the user before pushing.** Working tree has a pre-existing `M CLAUDE.md` (not from this session — leave it).
+`git rev-list origin/master..master` = **22 commits** (session 1 docs + 6 fixes + M5 spec/plans + Phase A + B0), all local-only per "never push without OK". `origin/master` = `051ac18`. **Ask the user before pushing.** Working tree has a pre-existing `M CLAUDE.md` (not from this session — leave it).
+
+## 🚧 M5 — FP reduction (in progress)
+Spec: `docs/superpowers/specs/2026-05-21-reviewgate-m5-fp-ledger-design.md` (v4, Codex-reviewed). Two parts: **A** diff-scoping (out-of-diff findings → INFO, default on) + **B** FP-ledger (signature learning, opt-in). 6 phases: A → B0 → B1 → B2a → B2b → B3.
+- **Phase A — MERGED** (`f96659d`): `scopeToDiff` aggregator stage (range-intersection demote-to-INFO), decisions-gate scoped to CRITICAL/WARN (so demote-to-INFO actually unblocks), hunk parser (`src/diff/hunks.ts`, diff-state-aware), `phases.review.scopeToDiff` (default true), report-writer advisory section, tightened preamble. DoD PASS (Codex+Claude found+fixed 2 bugs: details-cap overflow, `+++` content-line misparse).
+- **Phase B0 — MERGED** (`49474dd`): `Finding.members` provenance recorded by the aggregator (each merged member's signature + trusted `reviewer.provider`) — poison-safe prerequisite for B1.
+- **Phase B1 — PLANNED, NOT STARTED:** `docs/superpowers/plans/2026-05-21-reviewgate-m5-phase-b1-fp-ledger.md` — 8 TDD tasks (schema `src/schemas/fp-ledger.ts`, store `src/core/fp-ledger/store.ts` mirroring BrainStore, learn-from-decisions per member-signature, `phases.fpLedger` opt-in, reactive aggregator demote, orchestrator wiring, DoD+merge). **Next session: execute this plan** (executing-plans or subagent-driven). Storage `.reviewgate/learnings/known_fp.jsonl`.
+- **Phases B2a/B2b/B3 — later:** proactive few-shot + cache-hash; CLI (`fp list/show/pin/unpin/audit`) + decay + reject-rate; brain↔ledger coupling.
+- **Live e2e still owed:** Phase A in flashbuddy (restart → a FP on unchanged code lands as INFO/advisory, doesn't block).
 
 ## This session's 6 fixes (all on master, local; first 4 went through full Codex+Claude DoD)
 1. **`162ea18` decisions-rearm clear** — the decisions-gate matched by `finding_id` only; on a re-arm the iteration counter resets to 0 and reuses `decisions/<iter>.jsonl`, so a stale `F-001 fixed` line satisfied the next cycle's colliding F-001. Now wipes `decisions/` at both re-arm sites (PASS + escalated-commit). *Found by T2.*
