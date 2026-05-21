@@ -84,6 +84,7 @@ export const BrainEntrySchema = z.object({
   created_at: z.string(),
   last_referenced_at: z.string().optional(),
   source_run_id: z.string(),
+  linked_fp_id: z.string().optional(), // Phase B3: paired FP-ledger entry
 });
 export type BrainEntry = z.infer<typeof BrainEntrySchema>;
 
