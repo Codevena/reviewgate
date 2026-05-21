@@ -47,6 +47,8 @@ describe("aggregate — region dedup ignores category", () => {
     expect(r.dedupedFindings.length).toBe(1);
     expect(r.dedupedFindings[0]?.severity).toBe("WARN"); // highest of WARN/INFO
     expect(r.dedupedFindings[0]?.confirmed_by?.length).toBe(2);
+    // Masking guard: the multi-category merge is surfaced in details.
+    expect(r.dedupedFindings[0]?.details).toContain("merges concerns categorized as");
   });
 
   it("still keeps issues in DIFFERENT line regions distinct (even same category)", () => {
