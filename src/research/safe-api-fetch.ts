@@ -24,18 +24,20 @@ import { isBlockedIp } from "../core/brain/fetcher.ts";
 export interface SafeApiFetchOpts {
   /** Single exact-match host allowlist (the only host egress is permitted to). */
   allowHost: string;
+  // `| undefined` on the optional fields so callers can forward a shared opts
+  // object that carries explicit-undefined values under exactOptionalPropertyTypes.
   /** reviewgate-constructed query params (NOT user input → safe to set). */
-  query?: Record<string, string>;
+  query?: Record<string, string> | undefined;
   /** Bearer token; omitted → no Authorization header (keyless). */
-  apiKey?: string;
+  apiKey?: string | undefined;
   /** Request timeout in ms. */
   timeoutMs: number;
   /** Max response body size in bytes (default 2 MB). */
-  maxBytes?: number;
+  maxBytes?: number | undefined;
   /** Injectable for tests; defaults to global `fetch`. */
-  fetchImpl?: typeof fetch;
+  fetchImpl?: typeof fetch | undefined;
   /** Injectable for tests; defaults to node DNS lookup. */
-  resolve?: (host: string) => Promise<string[]>;
+  resolve?: ((host: string) => Promise<string[]>) | undefined;
 }
 
 const DEFAULT_MAX_BYTES = 2_000_000;
