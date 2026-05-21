@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { parseChangedRanges } from "../diff/hunks.ts";
@@ -31,6 +32,7 @@ import { enrichProposal } from "./brain/enrich.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
+import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { ReportWriter } from "./report-writer.ts";
@@ -229,31 +231,28 @@ export class Orchestrator {
         categories: [],
       });
     }
-    // Deterministic identity of the pinned brain: id+status per eligible entry,
-    // sorted, joined. Empty when brain is off → cache key unchanged from M3.
-    const brainActiveHash = brainEngine
-      ? brainEngine
-          .snapshotEntries()
-          .map((e) => `${e.id}:${e.status}`)
-          .sort()
-          .join(",")
-      : "";
-
     // M5 Part B1: the active/sticky FP-ledger snapshot decides which findings get
-    // demoted, so its identity must invalidate the cache exactly like the brain's.
-    // Without this a cached PASS/SOFT-PASS could be served BEFORE the reactive
-    // demote runs, leaving a now-active FP blocking (e.g. a SOFT-PASS under a
-    // block/ask-once soft-pass policy). Read post-learn/decay so a freshly
-    // promoted entry deterministically forces a re-review. Reused below so the
-    // aggregate stage does not read the ledger a second time.
+    // demoted (reactive) AND which few-shot lines are injected (proactive), so its
+    // identity must invalidate the cache exactly like the brain's — otherwise a
+    // cached PASS/SOFT-PASS could be served BEFORE either runs (e.g. a SOFT-PASS
+    // under a block/ask-once policy). Read post-learn/decay so a freshly promoted
+    // entry forces a re-review. Reused below for few-shot + the aggregate stage so
+    // the ledger is read exactly once.
     const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot() : undefined;
-    const fpActiveHash =
-      fpActiveSnapshot && fpActiveSnapshot.size > 0
-        ? [...fpActiveSnapshot.values()]
-            .map((e) => `${e.signature}:${e.id}:${e.stage}`)
-            .sort()
-            .join(",")
-        : "";
+
+    // M5 Part B2a: brain + FP identities flow through ONE structured behavior-hash
+    // (not an ad-hoc append). FP is keyed on {signature, stage} (the behavior-
+    // affecting fields; pattern_id is cosmetic). With no FP entries the result is
+    // byte-identical to the legacy brain-only `id:status` hash, so existing cache
+    // keys are preserved when fpLedger is off or has no active entries.
+    const behaviorHash = computeBehaviorHash({
+      brain: brainEngine
+        ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
+        : [],
+      fp: fpActiveSnapshot
+        ? [...fpActiveSnapshot.values()].map((e) => ({ signature: e.signature, stage: e.stage }))
+        : [],
+    });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
     const cacheEnabled = this.input.config.cache.enabled;
@@ -261,14 +260,25 @@ export class Orchestrator {
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
       // M3: provider versions not queried; cache invalidates on config/version/
-      // schema change. M4: the pinned brain identity is folded in here so any
-      // brain change re-runs the panel deterministically. M5 B1: the active FP
-      // ledger identity is appended (only when non-empty → existing keys are
-      // unchanged when fpLedger is off or has no active entries).
-      providerVersions: fpActiveHash ? `${brainActiveHash}|fp:${fpActiveHash}` : brainActiveHash,
+      // schema change. M4+M5: the combined brain+FP behavior-hash is folded in
+      // here so any brain OR active-ledger change re-runs the panel deterministically.
+      providerVersions: behaviorHash,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
+
+    // M5 Part B2a — proactive negative few-shot: tell the panel which findings
+    // this repo's maintainers have already confirmed as false positives for the
+    // changed files, so they are not re-reported (complements the reactive
+    // aggregator demote). Trusted context, injected before the untrusted diff
+    // fence like brain context. Derived from the same active snapshot folded into
+    // the behavior-hash, so the cache already accounts for it.
+    const fpFewShot = fpActiveSnapshot
+      ? buildFpFewShot({
+          active: fpActiveSnapshot,
+          changedFiles: facts.files.map((file) => file.path),
+        })
+      : "";
     if (cacheEnabled) {
       const cached = await getCachedReview(repo, cacheKey);
       if (cached && (cached.verdict === "PASS" || cached.verdict === "SOFT-PASS")) {
@@ -343,6 +353,7 @@ export class Orchestrator {
       const promptParts = [docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE, ""];
       if (researchText) promptParts.push("## Research context", researchText, "");
       if (brainText) promptParts.push("## Brain context", brainText, "");
+      if (fpFewShot) promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
       promptParts.push(sanitised.text);
       if (sanitisedCtx)
         promptParts.push(

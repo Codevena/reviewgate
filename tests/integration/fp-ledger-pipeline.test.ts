@@ -152,4 +152,42 @@ describe("FP-ledger pipeline (opt-in)", () => {
     expect(report.findings[0].severity).toBe("INFO");
     expect(report.findings[0].fp_ledger_match.pattern_id).toBe(fpId);
   });
+
+  it("injects active FP entries (matching a changed file) into the reviewer prompt", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-fppipe-fewshot-"));
+    await seedActive(repo); // active entry for sig "sigFP" on file "a.ts" (the changed file)
+    let capturedPrompt = "";
+    const capturing: ProviderAdapter = {
+      id: "codex",
+      async preflight() {
+        return { available: true, version: "x", authMode: "oauth", error: null };
+      },
+      async review(inp) {
+        capturedPrompt = readFileSync(inp.promptFile, "utf8");
+        return {
+          reviewerId: inp.reviewerId,
+          verdict: "PASS",
+          findings: [],
+          usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+          durationMs: 1,
+          exitCode: 0,
+          rawEventsPath: "",
+          rawText: "",
+          status: "ok",
+        };
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: configWithFpLedger(true),
+      adapters: { codex: capturing },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF, // touches a.ts
+      reasonOnFailEnabled: true,
+    });
+    await orch.runIteration({ runId: "RUN", iter: 1 });
+    expect(capturedPrompt).toContain("Known false positives");
+    expect(capturedPrompt).toContain("a.ts");
+  });
 });
