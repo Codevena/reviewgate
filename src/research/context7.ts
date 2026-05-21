@@ -82,6 +82,17 @@ function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
+// Truncate a string to at most `maxBytes` UTF-8 bytes WITHOUT splitting a
+// multibyte character (a char-count slice would over- or under-shoot a byte
+// budget and could cut a code point in half). TextDecoder drops a trailing
+// partial sequence to U+FFFD, which we strip.
+function truncateToBytes(s: string, maxBytes: number): string {
+  const buf = Buffer.from(s, "utf8");
+  if (buf.length <= maxBytes) return s;
+  const decoded = new TextDecoder("utf-8").decode(buf.subarray(0, maxBytes));
+  return decoded.replace(/�$/, ""); // strip a trailing split-sequence replacement char
+}
+
 function isEmptyContext(ctx: ContextResponse | null): boolean {
   if (!ctx) return true;
   const code = ctx.codeSnippets?.length ?? 0;
@@ -193,10 +204,10 @@ export async function fetchLibraryDocs(
         continue;
       }
 
-      // 4) render + truncate + cache
+      // 4) render + truncate (BY BYTES — perLibBytes is a byte budget) + cache
       const rendered = renderContext(ctx);
-      const truncated = rendered.length > opts.perLibBytes;
-      const text = truncated ? rendered.slice(0, opts.perLibBytes) : rendered;
+      const truncated = Buffer.byteLength(rendered, "utf8") > opts.perLibBytes;
+      const text = truncated ? truncateToBytes(rendered, opts.perLibBytes) : rendered;
       const responseHash = sha256(JSON.stringify(ctx));
 
       const entry: CachedDocs = {

@@ -113,6 +113,23 @@ describe("fetchLibraryDocs", () => {
     expect(res.libs[0]?.text.length).toBeLessThanOrEqual(100);
   });
 
+  it("truncates by BYTES (not chars) for multibyte docs and never exceeds perLibBytes", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-c7-mb-"));
+    // 200 rockets = 200 chars but 800 bytes (4 bytes each). perLibBytes 100.
+    const multibyte = "🚀".repeat(200);
+    const fetchImpl = stubFetch({
+      "/v2/libs/search": { results: [{ id: "/mb/lib" }] },
+      "/v2/context": { infoSnippets: [{ content: multibyte }] },
+    });
+    const res = await fetchLibraryDocs([{ name: "mb", version: null, fromFiles: ["a.ts"] }], {
+      ...baseOpts(repo, fetchImpl),
+      perLibBytes: 100,
+    });
+    expect(res.libs[0]?.outcome).toBe("truncated");
+    // the byte length of the kept text must respect the byte budget
+    expect(Buffer.byteLength(res.libs[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(100);
+  });
+
   it("respects maxLibs (caps the number of libs processed)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-c7-6-"));
     const fetchImpl = stubFetch({

@@ -49,7 +49,10 @@ function renderContextDocs(docs: RenderedContextDocs, budgetBytes: number): stri
   let budgetDropped = 0;
   for (const lib of includable) {
     const body = neutralizeFences(neutralizeInjectionMarkers(lib.text));
-    const block = [`### ${lib.name}`, "```text", body, "```", ""].join("\n");
+    // lib.name derives from an import specifier in the untrusted diff — neutralize
+    // it too (consistency with the body) and strip newlines so it stays a heading.
+    const name = neutralizeInjectionMarkers(lib.name).replace(/[\r\n]+/g, " ");
+    const block = [`### ${name}`, "```text", body, "```", ""].join("\n");
     const size = Buffer.byteLength(block, "utf8");
     // Strict TOTAL cap: drop any block that does not fit — including the first.
     // An over-budget single lib (misconfigured perLibBytes > budgetBytes, or a
