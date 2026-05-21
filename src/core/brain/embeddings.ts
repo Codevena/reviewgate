@@ -39,10 +39,13 @@ export interface EmbedOptions {
 }
 
 /**
- * Interface for anything that can produce an embedding vector for a text string.
- * Implementations must fail-closed: throw rather than returning an empty/invalid
- * vector so callers can treat any error as "dedup check unavailable".
+ * Interface for anything that can produce embedding vectors for a batch of texts.
+ * Implementations must fail-closed: throw rather than returning empty/invalid
+ * vectors so callers can treat any error as "dedup check unavailable".
  */
 export interface Embedder {
-  embed(text: string, opts: EmbedOptions): Promise<number[]>;
+  embed(
+    texts: string[],
+    cfg?: { model?: string; apiKeyEnv?: string; timeoutMs?: number },
+  ): Promise<number[][]>;
 }
