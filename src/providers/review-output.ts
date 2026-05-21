@@ -6,7 +6,10 @@ import { type Finding, type FindingCategory, FindingSchema } from "../schemas/fi
 export const REVIEW_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["verdict", "findings"],
+  // Strict structured-output mode (codex/OpenAI) requires EVERY property key to
+  // appear in `required`; optionality is expressed via a nullable type below
+  // (memory_proposals: ["array","null"]), never by omission.
+  required: ["verdict", "findings", "memory_proposals"],
   properties: {
     verdict: { type: "string", enum: ["PASS", "FAIL"] },
     findings: {
@@ -53,7 +56,7 @@ export const REVIEW_OUTPUT_SCHEMA = {
     // are deliberately omitted: the orchestrator stamps the emitting adapter's
     // identity and discards any LLM-supplied provider signal (anti-collusion).
     memory_proposals: {
-      type: "array",
+      type: ["array", "null"],
       items: {
         type: "object",
         additionalProperties: false,
@@ -73,13 +76,14 @@ export const REVIEW_OUTPUT_SCHEMA = {
             items: {
               type: "object",
               additionalProperties: false,
-              required: ["kind"],
+              // Strict mode: all property keys required; optional ones nullable.
+              required: ["kind", "source_url", "snippet", "from_diff"],
               properties: {
                 kind: { type: "string" },
-                source_url: { type: "string" },
-                snippet: { type: "string" },
+                source_url: { type: ["string", "null"] },
+                snippet: { type: ["string", "null"] },
                 from_diff: {
-                  type: "object",
+                  type: ["object", "null"],
                   additionalProperties: false,
                   required: ["file", "line_start", "line_end"],
                   properties: {
@@ -136,13 +140,36 @@ export interface ReviewOutput {
   memory_proposals?: RawProposal[];
 }
 
+// Rebuild each evidence item keeping only non-null optional fields. The strict
+// schema marks source_url/snippet/from_diff as nullable, so a reviewer may send
+// explicit nulls; we drop them so RawProposal stays optional-not-nullable.
+function normalizeProposals(proposals: RawProposal[]): RawProposal[] {
+  return proposals.map((p) => ({
+    ...p,
+    evidence: Array.isArray(p.evidence)
+      ? p.evidence.map((e) => {
+          const cleaned: RawProposal["evidence"][number] = { kind: e.kind };
+          if (e.source_url != null) cleaned.source_url = e.source_url;
+          if (e.snippet != null) cleaned.snippet = e.snippet;
+          if (e.reviewer_id != null) cleaned.reviewer_id = e.reviewer_id;
+          if (e.from_diff != null) cleaned.from_diff = e.from_diff;
+          return cleaned;
+        })
+      : [],
+  }));
+}
+
 export function parseReviewOutput(text: string): ReviewOutput | null {
   const tryParse = (s: string): ReviewOutput | null => {
     try {
       const o = JSON.parse(s) as Record<string, unknown>;
       if (Array.isArray(o.findings)) {
+        // memory_proposals is nullable in the schema (strict mode), so codex may
+        // emit `null` or null-valued optional evidence fields. Normalize null →
+        // absent so the RawProposal contract (optional, not nullable) holds and
+        // the Brain curator never sees a null where it expects undefined.
         const mp = Array.isArray(o.memory_proposals)
-          ? (o.memory_proposals as RawProposal[])
+          ? normalizeProposals(o.memory_proposals as RawProposal[])
           : undefined;
         return {
           verdict: o.verdict === "PASS" ? "PASS" : "FAIL",
