@@ -12,6 +12,9 @@ export interface AggregateInput {
   // scopeToDiff !== false, findings outside the changed hunks are demoted to INFO.
   changedRanges?: Map<string, Range[]>;
   scopeToDiff?: boolean;
+  // M5 Part B1: active/sticky FP-ledger entries keyed by signature. A finding
+  // whose representative or any member signature matches is demoted to INFO.
+  fpActive?: Map<string, { id: string }>;
 }
 
 export interface AggregateResult {
@@ -211,12 +214,29 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : survivors;
 
+  // M5 Part B1 — reactive FP-ledger demote: a finding whose representative
+  // signature (or any merged member signature) matches an active/sticky FP entry
+  // is demoted to INFO + tagged. Never dropped — stays visible in the advisory
+  // section, and the decisions-gate already ignores INFO.
+  const fpScoped: Finding[] = input.fpActive
+    ? scoped.map((f) => {
+        const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+        const hit = sigs.map((s) => input.fpActive?.get(s)).find((x) => x);
+        if (!hit) return f;
+        const base = f.severity === "INFO" ? f : { ...f, severity: "INFO" as const };
+        return {
+          ...base,
+          fp_ledger_match: { pattern_id: hit.id, matched_count: 1, suppressed: true },
+        };
+      })
+    : scoped;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of scoped) {
+  for (const f of fpScoped) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (f.category === "security" || f.category === "correctness") {
@@ -243,7 +263,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = scoped.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
+  const renumbered = fpScoped.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
 
   return { verdict, dedupedFindings: renumbered, counts: { critical, warn, info } };
 }
