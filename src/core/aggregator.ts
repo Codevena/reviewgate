@@ -30,14 +30,16 @@ function computeConsensus(flagged: number, total: number): Consensus {
 
 const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 1, INFO: 0 };
 
-// Semantic dedup key — deliberately EXCLUDES rule_id (different reviewers name
-// the same bug differently, e.g. "sql-injection" vs "sqli-risk", which would
-// otherwise yield distinct signatures and force the user to disposition the same
-// bug N times). Groups by file + category + a 5-line window, so the same issue
-// reported by multiple reviewers collapses to one finding, while genuinely
-// separate issues (>5 lines apart or different category) stay distinct.
+// Region dedup key — groups by file + a 5-line window. Deliberately EXCLUDES
+// BOTH rule_id AND category: different reviewers name the same bug differently
+// ("sql-injection" vs "sqli-risk") and categorize the same line differently (the
+// same magic number is "quality" to one reviewer and "performance" to another),
+// which would otherwise split one issue into several the user must disposition
+// separately. The tight 5-line window keeps genuinely separate issues (>5 lines
+// apart) distinct; representative keeps the highest severity, so a co-located
+// CRITICAL is never hidden behind a lower-severity neighbour.
 function dedupKey(f: Finding): string {
-  return `${f.file}|${f.category}|${Math.floor((f.line_start - 1) / 5)}`;
+  return `${f.file}|${Math.floor((f.line_start - 1) / 5)}`;
 }
 
 // Significant-word set of a message (lowercased, punctuation→space, drop short
@@ -70,6 +72,7 @@ interface Cluster {
   reviewers: string[];
   messages: string[];
   tokens: Set<string>;
+  categories: Set<string>;
 }
 
 export function aggregate(input: AggregateInput): AggregateResult {
@@ -89,8 +92,9 @@ export function aggregate(input: AggregateInput): AggregateResult {
   for (const f of sorted) {
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
     const fTokens = normTokens(f.message);
-    // Merge into an existing cluster (same file) when EITHER the original
-    // file|category|5-line region matches OR the wording is highly similar.
+    // Merge into an existing cluster (same file) when EITHER the file + 5-line
+    // region matches (category-independent — see dedupKey) OR the wording is
+    // highly similar.
     let target: Cluster | undefined;
     for (const c of clusters) {
       if (c.sample.file !== f.file) continue;
@@ -102,6 +106,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
     if (target) {
       if (!target.reviewers.includes(reviewerKey)) target.reviewers.push(reviewerKey);
       if (!target.messages.includes(f.message)) target.messages.push(f.message);
+      target.categories.add(f.category);
       // Representative = highest severity (most conservative); ties keep the first.
       // Note: target.tokens is NOT mutated — the seed's tokens stay the cluster's
       // stable comparison anchor (mutating them would make clustering order-dependent).
@@ -114,23 +119,32 @@ export function aggregate(input: AggregateInput): AggregateResult {
         reviewers: [reviewerKey],
         messages: [f.message],
         tokens: fTokens,
+        categories: new Set([f.category]),
       });
     }
   }
 
   const deduped: Finding[] = [];
-  for (const { sample, reviewers, messages } of clusters) {
+  for (const { sample, reviewers, messages, categories } of clusters) {
     const consensus = computeConsensus(reviewers.length, input.reviewersTotal);
     // Preserve every reviewer's wording so nothing is lost when findings merge.
     const others = messages.filter((m) => m !== sample.message);
-    const details =
+    let details =
       others.length > 0
-        ? `${sample.details}\n\nAlso reported by other reviewers:\n${others.map((m) => `- ${m}`).join("\n")}`.slice(
-            0,
-            2000,
-          )
+        ? `${sample.details}\n\nAlso reported by other reviewers:\n${others.map((m) => `- ${m}`).join("\n")}`
         : sample.details;
-    deduped.push({ ...sample, details, confirmed_by: reviewers, consensus });
+    // Masking guard: when a region merge spans MULTIPLE categories, this single
+    // finding (one decision) covers more than one concern — surface that so the
+    // agent's accept/reject addresses all of them, not just the representative.
+    if (categories.size > 1) {
+      details += `\n\n⚠ This finding merges concerns categorized as: ${[...categories].sort().join(", ")}. Your decision dispositions ALL of them — make sure each is addressed before accepting/rejecting.`;
+    }
+    deduped.push({
+      ...sample,
+      details: details.slice(0, 2000),
+      confirmed_by: reviewers,
+      consensus,
+    });
   }
 
   const critic = input.critic;
