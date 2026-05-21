@@ -67,7 +67,12 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const stderrFile = join(run, "err.log");
 
     const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
-    if (input.cfg.model) {
+    // Only force a model with -m for a REAL provider/model id. The sentinel
+    // "default" (or empty) means "use opencode's own configured default model"
+    // — which is how opencode is meant to be driven here (e.g. a MiniMax Token
+    // Plan default). Forcing -m opencode/minimax-m2.7 would instead hit the
+    // hosted, payment-gated model. (See CLAUDE.md: "do not pass -m".)
+    if (input.cfg.model && input.cfg.model !== "default") {
       args.push("-m", input.cfg.model);
     }
     // The prompt text is the trailing positional message argument.

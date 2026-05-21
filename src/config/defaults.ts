@@ -33,9 +33,10 @@ export const defaultConfig = {
     opencode: {
       enabled: false,
       auth: "oauth" as const,
-      // opencode model id is `provider/model` as listed by `opencode models`
-      // (e.g. opencode/minimax-m2.7). opencode uses its own configured creds.
-      model: "opencode/minimax-m2.7",
+      // "default" = use opencode's OWN configured default model (the recommended
+      // way — e.g. a MiniMax Token Plan default). Set a real `provider/model` id
+      // (from `opencode models`) only to force a specific model via -m.
+      model: "default",
       timeoutMs: 300_000,
     },
   },
