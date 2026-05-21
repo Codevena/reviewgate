@@ -2,7 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { normalizeProposal, providerOf, runCurator } from "../../src/core/brain/curator.ts";
+import {
+  normalizeProposal,
+  normalizeProposalResult,
+  providerOf,
+  runCurator,
+} from "../../src/core/brain/curator.ts";
 import type { Embedder } from "../../src/core/brain/embeddings.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { MemoryProposal } from "../../src/schemas/brain.ts";
@@ -481,7 +486,9 @@ describe("normalizeProposal", () => {
     expect(result).toBeNull();
   });
 
-  it("(c-ii) rejects a proposal with an unknown type", () => {
+  it("(c-ii) defaults an unknown type to 'convention' instead of rejecting", () => {
+    // Reviewers often use loose type labels ("security", "best-practice"). Losing
+    // the knowledge entirely is worse than bucketing it as a generic convention.
     const result = normalizeProposal({
       type: "totally-made-up-type", // not a valid BrainEntryType
       scope: "this-repo",
@@ -491,7 +498,21 @@ describe("normalizeProposal", () => {
       tags: [],
       evidence: [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }],
     });
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.type).toBe("convention");
+  });
+
+  it("keeps a valid type as-is (does not coerce anti-pattern → convention)", () => {
+    const result = normalizeProposal({
+      type: "anti-pattern",
+      scope: "this-repo",
+      title: "valid title",
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }],
+    });
+    expect(result?.type).toBe("anti-pattern");
   });
 
   it("(c-iii) rejects a proposal with NO valid evidence items", () => {
@@ -545,6 +566,37 @@ describe("normalizeProposal", () => {
       evidence: [{ kind: "deterministic" }],
     });
     expect(low?.confidence).toBe(0);
+  });
+});
+
+describe("normalizeProposalResult (schema reject sub-reasons for observability)", () => {
+  const validEvidence = [{ kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" }];
+  it("ok for a valid proposal", () => {
+    const r = normalizeProposalResult({
+      type: "convention",
+      title: "t",
+      body: "b",
+      confidence: 0.8,
+      tags: [],
+      evidence: validEvidence,
+    });
+    expect(r.ok).toBe(true);
+  });
+  it("reason 'not-object' for a non-object", () => {
+    expect(normalizeProposalResult(null)).toEqual({ ok: false, reason: "not-object" });
+    expect(normalizeProposalResult("nope")).toEqual({ ok: false, reason: "not-object" });
+  });
+  it("reason 'title' for a non-string title", () => {
+    const r = normalizeProposalResult({ type: "convention", title: 42, evidence: validEvidence });
+    expect(r).toEqual({ ok: false, reason: "title" });
+  });
+  it("reason 'evidence' when no valid evidence item remains", () => {
+    const r = normalizeProposalResult({
+      type: "convention",
+      title: "t",
+      evidence: [{ kind: "GARBAGE" }],
+    });
+    expect(r).toEqual({ ok: false, reason: "evidence" });
   });
 });
 

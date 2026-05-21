@@ -6,46 +6,51 @@ import {
   type EvidenceItem,
   type MemoryProposal,
   MemoryProposalSchema,
+  VALID_BRAIN_ENTRY_TYPES,
   VALID_EVIDENCE_KINDS,
 } from "../../schemas/brain.ts";
 import { curatorDecisionsPath } from "../../utils/paths.ts";
 import { type Embedder, cosineSimilarity } from "./embeddings.ts";
 import type { BrainStore } from "./store.ts";
 
-// Valid BrainEntryType values — mirrors BrainEntryType enum.
-const VALID_BRAIN_ENTRY_TYPES = new Set([
-  "convention",
-  "anti-pattern",
-  "external-knowledge",
-  "disagreement",
-  "research-cache",
-]);
-
 /**
  * normalizeProposal — coerce a raw (unknown) proposal into a valid
  * MemoryProposal shape, tolerating common formatting variance (overlong
- * title/body, missing/defaultable optional fields, bad evidence items) without
- * fabricating data or weakening security rules.
+ * title/body, unknown type, missing/defaultable optional fields, bad evidence
+ * items) without fabricating data or weakening security rules.
  *
  * Returns null only when the proposal is irrecoverably malformed:
  *   - title is not a string
- *   - type is not one of the 5 known BrainEntryType values
  *   - zero valid evidence items remain after dropping malformed ones
+ *   - the assembled proposal still fails MemoryProposalSchema
+ * An unknown/missing `type` is NOT a reject reason — it defaults to "convention".
  */
-export function normalizeProposal(p: unknown): MemoryProposal | null {
-  if (p === null || typeof p !== "object") return null;
+// Why a raw proposal could not be normalized — surfaced as `schema_detail` in the
+// curator-decisions log so a recurring reject cause is diagnosable. "shape" means
+// the assembled proposal still failed MemoryProposalSchema (e.g. a web-fetch
+// evidence item missing source_url/body_sha256/fetched_at).
+export type NormalizeResult =
+  | { ok: true; value: MemoryProposal }
+  | { ok: false; reason: "not-object" | "title" | "evidence" | "shape" };
+
+export function normalizeProposalResult(p: unknown): NormalizeResult {
+  if (p === null || typeof p !== "object") return { ok: false, reason: "not-object" };
   const raw = p as Record<string, unknown>;
 
   // title: must be a string; trim + truncate to 80 chars.
-  if (typeof raw.title !== "string") return null;
+  if (typeof raw.title !== "string") return { ok: false, reason: "title" };
   const title = raw.title.trim().slice(0, 80);
 
   // body: must be a string (may be empty); truncate to 500 chars.
   const body = typeof raw.body === "string" ? raw.body.slice(0, 500) : "";
 
-  // type: must be one of the 5 known values — cannot be guessed.
-  if (typeof raw.type !== "string" || !VALID_BRAIN_ENTRY_TYPES.has(raw.type)) return null;
-  const type = raw.type as MemoryProposal["type"];
+  // type: default an unknown/missing value to "convention" (the generic
+  // catch-all) rather than rejecting — reviewers routinely use loose type labels
+  // ("security", "best-practice"), and losing the knowledge is worse than
+  // bucketing it as a convention.
+  const type = (
+    typeof raw.type === "string" && VALID_BRAIN_ENTRY_TYPES.has(raw.type) ? raw.type : "convention"
+  ) as MemoryProposal["type"];
 
   // scope: if non-empty string keep; else default to "this-repo".
   const scope = typeof raw.scope === "string" && raw.scope.length > 0 ? raw.scope : "this-repo";
@@ -75,11 +80,16 @@ export function normalizeProposal(p: unknown): MemoryProposal | null {
   ) as EvidenceItem[];
 
   // A proposal needs ≥1 valid evidence item.
-  if (evidence.length === 0) return null;
+  if (evidence.length === 0) return { ok: false, reason: "evidence" };
 
   const normalized = { type, scope, title, body, evidence, confidence, tags };
   const result = MemoryProposalSchema.safeParse(normalized);
-  return result.success ? result.data : null;
+  return result.success ? { ok: true, value: result.data } : { ok: false, reason: "shape" };
+}
+
+export function normalizeProposal(p: unknown): MemoryProposal | null {
+  const r = normalizeProposalResult(p);
+  return r.ok ? r.value : null;
 }
 
 const DEDUP_THRESHOLD = 0.85;
@@ -221,15 +231,16 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
   const normalizedVecs: number[][] = [];
   for (let i = 0; i < input.proposals.length; i++) {
     const raw = input.proposals[i] as MemoryProposal;
-    const normalized = normalizeProposal(raw);
-    if (!normalized) {
+    const norm = normalizeProposalResult(raw);
+    if (!norm.ok) {
       res.rejected++;
       log("rejected", typeof raw.title === "string" ? raw.title : "(unknown)", {
         rule_failed: "schema",
+        schema_detail: norm.reason,
       });
       continue;
     }
-    normalizedProposals.push(normalized);
+    normalizedProposals.push(norm.value);
     normalizedVecs.push(vecs[i] as number[]);
   }
 
@@ -281,9 +292,13 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
 
     // Rule 1: schema (validate the representative + the merged evidence shape).
     const repWithMerged: MemoryProposal = { ...rep, evidence: mergedEvidence };
-    if (!MemoryProposalSchema.safeParse(repWithMerged).success) {
+    const repParse = MemoryProposalSchema.safeParse(repWithMerged);
+    if (!repParse.success) {
       res.rejected++;
-      log("rejected", title, { rule_failed: "schema" });
+      log("rejected", title, {
+        rule_failed: "schema",
+        schema_detail: `merged:${repParse.error.issues[0]?.path.join(".") || "shape"}`,
+      });
       continue;
     }
 

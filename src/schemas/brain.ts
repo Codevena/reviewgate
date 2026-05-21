@@ -7,6 +7,10 @@ export const BrainEntryType = z.enum([
   "disagreement",
   "research-cache",
 ]);
+// Single source of truth (derived from the enum) for valid brain-entry types —
+// the curator's proposal normalization imports this instead of re-listing the
+// literals, so adding a type to the enum can't silently diverge.
+export const VALID_BRAIN_ENTRY_TYPES: ReadonlySet<string> = new Set(BrainEntryType.options);
 
 export const BrainEntryStatus = z.enum(["candidate", "active", "stale", "archived"]);
 export type BrainEntryStatus = z.infer<typeof BrainEntryStatus>;
@@ -90,6 +94,9 @@ export const CuratorDecisionSchema = z
     proposal_title: z.string(),
     decision: z.enum(["promoted", "rejected", "queued", "merged-duplicate"]),
     rule_failed: z.string().optional(),
+    // Sub-reason for rule_failed:"schema" (e.g. "title", "evidence", "merged:evidence")
+    // — diagnostic only, so a recurring schema reject is identifiable from the log.
+    schema_detail: z.string().optional(),
     entry_id: z.string().optional(),
     provider: z.string(),
     ts: z.string(),
