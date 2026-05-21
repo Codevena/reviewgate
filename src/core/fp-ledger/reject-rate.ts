@@ -17,6 +17,11 @@ export function computeRejectRate(repoRoot: string, throughIter: number): Reject
   for (let iter = 1; iter <= throughIter; iter++) {
     const p = decisionsPath(repoRoot, iter);
     if (!existsSync(p)) continue;
+    // Dedup by finding_id WITHIN the iteration: the agent authors this file, so
+    // counting raw lines would let it pad duplicate reviewer_was_wrong entries to
+    // inflate the rate and force an escape-hatch escalation. Each finding_id
+    // contributes at most one decision per iteration (first valid line wins).
+    const seen = new Set<string>();
     for (const line of readFileSync(p, "utf8").split("\n")) {
       if (!line.trim()) continue;
       let parsed: unknown;
@@ -27,6 +32,8 @@ export function computeRejectRate(repoRoot: string, throughIter: number): Reject
       }
       const res = DecisionEntrySchema.safeParse(parsed);
       if (!res.success) continue;
+      if (seen.has(res.data.finding_id)) continue;
+      seen.add(res.data.finding_id);
       total++;
       if (res.data.verdict === "rejected" && res.data.reviewer_was_wrong === true) wrongRejects++;
     }

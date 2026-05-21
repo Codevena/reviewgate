@@ -57,4 +57,27 @@ describe("computeRejectRate", () => {
     const r = computeRejectRate(repo, 3);
     expect(r).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
   });
+
+  it("dedups duplicate finding_ids WITHIN an iteration (cannot pad the count)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rr4-"));
+    // Four lines, all the SAME finding_id → counts as ONE decision, not four.
+    writeDecisions(repo, 1, [
+      rejected("F-001"),
+      rejected("F-001"),
+      rejected("F-001"),
+      rejected("F-001"),
+    ]);
+    const r = computeRejectRate(repo, 1);
+    expect(r.total).toBe(1);
+    expect(r.wrongRejects).toBe(1);
+  });
+
+  it("counts the same finding_id once PER iteration (legitimate re-review)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rr5-"));
+    writeDecisions(repo, 1, [rejected("F-001"), accepted("F-002")]);
+    writeDecisions(repo, 2, [rejected("F-001")]); // re-raised + re-rejected next iter
+    const r = computeRejectRate(repo, 2);
+    expect(r.total).toBe(3); // (F-001,F-002 in iter1) + (F-001 in iter2)
+    expect(r.wrongRejects).toBe(2);
+  });
 });

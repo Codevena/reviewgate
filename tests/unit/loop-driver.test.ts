@@ -749,4 +749,55 @@ describe("LoopDriver", () => {
     expect((await state.load()).escalation_reason).toBe("reject-rate-high");
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
+
+  it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
+    // The decisions-gate must take precedence: an agent cannot append unrelated
+    // reviewer_was_wrong lines to force a reject-rate escape while leaving the
+    // real blocking finding unaddressed.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQMASK");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    // A real blocking finding with NO decision for it.
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    // Padding: 4 distinct unrelated confirmed-FP lines (would push rate to 100%).
+    const wrong = (id: string) => ({
+      schema: "reviewgate.decision.v1",
+      finding_id: id,
+      verdict: "rejected",
+      reason: "false positive on unchanged code xx",
+      reviewer_was_wrong: true,
+    });
+    const dpath = decisionsPath(repo, 1);
+    mkdirSync(dirname(dpath), { recursive: true });
+    writeFileSync(
+      dpath,
+      `${[wrong("F-901"), wrong("F-902"), wrong("F-903"), wrong("F-904")].map((l) => JSON.stringify(l)).join("\n")}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("not yet addressed"); // decisions-gate wins
+    expect(decision.reason).not.toContain("reject-rate-high");
+  });
 });

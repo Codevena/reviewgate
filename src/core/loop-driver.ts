@@ -236,23 +236,6 @@ export class LoopDriver {
       );
     }
 
-    // Escalation precondition: reviewers are producing a high rate of confirmed
-    // false positives this cycle → stop nagging and surface to the human. Guarded
-    // by a minimum sample so a single reviewer_was_wrong rejection never escalates.
-    if (state.iteration > 0 && this.i.config.loop.rejectRateEscalation > 0) {
-      const rr = computeRejectRate(this.i.repoRoot, state.iteration);
-      if (
-        rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
-        rr.rate >= this.i.config.loop.rejectRateEscalation
-      ) {
-        return this.escalateAndDecide(
-          state,
-          "reject-rate-high",
-          `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
-        );
-      }
-    }
-
     // If a prior iter exists and decisions are required, check they exist.
     if (state.iteration > 0) {
       const requiredIds = previousFindingIds(this.i.repoRoot);
@@ -277,6 +260,27 @@ export class LoopDriver {
           kind: "block",
           reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
         };
+      }
+    }
+
+    // Escalation precondition: reviewers are producing a high rate of confirmed
+    // false positives this cycle → stop nagging and surface to the human. Runs
+    // AFTER the decisions-gate so an unaddressed-findings block always takes
+    // precedence (it must not be masked by a high reject rate). Guarded by a
+    // minimum sample, and computeRejectRate dedups by finding_id per iteration,
+    // so the agent (which authors the decisions files) cannot pad duplicate
+    // reviewer_was_wrong lines to manufacture this escape-hatch escalation.
+    if (state.iteration > 0 && this.i.config.loop.rejectRateEscalation > 0) {
+      const rr = computeRejectRate(this.i.repoRoot, state.iteration);
+      if (
+        rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
+        rr.rate >= this.i.config.loop.rejectRateEscalation
+      ) {
+        return this.escalateAndDecide(
+          state,
+          "reject-rate-high",
+          `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
+        );
       }
     }
 
