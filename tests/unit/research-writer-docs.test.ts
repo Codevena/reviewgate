@@ -67,6 +67,20 @@ describe("writeResearch — Context7 docs section", () => {
     expect(md).toMatch(/docs partial: \d+ libs included, \d+ skipped\/truncated/);
   });
 
+  it("renders no section when even the first lib block exceeds the total budget (strict cap)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rw-docs5-"));
+    const contextDocs: RenderedContextDocs = {
+      text: "z".repeat(500),
+      libs: [{ name: "huge", outcome: "fetched", text: "z".repeat(500) }],
+      corpus: [],
+    };
+    await writeResearch({ ...baseInput(repo), contextDocs, contextDocsBudgetBytes: 100 });
+    const md = readFileSync(join(repo, ".reviewgate", "research.md"), "utf8");
+    // strict total cap: an over-budget single lib is dropped, no section emitted
+    expect(md).not.toContain("External library docs");
+    expect(md).not.toContain("### huge");
+  });
+
   it("neutralizes injection markers and backtick-fence escapes in untrusted docs", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rw-docs4-"));
     const contextDocs: RenderedContextDocs = {

@@ -78,7 +78,19 @@ export async function safeApiFetch<T = unknown>(url: string, opts: SafeApiFetchO
     if (!ct.includes("application/json")) {
       throw new Error(`safeApiFetch: non-JSON content-type ${ct}`);
     }
-    const text = (await resp.text()).slice(0, opts.maxBytes ?? DEFAULT_MAX_BYTES);
+    const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
+    // Hard size limit, mirroring the brain fetcher: REJECT an oversized body, never
+    // truncate. Slicing a JSON string would corrupt it into a parse error rather
+    // than enforcing a clean cap. Declared content-length is checked first; the
+    // actual byte length is re-checked after read (header may be absent/lying).
+    const declared = Number(resp.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new Error(`safeApiFetch: body too large (declared ${declared} > ${maxBytes})`);
+    }
+    const text = await resp.text();
+    if (Buffer.byteLength(text, "utf8") > maxBytes) {
+      throw new Error(`safeApiFetch: body too large (> ${maxBytes} bytes)`);
+    }
     return JSON.parse(text) as T;
   } finally {
     clearTimeout(timer);

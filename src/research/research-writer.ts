@@ -51,7 +51,10 @@ function renderContextDocs(docs: RenderedContextDocs, budgetBytes: number): stri
     const body = neutralizeFences(neutralizeInjectionMarkers(lib.text));
     const block = [`### ${lib.name}`, "```text", body, "```", ""].join("\n");
     const size = Buffer.byteLength(block, "utf8");
-    if (used + size > budgetBytes && renderedCount > 0) {
+    // Strict TOTAL cap: drop any block that does not fit — including the first.
+    // An over-budget single lib (misconfigured perLibBytes > budgetBytes, or a
+    // stale oversized cache entry) yields no section rather than blowing the cap.
+    if (used + size > budgetBytes) {
       budgetDropped++;
       continue;
     }

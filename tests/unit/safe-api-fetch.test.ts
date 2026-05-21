@@ -106,6 +106,43 @@ describe("safeApiFetch", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects (does not truncate) a body whose declared content-length exceeds maxBytes", async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json", "content-length": "5000" },
+      })) as unknown as typeof fetch;
+    await expect(
+      safeApiFetch("https://context7.com/api", {
+        allowHost: "context7.com",
+        timeoutMs: 100,
+        maxBytes: 100,
+        fetchImpl,
+        resolve: async () => ["93.184.216.34"],
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects (does not truncate→parse-fail) an actual body larger than maxBytes", async () => {
+    // big VALID json with no content-length header → must be rejected on actual size,
+    // never sliced (slicing would corrupt the JSON into a parse error instead).
+    const big = JSON.stringify({ data: "x".repeat(2000) });
+    const fetchImpl = (async () =>
+      new Response(big, {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    await expect(
+      safeApiFetch("https://context7.com/api", {
+        allowHost: "context7.com",
+        timeoutMs: 100,
+        maxBytes: 100,
+        fetchImpl,
+        resolve: async () => ["93.184.216.34"],
+      }),
+    ).rejects.toThrow();
+  });
+
   it("does NOT follow HTTP redirects (redirect: manual → 3xx is not ok)", async () => {
     const fetchImpl = (async () =>
       new Response(null, {
