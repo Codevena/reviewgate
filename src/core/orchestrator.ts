@@ -42,6 +42,10 @@ export interface OrchestratorInput {
   // to env vars / placeholders). The gate always supplies it.
   gitInfo?: { sha: string; branch: string; dirtyFiles: string[] };
   reasonOnFailEnabled: boolean;
+  // Optional injection for the Curator's web-fetch evidence enrichment. Lets
+  // tests drive the deterministic-source path with no real network/DNS. In
+  // production this is omitted and safeFetch uses global fetch + node DNS.
+  fetchOverrides?: { fetchImpl?: typeof fetch; resolve?: (host: string) => Promise<string[]> };
 }
 
 export interface IterationResult {
@@ -244,7 +248,16 @@ export class Orchestrator {
 
     // --- Brain write path (collect): parse memory_proposals from each OK
     // reviewer's rawText, stamp evidence with this run + reviewer id, and drop
-    // anything below the 0.5 confidence floor. Curation happens post-verdict. ---
+    // anything below the 0.5 confidence floor. Curation happens post-verdict.
+    //
+    // ANTI-COLLUSION: every evidence item's `reviewer_id` and `run_id` are
+    // ALWAYS OVERWRITTEN with the emitting adapter's identity. Whatever the LLM
+    // supplied is discarded — an output is only ever trustworthy evidence FROM
+    // its own emitter, so a single provider can never fake other providers'
+    // voices to manufacture a cross-provider quorum. Real cross-provider quorum
+    // is reconstructed downstream by the Curator, which GROUPS similar proposals
+    // emitted by DISTINCT reviewers. Each proposal here therefore carries
+    // evidence from exactly ONE provider (the reviewer that produced it). ---
     const proposals: MemoryProposal[] = [];
     if (brainCfg?.enabled) {
       for (const run of okRuns) {
@@ -260,10 +273,9 @@ export class Orchestrator {
             tags: Array.isArray(raw.tags) ? raw.tags : [],
             evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).map((ev) => ({
               kind: ev.kind as MemoryProposal["evidence"][number]["kind"],
+              // Trusted-provider signal: the EMITTING adapter, never the LLM text.
               run_id: opts.runId,
-              // Preserve a reviewer-cited corroborating id (cross-provider quorum);
-              // otherwise stamp the emitting reviewer (single-provider default).
-              reviewer_id: ev.reviewer_id ?? run.res.reviewerId,
+              reviewer_id: run.res.reviewerId,
               ...(ev.source_url != null ? { source_url: ev.source_url } : {}),
               ...(ev.snippet != null ? { snippet: ev.snippet } : {}),
               ...(ev.from_diff != null ? { from_diff: ev.from_diff } : {}),
@@ -411,10 +423,17 @@ export class Orchestrator {
     };
 
     // Enrich citation evidence (best-effort; failures drop the citation).
+    const fetchOpts = {
+      allow: brainCfg.egressAllowlist,
+      ...(this.input.fetchOverrides?.fetchImpl
+        ? { fetchImpl: this.input.fetchOverrides.fetchImpl }
+        : {}),
+      ...(this.input.fetchOverrides?.resolve ? { resolve: this.input.fetchOverrides.resolve } : {}),
+    };
     const enriched: MemoryProposal[] = [];
     for (const p of proposals) {
       try {
-        const { enriched: e } = await enrichProposal(repo, p, { allow: brainCfg.egressAllowlist });
+        const { enriched: e } = await enrichProposal(repo, p, fetchOpts);
         enriched.push(e);
       } catch {
         enriched.push(p);

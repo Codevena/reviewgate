@@ -47,6 +47,53 @@ export const REVIEW_OUTPUT_SCHEMA = {
         },
       },
     },
+    // OPTIONAL repo-knowledge proposals. Listed here (with the parent object's
+    // additionalProperties:false) so OpenRouter's strict json_schema mode does
+    // NOT silently strip them. Mirrors RawProposal. Evidence's reviewer_id/run_id
+    // are deliberately omitted: the orchestrator stamps the emitting adapter's
+    // identity and discards any LLM-supplied provider signal (anti-collusion).
+    memory_proposals: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["type", "scope", "title", "body", "confidence", "tags", "evidence"],
+        properties: {
+          type: {
+            type: "string",
+            enum: ["convention", "anti-pattern", "external-knowledge", "disagreement"],
+          },
+          scope: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          confidence: { type: "number" },
+          tags: { type: "array", items: { type: "string" } },
+          evidence: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["kind"],
+              properties: {
+                kind: { type: "string" },
+                source_url: { type: "string" },
+                snippet: { type: "string" },
+                from_diff: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["file", "line_start", "line_end"],
+                  properties: {
+                    file: { type: "string" },
+                    line_start: { type: "integer" },
+                    line_end: { type: "integer" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
   },
 } as const;
 

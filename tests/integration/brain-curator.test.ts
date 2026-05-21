@@ -79,10 +79,16 @@ function brainConfig() {
     ...defaultConfig,
     providers: {
       ...defaultConfig.providers,
+      gemini: { ...defaultConfig.providers.gemini, enabled: true },
       openrouter: { ...defaultConfig.providers.openrouter, enabled: true },
     },
     phases: {
-      review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
+      review: {
+        reviewers: [
+          { provider: "codex" as const, persona: "security" },
+          { provider: "gemini" as const, persona: "architecture" },
+        ],
+      },
       critic: null,
       triage: null,
       brain: {
@@ -101,29 +107,34 @@ function brainConfig() {
 }
 
 describe("brain curator integration", () => {
-  it("promotes a cross-provider-quorum proposal to a candidate after runIteration", async () => {
+  it("promotes a proposal emitted by TWO DIFFERENT reviewer adapters (grouped → cross-provider quorum)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-brain-int-"));
-    // A proposal whose evidence cites THREE distinct reviewers (codex, gemini,
-    // claude) → satisfies the ≥3-evidence / ≥2-provider quorum (rule 2).
+    // The SAME knowledge is emitted independently by two distinct reviewer
+    // adapters (codex + gemini). Each emits two evidence items; the orchestrator
+    // stamps them with the EMITTING adapter's id. The curator embeds title+body
+    // (identical → cosine 1.0), GROUPS the two proposals, and MERGES their
+    // evidence → 4 reviewer items spanning 2 providers → quorum satisfied.
+    const title = "cart null-guards are intentional";
+    const body = "src/cart.ts Promise.all null-guard is deliberate.";
     const proposal = {
       type: "convention",
       scope: "this-repo",
-      title: "cart null-guards are intentional",
-      body: "src/cart.ts Promise.all null-guard is deliberate.",
+      title,
+      body,
       confidence: 0.9,
       tags: ["cart"],
-      evidence: [
-        { kind: "reviewer-finding", reviewer_id: "codex-security" },
-        { kind: "reviewer-finding", reviewer_id: "gemini-architecture" },
-        { kind: "reviewer-finding", reviewer_id: "claude-adversarial" },
-      ],
+      evidence: [{ kind: "reviewer-observation" }, { kind: "reviewer-observation" }],
     };
     const rawText = JSON.stringify({ verdict: "PASS", findings: [], memory_proposals: [proposal] });
 
     const orch = new Orchestrator({
       repoRoot: repo,
       config: brainConfig(),
-      adapters: { codex: reviewer("codex", rawText), openrouter: fakeOpenRouter() },
+      adapters: {
+        codex: reviewer("codex", rawText),
+        gemini: reviewer("gemini", rawText),
+        openrouter: fakeOpenRouter(),
+      },
       sandboxMode: "off",
       hostTier: "opus",
       diff: CODE_DIFF,
@@ -134,13 +145,15 @@ describe("brain curator integration", () => {
     const snap = await new BrainStore(repo).snapshot();
     expect(snap.entries.length).toBe(1);
     expect(snap.entries[0]?.status).toBe("candidate");
-    expect(snap.entries[0]?.title).toBe("cart null-guards are intentional");
+    expect(snap.entries[0]?.title).toBe(title);
   });
 
-  it("does NOT promote a single-provider (colluding) proposal", async () => {
+  it("does NOT promote a single-provider proposal — even with FAKE other-provider reviewer_ids (anti-collusion)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-brain-collude-"));
-    // Three evidence items but all from ONE reviewer (no cited cross-provider
-    // ids) → after stamping they collapse to a single provider → quorum fails.
+    // A single reviewer (codex) tries to forge a cross-provider quorum by
+    // embedding FAKE reviewer_ids of other providers in its evidence. The
+    // orchestrator STRIPS those and stamps every item with the emitting adapter
+    // (codex) → all evidence collapses to ONE provider → quorum fails.
     const proposal = {
       type: "convention",
       scope: "this-repo",
@@ -149,9 +162,9 @@ describe("brain curator integration", () => {
       confidence: 0.9,
       tags: ["cart"],
       evidence: [
-        { kind: "reviewer-observation" },
-        { kind: "reviewer-observation" },
-        { kind: "reviewer-observation" },
+        { kind: "reviewer-observation", reviewer_id: "gemini-architecture" },
+        { kind: "reviewer-observation", reviewer_id: "claude-code-security" },
+        { kind: "reviewer-observation", reviewer_id: "openrouter-adversarial" },
       ],
     };
     const rawText = JSON.stringify({ verdict: "PASS", findings: [], memory_proposals: [proposal] });
@@ -169,6 +182,58 @@ describe("brain curator integration", () => {
 
     const snap = await new BrainStore(repo).snapshot();
     expect(snap.entries.length).toBe(0);
+  });
+
+  it("promotes a single-reviewer proposal carrying a valid web-fetch citation (deterministic-source path)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-brain-web-"));
+    // A single reviewer is sufficient when the proposal carries a deterministic
+    // source: a web-fetch citation (source_url). enrichProposal fetches it via
+    // the SSRF-resistant safeFetch and rewrites it into a full web-fetch record
+    // (source_url + body_sha256 + fetched_at). One web-fetch item satisfies
+    // quorum on its own — no cross-provider requirement. The test injects fetch
+    // + DNS so no real network is hit, and allowlists the host so egress passes.
+    const host = "docs.example.com";
+    const config = {
+      ...brainConfig(),
+      cache: { enabled: false, reviewTtlDays: 7 },
+      phases: {
+        ...brainConfig().phases,
+        brain: { ...brainConfig().phases.brain, egressAllowlist: [host] },
+      },
+    };
+    const proposal = {
+      type: "external-knowledge",
+      scope: "framework-next",
+      title: "next 16 use-cache directive",
+      body: "Next.js 16 introduces the `use cache` directive.",
+      confidence: 0.9,
+      tags: ["next"],
+      evidence: [{ kind: "reviewer-observation", source_url: `https://${host}/next-16` }],
+    };
+    const rawText = JSON.stringify({ verdict: "PASS", findings: [], memory_proposals: [proposal] });
+
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: { codex: reviewer("codex", rawText), openrouter: fakeOpenRouter() },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: CODE_DIFF,
+      reasonOnFailEnabled: true,
+      fetchOverrides: {
+        resolve: async () => ["93.184.216.34"],
+        fetchImpl: (async () =>
+          new Response("Next.js 16 use cache directive docs", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          })) as unknown as typeof fetch,
+      },
+    });
+    await orch.runIteration({ runId: "RUN1", iter: 1 });
+
+    const snap = await new BrainStore(repo).snapshot();
+    expect(snap.entries.length).toBe(1);
+    expect(snap.entries[0]?.evidence.some((e) => e.kind === "web-fetch")).toBe(true);
   });
 
   it("injects matching active brain entries into the assembled reviewer prompt", async () => {

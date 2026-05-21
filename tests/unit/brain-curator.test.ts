@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCurator } from "../../src/core/brain/curator.ts";
+import { providerOf, runCurator } from "../../src/core/brain/curator.ts";
 import type { Embedder } from "../../src/core/brain/embeddings.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { MemoryProposal } from "../../src/schemas/brain.ts";
@@ -90,11 +90,34 @@ describe("runCurator", () => {
   it("caps promotions at 3 per run and queues the rest", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-cur4-"));
     const store = new BrainStore(repo);
-    // 4 distinct (orthogonal vectors so no dedup) proposals
-    const embedder: Embedder = {
-      embed: async (t) => t.map((s) => (s.includes("p4") ? [0, 1] : [1, 0])),
+    // 4 DISTINCT proposals — each gets a mutually-orthogonal unit vector
+    // (cosine 0 < 0.85) so neither grouping nor dedup folds them together. With
+    // each emitted by ≥2 providers all 4 meet quorum; the run cap promotes 3,
+    // queues 1.
+    const basis: Record<string, number[]> = {
+      p0: [1, 0, 0, 0],
+      p1: [0, 1, 0, 0],
+      p2: [0, 0, 1, 0],
+      p3: [0, 0, 0, 1],
     };
-    const props = [0, 1, 2, 3].map((i) => p({ title: `p${i}`, body: `body ${i}` }));
+    const embedder: Embedder = {
+      embed: async (t) =>
+        t.map((s) => {
+          const key = (Object.keys(basis) as string[]).find((k) => s.startsWith(k));
+          return (key ? basis[key] : [1, 0, 0, 0]) as number[];
+        }),
+    };
+    const props = [0, 1, 2, 3].map((i) =>
+      p({
+        title: `p${i}`,
+        body: `body ${i}`,
+        evidence: [
+          { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" },
+          { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" },
+          { kind: "reviewer-finding", run_id: "r", reviewer_id: "gemini-architecture" },
+        ],
+      }),
+    );
     const res = await runCurator({
       repoRoot: repo,
       runId: "r",
@@ -178,5 +201,105 @@ describe("runCurator", () => {
       nowIso: "t",
     });
     expect(res.promoted).toBe(0); // 3 < doubled threshold (6)
+  });
+
+  it("GROUPS similar single-provider proposals across reviewers → reaches cross-provider quorum", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-group-"));
+    const store = new BrainStore(repo);
+    // Two proposals with IDENTICAL title+body, each emitted by a DIFFERENT
+    // provider (codex / gemini), each carrying 2 reviewer evidence items. On
+    // their own neither meets quorum (single provider). Grouped (cosine 1.0) the
+    // merged evidence = 4 items across 2 providers → promoted as ONE entry.
+    const sameVec = [1, 0];
+    const codexProp = p({
+      evidence: [
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+      ],
+    });
+    const geminiProp = p({
+      evidence: [
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "gemini-architecture" },
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "gemini-architecture" },
+      ],
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [codexProp, geminiProp],
+      store,
+      embedder: fakeEmbedder(sameVec),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    expect(res.promoted).toBe(1); // one representative entry per surviving group
+    expect((await store.snapshot()).entries.length).toBe(1);
+  });
+
+  it("does NOT promote when ALL grouped proposals are from the SAME provider (anti-collusion)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-collude-"));
+    const store = new BrainStore(repo);
+    // Two similar proposals, but BOTH emitted by codex (as the orchestrator would
+    // stamp a single colluding reviewer). Merged evidence spans only 1 provider →
+    // quorum fails even though there are ≥3 reviewer items.
+    const a = p({
+      evidence: [
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+      ],
+    });
+    const b = p({
+      evidence: [{ kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" }],
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [a, b],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "t",
+    });
+    expect(res.promoted).toBe(0);
+  });
+
+  it("counts a single web-fetch item as quorum (deterministic-source path)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-web-"));
+    const store = new BrainStore(repo);
+    const webProp = p({
+      type: "external-knowledge",
+      scope: "framework-next",
+      evidence: [
+        {
+          kind: "web-fetch",
+          source_url: "https://docs.example.com/x",
+          body_sha256: "a".repeat(64),
+          fetched_at: "2026-05-21T00:00:00Z",
+        },
+      ],
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [webProp],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "t",
+    });
+    expect(res.promoted).toBe(1);
+  });
+});
+
+describe("providerOf (longest-prefix provider extraction)", () => {
+  it("maps known reviewer ids to their provider via longest-prefix", () => {
+    expect(providerOf("codex-security")).toBe("codex");
+    expect(providerOf("gemini-architecture")).toBe("gemini");
+    // The bug guard: claude-code-security must NOT collapse to "claude".
+    expect(providerOf("claude-code-security")).toBe("claude-code");
+    expect(providerOf("claude-code")).toBe("claude-code");
+    expect(providerOf("openrouter-adversarial")).toBe("openrouter");
+  });
+
+  it("falls back to the part before the last dash for unknown providers", () => {
+    expect(providerOf("acme-tool-security")).toBe("acme-tool");
+    expect(providerOf("solo")).toBe("solo");
   });
 });

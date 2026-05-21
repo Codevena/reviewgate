@@ -72,6 +72,23 @@ export class BrainStore {
     });
   }
 
+  // Compute the next free `B-00N` id *inside* the same write lock that appends
+  // the entry, eliminating the nextId()/add() TOCTOU race where two concurrent
+  // curators could both read max=N and mint the same B-00(N+1). `build` receives
+  // the freshly-allocated id and returns the entry to persist; the id is also
+  // returned so the caller can log the promotion.
+  async addAllocatingId(build: (id: string) => BrainEntry): Promise<string> {
+    return this.mutate((snap) => {
+      const max = snap.entries
+        .map((e) => Number.parseInt(e.id.replace(/^B-/, ""), 10))
+        .filter((n) => Number.isFinite(n))
+        .reduce((a, b) => Math.max(a, b), 0);
+      const id = `B-${String(max + 1).padStart(3, "0")}`;
+      snap.entries.push(BrainEntrySchema.parse(build(id)));
+      return { next: snap, result: id };
+    });
+  }
+
   async revoke(id: string): Promise<boolean> {
     return this.mutate((snap) => {
       const before = snap.entries.length;
