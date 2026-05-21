@@ -68,6 +68,62 @@ describe("runCurator", () => {
     expect(res.promoted).toBe(0);
   });
 
+  it("promotes when TWO providers each emit ONE evidence item for the same convention (realistic convergence)", async () => {
+    // The real panel synthesizes ~1 evidence item per proposal, so two distinct
+    // providers independently proposing the same convention is the realistic best
+    // case: 2 items spanning 2 providers. This must promote (anti-collusion only
+    // requires ≥2 DISTINCT providers — not ≥3 raw items).
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-conv-"));
+    const store = new BrainStore(repo);
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [
+        p({
+          title: "prefer X",
+          evidence: [{ kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" }],
+        }),
+        p({
+          title: "prefer X",
+          evidence: [
+            { kind: "reviewer-observation", run_id: "r", reviewer_id: "gemini-architecture" },
+          ],
+        }),
+      ],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    expect(res.promoted).toBe(1);
+    const e = (await store.snapshot()).entries[0];
+    expect(e?.status).toBe("candidate");
+    expect(e?.referencing_reviewers?.sort()).toEqual(["codex", "gemini"]);
+  });
+
+  it("does NOT promote a diff-derived convention from only TWO providers (stricter diff quorum)", async () => {
+    // from_diff evidence makes the group 'doubled' → needs ≥3 distinct providers.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-diff-"));
+    const store = new BrainStore(repo);
+    const diffEv = (rid: string) => ({
+      kind: "reviewer-finding" as const,
+      run_id: "r",
+      reviewer_id: rid,
+      from_diff: { file: "a.ts", line_start: 1, line_end: 1 },
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [
+        p({ title: "diff conv", evidence: [diffEv("codex-security")] }),
+        p({ title: "diff conv", evidence: [diffEv("gemini-architecture")] }),
+      ],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    expect(res.promoted).toBe(0); // 2 providers < the diff-derived ≥3 requirement
+  });
+
   it("merges a near-duplicate (cosine ≥ 0.85) instead of adding a new entry", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-cur3-"));
     const store = new BrainStore(repo);

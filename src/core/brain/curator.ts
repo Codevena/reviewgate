@@ -146,13 +146,16 @@ function providersIn(evidence: EvidenceItem[]): Set<string> {
 }
 
 // Source quorum (rule 2/6) over a MERGED evidence set: ≥1 web-fetch item, OR
-// ≥3 reviewer evidence items spanning ≥2 DISTINCT providers. Diff-derived groups
-// are more speculative, so they need a STRICTER provider quorum — an extra
-// distinct provider (≥3 vs ≥2) rather than ≥2. This is panel-relative and
-// reachable: the old rule doubled the raw ITEM count (≥6), which a ≤5-reviewer
-// panel emitting ~1 evidence item per proposal can never meet — and with
-// web-fetch off, diff-derived memories could never promote at all. Web path
-// (≥1 / ≥2 web-fetch) unchanged.
+// reviewer evidence from ≥provNeed DISTINCT providers (each contributing ≥1
+// item). The INTEGRITY constraint that resists collusion is the DISTINCT-PROVIDER
+// count, not the raw item count — so the item floor is scaled to `provNeed`
+// (≥1 reviewer item per required provider), NOT a fixed ≥3. The panel synthesizes
+// ~1 evidence item per proposal, so the realistic best case — two distinct
+// providers independently proposing the same convention — is exactly 2 items /
+// 2 providers; the old fixed ≥3-item floor made that (and therefore essentially
+// ALL real convergence) unpromotable, which is why the brain never promoted.
+// Diff-derived groups are more speculative, so they keep the STRICTER provider
+// quorum (≥3 vs ≥2). Web path (≥1 / ≥2 web-fetch) unchanged.
 function quorumOk(evidence: EvidenceItem[], doubled: boolean): boolean {
   const web = evidence.filter((e) => e.kind === "web-fetch").length;
   const reviewerEv = evidence.filter(
@@ -162,7 +165,7 @@ function quorumOk(evidence: EvidenceItem[], doubled: boolean): boolean {
   const webNeed = doubled ? 2 : 1;
   const provNeed = doubled ? 3 : 2;
   if (web >= webNeed) return true;
-  return reviewerEv >= 3 && provs >= provNeed;
+  return reviewerEv >= provNeed && provs >= provNeed;
 }
 
 function isDiffDerived(evidence: EvidenceItem[]): boolean {
