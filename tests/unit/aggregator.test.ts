@@ -170,6 +170,56 @@ describe("aggregate", () => {
     expect(r.dedupedFindings.length).toBe(2); // distinct issues stay separate
   });
 
+  it("is order-independent: shuffled input yields identical clustering", () => {
+    const fs = [
+      fin({
+        file: "a.ts",
+        line_start: 5,
+        severity: "CRITICAL",
+        category: "security",
+        rule_id: "r1",
+        message: "hardcoded secret committed in source",
+        reviewer: { provider: "codex", model: "m", persona: "security" },
+      }),
+      fin({
+        file: "a.ts",
+        line_start: 30,
+        severity: "WARN",
+        category: "quality",
+        rule_id: "r2",
+        message: "hardcoded secret in source code",
+        reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+      }),
+      fin({
+        file: "a.ts",
+        line_start: 50,
+        severity: "WARN",
+        category: "performance",
+        rule_id: "r3",
+        message: "expensive loop without memoization here",
+        reviewer: { provider: "openrouter", model: "m", persona: "security" },
+      }),
+      fin({
+        file: "b.ts",
+        line_start: 1,
+        severity: "INFO",
+        category: "docs",
+        rule_id: "r4",
+        message: "missing jsdoc on exported function",
+        reviewer: { provider: "claude-code", model: "m", persona: "adversarial" },
+      }),
+    ];
+    const forward = aggregate({ findings: fs, reviewersTotal: 4 });
+    const reversed = aggregate({ findings: [...fs].reverse(), reviewersTotal: 4 });
+    const key = (r: ReturnType<typeof aggregate>) =>
+      r.dedupedFindings
+        .map((f) => `${f.severity}|${f.message}`)
+        .sort()
+        .join(";");
+    expect(key(forward)).toBe(key(reversed));
+    expect(forward.dedupedFindings.length).toBe(reversed.dedupedFindings.length);
+  });
+
   it("keeps genuinely separate bugs (different line regions) distinct", () => {
     const sqli = fin({
       severity: "CRITICAL",

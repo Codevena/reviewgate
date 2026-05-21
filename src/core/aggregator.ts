@@ -73,8 +73,20 @@ interface Cluster {
 }
 
 export function aggregate(input: AggregateInput): AggregateResult {
+  // Sort into a fully deterministic order BEFORE greedy clustering — reviewers
+  // return findings in an unstable order, and the cluster a finding lands in must
+  // not depend on that order. Highest severity first within a file+line so the
+  // cluster seed is the representative and its token set is a stable anchor.
+  const sorted = [...input.findings].sort(
+    (a, b) =>
+      a.file.localeCompare(b.file) ||
+      a.line_start - b.line_start ||
+      SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
+      a.rule_id.localeCompare(b.rule_id) ||
+      a.message.localeCompare(b.message),
+  );
   const clusters: Cluster[] = [];
-  for (const f of input.findings) {
+  for (const f of sorted) {
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
     const fTokens = normTokens(f.message);
     // Merge into an existing cluster (same file) when EITHER the original
@@ -91,9 +103,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
       if (!target.reviewers.includes(reviewerKey)) target.reviewers.push(reviewerKey);
       if (!target.messages.includes(f.message)) target.messages.push(f.message);
       // Representative = highest severity (most conservative); ties keep the first.
+      // Note: target.tokens is NOT mutated — the seed's tokens stay the cluster's
+      // stable comparison anchor (mutating them would make clustering order-dependent).
       if (SEVERITY_RANK[f.severity] > SEVERITY_RANK[target.sample.severity]) {
         target.sample = f;
-        target.tokens = fTokens;
       }
     } else {
       clusters.push({
