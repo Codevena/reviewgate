@@ -36,4 +36,46 @@ describe("triageFromFacts (deterministic)", () => {
     expect(d.riskClass).toBe("default");
     expect(d.runReview).toBe(true);
   });
+
+  const docDiff =
+    "diff --git a/docs/superpowers/specs/x.md b/docs/superpowers/specs/x.md\n--- a/docs/superpowers/specs/x.md\n+++ b/docs/superpowers/specs/x.md\n@@ -1 +1 @@\n-a\n+b\n";
+
+  it("docReview disabled → doc-only still skipped", () => {
+    const d = triageFromFacts(facts(docDiff), {
+      enabled: false,
+      globs: ["docs/superpowers/specs/**"],
+      persona: "plan",
+    });
+    expect(d.runReview).toBe(false);
+    expect(d.riskClass).toBe("trivial");
+  });
+
+  it("docReview enabled + glob match → reviewed as docs", () => {
+    const d = triageFromFacts(facts(docDiff), {
+      enabled: true,
+      globs: ["docs/superpowers/specs/**"],
+      persona: "plan",
+    });
+    expect(d.runReview).toBe(true);
+    expect(d.riskClass).toBe("docs");
+    expect(d.budgetTier).toBe("minimal");
+  });
+
+  it("docReview enabled + no glob match → skipped", () => {
+    const d = triageFromFacts(facts(docDiff), {
+      enabled: true,
+      globs: ["docs/other/**"],
+      persona: "plan",
+    });
+    expect(d.runReview).toBe(false);
+  });
+
+  it("invalid glob fails open (no match → skip), does not throw", () => {
+    const d = triageFromFacts(facts(docDiff), {
+      enabled: true,
+      globs: ["["],
+      persona: "plan",
+    });
+    expect(d.runReview).toBe(false);
+  });
 });

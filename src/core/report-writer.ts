@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
 import type { PendingReport } from "../schemas/pending-report.ts";
-import { escalationMdPath, pendingJsonPath, pendingMdPath } from "../utils/paths.ts";
+import {
+  escalationMdPath,
+  pendingJsonPath,
+  pendingMdPath,
+  planReviewJsonPath,
+  planReviewMdPath,
+} from "../utils/paths.ts";
 
 function ensureDir(p: string): void {
   const d = dirname(p);
@@ -28,7 +34,7 @@ function fmtFinding(f: Finding): string {
   ].join("\n");
 }
 
-function renderMd(r: PendingReport): string {
+function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
   // Coverage warning: any reviewer that didn't finish OK (timeout/error/etc.)
   // reduces how many independent reviewers actually saw this diff. Surface it
   // prominently — a silently degraded panel could let a PASS through with less
@@ -45,6 +51,19 @@ function renderMd(r: PendingReport): string {
           "",
         ]
       : [];
+  const actions =
+    mode === "one-shot"
+      ? []
+      : [
+          "## Required actions",
+          "",
+          `For each finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\`:`,
+          '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
+          '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
+          "",
+          "Reviewgate refuses to unblock until every finding ID has a decision.",
+          "",
+        ];
   const head = [
     `# Reviewgate Report — iteration ${r.iter} of ${r.max_iter}`,
     "",
@@ -53,14 +72,7 @@ function renderMd(r: PendingReport): string {
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
     ...coverageBanner,
-    "## Required actions",
-    "",
-    `For each finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\`:`,
-    '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
-    '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
-    "",
-    "Reviewgate refuses to unblock until every finding ID has a decision.",
-    "",
+    ...actions,
     "---",
     "",
   ].join("\n");
@@ -101,11 +113,15 @@ export interface EscalationInput {
 export class ReportWriter {
   constructor(private readonly repoRoot: string) {}
 
-  async write(report: PendingReport): Promise<void> {
-    const md = pendingMdPath(this.repoRoot);
-    const json = pendingJsonPath(this.repoRoot);
+  async write(report: PendingReport, opts?: { mode?: "gate" | "one-shot" }): Promise<void> {
+    const mode = opts?.mode ?? "gate";
+    // One-shot reviews write to their OWN files so they never clobber the gate's
+    // pending.md/json (which the Stop-hook decisions loop reads).
+    const md = mode === "one-shot" ? planReviewMdPath(this.repoRoot) : pendingMdPath(this.repoRoot);
+    const json =
+      mode === "one-shot" ? planReviewJsonPath(this.repoRoot) : pendingJsonPath(this.repoRoot);
     ensureDir(md);
-    writeFileSync(md, renderMd(report), { mode: 0o600 });
+    writeFileSync(md, renderMd(report, mode), { mode: 0o600 });
     writeFileSync(json, JSON.stringify(report, null, 2), { mode: 0o600 });
   }
 

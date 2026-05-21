@@ -25,6 +25,16 @@ export function pendingJsonPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "pending.json");
 }
 
+// One-shot `review-plan` reports go to their OWN paths so a manual plan review
+// never clobbers the gate's pending.md/json (which drives the decisions loop).
+export function planReviewMdPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "plan-review.md");
+}
+
+export function planReviewJsonPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "plan-review.json");
+}
+
 export function decisionsPath(repoRoot: string, iter: number): string {
   return join(reviewgateDir(repoRoot), "decisions", `${iter}.jsonl`);
 }

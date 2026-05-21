@@ -43,6 +43,11 @@ export interface OrchestratorInput {
   // to env vars / placeholders). The gate always supplies it.
   gitInfo?: { sha: string; branch: string; dirtyFiles: string[] };
   reasonOnFailEnabled: boolean;
+  // Doc/plan review hooks. forcePersona (set by the `review-plan` CLI) forces a
+  // review even when triage would skip, and pins the reviewer persona. reportMode
+  // "one-shot" tells the report writer to omit the decisions-loop instructions.
+  forcePersona?: string;
+  reportMode?: "gate" | "one-shot";
   // Optional injection for the Curator's web-fetch evidence enrichment. Lets
   // tests drive the deterministic-source path with no real network/DNS. In
   // production this is omitted and safeFetch uses global fetch + node DNS.
@@ -75,11 +80,26 @@ const REVIEW_PROMPT_PREAMBLE = [
   "full-file content — failure to do so produces false-positive findings.",
 ].join("\n");
 
+const DOC_REVIEW_PROMPT_PREAMBLE = [
+  "You are reviewing an implementation plan / spec document (prose, not code).",
+  "Output ONLY a single JSON object — no prose, no markdown fences — of exactly",
+  "this shape:",
+  '{"verdict":"PASS|FAIL","findings":[{"severity":"CRITICAL|WARN|INFO",',
+  '"category":"security|correctness|quality|architecture|performance|testing|docs",',
+  '"rule_id":"<short-kebab-id>","file":"<repo-relative path>","line":<integer>,',
+  '"message":"<one line>","details":"<explanation>","confidence":<number 0..1>}]}',
+  "Judge the plan on: completeness, internal contradictions, missing edge cases,",
+  "verifiability/testability, unrealistic assumptions, missing migration/rollback,",
+  "and wrong file/symbol references. Report every real issue. Use verdict PASS",
+  "with an empty findings array only if the plan is genuinely sound.",
+].join("\n");
+
 const PERSONA_REAFFIRM: Record<string, string> = {
   security:
     "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.",
   architecture: "You are a senior software architect. Judge design, coupling, and maintainability.",
   adversarial: "You are an adversarial critic. Attack assumptions; find what others miss.",
+  plan: "You are a meticulous staff engineer reviewing an implementation plan. Find gaps, contradictions, untestable steps, and unstated assumptions before code is written.",
 };
 const DEFAULT_REAFFIRM = PERSONA_REAFFIRM.security as string;
 
@@ -111,9 +131,15 @@ export class Orchestrator {
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---
     const facts = computeDiffFacts(this.input.diff);
-    const triage = await refineTriage(triageFromFacts(facts), { llm: null });
+    const triage = await refineTriage(triageFromFacts(facts, this.input.config.docReview), {
+      llm: null,
+    });
 
-    if (!triage.runReview) {
+    const docPersona =
+      this.input.forcePersona ??
+      (triage.riskClass === "docs" ? this.input.config.docReview.persona : null);
+
+    if (!triage.runReview && !this.input.forcePersona) {
       // Doc-only / trivial diff: pass without spawning any reviewer ($0).
       await this.writeReport(opts, start, [], [], "PASS");
       return {
@@ -221,7 +247,8 @@ export class Orchestrator {
         model = modelIdForTier(tier) ?? model;
       }
 
-      const reaffirm = PERSONA_REAFFIRM[r.persona] ?? DEFAULT_REAFFIRM;
+      const persona = docPersona ?? r.persona;
+      const reaffirm = PERSONA_REAFFIRM[persona] ?? DEFAULT_REAFFIRM;
       const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
       const sanitisedCtx = fileContext
         ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
@@ -231,7 +258,7 @@ export class Orchestrator {
       const findingsPath = join(runDir, "findings.md");
       const diffPath = join(runDir, "diff.patch");
       // research.md goes BEFORE the untrusted-diff fence (trusted context).
-      const promptParts = [REVIEW_PROMPT_PREAMBLE, ""];
+      const promptParts = [docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE, ""];
       if (researchText) promptParts.push("## Research context", researchText, "");
       if (brainText) promptParts.push("## Brain context", brainText, "");
       promptParts.push(sanitised.text);
@@ -245,14 +272,14 @@ export class Orchestrator {
       writeFileSync(diffPath, this.input.diff);
       const res = await adapter.review({
         cfg: { ...providerCfg, model },
-        reviewerId: `${r.provider}-${r.persona}`,
+        reviewerId: `${r.provider}-${persona}`,
         promptFile,
         workingDir: repo,
         findingsPath,
-        persona: r.persona,
+        persona,
         diffPath,
       });
-      return { res, provider: r.provider, persona: r.persona, model };
+      return { res, provider: r.provider, persona, model };
     });
 
     // allSettled (not all): a single adapter that THROWS (not just returns
@@ -574,23 +601,26 @@ export class Orchestrator {
               duration_ms: Date.now() - start,
             },
           ];
-    await writer.write({
-      schema: "reviewgate.pending.v1",
-      run_id: opts.runId,
-      iter: opts.iter,
-      max_iter: this.input.config.loop.maxIterations,
-      verdict: verdict === "ERROR" ? "FAIL" : verdict,
-      counts,
-      reviewers,
-      findings,
-      cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
-      duration_ms_total: Date.now() - start,
-      generated_at: new Date().toISOString(),
-      git: {
-        sha: this.input.gitInfo?.sha ?? process.env.GIT_SHA ?? "0".repeat(40),
-        branch: this.input.gitInfo?.branch ?? process.env.GIT_BRANCH ?? "main",
-        dirty_files: this.input.gitInfo?.dirtyFiles ?? [],
+    await writer.write(
+      {
+        schema: "reviewgate.pending.v1",
+        run_id: opts.runId,
+        iter: opts.iter,
+        max_iter: this.input.config.loop.maxIterations,
+        verdict: verdict === "ERROR" ? "FAIL" : verdict,
+        counts,
+        reviewers,
+        findings,
+        cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
+        duration_ms_total: Date.now() - start,
+        generated_at: new Date().toISOString(),
+        git: {
+          sha: this.input.gitInfo?.sha ?? process.env.GIT_SHA ?? "0".repeat(40),
+          branch: this.input.gitInfo?.branch ?? process.env.GIT_BRANCH ?? "main",
+          dirty_files: this.input.gitInfo?.dirtyFiles ?? [],
+        },
       },
-    });
+      { mode: this.input.reportMode ?? "gate" },
+    );
   }
 }

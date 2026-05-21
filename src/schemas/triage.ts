@@ -1,7 +1,7 @@
 // src/schemas/triage.ts
 import { z } from "zod";
 
-export const RiskClass = z.enum(["trivial", "minimal", "standard", "sensitive", "default"]);
+export const RiskClass = z.enum(["trivial", "minimal", "standard", "sensitive", "default", "docs"]);
 export type RiskClass = z.infer<typeof RiskClass>;
 
 export const TriageDecisionSchema = z.object({

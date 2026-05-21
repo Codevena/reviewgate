@@ -5,6 +5,7 @@ import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts"
 import { runDoctor } from "./commands/doctor.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
+import { runReviewPlan } from "./commands/review-plan.ts";
 
 const init = defineCommand({
   meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
@@ -58,6 +59,21 @@ const audit = defineCommand({
   },
 });
 
+const reviewPlan = defineCommand({
+  meta: {
+    name: "review-plan",
+    description: "Review a plan/spec markdown file (one-shot, committed or not)",
+  },
+  args: { file: { type: "positional", required: true, description: "Path(s) to plan file(s)" } },
+  async run({ args }) {
+    const files = (args._ ?? []).filter((s) => typeof s === "string" && s.length > 0);
+    const res = await runReviewPlan({ repoRoot: process.cwd(), files });
+    if (res.stdout) process.stdout.write(res.stdout);
+    if (res.stderr) process.stderr.write(res.stderr);
+    process.exit(res.exitCode);
+  },
+});
+
 const brain = defineCommand({
   meta: { name: "brain", description: "Brain entry management" },
   subCommands: {
@@ -102,7 +118,7 @@ const brain = defineCommand({
 
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, doctor, audit, brain },
+  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain },
 });
 
 void runMain(main);

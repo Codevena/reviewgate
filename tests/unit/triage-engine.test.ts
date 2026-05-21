@@ -33,4 +33,18 @@ describe("refineTriage", () => {
     });
     expect(d).toEqual(det);
   });
+  it("preserves the docs risk class through refinement (llm: null)", async () => {
+    const det = {
+      schema: "reviewgate.triage.v1" as const,
+      riskClass: "docs" as const,
+      runReview: true,
+      budgetTier: "minimal" as const,
+      loopCap: 3,
+      reviewerHint: [],
+      justification: "Plan/doc review.",
+    };
+    const out = await refineTriage(det, { llm: null });
+    expect(out.riskClass).toBe("docs");
+    expect(out.runReview).toBe(true);
+  });
 });

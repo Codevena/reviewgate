@@ -88,8 +88,13 @@ const docPersona =
   forcePersona ??                                      // CLI one-shot
   (triage.riskClass === "docs" ? cfg.docReview.persona // auto path
                                : null);
-// if docPersona set → run exactly one reviewer with persona = docPersona
+// if docPersona set → override the persona of EVERY active reviewer to docPersona
 ```
+
+When `docPersona` is set, the Orchestrator overrides the persona for **all**
+configured/active reviewers (not a single hard-coded one) — this never silently
+drops a reviewer the user enabled (consistent with the existing reviewer-hint
+philosophy). With the default single-reviewer panel this is exactly one reviewer.
 
 ### Decision 2 — CLI bypasses triage via an explicit Orchestrator input
 
@@ -98,7 +103,7 @@ diff would still hit `runReview:false`. The Orchestrator gains an optional input
 **`forcePersona?: string`**. When set, the Orchestrator:
 
 - skips the doc-only/`runReview:false` short-circuit (review is forced), and
-- uses `forcePersona` as the single reviewer's persona.
+- uses `forcePersona` as the persona for every active reviewer.
 
 This same mechanism cleanly serves both entry points (auto = `riskClass:"docs"`,
 CLI = `forcePersona`).
@@ -108,6 +113,10 @@ CLI = `forcePersona`).
 - New file `.reviewgate/personas/plan.md`. Criteria: completeness, internal
   contradictions, missing edge cases, verifiability/testability, unrealistic
   assumptions, missing migration/rollback, wrong file/symbol references.
+  **Note:** in this milestone the runtime does NOT read `.reviewgate/personas/*.md`
+  — reviewer behavior is driven entirely by `PERSONA_REAFFIRM` and the preamble
+  below. The `plan.md` file is created for parity with `security.md` and future
+  use; the substantive plan criteria therefore live in `PERSONA_REAFFIRM["plan"]`.
 - Add a `PERSONA_REAFFIRM["plan"]` entry in `orchestrator.ts`. **Required** —
   the default reaffirm wraps prose in hostile security-auditor instructions
   otherwise.
@@ -145,9 +154,14 @@ CLI = `forcePersona`).
 The report renderer (`src/core/report-writer.ts`) always emits "Required actions"
 and decisions-loop instructions in `pending.md`, which are misleading for a
 one-shot CLI run. The writer gains a **`mode: "gate" | "one-shot"`** parameter
-(default `"gate"`, preserving current output). In `"one-shot"` mode it omits the
-decisions-loop / "Required actions" instructions and renders findings only. The
-`review-plan` CLI uses `"one-shot"` and prints the findings to stdout; it must not
+(default `"gate"`, preserving current output). In `"one-shot"` mode it (a) omits
+the decisions-loop / "Required actions" instructions and renders findings only,
+**and (b) writes to its OWN files** — `.reviewgate/plan-review.md` and
+`plan-review.json` (via `planReviewMdPath`/`planReviewJsonPath`) — **never** the
+gate's `pending.md`/`pending.json`. This is critical: `pending.*` drives the
+Stop-hook decisions loop, so a manual or CI `review-plan` run during an active
+blocked turn must not stomp the gate state. The `review-plan` CLI uses
+`"one-shot"`, reads back `plan-review.md`, and prints it to stdout; it must not
 instruct the user to append decision JSONL.
 
 ## Scope cut & known limitation
@@ -163,13 +177,16 @@ auto path; anything else can be reviewed explicitly via `review-plan`.
 
 - `src/config/defaults.ts` — new `docReview` block (default off)
 - `src/config/define-config.ts` — `docReview` in the validated config type
-- `src/schemas/triage.ts` — `RiskClass` gains `"docs"`, matching `budgetTier`
+- `src/schemas/triage.ts` — `RiskClass` gains `"docs"` (the doc path reuses the
+  existing `"minimal"` budgetTier; no new tier, so `triage-engine.ts` TIER_RANK is
+  untouched)
 - `src/triage/matrix.ts` — doc-only branch: glob match → `riskClass:"docs"`,
   `runReview:true`; else skip as today
 - `src/triage/triage-engine.ts` — ensure the `"docs"` class survives `refineTriage`
 - `src/core/orchestrator.ts` — `forcePersona` input; persona resolution (Decision
   1); `PERSONA_REAFFIRM["plan"]`; generalized preamble
-- `src/core/report-writer.ts` — one-shot report mode (Decision 6)
+- `src/core/report-writer.ts` — one-shot report mode + separate output paths (Decision 6)
+- `src/utils/paths.ts` — `planReviewMdPath`/`planReviewJsonPath` (one-shot output)
 - `src/cli/index.ts` — register `review-plan` subcommand
 - `src/cli/commands/review-plan.ts` — **new**; path normalization, diff synthesis,
   one-shot orchestrator run, exit codes
@@ -193,6 +210,9 @@ auto path; anything else can be reviewed explicitly via `review-plan`.
 - **review-plan CLI:** path normalization (absolute → repo-relative), diff synthesis
   parses through `diff-facts.ts`, PASS/FAIL exit codes, missing-file error, binary
   rejection.
+- **one-shot state isolation:** a one-shot write lands in `plan-review.md`/`.json`
+  and leaves the gate's `pending.md`/`.json` untouched; gate mode still writes
+  `pending.*` (regression guard for the clobber bug).
 - **schema:** `RiskClass:"docs"` validates; config with `docReview` validates.
 - **Real end-to-end (no mocks):** `reviewgate review-plan` against a real sample
   spec with the real codex reviewer — must produce a real verdict. (Per project
