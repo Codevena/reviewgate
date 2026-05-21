@@ -1,41 +1,37 @@
-# Reviewgate — Session Handoff (2026-05-21)
+# Reviewgate — Session Handoff (2026-05-21, session 2)
 
-**Status:** M1–M4 shipped & merged to `master`. Live in the real project **flashbuddy**.
-**master HEAD:** `051ac18` (origin/master in sync). Repo: github.com/Codevena/reviewgate.
-**Runtime:** Bun (`~/.bun/bin` — prepend to PATH: `export PATH="$HOME/.bun/bin:$PATH"`). 300 tests pass / 9 skip / 0 fail; `bun run typecheck` + `bun run lint` clean. Binary: `bun run build` → `dist/reviewgate`, symlinked at `~/.local/bin/reviewgate`.
+**Status:** M1–M4 shipped. Full live test series (T1–T13) run against the real consumer
+**flashbuddy** — surfaced & fixed **6 real bugs**, all only visible via real end-to-end runs.
+**master HEAD:** `b862cc7` (local). **origin/master is STALE at `051ac18` — 8 commits behind, NOTHING PUSHED.**
+**Runtime:** Bun (`export PATH="$HOME/.bun/bin:$PATH"`). 318 tests pass / 11 skip / 0 fail; typecheck + lint clean. Binary: `bun run build` → `dist/reviewgate`, symlinked `~/.local/bin/reviewgate`.
 
-## What Reviewgate is (1 line)
-A code-review gate inside Claude Code's Stop hook: a heterogeneous LLM reviewer panel reviews the working-tree diff, a severity-weighted veto + critic + non-blocking Curator (brain) aggregate findings, and the gate blocks turn-end until each finding is fixed or rejected-with-reason. See `docs/superpowers/specs/2026-05-20-reviewgate-design.md` + CLAUDE.md.
+## ⚠️ FIRST: unpushed commits
+`git rev-list origin/master..master` = **8 commits** (2 docs from session 1 + 6 fixes from session 2), all local-only per "never push without OK". `origin/master` = `051ac18`. **Ask the user before pushing.** Working tree has a pre-existing `M CLAUDE.md` (not from this session — leave it).
 
-## Milestones (all shipped)
-- **M1** loop FSM + decisions protocol + hash-chained audit.
-- **M2** multi-reviewer panel (codex/gemini/claude/openrouter[/opencode]) + critic (demote-only) + severity-weighted aggregation.
-- **M3** adaptive triage (doc-only skip) + research.md (tree-sitter symbol graph) + content-addressed cache + symbol-relative signatures.
-- **M4** Brain + Curator: committed per-repo memory; read-path injection (per-run snapshot), `memory_proposals` write-path, non-blocking timeout-bounded Curator with 7 rules incl. cross-provider quorum via embedding grouping (anti-collusion), OpenRouter embeddings, SSRF-resistant web-fetch, lifecycle, `reviewgate brain list/show/revoke`. **Off by default** (`phases.brain` absent → null).
+## This session's 6 fixes (all on master, local; first 4 went through full Codex+Claude DoD)
+1. **`162ea18` decisions-rearm clear** — the decisions-gate matched by `finding_id` only; on a re-arm the iteration counter resets to 0 and reuses `decisions/<iter>.jsonl`, so a stale `F-001 fixed` line satisfied the next cycle's colliding F-001. Now wipes `decisions/` at both re-arm sites (PASS + escalated-commit). *Found by T2.*
+2. **`306a115` symbol-graph wasm** — `bun build --compile` didn't bundle web-tree-sitter's engine runtime (`web-tree-sitter.wasm`); `Parser.init()` aborted ENOENT in the binary → **M3 symbol graph was silently DEAD in every real review since M3** (source-mode `bun test` hid it). Build now copies it to `dist/grammars` (fail-hard); `resolveRuntimeWasm()` + `Parser.init({locateFile})`. Verified at the compiled-binary level. *Found by T5.*
+3. **`a16a5cf` brain promotion** — curator never promoted ANY memory (brain.json empty after a week). 3 barriers: diff-derived quorum needed ≥6 items (unreachable w/ ≤5 reviewers + no web-fetch) → now ≥3 distinct providers; GROUP_THRESHOLD 0.85→0.78 (paraphrases cluster; DEDUP stays 0.85); evidence synthesized when a proposal has none. Anti-collusion intact. *Found by T9.*
+4. **`e95d2a4` brain type-default + schema_detail** — unknown reviewer `type` labels now default to "convention" (4th barrier); curator logs `schema_detail` sub-reason in curator-decisions. *Follow-up to T9.*
+5. **`b5aa220` enrich keep-citation** *(TDD only, no DoD — small)* — `enrichProposal` dropped citations whose `safeFetch` failed (egress off → ALL fail) → emptied evidence → schema reject. Now keeps the item as reviewer evidence. *Found by T9 via schema_detail.*
+6. **`b862cc7` ESCALATION.md findings** *(TDD only, no DoD — small)* — report's "Final findings" was always empty (`topFindings:[]` hardcoded) + per-iter CRIT/WARN always 0. Now populated from pending.json (FindingSchema-validated). *Found by T12.*
 
-## This session's merged work (PRs #1–#9 on master)
-- **Gate loop fixes:** in-chain re-review (removed the blanket `stop_hook_active` short-circuit); re-arm budget on PASS/commit; visible gate states 🟢 GATE OPEN / 🔴 GATE CLOSED / 🟠 GATE ESCALATED; escalation block-once.
-- **Review-reliability cluster (PR #2):** full changed-file content given to reviewers (kills false-positive "undefined symbol" findings; SSRF-safe — no symlink follow, size-bounded); REVIEW_OUTPUT_SCHEMA strict-mode valid (fixed codex `--output-schema` 400s); reviewer `status_detail` persisted in pending.json; curator proposal normalization (tolerant of overlong title/body).
-- **Reviewer-timeout fix (PR #4):** `phases.review.fileContextBudgetBytes` configurable (default 32K, was 60K) → smaller prompts → fewer reviewer timeouts.
-- **Dedup (PR #5 + #9):** merge near-identically-worded findings across reviewers (conservative Jaccard ≥0.6, deterministic clustering); region dedup key drops category (same-line findings reviewers categorized differently now merge); multi-category merges surface a `⚠ merges concerns categorized as…` note in details (masking guard); never over-merges distinct issues, representative keeps highest severity.
-- **Critic observability (PR #6):** `pending.json.critic = { provider, status: ran|empty|error|misconfigured, verdicts, demoted }` — a configured-but-silent critic is now diagnosable.
-- **OpenCode adapter (PR #7 + #8):** 5th provider — runs `opencode run --dangerously-skip-permissions --format default [-m provider/model] <prompt>`. Model `"default"` (or empty) → omits `-m` → uses opencode's OWN configured default (e.g. the MiniMax Token Plan). A real `provider/model` id forces it via `-m`. **Do NOT use `opencode/minimax-m2.7`** — that's the hosted, payment-gated model ("No payment method"). Verified: real opencode emits clean JSON that parseReviewOutput extracts.
-- **Defaults:** gemini → `gemini-3-flash-preview` (the others ModelNotFound/quota). Removed the broken `reviewgate-self.yml` CI workflow (invalid YAML → failure emails). gemini reviewer+critic run via OAuth; only brain embeddings use OpenRouter.
+## Test series result (T1–T13, live in flashbuddy)
+T1✅ T2✅ T3✅(critic ran, demoted 2) T4✅(doc-skip, after tree cleanup) T5✅(symbol graph populated, after fix #2) T6✅(cache hit, $0/1ms) T7✅(no false undefined-symbol — full-file context) T8✅(via T3 dedup) T9⚠️(machinery fixed+verified; **live promotion not yet observed** — needs ≥2–3 reviewers to converge on the same convention, non-deterministic) T10⏭(moot, brain empty) T11✅(brain CLI list/show/revoke — note the `--id <id>` flag) T12✅(escalation + re-arm) T13⏭(opportunistic, no reviewer ever failed: 4/4 ok throughout).
 
-## flashbuddy config (`/Users/markus/Developer/flashbuddy/reviewgate.config.ts`)
-Plain object (NO `import` line). 4 reviewers (codex/security, openrouter[deepseek-v4-pro, 600s timeout]/security, gemini[gemini-3-flash-preview]/architecture, claude-code[sonnet-4-6]/adversarial). **critic = opencode/`default`/adversarial** (MiniMax Token Plan, genuine non-reviewer). brain enabled (embeddings `baai/bge-base-en-v1.5` via openrouter, egressAllowlist `[]`, no curator-LLM). loop.acknowledgePass true, notify.desktop true. opencode provider added (auth oauth, model `default`). OPENROUTER_API_KEY is set in flashbuddy's env (used by deepseek reviewer + brain embeddings).
+## Open findings / next-session candidates
+- **M5 (FP-ledger) is the clear priority.** Across T4/T7/T9 the panel repeatedly produced FALSE POSITIVES on UNCHANGED code far from the diff (one was a hallucinated line 389 in a 362-line file; a minority CRITICAL FP forced a block in T7). Findings aren't scoped to the diff. M5's FP-ledger directly targets this; also consider scoping reviewer findings to the change. See memory `project_reviewer_fp_unchanged_code`.
+- **Brain live promotion** still unobserved — machinery is sound (proposals reach quorum) but promotion needs reviewer convergence (≥2–3 providers proposing the same convention). T10 read-path can't be tested until a promotion exists. See `project_brain_never_promotes`.
+- **Reset wrapper trap:** `.reviewgate/bin/gate` is the STOP hook, `.reviewgate/bin/reset` is reset. The escalation message says `reviewgate gate --hook reset` — use it verbatim (Agent A used bin/gate by mistake in T12 and left the gate escalated; recovered with the correct command).
+- **Triage trigger gap (by-design, minor):** a change carried across a SessionStart reset that the agent doesn't re-touch via Edit/Write isn't reviewed until the next Edit (PostToolUse trigger is tool-based, not working-tree-state-based).
+- Roadmap: **M5** FP-ledger, **M6** cassette replay / weekly reports / `reviewgate stats` / native sandbox.
 
-## PENDING — the immediate next task: run the FULL test series in flashbuddy
-The complete, systematic series is in **`TEST_PLAN.md`** (Layer 1 automated → Layer 2 gated real e2e → Layer 3 flashbuddy end-to-end T1–T13). The binary is rebuilt; **restart Claude Code in flashbuddy** first (loads latest config + binary + resets state).
+## flashbuddy state
+Gate re-armed (T12's escalation reset properly). `brain.json` empty. Working tree: `M reviewgate.config.ts` (test config, review-excluded) + untracked `.reviewgate/brain/`. Config: 4 reviewers (codex/openrouter[deepseek-v4-pro]/gemini[gemini-3-flash-preview]/claude-code[sonnet-4-6]) + critic opencode/`default` (MiniMax) + brain enabled (embeddings baai/bge-base-en-v1.5, egressAllowlist []). flashbuddy must RESTART to pick up a freshly rebuilt binary (SessionStart reset also clears stale `.reviewgate/` state).
 
-Already validated in prior runs: T1 (M1 loop, audit chain), T2 (M2 panel/confirmed_by). NOT yet run with the latest fixes: **T3** (OpenCode/MiniMax critic via `default` — should now be `status:"ran"` instead of the earlier `"empty"` billing failure), **T4–T13**. Each Layer-3 test: tell the flashbuddy agent the Prompt from TEST_PLAN.md, have it `cp .reviewgate/pending.json /tmp/<id>.json` on the block before resolving, then inspect the snapshot here.
-
-## Roadmap not yet built
-- **M5** FP-Ledger (false-positive learning loop). **M6** cassette replay, weekly reports, `reviewgate stats`, live persona-bias detector, native sandbox (blocked on `@anthropic-ai/sandbox-runtime`).
-- Possible follow-ups surfaced this session: critic "empty" finer status (parseable-but-empty vs unparseable); audit log doesn't record per-reviewer events (only gate.decision/escalation) — the iter-1 reviewer details are lost when iter-2 PASS overwrites pending.json.
-
-## CRITICAL working-environment gotchas (read before touching git)
-- **Shared working directory with a PARALLEL agent session.** Another session (Markus's "plan-doc-review" feature on branch `feat/plan-doc-review`) shares this checkout; the git HEAD has jumped between branches unnoticed, and a commit of mine once got orphaned onto the wrong branch. **Do NOT touch `feat/plan-doc-review`.** Coordinate before force/reset. Prefer: branch → PR → merge → delete (the established flow). Each merge moves master → tell the parallel session to rebase on the latest.
-- **codex CLI and `opencode run` HANG / are flaky in this nested companion context** (0% CPU, no output). Don't rely on them from Bash here; real verification happens in the flashbuddy session. `codex exec` for reviews mostly worked but sometimes hung.
-- **Workflow:** TDD → `bun test`/`typecheck`/`lint` → Codex+Claude review subagents (write findings to `.review/*.md`, FINDINGS/VERDICT format, PASS = 0 CRITICAL/WARN) → fix → re-review → `rm -rf .review/` → commit → PR → merge → `bun run build` → delete branch. Never commit Claude attribution. Never push without explicit OK (granted per-action this session).
-- Memory: `/Users/markus/.claude/projects/-Users-markus-Developer-reviewgate/memory/` (user is German-speaking senior eng, milestone/subagent workflow, insists on REAL end-to-end verification — fakes hid bugs).
+## Working-environment gotchas
+- **Shared checkout with a PARALLEL session** (branch `feat/plan-doc-review`) — HEAD has jumped unnoticed. This session used **git worktrees** for every fix (branch from local HEAD → TDD → review → FF-merge → remove worktree → rebuild binary). origin is stale; integration was **local FF-merge only, no push**. After each merge tell the parallel session to rebase.
+- **codex worked reliably this session** (contradicts session 1's "often hangs"): `codex exec "$(<file)" </dev/null` foreground. opencode not needed.
+- Never commit Claude attribution (commits authored Codevena). Never push without explicit OK.
+- DoD for big fixes: TDD → `bun test`/typecheck/lint → Codex+Claude review subagents (`.review/*.md`, PASS=0 CRIT/WARN) → fix → re-review → `rm -rf .review/` → commit → FF-merge → rebuild. **Small fixes: TDD only, no DoD** (user's call this session).
+- Memory dir: `/Users/markus/.claude/projects/-Users-markus-Developer-reviewgate/memory/` (German-speaking senior eng, milestone/subagent workflow, insists on REAL e2e — this session's 6 bugs were all source-mode-invisible, vindicating that). New memories this session: `project_reviewer_fp_unchanged_code`, `reference_compiled_binary_wasm`, `project_brain_never_promotes`.
