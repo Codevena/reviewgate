@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
+import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
 import { decisionsDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
 import type { Orchestrator } from "./orchestrator.ts";
@@ -53,6 +54,42 @@ function previousFindingIds(repoRoot: string): string[] {
     return report.findings.map((f) => f.id).filter((id): id is string => typeof id === "string");
   } catch {
     return [];
+  }
+}
+
+// The last iteration's findings + severity counts, read from pending.json. The
+// gate escalates as a PRECONDITION (before running a new iteration), so pending.json
+// still reflects the prior iteration — used to populate the escalation report so it
+// is useful standalone instead of showing an empty findings section + zero counts.
+function readPendingReport(repoRoot: string): {
+  findings: Finding[];
+  counts: { critical: number; warn: number; info: number };
+} {
+  const empty = { findings: [] as Finding[], counts: { critical: 0, warn: 0, info: 0 } };
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return empty;
+  try {
+    const r = JSON.parse(readFileSync(p, "utf8")) as {
+      findings?: Finding[];
+      counts?: { critical?: number; warn?: number; info?: number };
+    };
+    // Validate each finding — pending.json could hold partial/stub entries
+    // (older format, hand-written tests); only fully-valid Findings reach the
+    // report renderer so a malformed one can't crash escalation.
+    const findings = (Array.isArray(r.findings) ? r.findings : [])
+      .map((f) => FindingSchema.safeParse(f))
+      .filter((res): res is { success: true; data: Finding } => res.success)
+      .map((res) => res.data);
+    return {
+      findings,
+      counts: {
+        critical: r.counts?.critical ?? 0,
+        warn: r.counts?.warn ?? 0,
+        info: r.counts?.info ?? 0,
+      },
+    };
+  } catch {
+    return empty;
   }
 }
 
@@ -347,21 +384,25 @@ export class LoopDriver {
     history: string[][],
   ): Promise<void> {
     const w = new ReportWriter(this.i.repoRoot);
+    const pending = readPendingReport(this.i.repoRoot);
     await w.writeEscalation({
       runId,
       iter,
       maxIter: this.i.config.loop.maxIterations,
       reasonCode,
       summary,
+      // Per-iteration history is reconstructed from signature_history, which only
+      // stores finding COUNT per iter — not severity. Only the LAST iteration's
+      // severity split is recoverable (from pending.json); earlier rows stay 0.
       perIter: history.map((sigs, i) => ({
         iter: i + 1,
         verdict: "FAIL",
-        crit: 0,
-        warn: 0,
+        crit: i === history.length - 1 ? pending.counts.critical : 0,
+        warn: i === history.length - 1 ? pending.counts.warn : 0,
         costUsd: 0,
         findings: sigs.length,
       })),
-      topFindings: [],
+      topFindings: pending.findings,
       triggeredAt: new Date().toISOString(),
     });
     await this.i.audit.append({ event: "escalation", run_id: runId, iter, trigger: "stop-hook" });

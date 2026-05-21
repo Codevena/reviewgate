@@ -1,6 +1,6 @@
 // tests/unit/loop-driver.test.ts
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { AuditLogger } from "../../src/audit/logger.ts";
@@ -328,6 +328,68 @@ describe("LoopDriver", () => {
     // It is bounded: the dirty flag was consumed, so the re-stop allows.
     const second = await driver.run();
     expect(second.kind).toBe("allow_stop");
+  });
+
+  it("the escalation report includes the last iteration's findings + severity counts from pending.json", async () => {
+    // Bug: ESCALATION.md's "Final findings" section was always empty (topFindings
+    // hardcoded []) and the per-iteration CRIT/WARN columns always 0. Populate them
+    // from the last iteration's pending.json so the report is useful standalone.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQESCREP");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["s1"], ["s1"], ["s1"]],
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-002",
+            signature: "s1",
+            severity: "CRITICAL",
+            category: "quality",
+            rule_id: "magic-number",
+            file: "src/lib/quiz-mode.ts",
+            line_start: 248,
+            line_end: 248,
+            message: "Hardcoded magic number 7200000",
+            details: "use a named constant",
+            reviewer: { provider: "codex", model: "gpt-5.4", persona: "security" },
+            confidence: 0.97,
+            consensus: "unanimous",
+            confirmed_by: ["codex", "gemini"],
+          },
+        ],
+        counts: { critical: 1, warn: 0, info: 0 },
+      }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const md = readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8");
+    expect(md).toContain("Hardcoded magic number 7200000"); // findings populated
+    expect(md).toContain("magic-number");
+    expect(md).toContain("| 3    | FAIL    | 1    |"); // last iter CRIT = 1, not 0
   });
 
   it("PASS re-arms the budget (iteration resets to 0) so the next batch is reviewed", async () => {
