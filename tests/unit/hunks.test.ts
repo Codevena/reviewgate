@@ -63,6 +63,25 @@ describe("parseChangedRanges", () => {
   it("parses concatenated diff streams", () => {
     expect(parseChangedRanges(`${MODIFY}\n${NEWFILE}`).size).toBe(2);
   });
+  it("does NOT treat an added content line starting with +++ as a file header", () => {
+    const TRICKY = [
+      "diff --git a/real.ts b/real.ts",
+      "--- a/real.ts",
+      "+++ b/real.ts",
+      "@@ -10,2 +10,3 @@",
+      " ctx",
+      "+++ this looks like a header but is added content",
+      " ctx",
+      "@@ -40,0 +50,1 @@",
+      "+later",
+    ].join("\n");
+    const m = parseChangedRanges(TRICKY);
+    expect(m.size).toBe(1);
+    expect(m.get("real.ts")).toEqual([
+      [10, 13],
+      [50, 51],
+    ]);
+  });
 });
 
 describe("rangeOverlapsChanged", () => {

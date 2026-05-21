@@ -22,14 +22,27 @@ function plusPath(line: string): string {
 export function parseChangedRanges(diff: string): Map<string, Range[]> {
   const out = new Map<string, Range[]>();
   let currentFile: string | null = null;
+  // Diff-state aware: a `+++ ` line is a FILE HEADER only in the per-file header
+  // section (after a `diff ` line, before the first `@@`). Inside a hunk body an
+  // added line whose content begins with `++` also renders as `+++ …`; without
+  // this gate it would be mis-read as a header and mis-attribute later hunks.
+  let inHunk = false;
   for (const line of diff.split("\n")) {
-    if (line.startsWith("+++ ")) {
+    if (line.startsWith("diff ")) {
+      // New file header section (git diff --git / --no-index both emit this).
+      currentFile = null;
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk && line.startsWith("+++ ")) {
       const p = plusPath(line);
       currentFile = p === "/dev/null" ? null : p; // deleted file → no new-side
       if (currentFile && !out.has(currentFile)) out.set(currentFile, []);
       continue;
     }
-    if (line.startsWith("@@") && currentFile) {
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      if (!currentFile) continue;
       // @@ -a,b +c,d @@ — new-file changed lines = [c, c+d); d omitted → 1.
       const m = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
       if (!m) continue;
