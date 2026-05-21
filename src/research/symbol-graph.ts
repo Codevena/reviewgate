@@ -46,7 +46,9 @@ function parserInitOptions(): { locateFile: (scriptName: string) => string } | u
   };
 }
 
-async function getLanguage(wasmFile: string): Promise<LoadedLanguage | null> {
+// Exported so other research modules (e.g. imports.ts) reuse the SAME parser
+// init + language cache rather than re-initialising tree-sitter differently.
+export async function getLanguage(wasmFile: string): Promise<LoadedLanguage | null> {
   const path = resolveGrammarWasm(wasmFile);
   if (!path) return null;
   const cached = langCache.get(wasmFile);
