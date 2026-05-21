@@ -161,19 +161,13 @@ export class Orchestrator {
     const start = Date.now();
     const repo = this.input.repoRoot;
 
-    if (this.input.sandboxMode !== "off") {
-      await this.writeReport(opts, start, [], [], "ERROR");
-      return {
-        verdict: "ERROR",
-        costUsd: 0,
-        durationMs: Date.now() - start,
-        signaturesThisIter: [],
-      };
-    }
-
     // --- M5 Part B1 — FP-ledger learn (opt-in, non-blocking): fold the previous
     // iteration's reviewer_was_wrong rejections into the signature ledger BEFORE
-    // this run's panel/aggregate, so a freshly-learned FP can demote this run. ---
+    // this run's panel/aggregate, so a freshly-learned FP can demote this run.
+    // Runs ahead of the sandbox-mode early return: that path overwrites
+    // pending.json with an empty ERROR report, which would destroy the prior
+    // report learnFromDecisions reads to map rejected finding ids → signatures,
+    // making the rejected FP unrecoverable on later runs. ---
     const fpCfg = this.input.config.phases.fpLedger;
     const fpStore = fpCfg?.enabled ? new FpLedgerStore(repo) : null;
     if (fpStore) {
@@ -184,6 +178,16 @@ export class Orchestrator {
         // non-blocking — a ledger error must never fail the gate.
         .then(() => fpStore.decayPass(nowIso))
         .catch(() => undefined);
+    }
+
+    if (this.input.sandboxMode !== "off") {
+      await this.writeReport(opts, start, [], [], "ERROR");
+      return {
+        verdict: "ERROR",
+        costUsd: 0,
+        durationMs: Date.now() - start,
+        signaturesThisIter: [],
+      };
     }
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---
