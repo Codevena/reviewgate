@@ -11,9 +11,20 @@ export const BrainEntryType = z.enum([
 export const BrainEntryStatus = z.enum(["candidate", "active", "stale", "archived"]);
 export type BrainEntryStatus = z.infer<typeof BrainEntryStatus>;
 
+export const EvidenceKind = z.enum([
+  "reviewer-finding",
+  "web-fetch",
+  "deterministic",
+  "reviewer-observation",
+]);
+// Single source of truth for valid evidence kinds — consumers (curator
+// normalization, orchestrator proposal collection) import this Set instead of
+// re-listing the literals, so adding a kind to the enum can't silently diverge.
+export const VALID_EVIDENCE_KINDS: ReadonlySet<string> = new Set(EvidenceKind.options);
+
 export const EvidenceItemSchema = z
   .object({
-    kind: z.enum(["reviewer-finding", "web-fetch", "deterministic", "reviewer-observation"]),
+    kind: EvidenceKind,
     source_url: z.string().url().optional(),
     body_sha256: z.string().length(64).optional(),
     fetched_at: z.string().optional(),

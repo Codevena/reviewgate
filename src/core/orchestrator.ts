@@ -14,7 +14,7 @@ import { loadConventions } from "../research/conventions.ts";
 import { computeDiffFacts } from "../research/diff-facts.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
-import type { MemoryProposal } from "../schemas/brain.ts";
+import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
@@ -104,6 +104,43 @@ const PERSONA_REAFFIRM: Record<string, string> = {
 const DEFAULT_REAFFIRM = PERSONA_REAFFIRM.security as string;
 
 const RG_VERSION = "0.1.0-m1";
+
+type RawEvidenceItem = {
+  kind: string;
+  source_url?: string | null;
+  snippet?: string | null;
+  reviewer_id?: string | null;
+  from_diff?: { file: string; line_start: number; line_end: number } | null;
+};
+
+// Build a proposal's evidence, ALWAYS stamping the EMITTING run + reviewer
+// (anti-collusion: whatever reviewer_id the LLM claimed is discarded). Items with
+// an unusable `kind` are dropped here. When that leaves NO usable evidence (the
+// reviewer proposed a memory with none, or only invalid items), synthesize a
+// single reviewer-observation so the proposal survives the curator's
+// evidence.min(1) gate and still counts as exactly ONE provider's voice toward
+// cross-provider quorum. The synthesized item is intentionally NOT from_diff —
+// it's general knowledge, not the stricter diff-derived quorum tier.
+export function buildProposalEvidence(
+  rawEvidence: RawEvidenceItem[] | undefined,
+  runId: string,
+  reviewerId: string,
+): MemoryProposal["evidence"] {
+  const mapped = (Array.isArray(rawEvidence) ? rawEvidence : [])
+    .filter((ev) => VALID_EVIDENCE_KINDS.has(ev.kind))
+    .map((ev) => ({
+      kind: ev.kind as MemoryProposal["evidence"][number]["kind"],
+      run_id: runId,
+      reviewer_id: reviewerId,
+      ...(ev.source_url != null ? { source_url: ev.source_url } : {}),
+      ...(ev.snippet != null ? { snippet: ev.snippet } : {}),
+      ...(ev.from_diff != null ? { from_diff: ev.from_diff } : {}),
+    })) as MemoryProposal["evidence"];
+  if (mapped.length === 0) {
+    return [{ kind: "reviewer-observation", run_id: runId, reviewer_id: reviewerId }];
+  }
+  return mapped;
+}
 
 interface ReviewerRun {
   res: ReviewResult;
@@ -318,15 +355,7 @@ export class Orchestrator {
             body: raw.body,
             confidence: raw.confidence,
             tags: Array.isArray(raw.tags) ? raw.tags : [],
-            evidence: (Array.isArray(raw.evidence) ? raw.evidence : []).map((ev) => ({
-              kind: ev.kind as MemoryProposal["evidence"][number]["kind"],
-              // Trusted-provider signal: the EMITTING adapter, never the LLM text.
-              run_id: opts.runId,
-              reviewer_id: run.res.reviewerId,
-              ...(ev.source_url != null ? { source_url: ev.source_url } : {}),
-              ...(ev.snippet != null ? { snippet: ev.snippet } : {}),
-              ...(ev.from_diff != null ? { from_diff: ev.from_diff } : {}),
-            })) as MemoryProposal["evidence"],
+            evidence: buildProposalEvidence(raw.evidence, opts.runId, run.res.reviewerId),
           });
         }
       }

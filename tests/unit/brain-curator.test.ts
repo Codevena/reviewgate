@@ -167,8 +167,50 @@ describe("runCurator", () => {
     expect(res.rejected).toBe(1);
   });
 
-  it("requires doubled quorum for diff-derived proposals", async () => {
+  it("diff-derived requires a STRICTER provider quorum (≥3 distinct) — 2 providers is rejected", async () => {
+    // Diff-derived knowledge is more speculative, so it needs an extra provider
+    // vs general knowledge (≥3 distinct vs ≥2). 3 reviewer items but only 2
+    // distinct providers (codex + gemini) → still rejected.
     const repo = mkdtempSync(join(tmpdir(), "rg-cur6-"));
+    const store = new BrainStore(repo);
+    const diffDerived = p({
+      evidence: [
+        {
+          kind: "reviewer-observation",
+          run_id: "r",
+          reviewer_id: "codex-security",
+          from_diff: { file: "a.ts", line_start: 1, line_end: 2 },
+        },
+        {
+          kind: "reviewer-observation",
+          run_id: "r",
+          reviewer_id: "codex-architecture",
+          from_diff: { file: "a.ts", line_start: 1, line_end: 2 },
+        },
+        {
+          kind: "reviewer-observation",
+          run_id: "r",
+          reviewer_id: "gemini-arch",
+          from_diff: { file: "a.ts", line_start: 1, line_end: 2 },
+        },
+      ],
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [diffDerived],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "t",
+    });
+    expect(res.promoted).toBe(0); // only 2 distinct providers < diff-derived's ≥3
+  });
+
+  it("promotes a diff-derived proposal backed by ≥3 DISTINCT providers (panel-relative quorum)", async () => {
+    // Pre-fix this needed ≥6 reviewer evidence items — unreachable with a 4-reviewer
+    // panel and no web-fetch, so diff-derived memories could NEVER promote. The
+    // panel-relative rule requires ≥3 distinct providers instead.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur6b-"));
     const store = new BrainStore(repo);
     const diffDerived = p({
       evidence: [
@@ -187,7 +229,7 @@ describe("runCurator", () => {
         {
           kind: "reviewer-observation",
           run_id: "r",
-          reviewer_id: "claude-x",
+          reviewer_id: "claude-code-adversarial",
           from_diff: { file: "a.ts", line_start: 1, line_end: 2 },
         },
       ],
@@ -200,7 +242,7 @@ describe("runCurator", () => {
       embedder: fakeEmbedder([1, 0]),
       nowIso: "t",
     });
-    expect(res.promoted).toBe(0); // 3 < doubled threshold (6)
+    expect(res.promoted).toBe(1); // 3 distinct providers meets diff-derived quorum
   });
 
   it("GROUPS similar single-provider proposals across reviewers → reaches cross-provider quorum", async () => {
@@ -259,6 +301,43 @@ describe("runCurator", () => {
       nowIso: "t",
     });
     expect(res.promoted).toBe(0);
+  });
+
+  it("groups paraphrased proposals at cosine ~0.80 (≥ GROUP_THRESHOLD) → reaches cross-provider quorum", async () => {
+    // The same convention worded differently by two providers embeds to similar
+    // (not identical) vectors. With the old 0.85 group threshold these paraphrases
+    // stayed separate single-provider singletons and never reached quorum; at 0.78
+    // they cluster (cosine 0.80) → merged evidence spans 2 providers → promoted.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-para-"));
+    const store = new BrainStore(repo);
+    // a=[1,0], b=[0.8,0.6] → cosine 0.80 (both unit vectors): between 0.78 and 0.85.
+    const embedder: Embedder = {
+      embed: async (t) => t.map((s) => (s.startsWith("conv-a") ? [1, 0] : [0.8, 0.6])),
+    };
+    const codexProp = p({
+      title: "conv-a phrasing",
+      evidence: [
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "codex-security" },
+      ],
+    });
+    const geminiProp = p({
+      title: "conv-b phrasing",
+      evidence: [
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "gemini-architecture" },
+        { kind: "reviewer-observation", run_id: "r", reviewer_id: "gemini-architecture" },
+      ],
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "r",
+      proposals: [codexProp, geminiProp],
+      store,
+      embedder,
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    expect(res.promoted).toBe(1); // clustered at 0.80 → 4 items / 2 providers
+    expect((await store.snapshot()).entries.length).toBe(1);
   });
 
   it("counts a single web-fetch item as quorum (deterministic-source path)", async () => {

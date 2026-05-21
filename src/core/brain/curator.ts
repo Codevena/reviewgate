@@ -6,18 +6,11 @@ import {
   type EvidenceItem,
   type MemoryProposal,
   MemoryProposalSchema,
+  VALID_EVIDENCE_KINDS,
 } from "../../schemas/brain.ts";
 import { curatorDecisionsPath } from "../../utils/paths.ts";
 import { type Embedder, cosineSimilarity } from "./embeddings.ts";
 import type { BrainStore } from "./store.ts";
-
-// Valid evidence kinds — mirrors EvidenceItemSchema's enum.
-const VALID_EVIDENCE_KINDS = new Set([
-  "reviewer-finding",
-  "web-fetch",
-  "deterministic",
-  "reviewer-observation",
-]);
 
 // Valid BrainEntryType values — mirrors BrainEntryType enum.
 const VALID_BRAIN_ENTRY_TYPES = new Set([
@@ -90,7 +83,13 @@ export function normalizeProposal(p: unknown): MemoryProposal | null {
 }
 
 const DEDUP_THRESHOLD = 0.85;
-const GROUP_THRESHOLD = 0.85;
+// Looser than DEDUP: paraphrases of the SAME convention from different reviewers
+// embed to similar-but-not-identical vectors. At 0.85 they stayed separate
+// single-provider singletons and never reached cross-provider quorum; 0.78 lets
+// genuine paraphrases cluster while still separating distinct concepts. (Dedup
+// vs EXISTING brain entries stays strict at 0.85 to avoid collapsing distinct
+// memories.)
+const GROUP_THRESHOLD = 0.78;
 const MAX_PROMOTIONS = 3;
 
 // Known provider ids, longest first so longest-prefix matching is deterministic
@@ -138,7 +137,12 @@ function providersIn(evidence: EvidenceItem[]): Set<string> {
 
 // Source quorum (rule 2/6) over a MERGED evidence set: ≥1 web-fetch item, OR
 // ≥3 reviewer evidence items spanning ≥2 DISTINCT providers. Diff-derived groups
-// require double (≥2 web-fetch, ≥6 reviewer items) per rule 6.
+// are more speculative, so they need a STRICTER provider quorum — an extra
+// distinct provider (≥3 vs ≥2) rather than ≥2. This is panel-relative and
+// reachable: the old rule doubled the raw ITEM count (≥6), which a ≤5-reviewer
+// panel emitting ~1 evidence item per proposal can never meet — and with
+// web-fetch off, diff-derived memories could never promote at all. Web path
+// (≥1 / ≥2 web-fetch) unchanged.
 function quorumOk(evidence: EvidenceItem[], doubled: boolean): boolean {
   const web = evidence.filter((e) => e.kind === "web-fetch").length;
   const reviewerEv = evidence.filter(
@@ -146,9 +150,9 @@ function quorumOk(evidence: EvidenceItem[], doubled: boolean): boolean {
   ).length;
   const provs = providersIn(evidence).size;
   const webNeed = doubled ? 2 : 1;
-  const revNeed = doubled ? 6 : 3;
+  const provNeed = doubled ? 3 : 2;
   if (web >= webNeed) return true;
-  return reviewerEv >= revNeed && provs >= 2;
+  return reviewerEv >= 3 && provs >= provNeed;
 }
 
 function isDiffDerived(evidence: EvidenceItem[]): boolean {
