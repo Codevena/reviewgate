@@ -23,26 +23,31 @@ The orchestrator stays audit-logger-free (it returns data; the LoopDriver logs �
     counts: { critical: int; warn: int; info: int };   // post-aggregation severities
     cost_usd: number;
     duration_ms: number;
-    escalated: boolean;
-    demoted: int;                                        // findings demoted to INFO (scopeToDiff + fp-ledger)
-    signatures: string[];                                // blocking findings' signatures, capped (e.g. ≤20) — feeds top-recurring
+    demoted: int;                                        // findings demoted to INFO (scope_demoted OR fp_ledger_match OR critic likely_fp)
+    signatures: string[];                                // blocking findings' signatures, capped at 20 — feeds top-recurring
     reviewers: { provider: ProviderId; persona: string; status: ReviewStatus;
                  findings: int; demoted: int; cost_usd: number; duration_ms: int }[];
   }
   ```
-  Optional + backward-compatible (existing events omit it). `run.complete` is already in the `EventType` enum.
+  Optional + backward-compatible (existing events omit it). `run.complete` is already in `EventType`. **No `escalated` field** — escalation is not knowable at iteration time (the LoopDriver decides escalation as a precondition on later stops), so escalation rate is derived in stats from the existing `escalation` audit events, not from `run_summary`. **Bounding (hash-chain stability):** `signatures` capped at 20; `reviewers` is bounded by the configured panel size; provider/persona/status are short enums/identifiers — so a `run.complete` line stays small.
 
-- **`src/core/orchestrator.ts` (modify).** Extend `IterationResult` with `summary: RunSummary` (the shape above), populated from data the pipeline already has: `agg.verdict`, `agg.counts`, the summed `costUsd`/`durationMs`, the per-reviewer `ReviewerRun`s (provider/persona/status/usage/duration + how many of their findings survived vs were demoted), the count of demoted findings, and the escalation flag. No new computation — just surfacing what `runIteration` already computes. The early-return paths (triage skip, cache hit, sandbox refuse, reviewer-error ERROR) each return a `summary` with the right verdict and empty/partial reviewer list.
+- **`src/core/orchestrator.ts` (modify).** Extend `IterationResult` with `summary: RunSummary`. On the **normal path** it is built AFTER `aggregate()` from `agg` (`{ verdict, dedupedFindings, counts }`) + the `settled` reviewer runs:
+  - `verdict`/`counts` ← `agg`; `cost_usd`/`duration_ms` ← the existing summed values.
+  - `demoted` (total) ← count of `agg.dedupedFindings` carrying ANY demotion marker: `scope_demoted === true` OR `fp_ledger_match?.suppressed === true` OR `critic_verdict === "likely_fp"`. (The orchestrator today counts only the critic case — broaden it.)
+  - `signatures` ← the blocking (CRITICAL/WARN) findings' `signature`s, capped at 20.
+  - **per-reviewer** ← one entry per `settled` `ReviewerRun` (provider, persona, `res.status`, `res.usage.costUsd`, `durationMs`). `findings` = number of `agg.dedupedFindings` that the provider contributed, i.e. the provider appears as the representative `reviewer.provider` OR in `members[].reviewer.provider` (a merged finding counts toward each contributing provider). `demoted` = that subset which now carries a demotion marker.
 
-- **`src/core/loop-driver.ts` (modify).** After `orchestrator.runIteration(...)`, emit one `run.complete` audit event: `audit.append({ event: "run.complete", run_id, iter, trigger, run_summary: result.summary })`. Best-effort `.catch` (like the existing `gate.decision` append) — never breaks the gate. Emitted once per iteration, regardless of allow/block.
+  **Early-return paths each return an explicit, partial `summary`** (fields that didn't happen are zero/empty, not faked): triage-skip → `verdict:"PASS"`, reviewers `[]`, cost 0, counts `{0,0,0}`, signatures `[]`; cache-hit → cached `verdict`+`counts`, reviewers `[]`, cost 0, signatures `[]` (the cache stores only verdict+counts); sandbox-refuse → `verdict:"ERROR"`, reviewers `[]`; reviewer-error → `verdict:"ERROR"`, reviewers from the `settled` runs (status/cost/duration; findings 0), counts `{0,0,0}`. stats treats empty-reviewer/zero-cost runs honestly (a cached or skipped run contributes a verdict but no cost/reviewer rows).
 
-- **`src/stats/load.ts` — `loadRunSummaries(repoRoot, { since?, last? })`.** Walk `.reviewgate/audit/**/*.jsonl` (date-partitioned), parse JSONL (skip malformed lines), keep `run.complete` events that carry `run_summary`, sort by `ts`. `since` (ISO date) prunes by the date-partition path + `ts`; `last` (int) keeps the most recent N. Returns `{ ts, run_id, iter, summary }[]`.
+- **`src/core/loop-driver.ts` (modify).** ONLY on the path that actually calls `orchestrator.runIteration(...)` (NOT the early exits — no-dirty-flag allow, nor the escalation-precondition paths `cost-cap`/`max-iterations`/`stuck-signatures`/`reject-rate-high`/`decisions-unaddressed` which never run an iteration), emit one `run.complete`: `audit.append({ event: "run.complete", run_id, iter, trigger, run_summary: result.summary })`. Best-effort `.catch` (like the existing `gate.decision` append) — never breaks the gate. Escalations continue to be recorded by the existing `escalation` event (emitted on those precondition paths), which stats consumes separately.
 
-- **`src/stats/aggregate.ts` — `aggregate(runs, fpSnapshot, brainSnapshot): StatsReport`.** Pure function → a typed report:
-  - **Verdict & activity:** run count, verdict distribution (counts + %), escalation rate, first/last run ts.
+- **`src/stats/load.ts` — `loadAuditWindow(repoRoot, { since?, last? })`.** Walk `.reviewgate/audit/**/*.jsonl` (date-partitioned), parse JSONL (skip malformed lines), sort by `ts`, and return BOTH the `run.complete` runs (`{ ts, run_id, iter, summary }[]`, filtered to those carrying `run_summary`) AND the count of `escalation` events in the window. `since` (ISO date) prunes by the date-partition path + `ts`; `last` (int) keeps the most recent N **runs** (escalation events are counted within the same `since`/post-`last` window).
+
+- **`src/stats/aggregate.ts` — `aggregate(runs, escalationCount, fpSnapshot, brainSnapshot): StatsReport`.** Pure function → a typed report:
+  - **Verdict & activity:** run count, verdict distribution (counts + %), **escalation rate = `escalationCount / runs.length`** (from the separate `escalation` events, NOT `run_summary`), first/last run ts.
   - **Cost:** total, avg/run, per-provider (summed from `reviewers[].cost_usd`), and a small per-day series.
-  - **Reviewer performance:** per provider — runs participated, total findings contributed, demote rate (`demoted/findings`), error+timeout rate (from `status`), avg `duration_ms`, total cost, and **FP-confirmation rate** from `fpSnapshot` (`rejects[].provider` ÷ that provider's findings).
-  - **Findings & learn-state:** top recurring finding signatures (from the capped `run_summary.signatures`), overall demote rate, FP-ledger summary (active/sticky/candidate counts), brain summary (entries by status/type).
+  - **Reviewer performance** (windowed, from `run_summary.reviewers`): per provider — runs participated, total findings contributed, **demote rate** (`Σdemoted / Σfindings`), error+timeout rate (from `status`), avg `duration_ms`, total cost.
+  - **Findings & learn-state:** top recurring finding signatures (from the capped `run_summary.signatures`); overall demote rate; FP-ledger summary (active/sticky/candidate counts) **and per-provider confirmed-FP reject counts** (all-time, from `fpSnapshot.rejects[].provider`); brain summary (entries by status/type). Per-provider confirmed-FP is reported as a COUNT in this learn-state section (all-time) — deliberately NOT divided by windowed findings, to avoid mixing an all-time numerator with a windowed denominator.
 
 - **`src/stats/render.ts` — `renderStats(report): string`.** Human-readable sections (mirrors `doctor` / `fp audit` output style). Empty data → a clear "no review history yet — run a review first" line.
 
@@ -55,8 +60,8 @@ review run → orchestrator returns IterationResult{ summary } → LoopDriver em
             run.complete{ run_summary } into .reviewgate/audit/<date>/<run>.jsonl
 
 reviewgate stats [--since|--last|--json]
-  → loadRunSummaries(window) + FpLedger snapshot + Brain snapshot
-  → aggregate() → StatsReport
+  → loadAuditWindow(window) → { runs, escalationCount }  + FpLedger snapshot + Brain snapshot
+  → aggregate(runs, escalationCount, fp, brain) → StatsReport
   → renderStats()  (or JSON.stringify)
 ```
 
@@ -67,7 +72,7 @@ reviewgate stats [--since|--last|--json]
 ## Testing
 
 - **Unit:** `run_summary` schema (valid + optional); `aggregate` (verdict distribution + %, cost totals/per-provider, reviewer demote rate, FP-confirmation rate from a seeded fp snapshot, `since`/`last` filtering, empty input); `render` (sections present; empty → "no data"); `load` (date-partition walk, malformed-line skip, run.complete-only filter).
-- **Integration:** drive one review **via a cassette** (deterministic, no LLM) through the LoopDriver/orchestrator → assert a `run.complete` with a correct `run_summary` is appended → `loadRunSummaries` + `aggregate` produce the expected report. (Reuses the cassette feature for a hermetic end-to-end stats test.)
+- **Integration:** drive one review **via a cassette** (deterministic, no LLM) through the LoopDriver/orchestrator → assert a `run.complete` with a correct `run_summary` is appended (verdict, per-reviewer findings/demoted derived from the deduped findings) → `loadAuditWindow` + `aggregate` produce the expected report. (Reuses the cassette feature for a hermetic end-to-end stats test.)
 - **Compiled-binary smoke:** seed a `.reviewgate/audit/` with a couple of `run.complete` lines → `dist/reviewgate stats` renders + `--json` parses, in the compiled binary.
 
 ## Scope / non-goals
