@@ -5,6 +5,7 @@ import type { ReviewgateConfig } from "../config/define-config.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
+import { maybeWriteWeeklySnapshot } from "../stats/snapshot.ts";
 import { decisionsDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import type { Orchestrator } from "./orchestrator.ts";
@@ -328,6 +329,7 @@ export class LoopDriver {
       }),
     );
 
+    let decision: LoopDecision;
     if (result.verdict === "PASS" || result.verdict === "SOFT-PASS") {
       try {
         unlinkSync(dirtyFlagPath(this.i.repoRoot));
@@ -348,34 +350,42 @@ export class LoopDriver {
       // flag is already deleted above, so the agent's re-stop hits the "no
       // changes" branch and allows the stop — no loop. Default off (silent pass)
       // to keep the happy path lean.
-      if (this.i.config.loop.acknowledgePass) {
-        return {
-          kind: "block",
-          reason: `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
-        };
-      }
-      return {
-        kind: "allow_stop",
-        reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
-      };
-    }
-
-    // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
-    // Block — Reviewgate must never pass a turn it could not actually review —
-    // but with a reason that points at the reviewer, not at fixing findings.
-    // Repeated errors increment the iteration and eventually hit the iter-cap
-    // escalation, so this cannot loop forever.
-    if (result.verdict === "ERROR") {
-      return {
+      decision = this.i.config.loop.acknowledgePass
+        ? {
+            kind: "block",
+            reason: `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
+          }
+        : {
+            kind: "allow_stop",
+            reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
+          };
+    } else if (result.verdict === "ERROR") {
+      // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
+      // Block — Reviewgate must never pass a turn it could not actually review —
+      // but with a reason that points at the reviewer, not at fixing findings.
+      // Repeated errors increment the iteration and eventually hit the iter-cap
+      // escalation, so this cannot loop forever.
+      decision = {
         kind: "block",
         reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}). The review could not complete. Run \`reviewgate doctor\` to diagnose, fix the reviewer, then continue. Reviewgate will not open the gate on a turn it could not review.`,
       };
+    } else {
+      decision = {
+        kind: "block",
+        reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations} · ${result.signaturesThisIter.length} finding(s). See .reviewgate/pending.md · record per-finding decisions in .reviewgate/decisions/${nextIter}.jsonl.`,
+      };
     }
 
-    return {
-      kind: "block",
-      reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations} · ${result.signaturesThisIter.length} finding(s). See .reviewgate/pending.md · record per-finding decisions in .reviewgate/decisions/${nextIter}.jsonl.`,
-    };
+    // Last trailing side-effect: opt-in weekly snapshot. State, dirty-flag, and
+    // gate.decision are already committed, so an interruption here cannot desync
+    // audit vs gate state. Fully isolated (own try/catch) — never affects the verdict.
+    try {
+      await maybeWriteWeeklySnapshot(this.i.repoRoot, this.i.config);
+    } catch {
+      /* best-effort: a snapshot failure must never affect the gate */
+    }
+
+    return decision;
   }
 
   // Escalate, then decide whether to BLOCK (to surface it to the agent) or
