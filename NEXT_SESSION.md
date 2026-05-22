@@ -1,6 +1,31 @@
-# Reviewgate — Session Handoff (2026-05-22, session 4)
+# Reviewgate — Session Handoff (2026-05-22, session 5)
 
-## ⭐ SESSION 4 (2026-05-22): M6 Context7 docs injection — COMPLETE & MERGED (local)
+## ⭐ SESSION 5 (2026-05-22): Cassette-Replay + `reviewgate stats` — COMPLETE & MERGED & PUSHED
+**origin/master = master HEAD `27bb89d`** (M6 + Cassette + Stats all on origin; `git push` done per user OK). 538 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt. Working tree: only the pre-existing `M CLAUDE.md`.
+
+**Roadmap progress this session:** M6 (session 4, pushed) · **Cassette-Replay** (this session) · **`reviewgate stats`** (this session). Remaining roadmap: **Weekly Reports (#3, builds on the stats aggregation)** · native sandbox (blocked — `@anthropic-ai/sandbox-runtime` unpublished).
+
+### Live-e2e (#1, observation only — no code)
+Controlled scratch-repo runs (codex+claude-code) confirmed **diff-scoping works at the reviewer level**: the panel no longer FPs on unchanged/out-of-diff code (a planted SQLi was anchored to the changed line; a planted unrelated `eval()` was ignored). So Phase-A's aggregator demote (the safety net) rarely fires live — and FP-ledger/Brain live-e2e are hard to provoke with well-behaved reviewers → **this motivated Cassette-Replay** (deterministic recorded reviewers). See [[project-reviewer-fp-unchanged-code]] (updated).
+
+### Cassette-Replay (#4) — `feat/cassette-replay`, FF-merged
+VCR-style record/replay at the `ProviderAdapter` seam. `RecordingAdapter`/`ReplayAdapter` (decorators), JSONL append-only store, `REVIEWGATE_CASSETTE=record|replay:<path>` env, content-keyed `embed` + FIFO `review`/`complete` (keyed by `reviewerId`, filtered by explicit `provider` field), strict-drift, `buildAdapters` builds the FULL consumed provider set (fixed a latent gate gap where brain embeddings/curator adapters only existed if also reviewers). Spec `docs/superpowers/specs/2026-05-22-reviewgate-cassette-replay-design.md` (3 Codex design rounds), plan `…/plans/2026-05-22-reviewgate-cassette-replay.md`. **Now unblocks deterministic FP-ledger/Brain/Phase-A pipeline tests.** DoD: Codex took 4 rounds (complete()-always-present broke brain feature-detection; cache short-circuit defeated record/replay; forced-persona reviewerId collapse; schema didn't validate result-vs-method) → PASS. Compiled-binary verified (0.2s replay drove a unique-marker verdict).
+
+### `reviewgate stats` (#2) — `feat/stats`, FF-merged
+Records a rich `run.complete` audit event per review (`run_summary`: verdict, source panel/cache/skipped, counts, cost, per-PROVIDER runs/findings/demoted/errors/cost/duration [representative-only attribution], demoted total, capped signatures) via a pure `buildRunSummary` + `IterationResult.summary` + LoopDriver emit. New `reviewgate stats [--since|--last|--json]` aggregates the audit log + FP-ledger/brain snapshots (`src/stats/{load,aggregate,render}`). Escalation rate from existing `escalation` events; panel-only denominators. Also: thrown reviewer adapters now captured as error runs (fail-closed intact). Spec `…/specs/2026-05-22-reviewgate-stats-design.md` (6 Codex design rounds — sparse-audit reframing, escalation-not-in-summary, provider-vs-persona attribution), plan `…/plans/2026-05-22-reviewgate-stats.md`. DoD: Codex 1 round (`--last` escalation-window >100% bug) → Codex+Claude PASS. Compiled-binary verified (rendered a seeded audit log + `--json`).
+- **Known-limitation / follow-up (Claude INFO, advisory):** rendered `cost.total` includes critic cost but the per-provider lines don't, so they don't sum — add a "critic: $X" render line (needs `aggregate` to expose critic cost separately) if it bothers anyone.
+
+### Reusable how-tos written to memory this session
+[[reference-context7-http-api]], [[reference-gate-stdin-dirtyflag]]. NEW idioms worth knowing: cassettes give deterministic reviewer outputs for tests; `reviewgate stats` reads the date-partitioned `.reviewgate/audit/`.
+
+### ➡️ NEXT SESSION
+- **#3 Weekly Reports** is the natural next milestone — it builds directly on `src/stats/aggregate.ts` (same data, periodic output/cadence). Brainstorm → spec → plan → subagent-driven.
+- Optional polish: the cassette audit-logger follow-up (M6) + the stats critic-cost render line.
+- flashbuddy has `contextDocs` + `docReview` enabled in its (uncommitted) config; `CONTEXT7_API_KEY` in its `.env`.
+
+---
+
+## SESSION 4 (2026-05-22): M6 Context7 docs injection — COMPLETE & MERGED (local→pushed)
 **master HEAD `9eb5767`** (+12 M6 commits, FF-merge off local master, **pushed to origin per user OK at end of session 4**). 439 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt (`dist/reviewgate`).
 - Executed `docs/superpowers/plans/2026-05-22-reviewgate-context7-docs.md` (executing-plans, worktree-isolated, 8 TDD tasks). Opt-in `phases.contextDocs` (default null/off): detect changed-file imports (tree-sitter, reuses symbol-graph `getLanguage`) → version (package.json + bun.lock JSONC) → fetch current docs from Context7 HTTP API (NEW SSRF-hardened `safeApiFetch`, NOT brain's safeFetch) → TTL'd per-lib cache → UNTRUSTED-labelled/fenced/budgeted section in `research.md` → every reviewer sees it. Docs-corpus identity feeds `computeBehaviorHash` PRE-CACHE (docs change invalidates cached verdict — the B2a cache-bug class). Best-effort/non-blocking (30s overall deadline + bounded DNS).
 - **New files:** `src/research/safe-api-fetch.ts`, `src/research/imports.ts`, `src/cache/docs-cache.ts`, `src/research/context7.ts`. **Modified:** research-writer, sanitizer (exported `neutralizeInjectionMarkers`), behavior-hash (docs segment), define-config, orchestrator, symbol-graph (exported `getLanguage`).
