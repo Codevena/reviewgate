@@ -28,15 +28,20 @@ function hasPartitionBefore(repoRoot: string, since: string): boolean {
   const dir = auditDir(repoRoot);
   if (!existsSync(dir)) return false;
   const sinceDay = since.slice(0, 10); // YYYY-MM-DD
-  for (const y of readdirSync(dir)) {
-    if (!/^\d{4}$/.test(y)) continue;
-    for (const m of readdirSync(join(dir, y))) {
-      if (!/^\d{2}$/.test(m)) continue;
-      for (const d of readdirSync(join(dir, y, m))) {
-        if (!/^\d{2}$/.test(d)) continue;
-        if (`${y}-${m}-${d}` < sinceDay) return true;
+  try {
+    for (const y of readdirSync(dir)) {
+      if (!/^\d{4}$/.test(y)) continue;
+      for (const m of readdirSync(join(dir, y))) {
+        if (!/^\d{2}$/.test(m)) continue;
+        for (const d of readdirSync(join(dir, y, m))) {
+          if (!/^\d{2}$/.test(d)) continue;
+          if (`${y}-${m}-${d}` < sinceDay) return true;
+        }
       }
     }
+  } catch {
+    // tolerate a malformed audit tree (e.g. a stray file where a dir is expected)
+    return false;
   }
   return false;
 }

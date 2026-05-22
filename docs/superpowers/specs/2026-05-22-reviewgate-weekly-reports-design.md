@@ -152,3 +152,7 @@ On the iteration path (the branch that runs `runIteration`; NOT the early allow/
 - `promoted_at` on `BrainEntry` (would make "newly promoted this week" exact) — not this milestone.
 - Durable historical FP/brain snapshots per week — not reconstructable from current schemas; counts/highlights are honestly scoped as generation-time.
 - Native sandbox (blocked — `@anthropic-ai/sandbox-runtime` unpublished).
+
+### Known limitation — partial report is not refreshed by the auto-snapshot
+
+If a user runs `reviewgate report --week <iso>` for the **current, still-in-progress week**, a partial (week-to-date) report is written to `.reviewgate/reports/<iso>.md`. When that week later completes and the auto-snapshot fires (`maybeWriteWeeklySnapshot`), it hits the `existsSync(weekReportPath(...))` short-circuit and treats the file as already written — it does **not** overwrite the stale partial with the final complete version. This is by design (§6.1(a) — any existing `<iso>.md` is treated as authoritative to avoid concurrent-write races). To refresh a partial report once the week has ended, re-run `reviewgate report --week <iso>` explicitly (the CLI path always overwrites).

@@ -32,7 +32,10 @@ export async function maybeWriteWeeklySnapshot(
   const week = lastCompleteWeek(now);
   const iso = formatIsoWeek(week);
 
-  if (existsSync(weekReportPath(repoRoot, iso))) return; // already written
+  // already written. NOTE: this also short-circuits if a user manually rendered
+  // this week via `reviewgate report --week` while it was still in progress — the
+  // partial report is then left as-is (the auto-snapshot does not refresh it).
+  if (existsSync(weekReportPath(repoRoot, iso))) return;
   if (existsSync(emptyMarker(repoRoot, iso))) return; // known zero-run week
   const failed = failedMarker(repoRoot, iso);
   if (existsSync(failed)) {
