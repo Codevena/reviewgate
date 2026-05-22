@@ -1,4 +1,17 @@
-# Reviewgate — Session Handoff (2026-05-21, session 3)
+# Reviewgate — Session Handoff (2026-05-22, session 4)
+
+## ⭐ SESSION 4 (2026-05-22): M6 Context7 docs injection — COMPLETE & MERGED (local)
+**master HEAD `9eb5767`** (+12 M6 commits, FF-merge off local master, **pushed to origin per user OK at end of session 4**). 439 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt (`dist/reviewgate`).
+- Executed `docs/superpowers/plans/2026-05-22-reviewgate-context7-docs.md` (executing-plans, worktree-isolated, 8 TDD tasks). Opt-in `phases.contextDocs` (default null/off): detect changed-file imports (tree-sitter, reuses symbol-graph `getLanguage`) → version (package.json + bun.lock JSONC) → fetch current docs from Context7 HTTP API (NEW SSRF-hardened `safeApiFetch`, NOT brain's safeFetch) → TTL'd per-lib cache → UNTRUSTED-labelled/fenced/budgeted section in `research.md` → every reviewer sees it. Docs-corpus identity feeds `computeBehaviorHash` PRE-CACHE (docs change invalidates cached verdict — the B2a cache-bug class). Best-effort/non-blocking (30s overall deadline + bounded DNS).
+- **New files:** `src/research/safe-api-fetch.ts`, `src/research/imports.ts`, `src/cache/docs-cache.ts`, `src/research/context7.ts`. **Modified:** research-writer, sanitizer (exported `neutralizeInjectionMarkers`), behavior-hash (docs segment), define-config, orchestrator, symbol-graph (exported `getLanguage`).
+- **DoD: Codex Agent A took 4 fix-rounds** (all real: maxBytes truncation→reject + content-length precheck; strict TOTAL budget incl. heading/caveat/note; byte-accurate multibyte truncation; defang textual injection markers via zero-width space; bound DNS + overall docs deadline; read-time TTL policy) → then Codex A + Claude A PASS.
+- **Live-verified (real, not stubs):** MUST-VERIFY against live Context7 (key provided) — `query` param REQUIRED, version-pin `<id>@v<version>`, keyless ok ([[reference-context7-http-api]]); real e2e through the client; **COMPILED-BINARY e2e** (scratch repo gate → tree-sitter detected zod → fetched `/colinhacks/zod@v3.24.2` → research.md section) → no M3-class wasm regression. To drive the gate manually see [[reference-gate-stdin-dirtyflag]].
+- **Deviation (documented):** per-lib outcomes → debug artifact `.reviewgate/cache/docs/last-run.json` (NOT the audit log — orchestrator has no logger, audit schema is hash-chained). Follow-up if wanted: thread the AuditLogger + add a `context_docs.fetch` EventType.
+- **Next:** rest of M6 roadmap (cassette replay / weekly reports / `reviewgate stats` / native sandbox); flashbuddy live-e2e of the docs feature (set `CONTEXT7_API_KEY`, enable `phases.contextDocs`, edit a file importing a lib → reviewer sees current docs).
+
+---
+
+## Session 3 (2026-05-21) — earlier handoff (kept for context)
 
 **Status:** M1–M4 shipped + live-tested. **M5 (FP reduction) — FULLY COMPLETE** (A diff-scoping · B0 merge-provenance · B1 FP-ledger core · B2a proactive few-shot+behavior-hash · B2b FP CLI+reject-rate · B3-core Brain↔Ledger coupling · B3b contradiction-check, all merged). Also this session: gate fail-open FIXED + doctor warning, brain-promotion root cause FIXED, 3 polish items. Remaining: live e2e (blocked only by LLM non-determinism), polish residue.
 **master HEAD:** `e55f221` (local; +any handoff commit). **origin/master pushed to `f3d0038` (M5 A/B0/B1) + then B2a; B2b (7 commits incl. plan) local-only — confirm before pushing.**
@@ -62,9 +75,9 @@ Gate re-armed (T12's escalation reset properly). `brain.json` empty. Working tre
 - DoD for big fixes: TDD → `bun test`/typecheck/lint → Codex+Claude review subagents (`.review/*.md`, PASS=0 CRIT/WARN) → fix → re-review → `rm -rf .review/` → commit → FF-merge → rebuild. **Small fixes: TDD only, no DoD** (user's call this session).
 - Memory dir: `/Users/markus/.claude/projects/-Users-markus-Developer-reviewgate/memory/` (German-speaking senior eng, milestone/subagent workflow, insists on REAL e2e — this session's 6 bugs were all source-mode-invisible, vindicating that). New memories this session: `project_reviewer_fp_unchanged_code`, `reference_compiled_binary_wasm`, `project_brain_never_promotes`.
 
-## ➡️ NEXT SESSION (M6 — ready to execute)
-**Context7 library-docs injection** — design spec + full 8-task TDD plan written, Codex design-reviewed, Context7 HTTP API live-verified:
-- Spec: `docs/superpowers/specs/2026-05-22-reviewgate-context7-docs-design.md`
-- Plan: `docs/superpowers/plans/2026-05-22-reviewgate-context7-docs.md` (safeApiFetch → tree-sitter imports+version → docs-cache → context7 client → research render → config → behavior-hash+wiring → DoD)
-- Opt-in `phases.contextDocs` (default off). Key gotchas baked in: NEW `safeApiFetch` (brain's safeFetch can't do query-params/Bearer), docs are UNTRUSTED (fenced + caveat), docs-corpus identity must feed the review behavior-hash (else cache bypass — the B2a bug class). Task 8 verifies the Context7 API against live before trusting it.
-- Execute with executing-plans or subagent-driven-development from a fresh worktree off master HEAD.
+## ➡️ NEXT SESSION (M6 Context7 docs — DONE; pick the next milestone)
+**M6 Context7 library-docs injection is COMPLETE & MERGED** (see the session-4 block at the top). Spec `docs/superpowers/specs/2026-05-22-reviewgate-context7-docs-design.md`, plan `docs/superpowers/plans/2026-05-22-reviewgate-context7-docs.md` — both fully executed.
+Candidates for the next session:
+- **flashbuddy live-e2e of contextDocs**: set `CONTEXT7_API_KEY`, add `phases.contextDocs:{enabled:true}` to flashbuddy's config, restart, edit a file importing a real lib → confirm the reviewer sees current docs and stale-API FPs drop. (Binary already verified; this is the in-the-wild confirmation.)
+- **Rest of the M6 roadmap**: cassette replay / weekly reports / `reviewgate stats` / native sandbox.
+- **Optional follow-up**: thread the AuditLogger into the Orchestrator + add a `context_docs.fetch` EventType so docs outcomes land in the hash-chained audit log (today they go to the `.reviewgate/cache/docs/last-run.json` debug artifact).
