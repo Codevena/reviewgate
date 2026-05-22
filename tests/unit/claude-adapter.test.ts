@@ -1,6 +1,6 @@
 // tests/unit/claude-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
@@ -86,12 +86,22 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
     Reflect.deleteProperty(process.env, "RG_FAKE_SLOW");
   });
 
-  it("cleans up its temp run dir on success (no rg-cl-cmpl-* leak)", async () => {
-    const cmpl = () => readdirSync(tmpdir()).filter((n) => n.startsWith("rg-cl-cmpl-"));
-    const before = new Set(cmpl());
-    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
-    await adapter.complete("judge this", { model: "m", auth: "oauth" });
-    const leaked = cmpl().filter((n) => !before.has(n));
-    expect(leaked).toEqual([]);
+  it("cleans up its temp run dir on success (no leak)", async () => {
+    // Isolate via a private TMPDIR so concurrent test PROCESSES (which also create
+    // rg-cl-cmpl-* dirs in the shared os.tmpdir()) can't pollute the assertion —
+    // os.tmpdir() honours TMPDIR at call time, and complete() mkdtemps under it.
+    const isolated = mkdtempSync(join(tmpdir(), "rg-cl-tmpbase-"));
+    const prevTmp = process.env.TMPDIR;
+    process.env.TMPDIR = isolated;
+    try {
+      const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+      await adapter.complete("judge this", { model: "m", auth: "oauth" });
+      const leaked = readdirSync(isolated).filter((n) => n.startsWith("rg-cl-cmpl-"));
+      expect(leaked).toEqual([]);
+    } finally {
+      if (prevTmp === undefined) Reflect.deleteProperty(process.env, "TMPDIR");
+      else process.env.TMPDIR = prevTmp;
+      rmSync(isolated, { recursive: true, force: true });
+    }
   });
 });

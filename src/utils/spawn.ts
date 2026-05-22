@@ -31,11 +31,33 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
   return new Promise<SpawnResult>((resolve, reject) => {
     const stdinStream = input.stdinFile ? createReadStream(input.stdinFile) : undefined;
 
+    // `detached: true` puts the child in its OWN process group so a timeout/watchdog
+    // kill can take down the WHOLE tree (the reviewer CLI + any helper grandchildren
+    // it spawned). Killing only the direct child leaves grandchildren that inherited
+    // the stdout pipe alive — they hold the pipe open, so neither "close" fires nor
+    // the host process can exit (the gate would hang past its own timeout).
     const child = nodeSpawn(input.command, input.args, {
       env: input.env,
       cwd: input.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: true,
     }) as ChildProcessByStdio<Writable, Readable, Readable>;
+
+    // Kill the child's entire process group; fall back to the lone child if the
+    // group send fails (e.g. already gone → ESRCH, or no pid).
+    const killTree = (sig: NodeJS.Signals) => {
+      const pid = child.pid;
+      if (pid === undefined) return;
+      try {
+        process.kill(-pid, sig);
+      } catch {
+        try {
+          child.kill(sig);
+        } catch {
+          // already dead
+        }
+      }
+    };
 
     if (stdinStream && child.stdin) {
       stdinStream.pipe(child.stdin);
@@ -70,27 +92,66 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       if (idle > (input.zeroByteWatchdogMs ?? 60_000)) {
         killedByWatchdog = true;
         clearInterval(watchdog);
-        child.kill("SIGKILL");
+        killTree("SIGKILL");
       }
     }, 5_000);
 
     const timeout = setTimeout(() => {
       killedByTimeout = true;
-      child.kill("SIGKILL");
+      killTree("SIGKILL");
     }, input.timeoutMs);
 
-    child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+    // Settle on "close" (NOT "exit"): "exit" can fire while stdout/stderr "data"
+    // events are still in flight, so resolving there lets the caller readFileSync
+    // the capture files before all output is written — under load that yields an
+    // empty/truncated file (a real bug: a reviewer's output could be lost). "close"
+    // fires only after both pipes have drained. Then we wait for the WriteStreams
+    // to flush (end callbacks) before resolving so the files are complete on disk.
+    //
+    // Exception: a SIGKILLed child can leave an orphaned grandchild (e.g. `sleep`)
+    // holding the stdout pipe open, so "close" may never fire after a kill — fall
+    // back to settling shortly after "exit" in that case (don't hang on the orphan).
+    let settled = false;
+    const settle = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
       clearInterval(watchdog);
       clearTimeout(timeout);
-      out.end();
-      err.end();
-      resolve({
-        exitCode: code ?? -1,
-        signal,
-        durationMs: Date.now() - start,
-        killedByWatchdog,
-        killedByTimeout,
-      });
+      // Release our handles on the child's pipes (and unref the child) so an
+      // orphaned grandchild still holding stdout/stderr open cannot keep THIS
+      // process alive — without this the promise resolves but the gate can hang at
+      // exit until the orphan dies (or forever). On the normal path the streams
+      // have already drained (settled from "close"), so destroying is a no-op.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      stdinStream?.destroy();
+      child.unref();
+      let pending = 2;
+      const finishOne = () => {
+        pending -= 1;
+        if (pending === 0) {
+          resolve({
+            exitCode: code ?? -1,
+            signal,
+            durationMs: Date.now() - start,
+            killedByWatchdog,
+            killedByTimeout,
+          });
+        }
+      };
+      out.end(finishOne);
+      err.end(finishOne);
+    };
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => settle(code, signal));
+    child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+      // The process is gone — cancel the kill timers NOW so a still-armed timeout
+      // can't fire after exit and spuriously flag killedByTimeout. Prefer "close"
+      // (full pipe drain), but a backgrounded grandchild can hold stdout/stderr
+      // open so "close" may never come (whether the child exited normally OR was
+      // killed) — settle after a short grace either way to bound the wall time.
+      clearInterval(watchdog);
+      clearTimeout(timeout);
+      setTimeout(() => settle(code, signal), 100);
     });
     child.on("error", reject);
   });
