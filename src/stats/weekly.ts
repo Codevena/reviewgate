@@ -48,6 +48,7 @@ export interface WeeklyBuildArgs {
 }
 
 const HIGHLIGHT_CAP = 20;
+const TOP_COST_PROVIDERS = 3;
 
 function delta(current: number, previous: number): Delta {
   return { current, previous, abs: current - previous };
@@ -125,7 +126,7 @@ export function buildWeeklyReport(
 
   const topCostProviders = Object.entries(current.cost.perProvider)
     .sort(([, a], [, b]) => b - a)
-    .slice(0, 3)
+    .slice(0, TOP_COST_PROVIDERS)
     .map(([provider, cost]) => ({ provider, cost }));
 
   const newSignatures = [...args.currentSignatures.entries()]

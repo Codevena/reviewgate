@@ -1,5 +1,6 @@
 // tests/unit/weekly-aggregate.test.ts
 import { describe, expect, it } from "bun:test";
+import type { BrainEntry } from "../../src/schemas/brain.ts";
 import type { FpLedgerEntry } from "../../src/schemas/fp-ledger.ts";
 import type { StatsReport } from "../../src/stats/aggregate.ts";
 import { buildWeeklyReport } from "../../src/stats/weekly.ts";
@@ -137,7 +138,7 @@ describe("buildWeeklyReport", () => {
     expect(byProvider.gemini).toEqual({ current: 0, previous: 0.5, abs: -0.5 });
   });
 
-  it("newSignatures = current signatures absent from previous (beyond top-10)", () => {
+  it("newSignatures = current signatures absent from previous", () => {
     const current = new Map<string, number>([
       ["sig-new", 3],
       ["sig-old", 1],
@@ -223,5 +224,65 @@ describe("buildWeeklyReport", () => {
     );
     expect(r.meta.status).toBe("future");
     expect(r.meta.generatedThrough).toBeNull();
+  });
+
+  it("topCostProviders are sorted desc by cost and capped at 3", () => {
+    const current = emptyStats({
+      cost: { total: 9.5, avgPerRun: 0, perProvider: { a: 1, b: 5, c: 3, d: 0.5 } },
+    });
+    const r = buildWeeklyReport(current, emptyStats(), baseArgs());
+    expect(r.highlights.topCostProviders).toEqual([
+      { provider: "b", cost: 5 },
+      { provider: "c", cost: 3 },
+      { provider: "a", cost: 1 },
+    ]);
+  });
+
+  it("windows newBrainEntries by created_at and sorts desc", () => {
+    const brain = (id: string, createdAt: string): BrainEntry => ({
+      id,
+      type: "convention",
+      scope: "global",
+      title: `t-${id}`,
+      body: "b",
+      tags: [],
+      file_globs: [],
+      status: "active",
+      referenced_count: 1,
+      referencing_reviewers: [],
+      confidence: 0.9,
+      embedding: null,
+      evidence: [],
+      created_at: createdAt,
+      source_run_id: "run-x",
+    });
+    const inEarly = brain("1", "2026-05-12T00:00:00.000Z");
+    const inLate = brain("2", "2026-05-15T00:00:00.000Z");
+    const outWeek = brain("3", "2026-05-01T00:00:00.000Z");
+    const r = buildWeeklyReport(
+      emptyStats(),
+      emptyStats(),
+      baseArgs({ windowedBrainEntries: [inEarly, inLate, outWeek] }),
+    );
+    expect(r.highlights.newBrainEntries).toEqual([
+      { id: "2", type: "convention", status: "active" },
+      { id: "1", type: "convention", status: "active" },
+    ]);
+  });
+
+  it("newSignatures tie-break on equal counts is lexicographic asc", () => {
+    const current = new Map<string, number>([
+      ["sig-b", 2],
+      ["sig-a", 2],
+    ]);
+    const r = buildWeeklyReport(
+      emptyStats(),
+      emptyStats(),
+      baseArgs({ currentSignatures: current, previousSignatures: new Map() }),
+    );
+    expect(r.highlights.newSignatures).toEqual([
+      { signature: "sig-a", count: 2 },
+      { signature: "sig-b", count: 2 },
+    ]);
   });
 });
