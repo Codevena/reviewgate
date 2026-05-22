@@ -6,6 +6,7 @@ import { runDoctor } from "./commands/doctor.ts";
 import { runFpAudit, runFpList, runFpPin, runFpShow, runFpUnpin } from "./commands/fp.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
+import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runStats } from "./commands/stats.ts";
 
@@ -195,9 +196,26 @@ const stats = defineCommand({
   },
 });
 
+const report = defineCommand({
+  meta: {
+    name: "report",
+    description: "Generate a weekly review report (Markdown + .reviewgate/reports/<iso>.md)",
+  },
+  args: { week: { type: "string" }, json: { type: "boolean" } },
+  async run({ args }) {
+    const week = typeof args.week === "string" ? args.week : undefined;
+    const output = await runReport({
+      repoRoot: process.cwd(),
+      ...(week !== undefined ? { week } : {}),
+      json: args.json === true,
+    });
+    process.stdout.write(`${output}\n`);
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp, stats },
+  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp, stats, report },
 });
 
 void runMain(main);
