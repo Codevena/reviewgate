@@ -95,4 +95,73 @@ describe("extractImportedLibs", () => {
     const names = (await extractImportedLibs(repo, ["f.ts"])).map((l) => l.name).sort();
     expect(names).toEqual(["@prisma/client", "zod"]);
   });
+
+  it("excludes ALL tsconfig compilerOptions.paths aliases (e.g. '~/'), keeps real pkgs", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-imp7-"));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ dependencies: { react: "19.0.0" } }),
+    );
+    // tsconfig as JSONC (comments + trailing comma) to prove tolerant parsing.
+    writeFileSync(
+      join(repo, "tsconfig.json"),
+      [
+        "{",
+        "  // editor: project config",
+        '  "compilerOptions": {',
+        '    "baseUrl": ".",',
+        '    "paths": {',
+        '      "~/*": ["./src/*"],',
+        '      "@app/*": ["./app/*"],',
+        '      "#config": ["./config.ts"],', // exact (no glob)
+        "    },",
+        "  } /* end */",
+        "}",
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(repo, "g.ts"),
+      [
+        `import { a } from "~/utils";`, // alias → dropped
+        `import { b } from "@app/x";`, // alias → dropped (would otherwise look scoped)
+        `import c from "#config";`, // exact alias → dropped
+        `import React from "react";`, // real pkg → kept
+      ].join("\n"),
+    );
+    const names = (await extractImportedLibs(repo, ["g.ts"])).map((l) => l.name).sort();
+    expect(names).toEqual(["react"]);
+  });
+
+  it("ignores a catch-all '*' paths key (must NOT exclude every real package)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-imp8-"));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ dependencies: { react: "19.0.0" } }),
+    );
+    writeFileSync(
+      join(repo, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "*": ["./src/*"] } } }),
+    );
+    writeFileSync(join(repo, "h.ts"), `import React from "react";`);
+    const names = (await extractImportedLibs(repo, ["h.ts"])).map((l) => l.name);
+    expect(names).toEqual(["react"]); // "*" prefix skipped → react still extracted
+  });
+
+  it("handles a mid-pattern '*' alias (foo/*/bar), keeps real pkgs", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-imp9-"));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ dependencies: { react: "19.0.0" } }),
+    );
+    writeFileSync(
+      join(repo, "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { paths: { "foo/*/bar": ["./x/*/bar"] } } }),
+    );
+    writeFileSync(
+      join(repo, "i.ts"),
+      [`import { a } from "foo/anything/bar";`, `import React from "react";`].join("\n"),
+    );
+    const names = (await extractImportedLibs(repo, ["i.ts"])).map((l) => l.name);
+    expect(names).toEqual(["react"]); // "foo/anything/bar" matched the prefix+suffix matcher
+  });
 });

@@ -245,15 +245,104 @@ function readBunLockVersions(repoRoot: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Strip JSONC so tsconfig.json parses: removes // and block comments + trailing
+ * commas. String-AWARE — a naive regex would eat `/*` that occurs inside path-glob
+ * string values (e.g. "./src/*"), so we scan char-by-char and only strip comment
+ * markers outside of string literals.
+ */
+function stripJsonc(raw: string): string {
+  let out = "";
+  let inStr = false;
+  let quote = "";
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      out += c;
+      if (c === "\\") {
+        out += raw[i + 1] ?? "";
+        i++;
+      } else if (c === quote) {
+        inStr = false;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inStr = true;
+      quote = c;
+      out += c;
+      continue;
+    }
+    if (c === "/" && raw[i + 1] === "/") {
+      while (i < raw.length && raw[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    if (c === "/" && raw[i + 1] === "*") {
+      i += 2;
+      while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) i++;
+      i++; // skip the closing "/" (loop's i++ skips "*")
+      continue;
+    }
+    out += c;
+  }
+  return out.replace(/,(\s*[}\]])/g, "$1"); // trailing commas (values are simple)
+}
+
+/**
+ * tsconfig `compilerOptions.paths` aliases (e.g. `@/`, `~/`, `#config`, and
+ * mid-pattern wildcards) so they aren't mistaken for npm packages. Each key becomes
+ * a matcher (TS allows ONE `*` wildcard anywhere → split into prefix+suffix at the
+ * star; globless keys match exactly; the bare catch-all `*` is skipped, else it
+ * would drop EVERY import). JSONC-tolerant; does NOT follow `extends` (root tsconfig
+ * only — the common case; bare `@/` is still caught by specToPackage regardless).
+ */
+function readTsconfigAliasMatchers(repoRoot: string): ((spec: string) => boolean)[] {
+  let raw: string;
+  try {
+    raw = readFileSync(join(repoRoot, "tsconfig.json"), "utf8");
+  } catch {
+    return [];
+  }
+  let parsed: { compilerOptions?: { paths?: Record<string, unknown> } };
+  try {
+    parsed = JSON.parse(stripJsonc(raw));
+  } catch {
+    return [];
+  }
+  const paths = parsed.compilerOptions?.paths;
+  if (!paths || typeof paths !== "object") return [];
+  const matchers: ((spec: string) => boolean)[] = [];
+  for (const key of Object.keys(paths)) {
+    if (!key) continue;
+    const star = key.indexOf("*");
+    if (star === -1) {
+      matchers.push((s) => s === key); // exact alias, e.g. "#config"
+      continue;
+    }
+    const prefix = key.slice(0, star); // "@/*"→"@/", "~/*"→"~/", "foo/*/bar"→"foo/"
+    const suffix = key.slice(star + 1); // "foo/*/bar"→"/bar"; trailing-* → ""
+    if (!prefix && !suffix) continue; // bare "*" catch-all → skip (matches everything)
+    matchers.push(
+      (s) =>
+        s.length >= prefix.length + suffix.length && s.startsWith(prefix) && s.endsWith(suffix),
+    );
+  }
+  return matchers;
+}
+
 export async function extractImportedLibs(
   repoRoot: string,
   changedFiles: string[],
 ): Promise<ImportedLib[]> {
+  const aliasMatchers = readTsconfigAliasMatchers(repoRoot);
+  const isAliased = (spec: string): boolean => aliasMatchers.some((m) => m(spec));
   // name → set of files that referenced it (insertion order preserved).
   const byName = new Map<string, Set<string>>();
   for (const file of changedFiles) {
     const specs = await specifiersFromFile(repoRoot, file);
     for (const spec of specs) {
+      if (isAliased(spec)) continue; // tsconfig path alias → not an npm package
       const pkg = specToPackage(spec);
       if (!pkg) continue;
       const files = byName.get(pkg) ?? new Set<string>();
