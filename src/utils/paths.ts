@@ -64,6 +64,14 @@ export function auditDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "audit");
 }
 
+export function reportsDir(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "reports");
+}
+
+export function weekReportPath(repoRoot: string, iso: string): string {
+  return join(reportsDir(repoRoot), `${iso}.md`);
+}
+
 export function brainDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "brain");
 }
