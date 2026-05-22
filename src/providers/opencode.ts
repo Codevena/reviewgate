@@ -1,5 +1,5 @@
 // src/providers/opencode.ts
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSafely } from "../utils/spawn.ts";
@@ -12,6 +12,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { failureReason } from "./complete-helpers.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const COMPLETE_TIMEOUT_MS = 20_000;
@@ -141,33 +142,41 @@ export class OpenCodeAdapter implements ProviderAdapter {
     // its own configured credential store, exactly as review() does — so
     // opts.auth/opts.apiKeyEnv are intentionally unused here.
     const run = mkdtempSync(join(tmpdir(), "rg-oc-cmpl-"));
-    const stdoutFile = join(run, "out.txt");
-    const stderrFile = join(run, "err.log");
-    const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
-    if (opts.model && opts.model !== "default") args.push("-m", opts.model);
-    args.push(prompt);
-    const res = await spawnSafely({
-      command: this.binPath,
-      args,
-      env: { ...process.env } as Record<string, string>,
-      cwd: run,
-      stdoutFile,
-      stderrFile,
-      timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
-    });
-    if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
-      let detail = "";
-      try {
-        detail = readFileSync(stderrFile, "utf8").slice(0, 500);
-      } catch {
-        detail = "";
-      }
-      throw new Error(`opencode complete exit=${res.exitCode}: ${detail}`);
-    }
     try {
-      return readFileSync(stdoutFile, "utf8");
-    } catch {
-      return "";
+      const stdoutFile = join(run, "out.txt");
+      const stderrFile = join(run, "err.log");
+      const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
+      if (opts.model && opts.model !== "default") args.push("-m", opts.model);
+      args.push(prompt);
+      const res = await spawnSafely({
+        command: this.binPath,
+        args,
+        env: { ...process.env } as Record<string, string>,
+        cwd: run,
+        stdoutFile,
+        stderrFile,
+        timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+      });
+      if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
+        let detail = "";
+        try {
+          detail = readFileSync(stderrFile, "utf8").slice(0, 500);
+        } catch {
+          detail = "";
+        }
+        throw new Error(`opencode complete ${failureReason(res)}: ${detail}`);
+      }
+      try {
+        return readFileSync(stdoutFile, "utf8");
+      } catch {
+        return "";
+      }
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
     }
   }
 }

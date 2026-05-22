@@ -1,6 +1,6 @@
 // tests/unit/claude-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
@@ -75,5 +75,23 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
     const text = await adapter.complete("p", { model: "m", auth: "oauth" });
     expect(text).toBe("");
     Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
+  });
+
+  it("surfaces a timeout as 'timeout' (not a bare exit=-1) in the error", async () => {
+    process.env.RG_FAKE_SLOW = "1";
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    await expect(
+      adapter.complete("p", { model: "m", auth: "oauth", timeoutMs: 200 }),
+    ).rejects.toThrow(/timeout/);
+    Reflect.deleteProperty(process.env, "RG_FAKE_SLOW");
+  });
+
+  it("cleans up its temp run dir on success (no rg-cl-cmpl-* leak)", async () => {
+    const cmpl = () => readdirSync(tmpdir()).filter((n) => n.startsWith("rg-cl-cmpl-"));
+    const before = new Set(cmpl());
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    await adapter.complete("judge this", { model: "m", auth: "oauth" });
+    const leaked = cmpl().filter((n) => !before.has(n));
+    expect(leaked).toEqual([]);
   });
 });

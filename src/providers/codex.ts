@@ -1,5 +1,5 @@
 // src/providers/codex.ts
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
@@ -13,6 +13,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { failureReason } from "./complete-helpers.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -161,50 +162,58 @@ export class CodexAdapter implements ProviderAdapter {
 
   async complete(prompt: string, opts: CompleteOptions): Promise<string> {
     const run = mkdtempSync(join(tmpdir(), "rg-codex-cmpl-"));
-    const lastMsgFile = join(run, "last.md");
-    const eventsFile = join(run, "events.jsonl");
-    const stderrFile = join(run, "stderr.log");
-    // NOTE: NO --output-schema — a judge needs a free-form completion.
-    const args = [
-      "exec",
-      "--sandbox",
-      "read-only",
-      "--json",
-      "--output-last-message",
-      lastMsgFile,
-      "--cd",
-      run,
-      "--model",
-      opts.model,
-      prompt,
-    ];
-    const env = { ...process.env } as Record<string, string>;
-    if (opts.auth === "apikey" && opts.apiKeyEnv) {
-      const key = process.env[opts.apiKeyEnv];
-      if (key) env.OPENAI_API_KEY = key;
-    }
-    const res = await spawnSafely({
-      command: this.binPath,
-      args,
-      env,
-      cwd: run,
-      stdoutFile: eventsFile,
-      stderrFile,
-      timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
-    });
-    if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
-      let detail = "";
-      try {
-        detail = readFileSync(stderrFile, "utf8").slice(0, 500);
-      } catch {
-        detail = "";
-      }
-      throw new Error(`codex complete exit=${res.exitCode}: ${detail}`);
-    }
     try {
-      return readFileSync(lastMsgFile, "utf8");
-    } catch {
-      return "";
+      const lastMsgFile = join(run, "last.md");
+      const eventsFile = join(run, "events.jsonl");
+      const stderrFile = join(run, "stderr.log");
+      // NOTE: NO --output-schema — a judge needs a free-form completion.
+      const args = [
+        "exec",
+        "--sandbox",
+        "read-only",
+        "--json",
+        "--output-last-message",
+        lastMsgFile,
+        "--cd",
+        run,
+        "--model",
+        opts.model,
+        prompt,
+      ];
+      const env = { ...process.env } as Record<string, string>;
+      if (opts.auth === "apikey" && opts.apiKeyEnv) {
+        const key = process.env[opts.apiKeyEnv];
+        if (key) env.OPENAI_API_KEY = key;
+      }
+      const res = await spawnSafely({
+        command: this.binPath,
+        args,
+        env,
+        cwd: run,
+        stdoutFile: eventsFile,
+        stderrFile,
+        timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+      });
+      if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
+        let detail = "";
+        try {
+          detail = readFileSync(stderrFile, "utf8").slice(0, 500);
+        } catch {
+          detail = "";
+        }
+        throw new Error(`codex complete ${failureReason(res)}: ${detail}`);
+      }
+      try {
+        return readFileSync(lastMsgFile, "utf8");
+      } catch {
+        return "";
+      }
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
     }
   }
 
