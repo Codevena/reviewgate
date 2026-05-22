@@ -77,8 +77,9 @@ export interface ProviderAdapter {
    * Optional free-form completion for LLM judges (curator accept/reject, FP↔Brain
    * contradiction). Implementers MUST NOT impose the review output-schema (that
    * would make a judge return review-shaped JSON instead of its verdict). Throws
-   * on error so the caller can fall back to its default. Only the OpenRouter
-   * adapter implements this today; judges no-op (use their default) when absent.
+   * on error so the caller can fall back to its default. Implemented by the
+   * OpenRouter and all four CLI adapters (codex/claude-code/gemini/opencode);
+   * judges no-op (use their default) when an adapter leaves it absent.
    */
   complete?(prompt: string, opts: CompleteOptions): Promise<string>;
 }

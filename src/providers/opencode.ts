@@ -137,6 +137,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
   }
 
   async complete(prompt: string, opts: CompleteOptions): Promise<string> {
+    // No apikey remap (unlike claude/gemini/codex): opencode authenticates via
+    // its own configured credential store, exactly as review() does — so
+    // opts.auth/opts.apiKeyEnv are intentionally unused here.
     const run = mkdtempSync(join(tmpdir(), "rg-oc-cmpl-"));
     const stdoutFile = join(run, "out.txt");
     const stderrFile = join(run, "err.log");
