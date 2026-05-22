@@ -788,7 +788,8 @@ export class Orchestrator {
       try {
         const text = await adapter.complete(prompt, {
           model: curatorCfg.model ?? pcfg.model,
-          apiKeyEnv: (pcfg as { apiKeyEnv?: string }).apiKeyEnv ?? "OPENROUTER_API_KEY",
+          ...(pcfg.apiKeyEnv ? { apiKeyEnv: pcfg.apiKeyEnv } : {}),
+          auth: pcfg.auth,
           timeoutMs: brainCfg.curatorTimeoutMs,
         });
         const first = text.indexOf("{");
@@ -914,7 +915,8 @@ export class Orchestrator {
           try {
             const text = await adapter.complete(prompt, {
               model: curatorCfg.model ?? pcfg.model,
-              apiKeyEnv: (pcfg as { apiKeyEnv?: string }).apiKeyEnv ?? "OPENROUTER_API_KEY",
+              ...(pcfg.apiKeyEnv ? { apiKeyEnv: pcfg.apiKeyEnv } : {}),
+              auth: pcfg.auth,
               timeoutMs: brainCfg.curatorTimeoutMs,
             });
             const first = text.indexOf("{");
