@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { curatorCheck } from "../../src/cli/commands/doctor.ts";
+import {
+  type ProviderAvailable,
+  brainEmbeddingsCheck,
+  criticCheck,
+  curatorCheck,
+} from "../../src/cli/commands/doctor.ts";
 import { defineConfig } from "../../src/config/define-config.ts";
 import type { ProviderId } from "../../src/providers/registry.ts";
 
@@ -62,5 +67,69 @@ describe("curatorCheck", () => {
     );
     expect(c?.status).toBe("ok");
     expect(c?.detail).toContain("also a reviewer");
+  });
+});
+
+function withCritic(provider: ProviderId) {
+  return defineConfig({
+    phases: { critic: { provider, persona: "adversarial" } },
+  } as Parameters<typeof defineConfig>[0]);
+}
+
+describe("criticCheck", () => {
+  it("returns null when no critic is configured (default)", () => {
+    expect(criticCheck(defineConfig({}), always)).toBeNull();
+  });
+
+  it("ok when the critic provider is available", () => {
+    const c = criticCheck(withCritic("opencode"), always);
+    expect(c?.status).toBe("ok");
+    expect(c?.detail).toContain("opencode");
+  });
+
+  it("warns when the critic provider is unavailable (no demotion)", () => {
+    const c = criticCheck(withCritic("opencode"), never);
+    expect(c?.status).toBe("warn");
+    expect(c?.detail).toContain("demoted");
+  });
+});
+
+function withBrain(enabled: boolean) {
+  return defineConfig({
+    phases: { brain: { enabled, embeddings: { provider: "openrouter" } } },
+  } as Parameters<typeof defineConfig>[0]);
+}
+
+describe("brainEmbeddingsCheck", () => {
+  it("returns null when brain is off (default)", () => {
+    expect(brainEmbeddingsCheck(defineConfig({}), always)).toBeNull();
+  });
+
+  it("ok when brain is on and openrouter (the embedder) is available", () => {
+    const c = brainEmbeddingsCheck(withBrain(true), always);
+    expect(c?.status).toBe("ok");
+    expect(c?.detail).toContain("openrouter");
+  });
+
+  it("warns when brain is on but OPENROUTER_API_KEY is missing (memory silently disabled)", () => {
+    const c = brainEmbeddingsCheck(withBrain(true), never);
+    expect(c?.status).toBe("warn");
+    expect(c?.detail).toContain("silently disabled");
+    expect(c?.hint).toContain("OPENROUTER_API_KEY");
+  });
+
+  it("checks the CONFIGURED embeddings apiKeyEnv, not a hard-coded name", () => {
+    const seen: (string | undefined)[] = [];
+    const spy: ProviderAvailable = (_id, apiKeyEnv) => {
+      seen.push(apiKeyEnv);
+      return true;
+    };
+    const cfg = defineConfig({
+      phases: {
+        brain: { enabled: true, embeddings: { provider: "openrouter", apiKeyEnv: "MY_OR_KEY" } },
+      },
+    } as Parameters<typeof defineConfig>[0]);
+    brainEmbeddingsCheck(cfg, spy);
+    expect(seen).toContain("MY_OR_KEY");
   });
 });

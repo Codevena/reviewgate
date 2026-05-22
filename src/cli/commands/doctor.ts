@@ -16,6 +16,12 @@ export interface Check {
   hint?: string;
 }
 
+// Resolves whether a provider can actually run. For CLI providers this probes the
+// CLI; for openrouter it checks the CONFIGURED key env var (apiKeyEnv) — which may
+// differ from the "OPENROUTER_API_KEY" default per provider/embeddings config, so
+// the caller passes the relevant name rather than hard-coding it.
+export type ProviderAvailable = (id: ProviderId, apiKeyEnv?: string) => boolean;
+
 // A reviewer must be BOTH listed in phases.review.reviewers AND enabled in
 // providers.<id> (only codex is enabled by default). If it is listed but not
 // enabled the panel produces zero runs — the gate now fails CLOSED (ERROR) rather
@@ -49,15 +55,12 @@ export function reviewersEnabledCheck(cfg: ReviewgateConfig): Check {
 // (accept / no-contradiction). doctor was previously silent about this. When a
 // curator is configured, confirm its provider can run; otherwise warn. `available`
 // is injected so the check stays pure/testable.
-export function curatorCheck(
-  cfg: ReviewgateConfig,
-  available: (id: ProviderId) => boolean,
-): Check | null {
+export function curatorCheck(cfg: ReviewgateConfig, available: ProviderAvailable): Check | null {
   const brain = cfg.phases.brain;
   if (!brain?.enabled || !brain.curator) return null; // no LLM judge → nothing to check
   const id = brain.curator.provider;
   const name = "brain curator (LLM judge)";
-  if (!available(id)) {
+  if (!available(id, cfg.providers[id]?.apiKeyEnv)) {
     return {
       name,
       status: "warn",
@@ -78,6 +81,52 @@ export function curatorCheck(
         : ""
     }`,
   };
+}
+
+// The critic is a demote-only pass (likely-FP → INFO). If its provider can't run,
+// the critic errors and NO findings are demoted — not dangerous (fail-safe: more
+// findings survive), but worth surfacing since the user configured it expecting it
+// to work. Same availability notion as the curator.
+export function criticCheck(cfg: ReviewgateConfig, available: ProviderAvailable): Check | null {
+  const critic = cfg.phases.critic;
+  if (!critic) return null;
+  const id = critic.provider;
+  const name = "critic provider";
+  if (!available(id, cfg.providers[id]?.apiKeyEnv)) {
+    return {
+      name,
+      status: "warn",
+      detail: `'${id}' configured but its CLI/API key is unavailable → the critic can't run and no findings will be demoted`,
+      hint:
+        id === "openrouter"
+          ? "Set OPENROUTER_API_KEY in your environment."
+          : `Install/authenticate the '${id}' CLI — the critic runs it.`,
+    };
+  }
+  return { name, status: "ok", detail: id };
+}
+
+// The brain's read-path injection AND the curator's pairing both embed text via the
+// OpenRouter embeddings provider. With brain enabled but OPENROUTER_API_KEY unset,
+// the embedder is unavailable → those memory features are SILENTLY skipped. (The
+// embeddings provider is always openrouter per the schema.)
+export function brainEmbeddingsCheck(
+  cfg: ReviewgateConfig,
+  available: ProviderAvailable,
+): Check | null {
+  const brain = cfg.phases.brain;
+  if (!brain?.enabled) return null;
+  const name = "brain embeddings";
+  if (!available("openrouter", brain.embeddings.apiKeyEnv)) {
+    return {
+      name,
+      status: "warn",
+      detail:
+        "brain is enabled but OPENROUTER_API_KEY is unset → memory injection + curator pairing are silently disabled (no embedder)",
+      hint: "Set OPENROUTER_API_KEY in your environment (the brain embeds memories via OpenRouter).",
+    };
+  }
+  return { name, status: "ok", detail: `openrouter / ${brain.embeddings.model}` };
 }
 
 function checkBinary(bin: string, name: string): Check {
@@ -137,20 +186,26 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   try {
     const cfg = await loadConfig(cfgExists ? cfgPath : null);
     checks.push(reviewersEnabledCheck(cfg));
-    // Curator/judge availability: CLI providers need their CLI reachable;
-    // openrouter needs OPENROUTER_API_KEY. ("claude-code" runs the `claude` CLI.)
-    const CURATOR_BIN: Record<ProviderId, string | null> = {
+    // Provider availability: CLI providers need their CLI reachable; openrouter
+    // needs its CONFIGURED key env var set (defaults to OPENROUTER_API_KEY, but a
+    // provider/embeddings config may name a different one). ("claude-code" runs the
+    // `claude` CLI.)
+    const PROVIDER_BIN: Record<ProviderId, string | null> = {
       codex: "codex",
       gemini: "gemini",
       "claude-code": "claude",
       opencode: "opencode",
       openrouter: null,
     };
-    const curatorAvailable = (id: ProviderId): boolean => {
-      if (id === "openrouter") return Boolean(process.env.OPENROUTER_API_KEY);
-      const bin = CURATOR_BIN[id];
+    const curatorAvailable: ProviderAvailable = (id, apiKeyEnv) => {
+      if (id === "openrouter") return Boolean(process.env[apiKeyEnv ?? "OPENROUTER_API_KEY"]);
+      const bin = PROVIDER_BIN[id];
       return bin ? checkBinary(bin, "").status === "ok" : false;
     };
+    const crit = criticCheck(cfg, curatorAvailable);
+    if (crit) checks.push(crit);
+    const emb = brainEmbeddingsCheck(cfg, curatorAvailable);
+    if (emb) checks.push(emb);
     const cur = curatorCheck(cfg, curatorAvailable);
     if (cur) checks.push(cur);
   } catch (e) {
