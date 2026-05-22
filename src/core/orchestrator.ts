@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
+import { cassetteFromEnv } from "../cassette/store.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { parseChangedRanges } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
@@ -336,7 +337,11 @@ export class Orchestrator {
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
-    const cacheEnabled = this.input.config.cache.enabled;
+    // When a cassette is active (record OR replay), bypass the verdict cache: a
+    // cached PASS would short-circuit BEFORE the (Recording/Replay)Adapter runs —
+    // record mode would write an empty cassette, replay mode would ignore the
+    // cassette's recorded verdict/findings. The cassette IS the source of truth.
+    const cacheEnabled = this.input.config.cache.enabled && cassetteFromEnv() === null;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),

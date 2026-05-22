@@ -89,7 +89,10 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   }
   const diff = diffs.join("\n");
 
-  const adapters = buildAdapters(cfg, input.providerOverrides);
+  // review-plan forces every reviewer to cfg.docReview.persona (see forcePersona
+  // below) → pass it so the cassette reviewerId-uniqueness check uses the effective
+  // (forced) persona, catching same-provider reviewers that collapse onto one id.
+  const adapters = buildAdapters(cfg, input.providerOverrides, undefined, cfg.docReview.persona);
 
   const host = detectHostModel({ env: process.env as Record<string, string>, hookStdin: null });
   const gitInfo = collectGitInfo(input.repoRoot);

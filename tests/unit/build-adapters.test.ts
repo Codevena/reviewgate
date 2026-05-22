@@ -40,4 +40,28 @@ describe("buildAdapters", () => {
     expect(adapters.codex?.id).toBe("codex");
     expect(adapters.openrouter?.id).toBe("openrouter");
   });
+
+  it("with a cassette active + forced persona, two same-provider reviewers collapsing to one id is a hard error", () => {
+    const cfg = {
+      ...defaultConfig,
+      phases: {
+        review: {
+          reviewers: [
+            { provider: "codex" as const, persona: "security" },
+            { provider: "codex" as const, persona: "architecture" },
+          ],
+        },
+        critic: null,
+        triage: null,
+      },
+    };
+    // forced persona "plan" collapses both codex reviewers onto "codex-plan"
+    expect(() =>
+      buildAdapters(cfg as never, undefined, { mode: "replay", path: "/dev/null" }, "plan"),
+    ).toThrow(/duplicate reviewerId/);
+    // without a forced persona the two distinct personas are fine
+    expect(() =>
+      buildAdapters(cfg as never, undefined, { mode: "replay", path: "/dev/null" }),
+    ).not.toThrow();
+  });
 });

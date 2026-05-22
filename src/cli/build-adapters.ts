@@ -24,11 +24,15 @@ export function consumedProviders(cfg: ReviewgateConfig): ProviderId[] {
 }
 
 // Hard preflight error when a cassette is active and two reviewers collapse to the
-// same reviewerId (FIFO under concurrency can't disambiguate them).
-function assertUniqueReviewerIds(cfg: ReviewgateConfig): void {
+// same reviewerId (FIFO under concurrency can't disambiguate them). The orchestrator
+// builds reviewerId as `${provider}-${persona}`, but under plan/doc review a SINGLE
+// forced persona is applied to every reviewer (review-plan passes
+// `cfg.docReview.persona`), which can collapse two same-provider reviewers onto one
+// id — so the check must use that effective persona when one is forced.
+function assertUniqueReviewerIds(cfg: ReviewgateConfig, effectivePersona?: string): void {
   const seen = new Set<string>();
   for (const r of cfg.phases.review.reviewers) {
-    const id = `${r.provider}-${r.persona}`;
+    const id = `${r.provider}-${effectivePersona ?? r.persona}`;
     if (seen.has(id))
       throw new Error(`cassette: duplicate reviewerId "${id}" — reviewer ids must be unique`);
     seen.add(id);
@@ -39,8 +43,9 @@ export function buildAdapters(
   cfg: ReviewgateConfig,
   providerOverrides?: Partial<Record<ProviderId, ProviderAdapter>>,
   cassette: CassetteEnv | null = cassetteFromEnv(),
+  effectivePersona?: string,
 ): Partial<Record<ProviderId, ProviderAdapter>> {
-  if (cassette) assertUniqueReviewerIds(cfg);
+  if (cassette) assertUniqueReviewerIds(cfg, effectivePersona);
   const entries =
     cassette?.mode === "replay" && existsSync(cassette.path) ? loadCassette(cassette.path) : [];
   if (cassette?.mode === "record") {
