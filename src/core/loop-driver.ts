@@ -295,6 +295,20 @@ export class LoopDriver {
       iter: nextIter,
     });
 
+    // Best-effort stats emission: record the iteration's RunSummary as a
+    // run.complete audit event. Wrapped in .catch so a logging failure can never
+    // affect the verdict. Emitted on the iteration path only (not on the early
+    // allow/escalation branches, which never run an iteration).
+    await this.i.audit
+      .append({
+        event: "run.complete",
+        run_id: state.session_id,
+        iter: nextIter,
+        trigger: "stop-hook",
+        run_summary: result.summary,
+      })
+      .catch(() => {});
+
     // A clean PASS means this change-set converged → re-arm the budget so the
     // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
     // advances the counter toward the iter-cap escalation. Either way, record the
