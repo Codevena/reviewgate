@@ -51,6 +51,27 @@ describe("OpenRouterAdapter.complete (raw judge completion)", () => {
       adapter.complete("x", { model: "m", apiKeyEnv: "OR_NEVER_SET_KEY_XYZ" }),
     ).rejects.toThrow();
   });
+
+  it("defaults a missing apiKeyEnv to OPENROUTER_API_KEY (fallback relocated from call-site)", async () => {
+    process.env.OPENROUTER_API_KEY = "default-key";
+    let authHeader = "";
+    const fetchImpl = (async (
+      _url: string,
+      init: { headers: Record<string, string>; body: string },
+    ) => {
+      authHeader = init.headers.Authorization ?? "";
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: '{"accept":true}' } }], usage: {} }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    // apiKeyEnv intentionally OMITTED — must fall back to OPENROUTER_API_KEY.
+    const text = await adapter.complete("judge this", { model: "m" });
+    expect(text).toBe('{"accept":true}');
+    expect(authHeader).toBe("Bearer default-key");
+    Reflect.deleteProperty(process.env, "OPENROUTER_API_KEY");
+  });
 });
 
 describe("OpenRouterAdapter (mocked fetch)", () => {

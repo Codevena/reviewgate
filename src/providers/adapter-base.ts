@@ -54,6 +54,21 @@ export interface ReviewResult {
   statusDetail?: string;
 }
 
+/**
+ * Options for the free-form judge completion. Distinct from EmbedOptions:
+ * `apiKeyEnv` is OPTIONAL (CLI providers in oauth mode have none) and `auth`
+ * selects per-provider auth handling. OpenRouter ignores `auth` and defaults a
+ * missing `apiKeyEnv` to "OPENROUTER_API_KEY". CLI adapters (added in later tasks)
+ * will use `auth` to decide key remapping and treat a missing `apiKeyEnv` as
+ * "use the CLI's own credentials".
+ */
+export interface CompleteOptions {
+  model: string;
+  apiKeyEnv?: string;
+  timeoutMs?: number;
+  auth?: "oauth" | "apikey" | "openrouter";
+}
+
 export interface ProviderAdapter {
   readonly id: "codex" | "claude-code" | "gemini" | "openrouter" | "opencode";
   preflight(cfg: ProviderConfig): Promise<Preflight>;
@@ -65,8 +80,5 @@ export interface ProviderAdapter {
    * on error so the caller can fall back to its default. Only the OpenRouter
    * adapter implements this today; judges no-op (use their default) when absent.
    */
-  complete?(
-    prompt: string,
-    opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
-  ): Promise<string>;
+  complete?(prompt: string, opts: CompleteOptions): Promise<string>;
 }

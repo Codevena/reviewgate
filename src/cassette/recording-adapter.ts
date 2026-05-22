@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import type { EmbedOptions } from "../core/brain/embeddings.ts";
 import type {
+  CompleteOptions,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -14,10 +15,7 @@ import { completeKey, embedKey, reviewKey, sha256 } from "./matching.ts";
 import { appendEntry } from "./store.ts";
 
 type EmbedFn = (text: string, opts: EmbedOptions) => Promise<number[]>;
-type CompleteFn = (
-  prompt: string,
-  opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
-) => Promise<string>;
+type CompleteFn = (prompt: string, opts: CompleteOptions) => Promise<string>;
 
 export class RecordingAdapter implements ProviderAdapter {
   readonly id: ProviderId;

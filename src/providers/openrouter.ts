@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { EmbedOptions } from "../core/brain/embeddings.ts";
 import type { Finding } from "../schemas/finding.ts";
 import type {
+  CompleteOptions,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -205,10 +206,11 @@ export class OpenRouterAdapter implements ProviderAdapter {
    * verdict — making the judge a silent no-op. Judges MUST use this raw path.
    * Throws on any error so callers can fall back to their default verdict.
    */
-  async complete(prompt: string, opts: EmbedOptions): Promise<string> {
-    const key = opts.apiKeyEnv ? process.env[opts.apiKeyEnv] : undefined;
+  async complete(prompt: string, opts: CompleteOptions): Promise<string> {
+    const apiKeyEnv = opts.apiKeyEnv ?? "OPENROUTER_API_KEY";
+    const key = process.env[apiKeyEnv];
     if (!key) {
-      throw new Error(`OpenRouter complete: API key env '${opts.apiKeyEnv}' is not set`);
+      throw new Error(`OpenRouter complete: API key env '${apiKeyEnv}' is not set`);
     }
     const body = { model: opts.model, messages: [{ role: "user", content: prompt }] };
     const controller = new AbortController();
