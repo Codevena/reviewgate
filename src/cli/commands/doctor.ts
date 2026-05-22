@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadConfig } from "../../config/loader.ts";
+import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
@@ -38,6 +39,44 @@ export function reviewersEnabledCheck(cfg: ReviewgateConfig): Check {
     status: "warn",
     detail: `configured but NOT enabled in providers: ${disabled.join(", ")} → the gate cannot review and will ERROR`,
     hint: `Set providers.${disabled[0]}.enabled = true in reviewgate.config.ts (a reviewer must be listed in phases.review.reviewers AND enabled in providers).`,
+  };
+}
+
+// The brain Curator / FP↔Brain Contradiction judge calls the curator provider's
+// adapter.complete(). Its adapter is always built (a consumed provider), so the
+// failure mode is NOT "disabled" — it is "the CLI/key isn't actually usable", in
+// which case complete() throws and the judge SILENTLY falls back to its default
+// (accept / no-contradiction). doctor was previously silent about this. When a
+// curator is configured, confirm its provider can run; otherwise warn. `available`
+// is injected so the check stays pure/testable.
+export function curatorCheck(
+  cfg: ReviewgateConfig,
+  available: (id: ProviderId) => boolean,
+): Check | null {
+  const brain = cfg.phases.brain;
+  if (!brain?.enabled || !brain.curator) return null; // no LLM judge → nothing to check
+  const id = brain.curator.provider;
+  const name = "brain curator (LLM judge)";
+  if (!available(id)) {
+    return {
+      name,
+      status: "warn",
+      detail: `'${id}' configured but its CLI/API key is unavailable → the judge silently falls back to its default (accept / no-contradiction)`,
+      hint:
+        id === "openrouter"
+          ? "Set OPENROUTER_API_KEY in your environment (the curator uses it for completions)."
+          : `Install/authenticate the '${id}' CLI — the curator runs it via complete().`,
+    };
+  }
+  const alsoReviewer = cfg.phases.review.reviewers.some((r) => r.provider === id);
+  return {
+    name,
+    status: "ok",
+    detail: `${id} (${brain.curator.persona})${
+      alsoReviewer
+        ? " — note: also a reviewer; a non-reviewer judge (e.g. opencode) is more independent"
+        : ""
+    }`,
   };
 }
 
@@ -98,6 +137,22 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   try {
     const cfg = await loadConfig(cfgExists ? cfgPath : null);
     checks.push(reviewersEnabledCheck(cfg));
+    // Curator/judge availability: CLI providers need their CLI reachable;
+    // openrouter needs OPENROUTER_API_KEY. ("claude-code" runs the `claude` CLI.)
+    const CURATOR_BIN: Record<ProviderId, string | null> = {
+      codex: "codex",
+      gemini: "gemini",
+      "claude-code": "claude",
+      opencode: "opencode",
+      openrouter: null,
+    };
+    const curatorAvailable = (id: ProviderId): boolean => {
+      if (id === "openrouter") return Boolean(process.env.OPENROUTER_API_KEY);
+      const bin = CURATOR_BIN[id];
+      return bin ? checkBinary(bin, "").status === "ok" : false;
+    };
+    const cur = curatorCheck(cfg, curatorAvailable);
+    if (cur) checks.push(cur);
   } catch (e) {
     checks.push({
       name: "reviewgate.config.ts load",
@@ -118,7 +173,9 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   checks.push({
     name: "OPENROUTER_API_KEY",
     status: process.env.OPENROUTER_API_KEY ? "ok" : "warn",
-    detail: process.env.OPENROUTER_API_KEY ? "set" : "unset (only needed for openrouter reviewers)",
+    detail: process.env.OPENROUTER_API_KEY
+      ? "set"
+      : "unset (needed for openrouter reviewers AND the brain's embeddings/curator)",
   });
 
   const rg = checkBinary("rg", "ripgrep (optional)");
