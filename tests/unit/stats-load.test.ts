@@ -5,6 +5,61 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadAuditWindow } from "../../src/stats/load.ts";
 
+// ---------------------------------------------------------------------------
+// Helpers for the until + partition-scope tests
+// ---------------------------------------------------------------------------
+function seedRepo(): string {
+  const root = join(tmpdir(), `rg-load-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(root, { recursive: true });
+  return root;
+}
+
+function writeRun(root: string, ts: string, runId: string): void {
+  const d = new Date(ts);
+  const y = String(d.getUTCFullYear());
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const dir = join(root, ".reviewgate", "audit", y, m, day);
+  mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({
+    schema: "reviewgate.audit.v1",
+    event: "run.complete",
+    ts,
+    run_id: runId,
+    iter: 1,
+    trigger: "stop-hook",
+    run_summary: {
+      verdict: "PASS",
+      source: "panel",
+      counts: { critical: 0, warn: 0, info: 0 },
+      cost_usd: 0.01,
+      duration_ms: 50,
+      demoted: 0,
+      signatures: [],
+      providers: [],
+    },
+  });
+  writeFileSync(join(dir, "120000.jsonl"), `${line}\n`, { flag: "a" });
+}
+
+function writeEscalation(root: string, ts: string): void {
+  const d = new Date(ts);
+  const y = String(d.getUTCFullYear());
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const dir = join(root, ".reviewgate", "audit", y, m, day);
+  mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({
+    schema: "reviewgate.audit.v1",
+    event: "escalation",
+    ts,
+    run_id: "esc",
+    iter: 1,
+    trigger: "stop-hook",
+  });
+  writeFileSync(join(dir, "130000.jsonl"), `${line}\n`, { flag: "a" });
+}
+
 function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-stats-"));
 }
@@ -146,5 +201,59 @@ describe("loadAuditWindow", () => {
     const result = loadAuditWindow(repo, { since: "2026-05-21" });
     expect(result.runs.length).toBe(0);
     expect(result.escalationCount).toBe(0);
+  });
+});
+
+describe("loadAuditWindow until + partition scope", () => {
+  it("until excludes runs and escalations at or after the bound", () => {
+    const root = seedRepo();
+    writeRun(root, "2026-05-11T10:00:00.000Z", "a");
+    writeRun(root, "2026-05-18T10:00:00.000Z", "b");
+    writeEscalation(root, "2026-05-12T10:00:00.000Z");
+    writeEscalation(root, "2026-05-18T11:00:00.000Z");
+    const w = loadAuditWindow(root, {
+      since: "2026-05-11T00:00:00.000Z",
+      until: "2026-05-18T00:00:00.000Z",
+    });
+    expect(w.runs.map((r) => r.run_id)).toEqual(["a"]);
+    expect(w.escalationCount).toBe(1);
+  });
+
+  it("finds an in-window run physically stored in the prior day's partition", () => {
+    const root = seedRepo();
+    const d = new Date("2026-05-10T23:00:00.000Z");
+    const dir = join(
+      root,
+      ".reviewgate",
+      "audit",
+      String(d.getUTCFullYear()),
+      String(d.getUTCMonth() + 1).padStart(2, "0"),
+      String(d.getUTCDate()).padStart(2, "0"),
+    );
+    mkdirSync(dir, { recursive: true });
+    const line = JSON.stringify({
+      schema: "reviewgate.audit.v1",
+      event: "run.complete",
+      ts: "2026-05-11T00:30:00.000Z",
+      run_id: "boundary",
+      iter: 1,
+      trigger: "stop-hook",
+      run_summary: {
+        verdict: "PASS",
+        source: "panel",
+        counts: { critical: 0, warn: 0, info: 0 },
+        cost_usd: 0,
+        duration_ms: 1,
+        demoted: 0,
+        signatures: [],
+        providers: [],
+      },
+    });
+    writeFileSync(join(dir, "230000.jsonl"), `${line}\n`);
+    const w = loadAuditWindow(root, {
+      since: "2026-05-11T00:00:00.000Z",
+      until: "2026-05-18T00:00:00.000Z",
+    });
+    expect(w.runs.map((r) => r.run_id)).toEqual(["boundary"]);
   });
 });
