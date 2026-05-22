@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpenCodeAdapter } from "../../src/providers/opencode.ts";
 
+const FAKE_COMPLETE = join(process.cwd(), "tests/fixtures/fake-opencode-complete.sh");
+
 /** Helper: write a temp executable bash script and return its path. */
 function makeFakeBin(dir: string, name: string, script: string): string {
   const p = join(dir, name);
@@ -129,5 +131,28 @@ describe("OpenCodeAdapter (mocked binary)", () => {
     expect(result.verdict).toBe("ERROR");
     expect(result.findings).toHaveLength(0);
     expect(result.statusDetail).toContain("opencode");
+  });
+});
+
+describe("OpenCodeAdapter.complete (judge completion)", () => {
+  it("returns the stdout text containing the judge JSON", async () => {
+    const adapter = new OpenCodeAdapter({ binPath: FAKE_COMPLETE });
+    const text = await adapter.complete("judge this", { model: "default", auth: "oauth" });
+    expect(text).toContain('"contradicts":false');
+  });
+
+  it("throws on non-zero exit", async () => {
+    process.env.RG_FAKE_FAIL = "1";
+    const adapter = new OpenCodeAdapter({ binPath: FAKE_COMPLETE });
+    await expect(adapter.complete("p", { model: "default", auth: "oauth" })).rejects.toThrow();
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
+  });
+
+  it("returns '' on empty stdout (no throw)", async () => {
+    process.env.RG_FAKE_EMPTY = "1";
+    const adapter = new OpenCodeAdapter({ binPath: FAKE_COMPLETE });
+    const text = await adapter.complete("p", { model: "default", auth: "oauth" });
+    expect(text).toBe("");
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });

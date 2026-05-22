@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
+  CompleteOptions,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -12,6 +13,8 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
+
+const COMPLETE_TIMEOUT_MS = 20_000;
 
 export interface OpenCodeAdapterOptions {
   binPath?: string;
@@ -131,5 +134,37 @@ export class OpenCodeAdapter implements ProviderAdapter {
       rawText: stdout,
       status: "ok",
     };
+  }
+
+  async complete(prompt: string, opts: CompleteOptions): Promise<string> {
+    const run = mkdtempSync(join(tmpdir(), "rg-oc-cmpl-"));
+    const stdoutFile = join(run, "out.txt");
+    const stderrFile = join(run, "err.log");
+    const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
+    if (opts.model && opts.model !== "default") args.push("-m", opts.model);
+    args.push(prompt);
+    const res = await spawnSafely({
+      command: this.binPath,
+      args,
+      env: { ...process.env } as Record<string, string>,
+      cwd: run,
+      stdoutFile,
+      stderrFile,
+      timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+    });
+    if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
+      let detail = "";
+      try {
+        detail = readFileSync(stderrFile, "utf8").slice(0, 500);
+      } catch {
+        detail = "";
+      }
+      throw new Error(`opencode complete exit=${res.exitCode}: ${detail}`);
+    }
+    try {
+      return readFileSync(stdoutFile, "utf8");
+    } catch {
+      return "";
+    }
   }
 }
