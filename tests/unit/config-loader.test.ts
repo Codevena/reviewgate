@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../../src/config/defaults.ts";
-import { defineConfig } from "../../src/config/define-config.ts";
+import { ConfigSchema, defineConfig } from "../../src/config/define-config.ts";
 import { loadConfig } from "../../src/config/loader.ts";
 
 function writeConfig(content: string): string {
@@ -90,5 +90,17 @@ describe("loadConfig", () => {
     const cfg = defineConfig({});
     expect(cfg.phases.critic).toBeNull();
     expect(cfg.phases.review.reviewers).toEqual([{ provider: "codex", persona: "security" }]);
+  });
+});
+
+describe("weeklyReport config", () => {
+  it("defaults weeklyReport to null (off)", () => {
+    const parsed = ConfigSchema.parse(defaultConfig);
+    expect(parsed.weeklyReport ?? null).toBeNull();
+  });
+
+  it("accepts weeklyReport.autoSnapshot", () => {
+    const parsed = ConfigSchema.parse({ ...defaultConfig, weeklyReport: { autoSnapshot: true } });
+    expect(parsed.weeklyReport?.autoSnapshot).toBe(true);
   });
 });

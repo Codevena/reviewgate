@@ -117,6 +117,7 @@ export const defaultConfig = {
     globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
     persona: "plan",
   },
+  weeklyReport: null as null | { autoSnapshot: boolean },
 };
 
 export type ReviewgateConfig = typeof defaultConfig;

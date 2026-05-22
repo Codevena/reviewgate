@@ -121,6 +121,8 @@ export const ConfigSchema = z.object({
       globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
       persona: "plan",
     }),
+  // Weekly report auto-snapshot-on-rollover. Opt-in.
+  weeklyReport: z.object({ autoSnapshot: z.boolean() }).nullable().default(null).optional(),
 });
 
 export type ReviewgateConfig = z.infer<typeof ConfigSchema>;

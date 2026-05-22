@@ -165,6 +165,7 @@ export async function runInit(input: InitInput): Promise<void> {
       "      ],",
       "    },",
       "  },",
+      "  // weeklyReport: { autoSnapshot: true }, // write .reviewgate/reports/<iso>.md on weekly rollover",
       "};",
       "",
     ].join("\n");
