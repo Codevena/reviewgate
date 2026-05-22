@@ -21,21 +21,26 @@ export class ReplayAdapter implements ProviderAdapter {
   private readonly strict: boolean;
   private readonly fifo = new Map<string, CassetteEntry[]>(); // review + complete queues
   private readonly embedMap = new Map<string, CassetteEntry>(); // embed by content key
-  // `embed` is an instance field present ONLY when embed entries exist, so
-  // buildEmbedder's `typeof adapter.embed === "function"` check mirrors the real
-  // OpenRouter adapter (no embed entries → Brain skips gracefully, as today).
+  // `embed`/`complete` are instance fields present ONLY when the cassette holds
+  // matching entries for this provider, so `typeof adapter.embed`/`typeof
+  // adapter.complete === "function"` mirror the real adapter's capability. The
+  // brain + judges feature-detect these — if absent, they skip gracefully (as
+  // today) instead of taking the replay-miss path.
   embed?: (text: string, opts: EmbedOptions) => Promise<number[]>;
+  complete?: (prompt: string) => Promise<string>;
 
   constructor(entries: CassetteEntry[], provider: ProviderId, opts: ReplayOpts = {}) {
     this.id = provider;
     this.strict = opts.strict ?? false;
     let hasEmbed = false;
+    let hasComplete = false;
     for (const e of entries) {
       if (e.provider !== provider) continue; // filter by explicit provider field
       if (e.method === "embed") {
         this.embedMap.set(e.key, e);
         hasEmbed = true;
       } else {
+        if (e.method === "complete") hasComplete = true;
         const q = this.fifo.get(e.key) ?? [];
         q.push(e);
         this.fifo.set(e.key, q);
@@ -47,6 +52,13 @@ export class ReplayAdapter implements ProviderAdapter {
         const entry = this.embedMap.get(key);
         if (!entry) throw new Error(`cassette: no recorded embed for ${this.id} (text hash miss)`);
         return (entry.result as { vector: number[] }).vector;
+      };
+    }
+    if (hasComplete) {
+      this.complete = async (prompt: string) => {
+        const entry = this.pop(completeKey(this.id), "complete");
+        this.checkDrift(entry, sha256(prompt));
+        return (entry.result as { text: string }).text;
       };
     }
   }
@@ -61,12 +73,6 @@ export class ReplayAdapter implements ProviderAdapter {
     const entry = this.pop(reviewKey(input.reviewerId), "review");
     this.checkDrift(entry, this.readPromptHash(input.promptFile));
     return entry.result as ReviewResult;
-  }
-
-  async complete(prompt: string): Promise<string> {
-    const entry = this.pop(completeKey(this.id), "complete");
-    this.checkDrift(entry, sha256(prompt));
-    return (entry.result as { text: string }).text;
   }
 
   private pop(key: string, method: string): CassetteEntry {

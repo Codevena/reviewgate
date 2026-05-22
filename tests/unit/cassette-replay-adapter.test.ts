@@ -82,6 +82,24 @@ describe("ReplayAdapter", () => {
     expect(typeof noEmbed.embed).toBe("undefined");
   });
 
+  it("exposes complete() only when complete entries exist (mirrors real adapter capability)", async () => {
+    const completeEntry: CassetteEntry = {
+      schema: "reviewgate.cassette.entry.v1",
+      provider: "openrouter",
+      key: "openrouter:complete",
+      method: "complete",
+      promptSha256: "f".repeat(64),
+      result: { text: '{"accept":true}' },
+    };
+    const withComplete = new ReplayAdapter([completeEntry], "openrouter");
+    expect(typeof withComplete.complete).toBe("function");
+    expect(await withComplete.complete?.("judge prompt")).toContain("accept");
+    const noComplete = new ReplayAdapter([], "openrouter") as ReplayAdapter & {
+      complete?: unknown;
+    };
+    expect(typeof noComplete.complete).toBe("undefined");
+  });
+
   it("strict mode throws on prompt drift; default warns", async () => {
     const entries = [review("codex", "codex-security", "PASS")]; // recorded promptSha256 = "a"*64
     const strict = new ReplayAdapter(entries, "codex", { strict: true });
