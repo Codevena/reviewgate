@@ -28,9 +28,10 @@ dist
 # Review pipeline scratch (Codex/Claude reviewer outputs — never commit)
 .review/
 
-# Editor
+# Editor / local tooling
 .vscode/
 .idea/
+.antigravitycli/
 
 # Local secrets (never commit)
 .env
