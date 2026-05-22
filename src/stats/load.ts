@@ -82,11 +82,21 @@ export function loadAuditWindow(
   const filteredEscalations =
     since != null ? escalations.filter((e) => e.ts >= since) : escalations;
 
-  // Apply last (most-recent N runs) — only affects runs, not escalationCount
+  // Apply last (most-recent N runs).
   const windowedRuns = last != null ? filteredRuns.slice(filteredRuns.length - last) : filteredRuns;
+
+  // When `last` narrows the runs, window escalations to the SAME time span (>=
+  // the oldest kept run's ts) so the escalation rate denominator (run count) and
+  // numerator (escalations) cover the same window — otherwise --last could yield
+  // an escalation rate above 100%.
+  const lowerBound = last != null && windowedRuns.length > 0 ? windowedRuns[0]?.ts : undefined;
+  const escalationsInWindow =
+    lowerBound != null
+      ? filteredEscalations.filter((e) => e.ts >= lowerBound)
+      : filteredEscalations;
 
   return {
     runs: windowedRuns,
-    escalationCount: filteredEscalations.length,
+    escalationCount: escalationsInWindow.length,
   };
 }

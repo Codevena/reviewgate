@@ -92,6 +92,37 @@ describe("loadAuditWindow", () => {
     expect(result.runs[0]?.run_id).toBe("r2");
   });
 
+  it("last: windows escalationCount to the kept runs' time span (no >100% rate)", () => {
+    const repo = tmp();
+    const auditPath = join(repo, ".reviewgate", "audit", "2026", "05", "20");
+    mkdirSync(auditPath, { recursive: true });
+    const lines = [
+      JSON.stringify(runCompleteEvent("2026-05-20T10:00:00.000Z", "r1", 1)),
+      JSON.stringify(runCompleteEvent("2026-05-20T12:00:00.000Z", "r2", 2)),
+      // two escalations BEFORE the most-recent run (12:00) — must be excluded by last:1
+      JSON.stringify({
+        ts: "2026-05-20T09:00:00.000Z",
+        run_id: "r0",
+        iter: 1,
+        event: "escalation",
+      }),
+      JSON.stringify({
+        ts: "2026-05-20T11:00:00.000Z",
+        run_id: "r1",
+        iter: 2,
+        event: "escalation",
+      }),
+    ].join("\n");
+    writeFileSync(join(auditPath, "x.jsonl"), `${lines}\n`);
+
+    // all-time: both escalations counted
+    expect(loadAuditWindow(repo, {}).escalationCount).toBe(2);
+    // last:1 keeps only the 12:00 run → escalations before 12:00 are out of window
+    const windowed = loadAuditWindow(repo, { last: 1 });
+    expect(windowed.runs.length).toBe(1);
+    expect(windowed.escalationCount).toBe(0);
+  });
+
   it("since: date filters out older runs and escalations", () => {
     const repo = tmp();
     const auditPath = join(repo, ".reviewgate", "audit", "2026", "05", "20");
