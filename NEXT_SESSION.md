@@ -1,6 +1,21 @@
-# Reviewgate — Session Handoff (2026-05-22, session 5)
+# Reviewgate — Session Handoff (2026-05-22, session 6)
 
-## ⭐ SESSION 5 (2026-05-22): Cassette-Replay + `reviewgate stats` — COMPLETE & MERGED & PUSHED
+## ⭐ SESSION 6 (2026-05-22): Weekly Reports (`reviewgate report`) — COMPLETE & MERGED LOCALLY (NOT pushed)
+**master HEAD `4ce6b2b`** (15 feature commits FF-merged off `feat/weekly-reports`; branch deleted, worktree removed). **NOT pushed — origin/master still at `27bb89d` (session 5). Ask before pushing.** 581 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt from master (`dist/reviewgate report --help` verified). Working tree: only the pre-existing `M CLAUDE.md` (untouched).
+
+**What shipped:** `reviewgate report [--week <iso>] [--json]` — a per-ISO-week report (snapshot **+ week-over-week trend + highlights**), Markdown to stdout + `.reviewgate/reports/<iso>.md`; PLUS an **opt-in** `config.weeklyReport.autoSnapshot` (default off) that writes the last-complete-week report on weekly rollover, wired as the **trailing** side-effect of the loop-driver iteration path (after state/dirty-flag/gate.decision commit; own try/catch; autoSnapshot-off is a true no-op). Spec `docs/superpowers/specs/2026-05-22-reviewgate-weekly-reports-design.md` (Codex design-reviewed, **9 rounds → PASS**), plan `docs/superpowers/plans/2026-05-22-reviewgate-weekly-reports.md` (12 TDD tasks, subagent-driven). Roadmap remaining: **native sandbox** (blocked — `@anthropic-ai/sandbox-runtime` unpublished); flashbuddy live-e2e of contextDocs/FP-ledger/brain.
+
+**New modules** (`src/stats/`): `iso-week.ts` (pure ISO-8601 UTC week math — Thursday rule, half-open `[since,until)`, W53, `lastCompleteWeek`), `weekly.ts` (pure `buildWeeklyReport` — deltas + highlights + `meta.status` complete/partial/future), `weekly-render.ts` (Markdown, ▲/▼/▬), `weekly-assemble.ts` (I/O: loads both weeks + dir-existence `hasPartitionBefore` prior-history probe → `aggregate()` ×2), `report-file.ts` (atomic writer: `renameSync` overwrite vs `linkSync`+unlink exclusive-create), `snapshot.ts` (`maybeWriteWeeklySnapshot` — `.empty`/`.failed`-cooldown sentinels, idempotent, injectable clock). **Modified:** `load.ts` (exclusive `until` + partition-scoped scan w/ −1-day midnight-crossing guard), `paths.ts` (reportsDir/weekReportPath), `define-config.ts`+`defaults.ts` (opt-in `weeklyReport`), `cli/index.ts`+`init.ts`, `core/loop-driver.ts` (trailing snapshot wiring).
+
+**Non-obvious gotchas surfaced:** (1) `RunSummary.providers[]` (`ProviderStatSchema`) **requires `personas: []`** — seed test data with it or `RunSummarySchema.parse` silently drops the run in load.ts's catch. (2) Persisted signatures are capped at `SIGNATURE_CAP=20`/run (`buildRunSummary`) — `newSignatures` accepts this. (3) `AuditLogger.currentFilePath()` memoizes the partition path for the whole process → midnight-crossing events land in the prior day's partition → the −1-day guard in `dayDirsInRange` recovers them. (4) Brain has **no `promoted_at`** → "new brain entries" uses `created_at` (created, not promoted).
+
+**Known limitation (documented in spec):** a CLI-rendered **partial** report for the *current* week (`reviewgate report --week <in-progress>`) is NOT later refreshed by the auto-snapshot when that week completes (the `existsSync(<iso>.md)` short-circuit treats any existing file as authoritative) — re-run `reviewgate report --week <iso>` to refresh. **Advisory cosmetic (left):** `weekly-render` deltaCell puts the minus inside the number (`▼ $-0.50` not `▼ -$0.50`) — arrow conveys direction.
+
+**DoD:** static checks green → Codex Agent A **PASS** (0 CRIT/0 WARN) → Claude Agent A **PASS** (0 CRIT/0 WARN, 3 advisory INFO) → both gates clean. Per-task spec+quality reviews throughout (subagent-driven); core `weekly.ts` got an extra test-coverage polish round; `snapshot.ts` cooldown path got a required test added after the quality review flagged it.
+
+---
+
+## SESSION 5 (2026-05-22): Cassette-Replay + `reviewgate stats` — COMPLETE & MERGED & PUSHED
 **origin/master = master HEAD `27bb89d`** (M6 + Cassette + Stats all on origin; `git push` done per user OK). 538 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt. Working tree: only the pre-existing `M CLAUDE.md`.
 
 **Roadmap progress this session:** M6 (session 4, pushed) · **Cassette-Replay** (this session) · **`reviewgate stats`** (this session). Remaining roadmap: **Weekly Reports (#3, builds on the stats aggregation)** · native sandbox (blocked — `@anthropic-ai/sandbox-runtime` unpublished).
