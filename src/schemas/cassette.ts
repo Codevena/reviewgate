@@ -35,17 +35,32 @@ export const ReviewResultSchema = z.object({
   statusDetail: z.string().optional(),
 });
 
-export const CassetteEntrySchema = z.object({
-  schema: z.literal("reviewgate.cassette.entry.v1"),
-  provider: ProviderIdSchema, // ReplayAdapter filters on THIS, not on parsing the key
-  key: z.string(),
-  method: z.enum(["review", "complete", "embed"]),
-  promptSha256: z.string(),
-  result: z.union([
-    ReviewResultSchema,
-    z.object({ text: z.string() }),
-    z.object({ vector: z.array(z.number()) }),
-  ]),
-});
+export const CassetteEntrySchema = z
+  .object({
+    schema: z.literal("reviewgate.cassette.entry.v1"),
+    provider: ProviderIdSchema, // ReplayAdapter filters on THIS, not on parsing the key
+    key: z.string(),
+    method: z.enum(["review", "complete", "embed"]),
+    promptSha256: z.string(),
+    result: z.union([
+      ReviewResultSchema,
+      z.object({ text: z.string() }),
+      z.object({ vector: z.array(z.number()) }),
+    ]),
+  })
+  // The `result` shape MUST match `method`, else a malformed line (e.g.
+  // method:"embed" with a {text} result) would validate and ReplayAdapter would
+  // cast it to the wrong shape and return undefined. Enforce the correspondence so
+  // loadCassette skips such lines instead.
+  .superRefine((e, ctx) => {
+    const r = e.result as Record<string, unknown>;
+    const matches =
+      (e.method === "review" && "findings" in r) ||
+      (e.method === "complete" && "text" in r) ||
+      (e.method === "embed" && "vector" in r);
+    if (!matches) {
+      ctx.addIssue({ code: "custom", message: `result shape does not match method "${e.method}"` });
+    }
+  });
 
 export type CassetteEntry = z.infer<typeof CassetteEntrySchema>;

@@ -44,6 +44,22 @@ describe("cassette store (JSONL)", () => {
     expect(loadCassette(p).map((e) => e.key)).toEqual(["a", "b"]);
   });
 
+  it("skips a line whose result shape does not match its method", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-cas3-"));
+    const p = join(dir, "c.jsonl");
+    // method:"embed" but a {text} result → must be rejected by the schema refine
+    const bad = {
+      schema: "reviewgate.cassette.entry.v1",
+      provider: "openrouter",
+      key: `openrouter:embed:${"a".repeat(64)}`,
+      method: "embed",
+      promptSha256: "a".repeat(64),
+      result: { text: "not a vector" },
+    };
+    writeFileSync(p, `${JSON.stringify(bad)}\n${JSON.stringify(entry("good"))}\n`);
+    expect(loadCassette(p).map((e) => e.key)).toEqual(["good"]);
+  });
+
   it("parses REVIEWGATE_CASSETTE record/replay forms", () => {
     expect(cassetteFromEnv("record:/tmp/x.jsonl")).toEqual({
       mode: "record",
