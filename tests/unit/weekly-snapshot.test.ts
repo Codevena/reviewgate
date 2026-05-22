@@ -1,6 +1,6 @@
 // tests/unit/weekly-snapshot.test.ts
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../src/config/define-config.ts";
@@ -77,5 +77,33 @@ describe("maybeWriteWeeklySnapshot", () => {
     writeRun(root, "2026-05-19T10:00:00.000Z");
     await maybeWriteWeeklySnapshot(root, { weeklyReport: null } as ReviewgateConfig, { now });
     expect(existsSync(join(root, ".reviewgate", "reports", "2026-W21.md"))).toBe(false);
+  });
+
+  it("a fresh .failed marker (younger than 6h) suppresses the snapshot", async () => {
+    const root = seedRepo();
+    writeRun(root, "2026-05-19T10:00:00.000Z"); // W21 has a run → would normally write
+    const reportsDirPath = join(root, ".reviewgate", "reports");
+    mkdirSync(reportsDirPath, { recursive: true });
+    const failed = join(reportsDirPath, ".2026-W21.failed");
+    writeFileSync(failed, "");
+    // mtime = 1h before `now` → within the 6h cooldown
+    const oneHourBefore = new Date(now.getTime() - 60 * 60 * 1000);
+    utimesSync(failed, oneHourBefore, oneHourBefore);
+    await maybeWriteWeeklySnapshot(root, { weeklyReport: ON } as ReviewgateConfig, { now });
+    expect(existsSync(join(reportsDirPath, "2026-W21.md"))).toBe(false); // suppressed
+  });
+
+  it("an expired .failed marker (older than 6h) no longer suppresses the snapshot", async () => {
+    const root = seedRepo();
+    writeRun(root, "2026-05-19T10:00:00.000Z");
+    const reportsDirPath = join(root, ".reviewgate", "reports");
+    mkdirSync(reportsDirPath, { recursive: true });
+    const failed = join(reportsDirPath, ".2026-W21.failed");
+    writeFileSync(failed, "");
+    // mtime = 7h before `now` → past the 6h cooldown → retry
+    const sevenHoursBefore = new Date(now.getTime() - 7 * 60 * 60 * 1000);
+    utimesSync(failed, sevenHoursBefore, sevenHoursBefore);
+    await maybeWriteWeeklySnapshot(root, { weeklyReport: ON } as ReviewgateConfig, { now });
+    expect(existsSync(join(reportsDirPath, "2026-W21.md"))).toBe(true); // retried + wrote
   });
 });

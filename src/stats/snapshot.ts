@@ -47,6 +47,7 @@ export async function maybeWriteWeeklySnapshot(
     const bounds = weekBounds(week.year, week.week);
     const win = loadAuditWindow(repoRoot, { since: bounds.since, until: bounds.until });
     if (win.runs.length === 0) {
+      // non-exclusive: content is always empty, so concurrent writes are benign
       writeReportFile(emptyMarker(repoRoot, iso), "", { exclusive: false });
       return;
     }
@@ -58,6 +59,7 @@ export async function maybeWriteWeeklySnapshot(
     // does not rescan on every gate stop. Not a poison — it expires.
     try {
       mkdirSync(reportsDir(repoRoot), { recursive: true });
+      // raw write (not writeReportFile): a 0-byte marker; mkdir above guarantees the dir exists
       writeFileSync(failed, "", { mode: 0o600 });
     } catch {
       /* best-effort */
