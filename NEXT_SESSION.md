@@ -40,11 +40,20 @@ gitignored).
    NOT `providers.enabled`. The availability resolver reads the CONFIGURED `apiKeyEnv` (provider /
    `brain.embeddings`), not a hard-coded `OPENROUTER_API_KEY` (Codex caught the false-warning case).
 
-**LIVE-e2e — DONE, both in a scratch repo (codex curator) and in flashbuddy (opencode curator).**
-Seeded an active FP + a contradicting active brain memory B-900, ran the real compiled gate →
-`fp` entry got `contradicts_brain_id:"B-900"` (no pairing) → the CLI judge fires end-to-end. All
-four CLI complete() also verified against their REAL CLIs (codex 4.3s after fix, claude 5.2s,
-gemini 9.6s w/ `GEMINI_CLI_TRUST_WORKSPACE=true`, opencode 7.9s w/ `--dangerously-skip-permissions`).
+6. **contextDocs `@/`-alias fix** (`7693cdf`) — **found by live observation B**: `specToPackage()`
+   treated the tsconfig path alias `@/lib` as a scoped npm package and mis-resolved it on Context7.
+   Reject empty-scope `@/...` (`parts[0]==="@"`). Follow-up noted: `~/` + other custom tsconfig
+   path prefixes still leak; a fuller fix reads `compilerOptions.paths`.
+
+**LIVE-e2e — ALL confirmed.** (1) CLI judge: seeded an active FP + contradicting brain memory
+B-900, ran the real compiled gate (scratch w/ codex curator AND flashbuddy w/ opencode curator) →
+`contradicts_brain_id:"B-900"` (no pairing). All four CLI complete() verified against REAL CLIs
+(codex 4.3s post-fix, claude 5.2s, gemini 9.6s, opencode 7.9s). (2) **Live observations A/B/C done:**
+**A** `reviewgate doctor` in flashbuddy → new critic/brain/curator lines all green on the real
+4-panel config; **B** contextDocs → editing a zod-importing file injected current zod-v4 docs into
+`research.md` (+ found the `@/`-alias bug, now fixed); **C** FP-ledger reactive demote via
+Cassette-Replay → a recorded CRITICAL SQLi finding matched a seeded active FP → demoted to INFO
+(`fp_ledger_match.suppressed:true`) → gate PASS instead of CLOSED (deterministic, in the binary).
 
 **Reusable lessons (also in memory):** (a) subagent-driven dev shares the parent worktree HEAD — a
 reviewer that ran `git checkout <sha>` left HEAD detached → next implementer orphaned a commit
@@ -54,14 +63,14 @@ process.env.X` → use `Reflect.deleteProperty(process.env,"X")` in tests. (c) c
 `--skip-git-repo-check` outside a git repo.
 
 ### ➡️ NEXT (open items)
-- **PUSH the 2 local commits** (`9e19e39` + `d53dce1`) once approved → origin to `d53dce1`.
-- **Live observations in flashbuddy (relay with the user)** — not yet done: (A) `reviewgate doctor`
-  in flashbuddy to see the new critic(opencode)+brain+curator lines on the real multi-provider
-  config; (B) **contextDocs (M6)** — edit a file importing a real lib → confirm `research.md` gets
-  current docs (flashbuddy has `CONTEXT7_API_KEY`); (C) **FP-ledger demote/few-shot** — only
-  deterministic via Cassette-Replay (LLM signature non-determinism otherwise).
+- **PUSH the local commits** (origin at `e7e033b`; local `master` has gitignore + doctor-broaden +
+  handoff + alias-fix + this update) once approved.
+- **Live observations A/B/C: DONE** (see above). Nothing owed there.
+- **Follow-up (minor, noted):** contextDocs still leaks non-`@/` tsconfig path aliases (`~/`, custom
+  prefixes) — fuller fix = read `compilerOptions.paths` in `src/research/imports.ts`.
 - **Roadmap: native sandbox** still BLOCKED (`@anthropic-ai/sandbox-runtime` unpublished).
-- Pre-existing `M CLAUDE.md` in the working tree — leave it (user: do NOT commit).
+- Pre-existing `M CLAUDE.md` in the working tree — leave it (user: do NOT commit). `.antigravitycli/`
+  is now gitignored.
 
 ---
 
