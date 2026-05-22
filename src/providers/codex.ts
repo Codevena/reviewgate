@@ -167,10 +167,13 @@ export class CodexAdapter implements ProviderAdapter {
       const eventsFile = join(run, "events.jsonl");
       const stderrFile = join(run, "stderr.log");
       // NOTE: NO --output-schema — a judge needs a free-form completion.
+      // --skip-git-repo-check: the judge runs in a fresh non-git temp dir, and
+      // codex `exec` otherwise refuses ("Not inside a trusted directory").
       const args = [
         "exec",
         "--sandbox",
         "read-only",
+        "--skip-git-repo-check",
         "--json",
         "--output-last-message",
         lastMsgFile,
