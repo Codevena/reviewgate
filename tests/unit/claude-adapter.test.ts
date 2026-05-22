@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
 
 const FAKE = join(process.cwd(), "tests/fixtures/fake-claude.sh");
+const FAKE_COMPLETE = join(process.cwd(), "tests/fixtures/fake-claude-complete.sh");
 
 describe("ClaudeAdapter (mocked)", () => {
   it("parses findings + usage from the result envelope", async () => {
@@ -27,5 +28,52 @@ describe("ClaudeAdapter (mocked)", () => {
     expect(res.findings[0]?.reviewer.provider).toBe("claude-code");
     expect(res.usage.inputTokens).toBe(300);
     expect(res.usage.outputTokens).toBe(40);
+  });
+});
+
+describe("ClaudeAdapter.complete (judge completion)", () => {
+  it("returns the raw model text containing the judge JSON", async () => {
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    const text = await adapter.complete("judge this", {
+      model: "claude-sonnet-4-6",
+      auth: "oauth",
+    });
+    expect(text).toContain('"contradicts":false');
+  });
+
+  it("remaps apiKeyEnv -> ANTHROPIC_API_KEY only under auth=apikey", async () => {
+    const prev = process.env.ANTHROPIC_API_KEY;
+    Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
+    process.env.RG_TEST_CL_KEY = "sentinel-cl";
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    const apikey = await adapter.complete("p", {
+      model: "m",
+      apiKeyEnv: "RG_TEST_CL_KEY",
+      auth: "apikey",
+    });
+    expect(apikey).toContain("k=sentinel-cl");
+    const oauth = await adapter.complete("p", {
+      model: "m",
+      apiKeyEnv: "RG_TEST_CL_KEY",
+      auth: "oauth",
+    });
+    expect(oauth).toContain("k=NONE");
+    Reflect.deleteProperty(process.env, "RG_TEST_CL_KEY");
+    if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
+  });
+
+  it("throws on non-zero exit (caller falls back to default)", async () => {
+    process.env.RG_FAKE_FAIL = "1";
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
+  });
+
+  it("returns '' on a result-less envelope (no throw)", async () => {
+    process.env.RG_FAKE_EMPTY = "1";
+    const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
+    const text = await adapter.complete("p", { model: "m", auth: "oauth" });
+    expect(text).toBe("");
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });

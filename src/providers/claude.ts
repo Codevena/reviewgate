@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
+  CompleteOptions,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -15,6 +16,7 @@ import type {
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
+const COMPLETE_TIMEOUT_MS = 20_000;
 
 export interface ClaudeAdapterOptions {
   binPath?: string;
@@ -132,6 +134,60 @@ export class ClaudeAdapter implements ProviderAdapter {
       rawText,
       status: "ok",
     };
+  }
+
+  async complete(prompt: string, opts: CompleteOptions): Promise<string> {
+    const run = mkdtempSync(join(tmpdir(), "rg-cl-cmpl-"));
+    const outFile = join(run, "out.json");
+    const errFile = join(run, "err.log");
+    const args = [
+      "-p",
+      prompt,
+      "--model",
+      opts.model,
+      "--output-format",
+      "json",
+      "--disallowedTools",
+      DISALLOWED,
+      "--permission-mode",
+      "dontAsk",
+      "--no-session-persistence",
+    ];
+    const env = { ...process.env } as Record<string, string>;
+    if (opts.auth === "apikey" && opts.apiKeyEnv) {
+      const key = process.env[opts.apiKeyEnv];
+      if (key) env.ANTHROPIC_API_KEY = key;
+    }
+    const res = await spawnSafely({
+      command: this.binPath,
+      args,
+      env,
+      cwd: run,
+      stdoutFile: outFile,
+      stderrFile: errFile,
+      timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+    });
+    if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
+      let detail = "";
+      try {
+        detail = readFileSync(errFile, "utf8").slice(0, 500);
+      } catch {
+        detail = "";
+      }
+      throw new Error(`claude complete exit=${res.exitCode}: ${detail}`);
+    }
+    let fileText = "";
+    try {
+      fileText = readFileSync(outFile, "utf8");
+    } catch {
+      return "";
+    }
+    try {
+      const envelope = JSON.parse(fileText) as ClaudeEnvelope;
+      return envelope.result ?? "";
+    } catch {
+      return fileText;
+    }
   }
 
   private parse(
