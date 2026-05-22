@@ -7,10 +7,11 @@ import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { defaultConfigPath, loadConfig } from "../../config/loader.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
-import { type ProviderId, createAdapter } from "../../providers/registry.ts";
+import type { ProviderId } from "../../providers/registry.ts";
 import { collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { planReviewMdPath } from "../../utils/paths.ts";
+import { buildAdapters } from "../build-adapters.ts";
 
 export interface ReviewPlanInput {
   repoRoot: string;
@@ -88,12 +89,7 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   }
   const diff = diffs.join("\n");
 
-  const adapters: Partial<Record<ProviderId, ProviderAdapter>> = {};
-  for (const r of cfg.phases.review.reviewers) {
-    if (!adapters[r.provider]) {
-      adapters[r.provider] = input.providerOverrides?.[r.provider] ?? createAdapter(r.provider);
-    }
-  }
+  const adapters = buildAdapters(cfg, input.providerOverrides);
 
   const host = detectHostModel({ env: process.env as Record<string, string>, hookStdin: null });
   const gitInfo = collectGitInfo(input.repoRoot);

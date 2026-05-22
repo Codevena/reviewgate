@@ -9,11 +9,12 @@ import { Orchestrator } from "../../core/orchestrator.ts";
 import { StateStore } from "../../core/state-store.ts";
 import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
-import { type ProviderId, createAdapter } from "../../providers/registry.ts";
+import type { ProviderId } from "../../providers/registry.ts";
 import { collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
 import { auditDir } from "../../utils/paths.ts";
+import { buildAdapters } from "../build-adapters.ts";
 
 export interface GateInput {
   repoRoot: string;
@@ -70,17 +71,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     hookStdin: parsedStdin as { session?: { model?: string } } | null,
   });
 
-  const adapters: Partial<Record<ProviderId, ProviderAdapter>> = {};
-  for (const r of cfg.phases.review.reviewers) {
-    if (!adapters[r.provider]) {
-      adapters[r.provider] = input.providerOverrides?.[r.provider] ?? createAdapter(r.provider);
-    }
-  }
-  if (cfg.phases.critic && !adapters[cfg.phases.critic.provider]) {
-    adapters[cfg.phases.critic.provider] =
-      input.providerOverrides?.[cfg.phases.critic.provider] ??
-      createAdapter(cfg.phases.critic.provider);
-  }
+  const adapters = buildAdapters(cfg, input.providerOverrides);
   const gitInfo = collectGitInfo(input.repoRoot);
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
