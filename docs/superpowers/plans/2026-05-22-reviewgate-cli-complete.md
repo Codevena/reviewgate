@@ -59,7 +59,7 @@ Add to `tests/unit/openrouter-adapter.test.ts` inside the existing `describe("Op
     const text = await adapter.complete("judge this", { model: "m" });
     expect(text).toBe('{"accept":true}');
     expect(authHeader).toBe("Bearer default-key");
-    delete process.env.OPENROUTER_API_KEY;
+    Reflect.deleteProperty(process.env, "OPENROUTER_API_KEY");
   });
 ```
 
@@ -212,14 +212,14 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
 
   it("remaps apiKeyEnv -> ANTHROPIC_API_KEY only under auth=apikey", async () => {
     const prev = process.env.ANTHROPIC_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
+    Reflect.deleteProperty(process.env, "ANTHROPIC_API_KEY");
     process.env.RG_TEST_CL_KEY = "sentinel-cl";
     const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
     const apikey = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_CL_KEY", auth: "apikey" });
     expect(apikey).toContain("k=sentinel-cl");
     const oauth = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_CL_KEY", auth: "oauth" });
     expect(oauth).toContain("k=NONE");
-    delete process.env.RG_TEST_CL_KEY;
+    Reflect.deleteProperty(process.env, "RG_TEST_CL_KEY");
     if (prev !== undefined) process.env.ANTHROPIC_API_KEY = prev;
   });
 
@@ -227,7 +227,7 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
     process.env.RG_FAKE_FAIL = "1";
     const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
     await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
-    delete process.env.RG_FAKE_FAIL;
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
   });
 
   it("returns '' on a result-less envelope (no throw)", async () => {
@@ -235,7 +235,7 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
     const adapter = new ClaudeAdapter({ binPath: FAKE_COMPLETE });
     const text = await adapter.complete("p", { model: "m", auth: "oauth" });
     expect(text).toBe("");
-    delete process.env.RG_FAKE_EMPTY;
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });
 ```
@@ -375,14 +375,14 @@ describe("GeminiAdapter.complete (judge completion)", () => {
 
   it("remaps apiKeyEnv -> GEMINI_API_KEY only under auth=apikey", async () => {
     const prev = process.env.GEMINI_API_KEY;
-    delete process.env.GEMINI_API_KEY;
+    Reflect.deleteProperty(process.env, "GEMINI_API_KEY");
     process.env.RG_TEST_GEM_KEY = "sentinel-gem";
     const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
     const apikey = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_GEM_KEY", auth: "apikey" });
     expect(apikey).toContain("k=sentinel-gem");
     const oauth = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_GEM_KEY", auth: "oauth" });
     expect(oauth).toContain("k=NONE");
-    delete process.env.RG_TEST_GEM_KEY;
+    Reflect.deleteProperty(process.env, "RG_TEST_GEM_KEY");
     if (prev !== undefined) process.env.GEMINI_API_KEY = prev;
   });
 
@@ -390,7 +390,7 @@ describe("GeminiAdapter.complete (judge completion)", () => {
     process.env.RG_FAKE_FAIL = "1";
     const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
     await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
-    delete process.env.RG_FAKE_FAIL;
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
   });
 
   it("returns '' on a response-less envelope (no throw)", async () => {
@@ -398,7 +398,7 @@ describe("GeminiAdapter.complete (judge completion)", () => {
     const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
     const text = await adapter.complete("p", { model: "m", auth: "oauth" });
     expect(text).toBe("");
-    delete process.env.RG_FAKE_EMPTY;
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });
 ```
@@ -532,14 +532,14 @@ describe("CodexAdapter.complete (judge completion)", () => {
 
   it("remaps apiKeyEnv -> OPENAI_API_KEY only under auth=apikey", async () => {
     const prev = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
     process.env.RG_TEST_CDX_KEY = "sentinel-cdx";
     const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
     const apikey = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_CDX_KEY", auth: "apikey" });
     expect(apikey).toContain("k=sentinel-cdx");
     const oauth = await adapter.complete("p", { model: "m", apiKeyEnv: "RG_TEST_CDX_KEY", auth: "oauth" });
     expect(oauth).toContain("k=NONE");
-    delete process.env.RG_TEST_CDX_KEY;
+    Reflect.deleteProperty(process.env, "RG_TEST_CDX_KEY");
     if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
   });
 
@@ -547,7 +547,7 @@ describe("CodexAdapter.complete (judge completion)", () => {
     process.env.RG_FAKE_FAIL = "1";
     const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
     await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
-    delete process.env.RG_FAKE_FAIL;
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
   });
 
   it("returns '' on an empty last-message file (no throw)", async () => {
@@ -555,7 +555,7 @@ describe("CodexAdapter.complete (judge completion)", () => {
     const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
     const text = await adapter.complete("p", { model: "m", auth: "oauth" });
     expect(text).toBe("");
-    delete process.env.RG_FAKE_EMPTY;
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });
 ```
@@ -687,7 +687,7 @@ describe("OpenCodeAdapter.complete (judge completion)", () => {
     process.env.RG_FAKE_FAIL = "1";
     const adapter = new OpenCodeAdapter({ binPath: FAKE_COMPLETE });
     await expect(adapter.complete("p", { model: "default", auth: "oauth" })).rejects.toThrow();
-    delete process.env.RG_FAKE_FAIL;
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
   });
 
   it("returns '' on empty stdout (no throw)", async () => {
@@ -695,7 +695,7 @@ describe("OpenCodeAdapter.complete (judge completion)", () => {
     const adapter = new OpenCodeAdapter({ binPath: FAKE_COMPLETE });
     const text = await adapter.complete("p", { model: "default", auth: "oauth" });
     expect(text).toBe("");
-    delete process.env.RG_FAKE_EMPTY;
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });
 ```
