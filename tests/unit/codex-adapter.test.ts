@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { CodexAdapter } from "../../src/providers/codex.ts";
 
 const PRETEND_CODEX_BIN = join(process.cwd(), "tests/fixtures/fake-codex.sh");
+const FAKE_CODEX_COMPLETE = join(process.cwd(), "tests/fixtures/fake-codex-complete.sh");
 
 describe("CodexAdapter (mocked binary)", () => {
   it("parses findings and usage from a fake codex run", async () => {
@@ -29,5 +30,50 @@ describe("CodexAdapter (mocked binary)", () => {
     expect(result.status).toBe("ok");
     expect(result.findings.length).toBeGreaterThanOrEqual(1);
     expect(result.usage.inputTokens).toBeGreaterThan(0);
+  });
+});
+
+describe("CodexAdapter.complete (judge completion)", () => {
+  it("returns the last-message text and passes NO --output-schema", async () => {
+    // If complete() wrongly passed --output-schema, the fake exits 3 -> throw.
+    const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
+    const text = await adapter.complete("judge this", { model: "gpt-x", auth: "oauth" });
+    expect(text).toContain('"contradicts":false');
+  });
+
+  it("remaps apiKeyEnv -> OPENAI_API_KEY only under auth=apikey", async () => {
+    const prev = process.env.OPENAI_API_KEY;
+    Reflect.deleteProperty(process.env, "OPENAI_API_KEY");
+    process.env.RG_TEST_CDX_KEY = "sentinel-cdx";
+    const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
+    const apikey = await adapter.complete("p", {
+      model: "m",
+      apiKeyEnv: "RG_TEST_CDX_KEY",
+      auth: "apikey",
+    });
+    expect(apikey).toContain("k=sentinel-cdx");
+    const oauth = await adapter.complete("p", {
+      model: "m",
+      apiKeyEnv: "RG_TEST_CDX_KEY",
+      auth: "oauth",
+    });
+    expect(oauth).toContain("k=NONE");
+    Reflect.deleteProperty(process.env, "RG_TEST_CDX_KEY");
+    if (prev !== undefined) process.env.OPENAI_API_KEY = prev;
+  });
+
+  it("throws on non-zero exit", async () => {
+    process.env.RG_FAKE_FAIL = "1";
+    const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
+    await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
+    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
+  });
+
+  it("returns '' on an empty last-message file (no throw)", async () => {
+    process.env.RG_FAKE_EMPTY = "1";
+    const adapter = new CodexAdapter({ binPath: FAKE_CODEX_COMPLETE });
+    const text = await adapter.complete("p", { model: "m", auth: "oauth" });
+    expect(text).toBe("");
+    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
   });
 });
