@@ -1,6 +1,71 @@
-# Reviewgate — Session Handoff (2026-05-22, session 6)
+# Reviewgate — Session Handoff (2026-05-23, session 7)
 
-## ⭐ SESSION 6 (2026-05-22): Weekly Reports (`reviewgate report`) — COMPLETE & MERGED LOCALLY (NOT pushed)
+## ⭐ SESSION 7 (2026-05-22/23): CLI-adapter `complete()` (LLM judges for any provider) + follow-ups
+
+**origin/master = `e7e033b`** (everything through the doctor curator-check is PUSHED, user OK).
+**Local `master` is AHEAD of origin, NOT yet pushed** — `9e19e39` (gitignore `.antigravitycli/`) +
+`d53dce1` (doctor critic+embeddings checks) + this handoff commit. **Ask before pushing.**
+618 pass / 9 skip / 0 fail; typecheck + lint clean; binary rebuilt. Working tree: only the
+pre-existing `M CLAUDE.md` (untouched, per user — do NOT commit it; `.antigravitycli/` is now
+gitignored).
+
+**What shipped this session (the whole arc):**
+1. **CLI-adapter `complete()`** — the optional `ProviderAdapter.complete()` is now implemented by
+   all four CLI adapters (claude/gemini/codex/opencode), so the brain **Curator** + **FP↔Brain
+   Contradiction** judges work with ANY provider, not just OpenRouter (before: `typeof
+   adapter.complete !== "function"` → judges silently no-op'd). New dedicated `CompleteOptions`
+   type (optional `apiKeyEnv` + `auth`; doesn't weaken the embed-only `EmbedOptions`); OpenRouter's
+   `?? "OPENROUTER_API_KEY"` fallback relocated INTO `OpenRouterAdapter.complete()`; cassette
+   `CompleteFn` widened; both orchestrator judge call-sites forward `auth: pcfg.auth` + conditional
+   `apiKeyEnv`. complete() diverges from review(): NO output-schema (codex drops `--output-schema`),
+   no Finding mapping, fresh temp CWD, raw text / `""` on empty / throws on error (judge fails open
+   to default). Spec `docs/superpowers/specs/2026-05-22-reviewgate-cli-complete-design.md` (Codex 5
+   rounds → PASS), plan `docs/superpowers/plans/2026-05-22-reviewgate-cli-complete.md` (7 TDD tasks,
+   subagent-driven, per-task spec+quality reviews).
+2. **Follow-up polish** — shared `src/providers/complete-helpers.ts` `failureReason()` (timeout/
+   watchdog vs exit in the error message) + each complete() rmSyncs its mkdtemp run dir (temp-dir
+   hygiene at judge cadence).
+3. **codex trust-dir fix** — **found by the LIVE e2e, invisible to all fake-`.sh` tests**:
+   `codex exec --cd <fresh non-git temp dir>` refuses ("Not inside a trusted directory"). Fix: add
+   `--skip-git-repo-check` to `codex.complete()` (review() unaffected — its `--cd` is the real
+   repo). The fake fixture now requires the flag so unit tests lock it.
+4. **init-scaffold defaults** — `reviewgate init` (NEW installs only; `defaultConfig` untouched →
+   existing users unaffected) now ships `fpLedger:{enabled:true}` + `brain:{enabled:true}` (openrouter
+   embeddings) + `curator:{provider:"codex"}` + `openrouter` enabled. `init.test.ts` loads the
+   scaffold through `loadConfig()` to lock it.
+5. **doctor brain/judge health checks** — `curatorCheck` + `criticCheck` + `brainEmbeddingsCheck`:
+   warn (with fix hint) when a configured curator/critic provider's CLI/key is unavailable (the
+   silent-no-op class) or when brain is on but OPENROUTER_API_KEY is unset (memory inert). KEY: the
+   curator's adapter is ALWAYS built (consumed provider) so the check keys off CLI/key availability,
+   NOT `providers.enabled`. The availability resolver reads the CONFIGURED `apiKeyEnv` (provider /
+   `brain.embeddings`), not a hard-coded `OPENROUTER_API_KEY` (Codex caught the false-warning case).
+
+**LIVE-e2e — DONE, both in a scratch repo (codex curator) and in flashbuddy (opencode curator).**
+Seeded an active FP + a contradicting active brain memory B-900, ran the real compiled gate →
+`fp` entry got `contradicts_brain_id:"B-900"` (no pairing) → the CLI judge fires end-to-end. All
+four CLI complete() also verified against their REAL CLIs (codex 4.3s after fix, claude 5.2s,
+gemini 9.6s w/ `GEMINI_CLI_TRUST_WORKSPACE=true`, opencode 7.9s w/ `--dangerously-skip-permissions`).
+
+**Reusable lessons (also in memory):** (a) subagent-driven dev shares the parent worktree HEAD — a
+reviewer that ran `git checkout <sha>` left HEAD detached → next implementer orphaned a commit
+(recovered via `git merge --ff-only`); forbid HEAD-moving git in every subagent prompt, use
+`git add <explicit files>` not `-A`. (b) biome `lint/performance/noDelete` blocks `delete
+process.env.X` → use `Reflect.deleteProperty(process.env,"X")` in tests. (c) codex needs
+`--skip-git-repo-check` outside a git repo.
+
+### ➡️ NEXT (open items)
+- **PUSH the 2 local commits** (`9e19e39` + `d53dce1`) once approved → origin to `d53dce1`.
+- **Live observations in flashbuddy (relay with the user)** — not yet done: (A) `reviewgate doctor`
+  in flashbuddy to see the new critic(opencode)+brain+curator lines on the real multi-provider
+  config; (B) **contextDocs (M6)** — edit a file importing a real lib → confirm `research.md` gets
+  current docs (flashbuddy has `CONTEXT7_API_KEY`); (C) **FP-ledger demote/few-shot** — only
+  deterministic via Cassette-Replay (LLM signature non-determinism otherwise).
+- **Roadmap: native sandbox** still BLOCKED (`@anthropic-ai/sandbox-runtime` unpublished).
+- Pre-existing `M CLAUDE.md` in the working tree — leave it (user: do NOT commit).
+
+---
+
+## SESSION 6 (2026-05-22): Weekly Reports (`reviewgate report`) — COMPLETE & MERGED (now pushed; see session-7 origin)
 **master HEAD `4ce6b2b`** (15 feature commits FF-merged off `feat/weekly-reports`; branch deleted, worktree removed). **NOT pushed — origin/master still at `27bb89d` (session 5). Ask before pushing.** 581 pass / 9 skip / 0 fail; typecheck + lint clean. Binary rebuilt from master (`dist/reviewgate report --help` verified). Working tree: only the pre-existing `M CLAUDE.md` (untouched).
 
 **What shipped:** `reviewgate report [--week <iso>] [--json]` — a per-ISO-week report (snapshot **+ week-over-week trend + highlights**), Markdown to stdout + `.reviewgate/reports/<iso>.md`; PLUS an **opt-in** `config.weeklyReport.autoSnapshot` (default off) that writes the last-complete-week report on weekly rollover, wired as the **trailing** side-effect of the loop-driver iteration path (after state/dirty-flag/gate.decision commit; own try/catch; autoSnapshot-off is a true no-op). Spec `docs/superpowers/specs/2026-05-22-reviewgate-weekly-reports-design.md` (Codex design-reviewed, **9 rounds → PASS**), plan `docs/superpowers/plans/2026-05-22-reviewgate-weekly-reports.md` (12 TDD tasks, subagent-driven). Roadmap remaining: **native sandbox** (blocked — `@anthropic-ai/sandbox-runtime` unpublished); flashbuddy live-e2e of contextDocs/FP-ledger/brain.
