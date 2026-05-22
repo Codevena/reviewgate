@@ -66,8 +66,10 @@ process.env.X` → use `Reflect.deleteProperty(process.env,"X")` in tests. (c) c
 - **PUSH the local commits** (origin at `e7e033b`; local `master` has gitignore + doctor-broaden +
   handoff + alias-fix + this update) once approved.
 - **Live observations A/B/C: DONE** (see above). Nothing owed there.
-- **Follow-up (minor, noted):** contextDocs still leaks non-`@/` tsconfig path aliases (`~/`, custom
-  prefixes) — fuller fix = read `compilerOptions.paths` in `src/research/imports.ts`.
+- **contextDocs alias follow-up: DONE** (`233b2a7`) — `extractImportedLibs` now reads tsconfig
+  `compilerOptions.paths` and excludes ALL declared aliases (`~/`, `@app/`, exact, mid-pattern
+  `foo/*/bar`) via a string-aware JSONC stripper + per-key prefix/suffix matchers. Does NOT follow
+  tsconfig `extends` (root tsconfig only — remaining minor edge).
 - **Roadmap: native sandbox** still BLOCKED (`@anthropic-ai/sandbox-runtime` unpublished).
 - Pre-existing `M CLAUDE.md` in the working tree — leave it (user: do NOT commit). `.antigravitycli/`
   is now gitignored.
