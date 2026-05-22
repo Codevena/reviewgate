@@ -7,6 +7,7 @@ import { runFpAudit, runFpList, runFpPin, runFpShow, runFpUnpin } from "./comman
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
+import { runStats } from "./commands/stats.ts";
 
 const init = defineCommand({
   meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
@@ -175,9 +176,28 @@ const fp = defineCommand({
   },
 });
 
+const stats = defineCommand({
+  meta: {
+    name: "stats",
+    description: "Show review stats (verdicts, cost, reviewers, learn-state)",
+  },
+  args: { since: { type: "string" }, last: { type: "string" }, json: { type: "boolean" } },
+  async run({ args }) {
+    const since = typeof args.since === "string" ? args.since : undefined;
+    const last = typeof args.last === "string" ? Number(args.last) : undefined;
+    const output = await runStats({
+      repoRoot: process.cwd(),
+      ...(since !== undefined ? { since } : {}),
+      ...(last !== undefined && Number.isFinite(last) ? { last } : {}),
+      json: args.json === true,
+    });
+    process.stdout.write(`${output}\n`);
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp },
+  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp, stats },
 });
 
 void runMain(main);
