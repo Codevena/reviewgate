@@ -69,6 +69,36 @@ const GenAi = z.object({
   "response.finish_reasons": z.array(z.string()).optional(),
 });
 
+const ProviderIdEnum = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
+
+export const ProviderStatSchema = z.object({
+  provider: ProviderIdEnum,
+  personas: z.array(z.string()),
+  runs: z.number().int().nonnegative(),
+  errors: z.number().int().nonnegative(),
+  findings: z.number().int().nonnegative(),
+  demoted: z.number().int().nonnegative(),
+  cost_usd: z.number(),
+  duration_ms: z.number().int().nonnegative(),
+});
+
+export const RunSummarySchema = z.object({
+  verdict: z.enum(["PASS", "SOFT-PASS", "FAIL", "ERROR"]),
+  source: z.enum(["panel", "cache", "skipped"]),
+  counts: z.object({
+    critical: z.number().int().nonnegative(),
+    warn: z.number().int().nonnegative(),
+    info: z.number().int().nonnegative(),
+  }),
+  cost_usd: z.number(),
+  duration_ms: z.number().int().nonnegative(),
+  demoted: z.number().int().nonnegative(),
+  signatures: z.array(z.string()),
+  providers: z.array(ProviderStatSchema),
+});
+export type RunSummary = z.infer<typeof RunSummarySchema>;
+export type ProviderStat = z.infer<typeof ProviderStatSchema>;
+
 export const AuditEventSchema = z.object({
   schema: z.literal("reviewgate.audit.v1"),
   ts: z.string(),
@@ -80,6 +110,7 @@ export const AuditEventSchema = z.object({
   reviewer: Reviewer.optional(),
   gen_ai: GenAi.optional(),
   egress: Egress.optional(),
+  run_summary: RunSummarySchema.optional(),
   prompt_sha256: z.string().optional(),
   response_sha256: z.string().optional(),
   prompt_ref: z.string().optional(),
