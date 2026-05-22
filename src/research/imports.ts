@@ -154,9 +154,11 @@ function specToPackage(spec: string): string | null {
   if (spec.startsWith(".") || spec.startsWith("/")) return null; // relative / absolute
   if (spec.startsWith("node:")) return null; // explicit builtin
   if (spec.startsWith("@")) {
-    // scoped: keep "@scope/name", drop deeper segments
+    // scoped: keep "@scope/name", drop deeper segments. Reject empty-scope "@/..."
+    // — that's a tsconfig path alias (e.g. "@/lib"), NOT a scoped npm package
+    // (a real one is "@scope/name" with a non-empty scope like "@prisma/client").
     const parts = spec.split("/");
-    if (parts.length < 2 || !parts[0] || !parts[1]) return null;
+    if (parts.length < 2 || parts[0] === "@" || !parts[0] || !parts[1]) return null;
     return `${parts[0]}/${parts[1]}`;
   }
   const name = spec.split("/")[0];

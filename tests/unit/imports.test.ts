@@ -76,4 +76,23 @@ describe("extractImportedLibs", () => {
     const libs = await extractImportedLibs(repo, ["e.ts"]);
     expect(libs[0]?.version).toBe("3.25.76");
   });
+
+  it("excludes '@/'-style tsconfig path aliases but keeps real scoped packages", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-imp6-"));
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({ dependencies: { "@prisma/client": "6.0.0", zod: "4.0.0" } }),
+    );
+    writeFileSync(
+      join(repo, "f.ts"),
+      [
+        `import { prisma } from "@/lib/prisma";`, // path alias (empty scope) → MUST be dropped
+        `import { Button } from "@/components/ui/button";`, // path alias → dropped
+        `import { PrismaClient } from "@prisma/client";`, // real scoped pkg → kept
+        `import { z } from "zod";`, // real pkg → kept
+      ].join("\n"),
+    );
+    const names = (await extractImportedLibs(repo, ["f.ts"])).map((l) => l.name).sort();
+    expect(names).toEqual(["@prisma/client", "zod"]);
+  });
 });
