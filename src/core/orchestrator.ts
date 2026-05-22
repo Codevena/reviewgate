@@ -19,6 +19,7 @@ import { computeDiffFacts } from "../research/diff-facts.ts";
 import { extractImportedLibs } from "../research/imports.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
+import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
@@ -40,6 +41,7 @@ import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { ReportWriter } from "./report-writer.ts";
+import { buildRunSummary } from "./run-summary.ts";
 
 export interface OrchestratorInput {
   repoRoot: string;
@@ -68,6 +70,7 @@ export interface IterationResult {
   costUsd: number;
   durationMs: number;
   signaturesThisIter: string[];
+  summary: RunSummary;
 }
 
 const REVIEW_PROMPT_PREAMBLE = [
@@ -228,6 +231,15 @@ export class Orchestrator {
         costUsd: 0,
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        summary: buildRunSummary({
+          verdict: "ERROR",
+          source: "skipped",
+          counts: { critical: 0, warn: 0, info: 0 },
+          durationMs: Date.now() - start,
+          criticCostUsd: 0,
+          findings: [],
+          runs: [],
+        }),
       };
     }
 
@@ -249,6 +261,15 @@ export class Orchestrator {
         costUsd: 0,
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        summary: buildRunSummary({
+          verdict: "PASS",
+          source: "skipped",
+          counts: { critical: 0, warn: 0, info: 0 },
+          durationMs: Date.now() - start,
+          criticCostUsd: 0,
+          findings: [],
+          runs: [],
+        }),
       };
     }
 
@@ -362,6 +383,15 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [],
+          summary: buildRunSummary({
+            verdict: cached.verdict,
+            source: "cache",
+            counts: cached.counts,
+            durationMs: Date.now() - start,
+            criticCostUsd: 0,
+            findings: [],
+            runs: [],
+          }),
         };
       }
     }
@@ -453,15 +483,37 @@ export class Orchestrator {
         );
       writeFileSync(promptFile, promptParts.join("\n"));
       writeFileSync(diffPath, this.input.diff);
-      const res = await adapter.review({
-        cfg: { ...providerCfg, model },
-        reviewerId: `${r.provider}-${persona}`,
-        promptFile,
-        workingDir: repo,
-        findingsPath,
-        persona,
-        diffPath,
-      });
+      // Catch-wrap so a THROWING adapter becomes an error run (a synthetic
+      // status:"error" ReviewResult) instead of a Promise rejection that
+      // Promise.allSettled would drop from `settled`. The fail-closed guard is
+      // unchanged — okRuns still filters status === "ok", so a thrown adapter
+      // does NOT count as a usable result; it only becomes visible in `settled`
+      // (and thus in the RunSummary's per-provider error count).
+      const reviewStart = Date.now();
+      let res: ReviewResult;
+      try {
+        res = await adapter.review({
+          cfg: { ...providerCfg, model },
+          reviewerId: `${r.provider}-${persona}`,
+          promptFile,
+          workingDir: repo,
+          findingsPath,
+          persona,
+          diffPath,
+        });
+      } catch (err) {
+        res = {
+          reviewerId: `${r.provider}-${persona}`,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: Date.now() - reviewStart,
+          exitCode: -1,
+          rawEventsPath: "",
+          status: "error",
+          statusDetail: `threw: ${(err as Error).message}`.slice(0, 200),
+        };
+      }
       return { res, provider: r.provider, persona, model };
     });
 
@@ -472,6 +524,16 @@ export class Orchestrator {
       .map((o) => (o.status === "fulfilled" ? o.value : null))
       .filter((x): x is ReviewerRun => x !== null);
     const okRuns = settled.filter((s) => s.res.status === "ok");
+
+    // Per-reviewer outcomes for the RunSummary (includes thrown adapters, now
+    // surfaced as error runs in `settled`). Built once for both the okRuns===0
+    // ERROR path and the normal final return.
+    const reviewerOutcomes = settled.map((s) => ({
+      provider: s.provider,
+      persona: s.persona,
+      res: { status: s.res.status, usage: { costUsd: s.res.usage.costUsd } },
+      durationMs: s.res.durationMs,
+    }));
 
     // --- Brain write path (collect): parse memory_proposals from each OK
     // reviewer's rawText, stamp evidence with this run + reviewer id, and drop
@@ -517,6 +579,15 @@ export class Orchestrator {
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        summary: buildRunSummary({
+          verdict: "ERROR",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          durationMs: Date.now() - start,
+          criticCostUsd: 0,
+          findings: [],
+          runs: reviewerOutcomes,
+        }),
       };
     }
 
@@ -533,6 +604,7 @@ export class Orchestrator {
     let criticInfo:
       | { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number }
       | undefined;
+    let criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
     if (criticCfg && allFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
@@ -543,27 +615,34 @@ export class Orchestrator {
         const cRun = mkdtempSync(join(tmpdir(), "rg-critic-"));
         const cPrompt = join(cRun, "prompt.txt");
         writeFileSync(cPrompt, buildCriticPrompt(allFindings));
-        const cRes = await criticAdapter.review({
-          cfg: { ...cProviderCfg, ...(criticCfg.model ? { model: criticCfg.model } : {}) },
-          reviewerId: `critic-${criticCfg.provider}`,
-          promptFile: cPrompt,
-          workingDir: repo,
-          findingsPath: join(cRun, "f.md"),
-          persona: criticCfg.persona,
-          diffPath: join(cRun, "d.patch"),
-        });
-        const criticText = cRes.rawText ?? "";
-        if (cRes.status !== "ok") {
+        try {
+          const cRes = await criticAdapter.review({
+            cfg: { ...cProviderCfg, ...(criticCfg.model ? { model: criticCfg.model } : {}) },
+            reviewerId: `critic-${criticCfg.provider}`,
+            promptFile: cPrompt,
+            workingDir: repo,
+            findingsPath: join(cRun, "f.md"),
+            persona: criticCfg.persona,
+            diffPath: join(cRun, "d.patch"),
+          });
+          criticCostUsd += cRes.usage.costUsd;
+          const criticText = cRes.rawText ?? "";
+          if (cRes.status !== "ok") {
+            criticInfo = { provider: criticCfg.provider, status: "error", verdicts: 0 };
+          } else if (!criticText) {
+            criticInfo = { provider: criticCfg.provider, status: "empty", verdicts: 0 };
+          } else {
+            criticMap = parseCriticOutput(criticText);
+            criticInfo = {
+              provider: criticCfg.provider,
+              status: criticMap.size > 0 ? "ran" : "empty",
+              verdicts: criticMap.size,
+            };
+          }
+        } catch {
+          // A throwing critic must not abort the run (it's demote-only). Leave
+          // criticMap undefined (no demotions applied) and record an error.
           criticInfo = { provider: criticCfg.provider, status: "error", verdicts: 0 };
-        } else if (!criticText) {
-          criticInfo = { provider: criticCfg.provider, status: "empty", verdicts: 0 };
-        } else {
-          criticMap = parseCriticOutput(criticText);
-          criticInfo = {
-            provider: criticCfg.provider,
-            status: criticMap.size > 0 ? "ran" : "empty",
-            verdicts: criticMap.size,
-          };
         }
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
@@ -638,6 +717,15 @@ export class Orchestrator {
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
+      summary: buildRunSummary({
+        verdict: agg.verdict,
+        source: "panel",
+        counts: agg.counts,
+        durationMs: Date.now() - start,
+        criticCostUsd,
+        findings: agg.dedupedFindings,
+        runs: reviewerOutcomes,
+      }),
     };
   }
 
