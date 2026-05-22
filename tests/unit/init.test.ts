@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInit } from "../../src/cli/commands/init.ts";
+import { loadConfig } from "../../src/config/loader.ts";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-init-"));
@@ -49,5 +50,20 @@ describe("runInit", () => {
     const s = JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8"));
     expect(s.hooks.Stop.length).toBe(1);
     expect(s.hooks.PostToolUse.length).toBe(1);
+  });
+
+  it("scaffolds a reviewgate.config.ts that validates with fpLedger + brain + codex curator on", async () => {
+    const repo = tmp();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const cfgPath = join(repo, "reviewgate.config.ts");
+    expect(existsSync(cfgPath)).toBe(true);
+    // Must load + validate through the real loader (catches a malformed scaffold).
+    const cfg = await loadConfig(cfgPath);
+    expect(cfg.phases.fpLedger?.enabled).toBe(true);
+    expect(cfg.phases.brain?.enabled).toBe(true);
+    expect(cfg.phases.brain?.curator?.provider).toBe("codex");
+    // openrouter must be enabled — the brain's embeddings depend on it.
+    expect(cfg.providers.openrouter?.enabled).toBe(true);
+    expect(cfg.phases.brain?.embeddings.provider).toBe("openrouter");
   });
 });
