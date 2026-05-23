@@ -225,15 +225,28 @@ export class LoopDriver {
       );
     }
 
-    // Stuck-loop: same signatures two iters in a row.
-    const lastIdx = state.signature_history.length - 1;
-    const last = state.signature_history[lastIdx];
-    const prev = state.signature_history[lastIdx - 1];
-    if (last && prev && last.join(",") === prev.join(",")) {
+    // Stuck-loop: the SAME non-empty signature set repeated for `stuckThreshold`
+    // consecutive iterations (config.loop.stuckThreshold; default 2 = the original
+    // "two iters in a row"). Now actually wired to config — previously the window
+    // was hardcoded to 2 and stuckThreshold was dead. Configurable so a repo can
+    // raise it above the FP-ledger's active-promotion horizon: a repeated
+    // cross-provider FP needs ≥3 rejects (→ 3 iterations) to reach `active` and be
+    // auto-demoted, so with the default 2 the gate escalates before the ledger can
+    // suppress it. Clamp to ≥2 (a 1-iter "streak" isn't a stuck loop). An empty
+    // signature set (a clean iteration) never counts as stuck.
+    const stuckN = Math.max(2, this.i.config.loop.stuckThreshold);
+    const hist = state.signature_history;
+    const windowKey = hist[hist.length - 1]?.join(",");
+    if (
+      hist.length >= stuckN &&
+      windowKey !== undefined &&
+      windowKey !== "" &&
+      hist.slice(-stuckN).every((s) => s.join(",") === windowKey)
+    ) {
       return this.escalateAndDecide(
         state,
         "stuck-signatures",
-        "Findings unchanged across 2 iterations.",
+        `Findings unchanged across ${stuckN} iterations.`,
       );
     }
 

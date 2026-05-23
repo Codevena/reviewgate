@@ -812,3 +812,84 @@ describe("LoopDriver", () => {
     expect(decision.reason).not.toContain("reject-rate-high");
   });
 });
+
+describe("LoopDriver stuck-signature threshold (configurable)", () => {
+  const cfgWith = (stuckThreshold: number, maxIterations: number) => ({
+    ...defaultConfig,
+    loop: { ...defaultConfig.loop, stuckThreshold, maxIterations },
+  });
+
+  async function drive(opts: {
+    stuckThreshold: number;
+    maxIterations: number;
+    history: string[][];
+    iteration: number;
+    diff: string;
+  }) {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSTUCK");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: opts.iteration,
+      signature_history: opts.history,
+    }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfgWith(opts.stuckThreshold, opts.maxIterations),
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfgWith(opts.stuckThreshold, opts.maxIterations),
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: opts.diff,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    return { decision, state };
+  }
+
+  it("default stuckThreshold=2: escalates on 2 identical signature iterations", async () => {
+    const { decision, state } = await drive({
+      stuckThreshold: 2,
+      maxIterations: 3,
+      history: [["sig1"], ["sig1"]],
+      iteration: 2,
+      diff: "",
+    });
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/ESCALATED/);
+    expect((await state.load()).escalation_reason).toBe("stuck-signatures");
+  });
+
+  it("stuckThreshold=3: does NOT escalate on only 2 identical iterations", async () => {
+    const { decision, state } = await drive({
+      stuckThreshold: 3,
+      maxIterations: 10,
+      history: [["sig1"], ["sig1"]],
+      iteration: 2,
+      diff: DOC_DIFF, // doc-only → panel skipped → PASS, no stuck escalation
+    });
+    expect(decision.kind).toBe("allow_stop");
+    expect((await state.load()).escalation_reason).not.toBe("stuck-signatures");
+  });
+
+  it("stuckThreshold=3: escalates once 3 identical iterations accumulate", async () => {
+    const { decision, state } = await drive({
+      stuckThreshold: 3,
+      maxIterations: 10,
+      history: [["sig1"], ["sig1"], ["sig1"]],
+      iteration: 3,
+      diff: "",
+    });
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/ESCALATED/);
+    expect((await state.load()).escalation_reason).toBe("stuck-signatures");
+  });
+});
