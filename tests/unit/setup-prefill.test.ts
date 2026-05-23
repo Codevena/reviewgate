@@ -12,6 +12,7 @@ describe("RECOMMENDED_DEFAULTS", () => {
     expect(RECOMMENDED_DEFAULTS.perReviewer.codex).toEqual({
       persona: "security",
       model: MODEL_DEFAULT.codex,
+      fallback: ["gemini", "claude-code"],
     });
     expect(RECOMMENDED_DEFAULTS.critic).toBeNull();
     expect(RECOMMENDED_DEFAULTS.brainCurator).toBeNull();

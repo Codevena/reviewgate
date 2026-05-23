@@ -73,7 +73,13 @@ export function buildQuickPreset(input: QuickInput): DeepPartial<ReviewgateConfi
   return {
     providers: { codex: { enabled: true, auth: "oauth" } },
     phases: {
-      review: { reviewers: [{ provider: "codex", persona: "security" }] },
+      // Predefined quota-failover: codex → gemini → claude-code (both OAuth, $0).
+      // Each only runs if its CLI is available; no surprise billing.
+      review: {
+        reviewers: [
+          { provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] },
+        ],
+      },
       fpLedger: { enabled: true },
       ...brainPhase,
     },

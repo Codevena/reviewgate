@@ -42,7 +42,17 @@ export const defaultConfig = {
   },
   phases: {
     review: {
-      reviewers: [{ provider: "codex" as const, persona: "security" }],
+      // Predefined quota-failover chain: if codex hits its usage cap, the gate
+      // automatically re-runs the SAME review on gemini, then claude-code — both
+      // OAuth ($0), so no surprise billing. Each only runs if its CLI is actually
+      // available; append "openrouter" if you want a paid last resort.
+      reviewers: [
+        {
+          provider: "codex" as const,
+          persona: "security",
+          fallback: ["gemini", "claude-code"] as ("gemini" | "claude-code")[],
+        },
+      ],
       fileContextBudgetBytes: 32_000,
       scopeToDiff: true,
     },

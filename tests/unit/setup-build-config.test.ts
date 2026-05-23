@@ -9,7 +9,9 @@ describe("buildQuickPreset", () => {
     );
     expect(cfg.phases.fpLedger).toEqual({ enabled: true });
     expect(cfg.phases.brain).toBeNull();
-    expect(cfg.phases.review.reviewers).toEqual([{ provider: "codex", persona: "security" }]);
+    expect(cfg.phases.review.reviewers).toEqual([
+      { provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] },
+    ]);
   });
 
   it("OPENROUTER key present => brain ON with codex fp-filter curator", () => {

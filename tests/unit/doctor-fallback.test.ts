@@ -11,7 +11,15 @@ const noneAvailable: ProviderAvailable = () => false;
 
 describe("fallbackChainCheck", () => {
   it("returns null when no reviewer declares a fallback chain", () => {
-    expect(fallbackChainCheck(defineConfig({}), allAvailable)).toBeNull();
+    // Explicitly override reviewers to drop the predefined default chain.
+    const noChain = defineConfig({
+      phases: { review: { reviewers: [{ provider: "codex", persona: "security" }] } },
+    } as Parameters<typeof defineConfig>[0]);
+    expect(fallbackChainCheck(noChain, allAvailable)).toBeNull();
+  });
+
+  it("the shipped default config HAS a usable failover chain (gemini/claude-code)", () => {
+    expect(fallbackChainCheck(defineConfig({}), allAvailable)?.status).toBe("ok");
   });
 
   it("ok when a declared fallback provider is configured + available", () => {

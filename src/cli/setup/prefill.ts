@@ -24,7 +24,10 @@ export interface WizardDefaults {
 // notably fpLedger recommended ON even though the schema default is null/off.
 export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   reviewerProviders: ["codex"],
-  perReviewer: { codex: { persona: "security", model: MODEL_DEFAULT.codex } },
+  // Predefined quota-failover chain (both OAuth, $0; each runs only if available).
+  perReviewer: {
+    codex: { persona: "security", model: MODEL_DEFAULT.codex, fallback: ["gemini", "claude-code"] },
+  },
   critic: null,
   brainCurator: null,
   fpLedger: true,

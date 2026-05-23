@@ -86,10 +86,12 @@ describe("loadConfig", () => {
     ).toThrow();
   });
 
-  it("defaults critic to null and keeps codex as the sole default reviewer", () => {
+  it("defaults critic to null and keeps codex as the sole default reviewer (with a free failover chain)", () => {
     const cfg = defineConfig({});
     expect(cfg.phases.critic).toBeNull();
-    expect(cfg.phases.review.reviewers).toEqual([{ provider: "codex", persona: "security" }]);
+    expect(cfg.phases.review.reviewers).toEqual([
+      { provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] },
+    ]);
   });
 });
 
