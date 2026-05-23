@@ -1,4 +1,5 @@
 // src/cli/commands/gate.ts
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
@@ -12,7 +13,7 @@ import type { ProviderId } from "../../providers/registry.ts";
 import { collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
-import { auditDir } from "../../utils/paths.ts";
+import { auditDir, dirtyFlagPath } from "../../utils/paths.ts";
 import { buildAdapters } from "../build-adapters.ts";
 
 export interface GateInput {
@@ -63,13 +64,24 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
 
   const adapters = buildAdapters(cfg, input.providerOverrides);
   const gitInfo = collectGitInfo(input.repoRoot);
+  // Review base: the pre-batch HEAD captured in dirty.flag, so commit-per-task
+  // work (committed mid-batch) is reviewed too — not just the working tree.
+  let reviewBase: string | null = null;
+  try {
+    const dp = dirtyFlagPath(input.repoRoot);
+    if (existsSync(dp)) {
+      reviewBase = (JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string }).base_sha ?? null;
+    }
+  } catch {
+    reviewBase = null;
+  }
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,
     adapters,
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
-    diff: collectDiff(input.repoRoot),
+    diff: collectDiff(input.repoRoot, reviewBase),
     gitInfo,
     reasonOnFailEnabled: true,
   });

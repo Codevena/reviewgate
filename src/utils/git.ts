@@ -31,17 +31,36 @@ function isReviewgateManaged(path: string): boolean {
 // `git diff HEAD` omits it entirely. Non-mutating (never touches the index).
 // .gitignored files are excluded (--exclude-standard); Reviewgate's own managed
 // files are excluded explicitly (they aren't all gitignored, e.g. .reviewgate/bin).
-export function collectDiff(repoRoot: string): string {
-  const tracked = git(repoRoot, [
+// Current HEAD sha, or null if there is none (e.g. an empty repo). Used to anchor
+// a review BASE in dirty.flag so commit-per-task work is still reviewed.
+export function gitHeadSha(repoRoot: string): string | null {
+  const r = git(repoRoot, ["rev-parse", "HEAD"]);
+  const sha = r.stdout.trim();
+  return r.status === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
+// `baseSha` (optional) — the commit to diff the working tree against. When the
+// agent commits work mid-batch (commit-per-task), `git diff HEAD` is empty at
+// turn-end so the gate would review nothing; diffing against the pre-batch base
+// (captured in dirty.flag at the clean→dirty transition) captures BOTH committed
+// and uncommitted changes since then. Defaults to HEAD — the original
+// working-tree-only behavior — when no base is given or the base ref is invalid.
+export function collectDiff(repoRoot: string, baseSha?: string | null): string {
+  const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
+  const diffArgs = (ref: string) => [
     "diff",
     "--no-color",
-    "HEAD",
+    ref,
     "--",
     ".",
     ":(exclude)reviewgate.config.ts",
     ":(exclude).reviewgate",
     ":(exclude).reviewgate/**",
-  ]);
+  ];
+  let tracked = git(repoRoot, diffArgs(base));
+  // A stale/rewritten base (rebase, amend, branch switch) makes `git diff <base>`
+  // fail → fall back to HEAD so the working-tree diff is still reviewed.
+  if (tracked.status !== 0 && base !== "HEAD") tracked = git(repoRoot, diffArgs("HEAD"));
   let out = tracked.status === 0 ? tracked.stdout : "";
 
   const untracked = git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);

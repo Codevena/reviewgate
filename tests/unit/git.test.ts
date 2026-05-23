@@ -4,7 +4,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectDiff, collectGitInfo } from "../../src/utils/git.ts";
+import { collectDiff, collectGitInfo, gitHeadSha } from "../../src/utils/git.ts";
+
+function commitAll(dir: string, msg: string): void {
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  spawnSync("git", ["-c", "user.email=e@e", "-c", "user.name=e", "commit", "-q", "-m", msg], {
+    cwd: dir,
+  });
+}
 
 function repo(): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-git-"));
@@ -26,6 +33,40 @@ describe("collectDiff", () => {
     expect(diff).toContain("diff --git a/existing.ts b/existing.ts");
     expect(diff).toContain("diff --git a/newmod.ts b/newmod.ts"); // the bug-1 fix
     expect(diff).toContain("SECRET"); // new-file content is present for the reviewer
+  });
+
+  it("reviews COMMITTED changes since a base SHA (commit-per-task), not just the working tree", () => {
+    const dir = repo();
+    const base = gitHeadSha(dir); // pre-batch HEAD
+    expect(base).toMatch(/^[0-9a-f]{40}$/);
+    // Agent edits AND commits (commit-per-task) → working tree is now clean.
+    writeFileSync(join(dir, "feature.ts"), "export const FEATURE = 'shipped';\n");
+    commitAll(dir, "feat: add feature");
+
+    // Default (HEAD) sees NOTHING — the working tree is clean (the gap).
+    expect(collectDiff(dir)).toBe("");
+    // Diffing against the pre-batch base captures the committed change.
+    const sinceBase = collectDiff(dir, base);
+    expect(sinceBase).toContain("diff --git a/feature.ts b/feature.ts");
+    expect(sinceBase).toContain("FEATURE");
+  });
+
+  it("includes committed AND uncommitted changes since the base", () => {
+    const dir = repo();
+    const base = gitHeadSha(dir);
+    writeFileSync(join(dir, "committed.ts"), "export const C = 1;\n");
+    commitAll(dir, "feat: committed");
+    writeFileSync(join(dir, "wip.ts"), "export const W = 2;\n"); // uncommitted (untracked)
+    const diff = collectDiff(dir, base);
+    expect(diff).toContain("committed.ts");
+    expect(diff).toContain("wip.ts");
+  });
+
+  it("falls back to HEAD when the base SHA is invalid/stale", () => {
+    const dir = repo();
+    writeFileSync(join(dir, "existing.ts"), "export const a = 9;\n"); // working-tree change
+    const diff = collectDiff(dir, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"); // nonexistent sha
+    expect(diff).toContain("diff --git a/existing.ts b/existing.ts"); // still got the WT diff
   });
 
   it("excludes gitignored files (no diff header for the ignored file)", () => {

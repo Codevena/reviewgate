@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { gitHeadSha } from "../utils/git.ts";
 import { dirtyFlagPath, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
 
 export interface TriggerInput {
@@ -13,8 +14,25 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const diffHash = createHash("sha256").update(input.hookStdinRaw).digest("hex").slice(0, 16);
-  const body = JSON.stringify({ diff_hash: diffHash, ts: new Date().toISOString() });
   const p = dirtyFlagPath(input.repoRoot);
+  // Capture the review BASE = HEAD at the FIRST edit of this batch (clean→dirty
+  // transition). Preserve it across subsequent edits AND any commits the agent
+  // makes mid-batch, so the gate reviews `git diff <base>` (committed +
+  // uncommitted since then), not just the now-clean working tree.
+  let baseSha: string | null = null;
+  if (existsSync(p)) {
+    try {
+      baseSha = (JSON.parse(readFileSync(p, "utf8")) as { base_sha?: string }).base_sha ?? null;
+    } catch {
+      baseSha = null;
+    }
+  }
+  if (!baseSha) baseSha = gitHeadSha(input.repoRoot);
+  const body = JSON.stringify({
+    diff_hash: diffHash,
+    ts: new Date().toISOString(),
+    ...(baseSha ? { base_sha: baseSha } : {}),
+  });
   const tmp = `${p}.tmp`;
   if (!existsSync(dirname(p))) mkdirSync(dirname(p), { recursive: true });
   writeFileSync(tmp, body, { mode: 0o600 });

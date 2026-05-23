@@ -35,6 +35,7 @@ export type LoopDecision =
 interface DirtyFlag {
   diff_hash: string;
   ts: string;
+  base_sha?: string; // pre-batch HEAD; the gate diffs against it (commit-per-task)
 }
 
 function readDirtyFlag(repoRoot: string): DirtyFlag | null {
