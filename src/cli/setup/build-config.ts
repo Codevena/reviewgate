@@ -4,6 +4,7 @@ import type { ProviderId } from "../../providers/registry.ts";
 export interface ReviewerAnswer {
   provider: ProviderId;
   persona: string;
+  /** Model slug. Empty string → omit it so defineConfig falls back to the provider default in defaults.ts. */
   model: string;
 }
 
@@ -73,6 +74,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
   if (a.critic) providerIds.push({ provider: a.critic.provider });
   if (a.brain) providerIds.push({ provider: a.brain.curator.provider });
 
+  // Record<string,unknown> so contextDocs can be null (a valid override); defineConfig validates it.
   const phases: Record<string, unknown> = {
     review: { reviewers: a.reviewers.map((r) => ({ provider: r.provider, persona: r.persona })) },
     fpLedger: { enabled: a.fpLedger },
