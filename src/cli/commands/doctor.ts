@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadConfig } from "../../config/loader.ts";
+import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
@@ -190,18 +191,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     // needs its CONFIGURED key env var set (defaults to OPENROUTER_API_KEY, but a
     // provider/embeddings config may name a different one). ("claude-code" runs the
     // `claude` CLI.)
-    const PROVIDER_BIN: Record<ProviderId, string | null> = {
-      codex: "codex",
-      gemini: "gemini",
-      "claude-code": "claude",
-      opencode: "opencode",
-      openrouter: null,
-    };
-    const curatorAvailable: ProviderAvailable = (id, apiKeyEnv) => {
-      if (id === "openrouter") return Boolean(process.env[apiKeyEnv ?? "OPENROUTER_API_KEY"]);
-      const bin = PROVIDER_BIN[id];
-      return bin ? checkBinary(bin, "").status === "ok" : false;
-    };
+    const curatorAvailable: ProviderAvailable = (id, apiKeyEnv) =>
+      isProviderAvailable(id, apiKeyEnv);
     const crit = criticCheck(cfg, curatorAvailable);
     if (crit) checks.push(crit);
     const emb = brainEmbeddingsCheck(cfg, curatorAvailable);
