@@ -20,7 +20,7 @@ import {
   defineConfig,
 } from "../../config/define-config.ts";
 import { diffFromDefaults } from "../../config/diff-defaults.ts";
-import { loadEffectiveConfig, resolveGlobalConfigPath } from "../../config/global.ts";
+import { resolveGlobalConfigPath } from "../../config/global.ts";
 import { serializeConfig } from "../../config/serialize.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
