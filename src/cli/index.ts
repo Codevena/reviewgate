@@ -8,6 +8,7 @@ import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
+import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 
 const init = defineCommand({
@@ -213,9 +214,27 @@ const report = defineCommand({
   },
 });
 
+const setup = defineCommand({
+  meta: { name: "setup", description: "Interactive configuration wizard" },
+  async run() {
+    process.exit(await runSetup({ repoRoot: process.cwd() }));
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: "0.1.0-m1" },
-  subCommands: { init, gate, "review-plan": reviewPlan, doctor, audit, brain, fp, stats, report },
+  subCommands: {
+    init,
+    gate,
+    "review-plan": reviewPlan,
+    doctor,
+    audit,
+    brain,
+    fp,
+    stats,
+    report,
+    setup,
+  },
 });
 
 void runMain(main);

@@ -23,6 +23,7 @@
     "self-review": "bun run dev init && bun run dev gate --hook trigger </dev/null && bun run dev gate --hook stop </dev/null"
   },
   "dependencies": {
+    "@clack/prompts": "^1.4.0",
     "citty": "^0.1.6",
     "minimatch": "^10.2.5",
     "tree-sitter-python": "^0.25.0",
