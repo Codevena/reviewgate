@@ -1,4 +1,57 @@
-# Reviewgate — Session Handoff (2026-05-23, session 7)
+# Reviewgate — Session Handoff (2026-05-23, session 8)
+
+## ⭐ SESSION 8 (2026-05-23): `reviewgate setup` WIZARD — COMPLETE on `feat/setup-wizard` (NOT merged/pushed)
+
+The headline onboarding feature shipped. Branch **`feat/setup-wizard`** (off local master
+`c4fa567`); **8 commits, NOT merged to master, NOT pushed** — awaiting user decision
+(finishing-a-development-branch). 650 pass / 9 skip / 0 fail; tsc + lint clean; binary rebuilt.
+Working tree: only the pre-existing `M CLAUDE.md` (leave it) + untracked `.claude/` (harness
+scheduling artifacts — do NOT commit).
+
+**What shipped:** `reviewgate setup` — an interactive @clack/prompts wizard (Quick preset |
+Custom walk) that gates providers on real availability, live-probes models via
+`adapter.complete()`, and writes a **minimal plain-object `reviewgate.config.ts`** (project OR
+global) with a `.bak` backup; runs `doctor` at the end. Plus a NEW config-precedence layer
+**defaults ← global ← project** (`src/config/global.ts` `loadEffectiveConfig`, used by the gate
++ doctor; preserves the gate's graceful malformed-config fallback). `init` now prints a TTY-only
+tip pointing at `setup`.
+
+**New modules:** `src/providers/availability.ts` (injectable `isProviderAvailable`, extracted from
+doctor), `src/config/diff-defaults.ts` (`diffFromDefaults` minimal structural diff),
+`src/config/serialize.ts` (`serializeConfig` → plain `export default {}`, no defineConfig import),
+`src/config/global.ts`, `src/cli/setup/build-config.ts` (`buildQuickPreset`/`buildCustomConfig`),
+`src/cli/setup/probe.ts` (`probeModel`), `src/cli/commands/setup.ts` (flow + pure `finalizeSetup`/
+`setupTip`). `define-config.ts` now exports `deepMerge`/`DeepPartial`.
+
+**Spec** `docs/superpowers/specs/2026-05-23-reviewgate-setup-wizard-design.md` (OpenCode-reviewed —
+3 rounds, mostly false positives, real findings folded in; codex was ratelimited). **Plan**
+`docs/superpowers/plans/2026-05-23-reviewgate-setup-wizard.md` (8 TDD tasks, subagent-driven,
+per-task spec+quality reviews + an Opus final review = **APPROVED FOR MERGE**, 0 critical/important).
+
+**REAL compiled-binary E2E (per the ethos):** drove the Quick path via a PTY against
+`dist/reviewgate setup` in a scratch repo → wrote a valid plain-object minimal config
+(`phases.brain` + `fpLedger` only; codex reviewer omitted as default), OPENROUTER_API_KEY present
+→ brain on with codex fp-filter curator, closing **doctor all-green**.
+
+**Intentional decisions / deviations (don't "fix" without thought):**
+- Declined features emit explicit-off (`contextDocs: null`, `fpLedger:{enabled:false}`) — REQUIRED
+  so a project can OVERRIDE a global that enabled them; treating `null===undefined` as equal in the
+  diff would BREAK override semantics.
+- Enabling brain emits the whole resolved brain block incl. schema defaults (`maxPromptTokens` etc.)
+  because `defaultConfig.phases.brain` is `null` — necessary for round-trip, harmless.
+
+**Deferred follow-ups:** (1) **re-run pre-fill** — prompts seed from `defaults.ts`, NOT the current
+effective config (spec §7 wanted current-config pre-fill; fine for first-run onboarding, nice-to-have
+for reconfigure). (2) critic/curator models are not live-probed (only reviewers are). (3) A contextDocs
+line in `doctor` (it has none today; wizard prints the keyless note itself).
+
+**DoD note:** codex ratelimited all session → used the OpenCode fallback; OpenCode was unreliable
+(hallucinated spec findings; the final whole-diff review **stalled 20 min / killed, exit 144**). The
+authoritative **codex review pass is still OWED** when codex is off ratelimit — run it over
+`git diff master..feat/setup-wizard` before/after merge. See memory
+[[reference-opencode-spec-review-fp]].
+
+---
 
 ## ⭐ SESSION 7 (2026-05-22/23): CLI-adapter `complete()` (LLM judges for any provider) + follow-ups
 
