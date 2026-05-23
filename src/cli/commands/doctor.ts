@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
+import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
@@ -203,6 +204,22 @@ export function recentQuotaCheck(
   };
 }
 
+// Active quota cooldowns: providers reviewgate is currently skipping (straight to
+// their fallback) because a prior review hit their usage cap, with the remembered
+// reset time. Informational — it auto-resumes once the reset passes.
+export function quotaCooldownCheck(repoRoot: string, now: Date): Check | null {
+  const active = new QuotaCooldownStore(repoRoot).activeSnapshot(now);
+  const entries = Object.entries(active);
+  if (entries.length === 0) return null;
+  return {
+    name: "provider quota cooldown",
+    status: "warn",
+    detail: `skipping to fallback until reset: ${entries
+      .map(([p, t]) => `${p} → ${t}`)
+      .join(", ")} (auto-resumes after; no config change)`,
+  };
+}
+
 function checkBinary(bin: string, name: string): Check {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
   if (r.status === 0)
@@ -302,6 +319,10 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   } catch {
     // ignore — quota hint is advisory
   }
+
+  // Active quota cooldowns (remembered reset time → auto-skip to fallback).
+  const cd = quotaCooldownCheck(input.repoRoot, new Date());
+  if (cd) checks.push(cd);
 
   // Optional reviewer CLIs (M2). These are only needed if enabled in config;
   // report as warn (not fail) when absent so codex-only setups stay green.

@@ -14,7 +14,7 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
-import { isQuotaExhausted } from "./quota-signals.ts";
+import { extractQuotaMessage, isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -112,17 +112,20 @@ export class CodexAdapter implements ProviderAdapter {
     });
 
     const stderrText = readFileSafe(stderrFile);
-    // codex's usage-limit banner ("You've hit your usage limit") lands on STDOUT
-    // (the --json event stream), while stderr may only show the generic stdin
-    // notice — so scan BOTH before classifying as a generic error vs quota.
+    // codex's usage-limit banner ("You've hit your usage limit … try again at
+    // <date>") lands on STDOUT (the --json event stream), while stderr may only
+    // show the generic stdin notice — so scan BOTH before classifying, and when
+    // it IS a quota hit surface the events' banner (with the reset time) as
+    // statusDetail so the cooldown can parse when codex's limit resets.
+    const quotaText = `${stderrText}\n${readFileSafe(eventsFile)}`;
     const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
     const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(stderrText + readFileSafe(eventsFile))
-        ? "quota-exhausted"
-        : baseStatus;
+      baseStatus === "error" && isQuotaExhausted(quotaText) ? "quota-exhausted" : baseStatus;
 
     if (status !== "ok") {
+      const detail =
+        status === "quota-exhausted" ? (extractQuotaMessage(quotaText) ?? stderrText) : stderrText;
       return {
         reviewerId: input.reviewerId,
         verdict: "ERROR",
@@ -132,7 +135,7 @@ export class CodexAdapter implements ProviderAdapter {
         exitCode: res.exitCode,
         rawEventsPath: eventsFile,
         status,
-        statusDetail: stderrText.slice(0, 1000),
+        statusDetail: detail.slice(0, 1000),
       };
     }
 

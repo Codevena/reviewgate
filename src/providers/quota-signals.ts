@@ -31,3 +31,25 @@ export function isQuotaExhausted(text: string | undefined | null): boolean {
   if (!text) return false;
   return QUOTA_SIGNATURES.some((re) => re.test(text));
 }
+
+/**
+ * A clean one-line snippet around the quota signal, for statusDetail. Needed
+ * because some CLIs (codex) print the usage-limit banner — INCLUDING the
+ * "try again at <date>" reset time — to STDOUT/events, not stderr; passing this
+ * to statusDetail lets parseQuotaResetAt recover the reset time. Returns null if
+ * no signal is present.
+ */
+export function extractQuotaMessage(text: string | undefined | null): string | null {
+  if (!text) return null;
+  let earliest = -1;
+  for (const re of QUOTA_SIGNATURES) {
+    const m = re.exec(text);
+    if (m && (earliest === -1 || m.index < earliest)) earliest = m.index;
+  }
+  if (earliest === -1) return null;
+  const start = Math.max(0, earliest - 40);
+  return text
+    .slice(start, start + 500)
+    .replace(/\s+/g, " ")
+    .trim();
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isQuotaExhausted } from "../../src/providers/quota-signals.ts";
+import { extractQuotaMessage, isQuotaExhausted } from "../../src/providers/quota-signals.ts";
 
 describe("isQuotaExhausted", () => {
   test("detects codex usage-limit banner", () => {
@@ -39,5 +39,21 @@ describe("isQuotaExhausted", () => {
   test("handles empty / undefined input", () => {
     expect(isQuotaExhausted("")).toBe(false);
     expect(isQuotaExhausted(undefined)).toBe(false);
+  });
+});
+
+describe("extractQuotaMessage", () => {
+  test("returns a snippet that retains the codex 'try again at <date>' reset time", () => {
+    // The reset time can sit well after the first signal, buried in JSONL events.
+    const events =
+      '{"type":"item","text":"ERROR: You\'ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at May 27th, 2026 12:57 AM."}';
+    const msg = extractQuotaMessage(events);
+    expect(msg).not.toBeNull();
+    expect(msg).toContain("try again at May 27th, 2026 12:57 AM");
+  });
+
+  test("returns null when there is no quota signal", () => {
+    expect(extractQuotaMessage("just a normal error")).toBeNull();
+    expect(extractQuotaMessage(undefined)).toBeNull();
   });
 });

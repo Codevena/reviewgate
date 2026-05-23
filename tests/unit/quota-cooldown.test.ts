@@ -1,0 +1,82 @@
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { QuotaCooldownStore, parseQuotaResetAt } from "../../src/core/quota-cooldown.ts";
+
+const NOW = new Date("2026-05-23T12:00:00.000Z");
+
+describe("parseQuotaResetAt", () => {
+  test("parses codex's 'try again at <date>' banner (ordinal stripped)", () => {
+    const iso = parseQuotaResetAt(
+      "ERROR: You've hit your usage limit. ... or try again at May 27th, 2026 12:57 AM.",
+      NOW,
+    );
+    expect(iso).not.toBeNull();
+    expect(new Date(iso as string).getTime()).toBeGreaterThan(NOW.getTime());
+    // Same day-of-month regardless of TZ rendering.
+    expect(new Date(iso as string).toISOString()).toContain("2026-05-2");
+  });
+
+  test("parses the reset time even when embedded in codex JSONL events (trailing JSON)", () => {
+    const events =
+      '{"type":"error","message":"You\'ve hit your usage limit. ... or try again at May 27th, 2026 12:57 AM."}}{"type":"turn.failed"}';
+    const iso = parseQuotaResetAt(events, NOW);
+    expect(iso).not.toBeNull();
+    // 4 days out — within the 30-day guard, NOT swallowed into a garbage date.
+    expect(new Date(iso as string).getTime()).toBeGreaterThan(NOW.getTime());
+  });
+
+  test("parses a 'retry after N seconds' rate-limit message", () => {
+    const iso = parseQuotaResetAt("HTTP 429: rate limited, retry after 120 seconds", NOW);
+    expect(iso).toBe(new Date(NOW.getTime() + 120_000).toISOString());
+  });
+
+  test("returns null when no reset hint is present", () => {
+    expect(parseQuotaResetAt("RESOURCE_EXHAUSTED: quota exceeded", NOW)).toBeNull();
+    expect(parseQuotaResetAt("", NOW)).toBeNull();
+    expect(parseQuotaResetAt(undefined, NOW)).toBeNull();
+  });
+
+  test("rejects a parsed time in the past or absurdly far out", () => {
+    expect(parseQuotaResetAt("try again at January 1st, 2020 00:00 AM", NOW)).toBeNull();
+    expect(parseQuotaResetAt("try again at May 27th, 2099 12:00 PM", NOW)).toBeNull();
+  });
+});
+
+describe("QuotaCooldownStore", () => {
+  const repo = () => mkdtempSync(join(tmpdir(), "rg-cd-"));
+
+  test("records a cooldown and reports it active until the reset time", () => {
+    const r = repo();
+    const s = new QuotaCooldownStore(r);
+    const resetAt = new Date(NOW.getTime() + 3_600_000).toISOString();
+    s.record("codex", resetAt, NOW);
+    expect(s.activeUntil("codex", NOW)).toBe(resetAt);
+    // persisted to disk
+    const onDisk = JSON.parse(readFileSync(join(r, ".reviewgate", "quota-cooldowns.json"), "utf8"));
+    expect(onDisk.providers.codex.reset_at).toBe(resetAt);
+  });
+
+  test("a cooldown expires once now passes the reset time", () => {
+    const r = repo();
+    const s = new QuotaCooldownStore(r);
+    const resetAt = new Date(NOW.getTime() + 1000).toISOString();
+    s.record("codex", resetAt, NOW);
+    const later = new Date(NOW.getTime() + 5000);
+    expect(s.activeUntil("codex", later)).toBeNull();
+  });
+
+  test("clear removes the cooldown (provider recovered)", () => {
+    const r = repo();
+    const s = new QuotaCooldownStore(r);
+    s.record("codex", new Date(NOW.getTime() + 3_600_000).toISOString(), NOW);
+    s.clear("codex");
+    expect(s.activeUntil("codex", NOW)).toBeNull();
+  });
+
+  test("a fresh store with no file reports nothing active", () => {
+    const s = new QuotaCooldownStore(repo());
+    expect(s.activeUntil("codex", NOW)).toBeNull();
+  });
+});

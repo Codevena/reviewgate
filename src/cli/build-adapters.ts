@@ -13,7 +13,13 @@ import { type ProviderId, createAdapter } from "../providers/registry.ts";
 // existed only by coincidence of also being reviewers — fixed here.)
 export function consumedProviders(cfg: ReviewgateConfig): ProviderId[] {
   const set = new Set<ProviderId>();
-  for (const r of cfg.phases.review.reviewers) set.add(r.provider);
+  for (const r of cfg.phases.review.reviewers) {
+    set.add(r.provider);
+    // A provider that appears ONLY in a reviewer's quota-failover chain still
+    // needs its adapter built — otherwise the orchestrator can't run the failover
+    // (adapters[fb] would be undefined) and a capped primary just degrades.
+    for (const fb of r.fallback ?? []) set.add(fb);
+  }
   if (cfg.phases.critic) set.add(cfg.phases.critic.provider);
   const brain = cfg.phases.brain;
   if (brain) {
