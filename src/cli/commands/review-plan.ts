@@ -1,10 +1,10 @@
 // src/cli/commands/review-plan.ts
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { ulid } from "ulid";
-import type { ReviewgateConfig } from "../../config/define-config.ts";
-import { defaultConfigPath, loadConfig } from "../../config/loader.ts";
+import { loadEffectiveConfig } from "../../config/global.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
@@ -24,18 +24,6 @@ export interface ReviewPlanOutput {
   exitCode: number;
   stdout: string;
   stderr: string;
-}
-
-async function loadEffectiveConfig(repoRoot: string): Promise<ReviewgateConfig> {
-  const p = defaultConfigPath(repoRoot);
-  if (existsSync(p)) {
-    try {
-      return await loadConfig(p);
-    } catch {
-      // fall through to defaults
-    }
-  }
-  return loadConfig(null);
 }
 
 // Normalize a user path to repo-relative. Reject paths that escape the repo —
@@ -77,7 +65,11 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   if (input.files.length === 0) {
     return { exitCode: 2, stdout: "", stderr: "review-plan: no files given\n" };
   }
-  const cfg = await loadEffectiveConfig(input.repoRoot);
+  const cfg = await loadEffectiveConfig({
+    cwd: input.repoRoot,
+    env: process.env as Record<string, string | undefined>,
+    home: homedir(),
+  });
 
   const diffs: string[] = [];
   for (const f of input.files) {
