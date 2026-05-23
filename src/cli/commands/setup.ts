@@ -191,11 +191,9 @@ async function runCustom(
       options: PERSONAS.map((x) => ({ value: x, label: x })),
     });
     if (isCancel(persona)) return null;
-    const model = await text({ message: `${p}: model`, initialValue: MODEL_DEFAULT[p] });
-    if (isCancel(model)) return null;
-    const verified = await maybeProbe(p, String(model), authFor(p));
-    if (verified === "cancel") return null;
-    reviewers.push({ provider: p, persona: String(persona), model: String(model) });
+    const model = await promptModelWithProbe(p, authFor(p));
+    if (model === null) return null;
+    reviewers.push({ provider: p, persona: String(persona), model });
   }
 
   const wantCritic = await confirm({
@@ -256,26 +254,49 @@ async function runCustom(
   });
 }
 
-// Reports the probe result inline and continues (keep). Returns "cancel" on prompt cancel.
-async function maybeProbe(
+// Prompts for a model (pre-filled with the provider default), optionally live-probes it,
+// and on a probe FAILURE offers re-enter / keep-anyway (spec §6). Returns the chosen model
+// string, or null if the user cancelled. A successful OR un-verifiable probe (the provider
+// has no completion API → cannot verify) just accepts the entered model.
+async function promptModelWithProbe(
   provider: ProviderId,
-  model: string,
   auth: "oauth" | "openrouter",
-): Promise<"probed" | "kept" | "cancel"> {
-  const verify = await confirm({
-    message: `Verify ${provider}/${model} with a test call?`,
-    initialValue: true,
-  });
-  if (isCancel(verify)) return "cancel";
-  if (!verify) return "kept";
-  const s = spinner();
-  s.start(`probing ${provider}/${model} (${auth})…`);
-  const r = await probeModel({
-    provider,
-    model,
-    auth,
-    ...(provider === "openrouter" ? { apiKeyEnv: "OPENROUTER_API_KEY" } : {}),
-  });
-  s.stop(r.ok ? "✓ model responds" : r.skipped ? `⚠ ${r.detail}` : `✗ ${r.detail}`);
-  return "probed";
+): Promise<string | null> {
+  let initial = MODEL_DEFAULT[provider];
+  for (;;) {
+    const model = await text({ message: `${provider}: model`, initialValue: initial });
+    if (isCancel(model)) return null;
+    const chosen = String(model);
+
+    const verify = await confirm({
+      message: `Verify ${provider}/${chosen} with a test call?`,
+      initialValue: true,
+    });
+    if (isCancel(verify)) return null;
+    if (!verify) return chosen;
+
+    const s = spinner();
+    s.start(`probing ${provider}/${chosen} (${auth})…`);
+    const r = await probeModel({
+      provider,
+      model: chosen,
+      auth,
+      ...(provider === "openrouter" ? { apiKeyEnv: "OPENROUTER_API_KEY" } : {}),
+    });
+    s.stop(r.ok ? "✓ model responds" : r.skipped ? `⚠ ${r.detail}` : `✗ ${r.detail}`);
+
+    // Success or un-verifiable → accept. Only a genuine failure offers re-enter/keep.
+    if (r.ok || r.skipped) return chosen;
+    const next = await select({
+      message: `${provider}/${chosen} did not verify — what now?`,
+      options: [
+        { value: "reenter", label: "Re-enter the model" },
+        { value: "keep", label: "Keep it anyway" },
+      ],
+      initialValue: "reenter",
+    });
+    if (isCancel(next)) return null;
+    if (next === "keep") return chosen;
+    initial = chosen; // re-enter, pre-filled with the last attempt
+  }
 }
