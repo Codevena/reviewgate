@@ -43,4 +43,13 @@ describe("finalizeSetup", () => {
     expect(() => finalizeSetup({ partial: bad, targetPath: target, print: false })).toThrow();
     expect(existsSync(target)).toBe(false);
   });
+
+  it("creates a missing parent directory for a new target", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-fin-"));
+    const target = join(dir, "nested", "reviewgate.config.ts");
+    const partial = buildQuickPreset({ openrouterKeyPresent: false });
+    const r = finalizeSetup({ partial, targetPath: target, print: false });
+    expect(r.wrotePath).toBe(target);
+    expect(existsSync(target)).toBe(true);
+  });
 });

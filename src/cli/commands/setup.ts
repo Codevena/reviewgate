@@ -52,6 +52,7 @@ export function finalizeSetup(input: FinalizeInput): FinalizeResult {
   const text = serializeConfig(minimal as Record<string, unknown>);
   if (input.print) return { text, wrotePath: null };
   if (existsSync(input.targetPath)) {
+    // Single backup slot — a prior .bak is overwritten (git is the real history).
     copyFileSync(input.targetPath, `${input.targetPath}.bak`);
   } else {
     mkdirSync(dirname(input.targetPath), { recursive: true });
@@ -104,21 +105,22 @@ export async function runSetup(input: SetupInput): Promise<number> {
   let targetPath = join(input.repoRoot, "reviewgate.config.ts");
   if (input.global) {
     if (!globalPath) {
-      cancel("no resolvable global config dir — set XDG_CONFIG_HOME or HOME");
+      outro("setup aborted: no resolvable global config dir — set XDG_CONFIG_HOME or HOME");
       return 1;
     }
     targetPath = globalPath;
-  } else {
+  } else if (globalPath) {
     const target = await select({
       message: "Where should this config be saved?",
       options: [
         { value: "project", label: `This project (${targetPath})` },
-        ...(globalPath ? [{ value: "global", label: `My global default (${globalPath})` }] : []),
+        { value: "global", label: `My global default (${globalPath})` },
       ],
     });
     if (isCancel(target)) return cancelOut();
-    if (target === "global" && globalPath) targetPath = globalPath;
+    if (target === "global") targetPath = globalPath;
   }
+  // else: no resolvable global path → default to the project path (no prompt)
 
   // 2. Mode
   const mode = await select({
@@ -259,7 +261,7 @@ async function maybeProbe(
   provider: ProviderId,
   model: string,
   auth: "oauth" | "openrouter",
-): Promise<"ok" | "kept" | "cancel"> {
+): Promise<"probed" | "kept" | "cancel"> {
   const verify = await confirm({
     message: `Verify ${provider}/${model} with a test call?`,
     initialValue: true,
@@ -275,5 +277,5 @@ async function maybeProbe(
     ...(provider === "openrouter" ? { apiKeyEnv: "OPENROUTER_API_KEY" } : {}),
   });
   s.stop(r.ok ? "✓ model responds" : r.skipped ? `⚠ ${r.detail}` : `✗ ${r.detail}`);
-  return "ok";
+  return "probed";
 }
