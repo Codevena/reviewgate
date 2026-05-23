@@ -26,12 +26,12 @@ hosted model by name.
   <img src="docs/assets/demo.gif" alt="Reviewgate in action: Claude edits code, tries to finish, Reviewgate blocks on a CRITICAL finding, Claude fixes it, re-review passes." width="820">
 </p>
 
-> **Status: `0.1.0-alpha` (M1–M6 implemented).** Multi-reviewer panel
+> **Status: `0.1.0-alpha`.** Multi-reviewer panel
 > (Codex + Gemini + Claude + OpenRouter) · parallel execution · adversarial critic ·
 > adaptive triage · tree-sitter symbol graph · research context · review cache ·
-> per-repo learning brain + curator · false-positive ledger · stats & weekly
-> reports · interactive `setup` wizard. The one piece **not** done yet: native
-> sandbox isolation. See [Scope & limitations](#scope--limitations).
+> quota auto-failover · per-repo learning brain + curator · false-positive ledger ·
+> stats & weekly reports · interactive `setup` wizard. The one piece **not** done
+> yet: native sandbox isolation. See [Scope & limitations](#scope--limitations).
 
 ---
 
@@ -268,10 +268,10 @@ treated as a pass.
 
 ---
 
-## Adaptive pipeline (M3)
+## Adaptive pipeline
 
-M3 adds four stages that run before the reviewer panel, making the gate faster
-and more precise without changing any external protocols:
+Four stages run before the reviewer panel, making the gate faster and more
+precise without changing any external protocols:
 
 ### Triage
 
@@ -290,7 +290,7 @@ injects it into each reviewer's prompt. The context includes:
 
 - A summary of which files changed and why.
 - **Symbol graph** callers/callees (see below).
-- Any relevant entries from the per-repo learning brain (M4+).
+- Any relevant entries from the per-repo learning brain (when enabled).
 
 Every reviewer reads this context, so findings reference stable symbol names
 rather than raw line numbers.
@@ -321,7 +321,7 @@ repeated stop-hooks instantaneous after a trivially clean re-run.
 ## Security
 
 - **Author ≠ reviewer.** The host Claude session never reviews its own work; the
-  anti-sycophancy rule downgrades any Claude reviewer to a smaller tier (M2).
+  anti-sycophancy rule downgrades any Claude reviewer to a smaller tier.
 - **Diff sanitisation.** Diffs are run through a 6-layer pipeline (Unicode NFKC
   normalise → injection-marker neutralise → fenced wrap → high-entropy secret
   redaction → persona reaffirmation) before reaching the reviewer, to blunt
@@ -365,32 +365,40 @@ Reviewgate blocks your turn (read `pending.md`, fix or reject each finding, writ
 
 ## Scope & limitations
 
-**In M1:** single Codex reviewer · Static + Review phases · single-iteration loop
-with escalation (max-iterations / stuck-signatures / cost-cap) · severity-weighted
-verdict · pending.md/json + decisions protocol · hash-chained audit log ·
-`init` / `gate` / `doctor` / `audit verify` commands · OAuth ($0) cost model.
+**Reviewing**
 
-**In M2:** multi-reviewer panel (Codex + Gemini + Claude + OpenRouter any-model) ·
-parallel panel execution · adversarial critic phase · `confirmed_by` consensus
-tracking across reviewers · OpenRouter API-key cost tracking against `costCapUsd` ·
-`google/gemini-3.5-flash` and any other OpenRouter model by slug.
+- Multi-reviewer panel — Codex + Gemini + Claude + OpenRouter (any model by slug),
+  run in parallel, with an adversarial critic phase and `confirmed_by` cross-reviewer
+  consensus tracking.
+- Severity-weighted veto verdict · `pending.md`/`pending.json` + decisions protocol ·
+  single loop with escalation (max-iterations / stuck-signatures / cost-cap).
+- Quota auto-failover — if a reviewer hits its usage cap, the gate fails over to a
+  configured fallback provider, remembers when the limit resets, and resumes the
+  primary automatically (no config edit).
 
-**In M3:** adaptive triage (doc-only diffs skip review at $0; sensitive paths get
-expanded budget) · `research.md` context injected into every reviewer · tree-sitter
-symbol graph (TS/JS/TSX/Python; needs ripgrep for callers; degrades gracefully) ·
-review cache (identical diff → cached verdict, no reviewer spawn) · grammar WASM
-bundled into `dist/grammars/` by `bun run build`.
+**Speed & precision**
 
-**In M4:** per-repo learning brain & Curator (see [Brain & Curator (M4)](#brain--curator-m4) below) ·
-`reviewgate brain list|show|revoke` CLI.
+- Adaptive triage — doc-only diffs skip review at $0; sensitive paths (auth, crypto,
+  payment) get an expanded budget.
+- `research.md` context injected into every reviewer prompt — a tree-sitter symbol
+  graph (TS/JS/TSX/Python; ripgrep used for callers if present, degrades gracefully)
+  and, when enabled, Context7 library docs.
+- Review cache — an identical diff returns a cached verdict with no reviewer spawn.
 
-**In M5:** false-positive ledger (`reviewgate fp list|show|pin|unpin|audit` — known
-FPs are demoted on future runs) · cassette record/replay for deterministic
-provider testing · per-reviewer quota-failover chain.
+**Learning**
 
-**In M6:** review stats (`reviewgate stats`) · weekly Markdown reports
-(`reviewgate report`) · one-shot plan/spec review (`reviewgate review-plan <file>`) ·
-optional Context7 documentation context · interactive `reviewgate setup` wizard.
+- Per-repo learning brain & Curator (see [Brain & Curator](#brain--curator)) — committed
+  memory; `reviewgate brain list|show|revoke`.
+- False-positive ledger — FPs you reject are demoted on future runs;
+  `reviewgate fp list|show|pin|unpin|audit`.
+
+**Tooling**
+
+- Commands: `init` · `gate` · `doctor` · `audit verify` · `stats` · `report` ·
+  `review-plan <file>` · `setup` (interactive wizard) · `brain` · `fp`.
+- Cost model: OAuth ($0) for Codex/Gemini/Claude; OpenRouter via API key, tracked
+  against `costCapUsd`.
+- Hash-chained audit log · cassette record/replay for deterministic provider testing.
 
 **Not yet:** native sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1) —
 this is why the gate is positioned for trusted local development only. See
@@ -398,7 +406,7 @@ this is why the gate is positioned for trusted local development only. See
 
 ---
 
-## Brain & Curator (M4)
+## Brain & Curator
 
 The brain is a **committed per-repo memory** (`reviewgate.brain.json`,
 `brain.md`, `sources.jsonl`, `archive.md` under `.reviewgate/brain/`). Every
