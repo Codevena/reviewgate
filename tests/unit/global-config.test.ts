@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "../../src/config/define-config.ts";
@@ -17,6 +17,11 @@ describe("resolveGlobalConfigPath", () => {
   });
   it("falls back to <home>/.config", () => {
     expect(resolveGlobalConfigPath({}, "/home/u")).toBe(
+      "/home/u/.config/reviewgate/reviewgate.config.ts",
+    );
+  });
+  it("ignores a non-absolute XDG_CONFIG_HOME and falls back to home", () => {
+    expect(resolveGlobalConfigPath({ XDG_CONFIG_HOME: "relative/path" }, "/home/u")).toBe(
       "/home/u/.config/reviewgate/reviewgate.config.ts",
     );
   });
@@ -46,7 +51,7 @@ describe("loadEffectiveConfig", () => {
   it("project beats global; global beats defaults; reviewers array REPLACES", async () => {
     const home = tmp();
     const gdir = join(home, ".config", "reviewgate");
-    require("node:fs").mkdirSync(gdir, { recursive: true });
+    mkdirSync(gdir, { recursive: true });
     writeFileSync(
       join(gdir, "reviewgate.config.ts"),
       'export default { notify: { desktop: true }, phases: { review: { reviewers: [{ provider: "gemini", persona: "security" }] } } };',

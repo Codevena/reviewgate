@@ -43,7 +43,7 @@ export interface EffectiveConfigInput {
 // Effective config = defaults <- global <- project. Validated once at the end.
 export async function loadEffectiveConfig(input: EffectiveConfigInput): Promise<ReviewgateConfig> {
   const env = input.env ?? (process.env as Record<string, string | undefined>);
-  const home = input.home ?? "";
+  const home = input.home ?? ""; // empty/non-absolute => no global layer (resolveGlobalConfigPath returns null)
   const globalPath = resolveGlobalConfigPath(env, home);
   const globalPartial = await readRawPartial(globalPath);
   const projectPartial = await readRawPartial(join(input.cwd, "reviewgate.config.ts"));
