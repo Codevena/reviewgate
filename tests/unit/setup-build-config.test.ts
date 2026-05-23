@@ -94,4 +94,34 @@ describe("buildCustomConfig", () => {
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.codex.model).toBe("gpt-5.4-codex");
   });
+
+  it("emits a per-reviewer fallback chain when present", () => {
+    const partial = buildCustomConfig({
+      reviewers: [
+        { provider: "codex", persona: "security", model: "", fallback: ["gemini", "claude-code"] },
+      ],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+    });
+    const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
+    expect(cfg.phases.review.reviewers[0]).toEqual({
+      provider: "codex",
+      persona: "security",
+      fallback: ["gemini", "claude-code"],
+    });
+  });
+
+  it("omits the fallback key when the chain is empty/absent", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "", fallback: [] }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+    });
+    const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
+    expect(Object.hasOwn(cfg.phases.review.reviewers[0] ?? {}, "fallback")).toBe(false);
+  });
 });

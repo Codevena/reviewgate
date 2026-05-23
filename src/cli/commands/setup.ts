@@ -197,7 +197,23 @@ async function runCustom(
     if (isCancel(persona)) return null;
     const model = await promptModelWithProbe(p, authFor(p), seed?.model ?? MODEL_DEFAULT[p]);
     if (model === null) return null;
-    reviewers.push({ provider: p, persona: String(persona), model });
+
+    // Quota-failover chain: only providers OTHER than this reviewer that are
+    // actually available (CLI/key reachable) — a fallback to a missing CLI is a
+    // no-op. Optional; empty selection = no failover for this slot.
+    let fallback: ProviderId[] = [];
+    const fbCandidates = REVIEWER_PROVIDERS.filter((x) => x !== p && avail(x));
+    if (fbCandidates.length > 0) {
+      const fb = await multiselect({
+        message: `${p}: quota-failover fallback(s) — used ONLY if ${p} hits its usage cap (space to toggle, enter to skip)`,
+        options: fbCandidates.map((x) => ({ value: x, label: x })),
+        initialValues: (seed?.fallback ?? []).filter((x) => fbCandidates.includes(x)),
+        required: false,
+      });
+      if (isCancel(fb)) return null;
+      fallback = fb as ProviderId[];
+    }
+    reviewers.push({ provider: p, persona: String(persona), model, fallback });
   }
 
   const wantCritic = await confirm({

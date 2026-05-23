@@ -13,7 +13,7 @@ export const MODEL_DEFAULT: Record<ProviderId, string> = {
 
 export interface WizardDefaults {
   reviewerProviders: ProviderId[];
-  perReviewer: Record<string, { persona: string; model: string }>;
+  perReviewer: Record<string, { persona: string; model: string; fallback?: ProviderId[] }>;
   critic: { provider: ProviderId; model: string } | null;
   brainCurator: { provider: ProviderId; model: string } | null;
   fpLedger: boolean;
@@ -43,7 +43,11 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
   for (const r of cfg.phases.review.reviewers) {
     if (!reviewerProviders.includes(r.provider)) reviewerProviders.push(r.provider);
     if (!perReviewer[r.provider]) {
-      perReviewer[r.provider] = { persona: r.persona, model: modelFor(cfg, r.provider, r.model) };
+      perReviewer[r.provider] = {
+        persona: r.persona,
+        model: modelFor(cfg, r.provider, r.model),
+        ...(r.fallback && r.fallback.length > 0 ? { fallback: r.fallback } : {}),
+      };
     }
   }
   const c = cfg.phases.critic;

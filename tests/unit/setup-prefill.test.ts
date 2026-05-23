@@ -75,4 +75,15 @@ describe("answersFromConfig", () => {
     } as Parameters<typeof defineConfig>[0]);
     expect(answersFromConfig(cfg).perReviewer.codex?.model).toBe("gpt-5.4-codex");
   });
+
+  it("round-trips a per-reviewer fallback chain from the config", () => {
+    const cfg = defineConfig({
+      phases: {
+        review: {
+          reviewers: [{ provider: "codex", persona: "security", fallback: ["gemini"] }],
+        },
+      },
+    } as Parameters<typeof defineConfig>[0]);
+    expect(answersFromConfig(cfg).perReviewer.codex?.fallback).toEqual(["gemini"]);
+  });
 });

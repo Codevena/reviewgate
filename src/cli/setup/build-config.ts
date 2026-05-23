@@ -6,6 +6,8 @@ export interface ReviewerAnswer {
   persona: string;
   /** Model slug. Empty string → omit it so defineConfig falls back to the provider default in defaults.ts. */
   model: string;
+  /** Quota-failover chain. Empty/absent → omit the key (no failover for this slot). */
+  fallback?: ProviderId[];
 }
 
 export interface CustomAnswers {
@@ -88,7 +90,13 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
 
   // Record<string,unknown> so contextDocs can be null (a valid override); defineConfig validates it.
   const phases: Record<string, unknown> = {
-    review: { reviewers: a.reviewers.map((r) => ({ provider: r.provider, persona: r.persona })) },
+    review: {
+      reviewers: a.reviewers.map((r) => ({
+        provider: r.provider,
+        persona: r.persona,
+        ...(r.fallback && r.fallback.length > 0 ? { fallback: r.fallback } : {}),
+      })),
+    },
     fpLedger: { enabled: a.fpLedger },
   };
   if (a.critic) {
