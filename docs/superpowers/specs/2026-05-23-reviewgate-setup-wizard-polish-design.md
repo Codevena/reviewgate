@@ -87,6 +87,15 @@ when omitted) so the seed flows through.
 **Pre-fill source:** the *effective* merged config (global+project), per the wizard design §7. A
 re-run targeting the project while a global layer set something will pre-fill with the effective
 value; accepting it writes it into the project (redundant with global but harmless, and explicit).
+Note: `finalizeSetup` → `diffFromDefaults` strips values equal to **defaults** but NOT values that
+merely echo the **global layer** (the diff only knows defaults), so such a re-run can write
+project entries that duplicate global ones. This is expected, not a regression.
+
+**Model-precedence test honesty:** because `defaultConfig` gives every provider a `model`, the
+effective config always populates `cfg.providers[p].model` — so `answersFromConfig(effectiveCfg)`
+resolves models via that tier and the `MODEL_DEFAULT[p]` third tier is only reachable through the
+RECOMMENDED_DEFAULTS (no-config) branch or a hand-built partial. The §8 precedence test must build
+the partial it needs to exercise the intended tier (don't assert a tier the path can't reach).
 
 ## 4. Critic & curator model prompt + probe
 
@@ -100,21 +109,29 @@ value; accepting it writes it into the project (redundant with global but harmle
 - `providersFor` is **unchanged** — it keeps pushing judge providers WITHOUT a model, so a provider
   that is both a reviewer and a judge keeps its reviewer `providers.<id>.model`; the judge's
   per-role `phases.{critic,brain.curator}.model` overrides for the judge call.
-- **Implementation check (must verify, not assume):** confirm the orchestrator resolves the critic
-  model as `criticCfg.model ?? providers[provider].model ?? <default>` and the curator likewise. If
-  it does NOT read the per-role `model`, adjust so the wizard's stored judge model is actually used
-  (and note it in the plan). The probe itself is correct regardless; this only affects whether the
-  *written* model takes effect at run time.
+- **Orchestrator per-role model resolution — VERIFIED (Opus spec review, 2026-05-23):** the critic
+  spreads `criticCfg.model` into the adapter cfg (`orchestrator.ts:620`) and the curator uses
+  `curatorCfg.model ?? pcfg.model` (`orchestrator.ts:790`, `:917`). So a model stored in
+  `phases.critic.model` / `phases.brain.curator.model` IS honored at run time — no silent-ignore. No
+  orchestrator change needed.
+- **Existing test must be MODIFIED, not just extended:** `tests/unit/setup-build-config.test.ts:39`
+  asserts `cfg.phases.critic` equals exactly `{ provider, persona }` — emitting `{ provider, persona,
+  model }` breaks that exact-equality. The plan must update that assertion (and any curator one).
+- **Quick preset is unchanged:** `buildQuickPreset`'s curator stays `{ provider, persona }` (no
+  model) — §4 only touches the Custom path. The Quick-curator test assertion stays as-is.
 
 ## 5. `doctor` contextDocs line
 
 New pure check in `doctor.ts`, mirroring the existing `criticCheck`/`brainEmbeddingsCheck` shape:
 
 ```ts
-export function contextDocsCheck(cfg, env): Check | null {
+export function contextDocsCheck(
+  cfg: ReviewgateConfig,
+  env: Record<string, string | undefined>,
+): Check | null {
   const cd = cfg.phases.contextDocs;
   if (!cd?.enabled) return null;                 // off → nothing to show
-  const keyName = cd.apiKeyEnv ?? "CONTEXT7_API_KEY";
+  const keyName = cd.apiKeyEnv;                  // schema-defaulted to CONTEXT7_API_KEY; always set
   const set = Boolean(env[keyName]);
   return {
     name: "contextDocs",
@@ -126,9 +143,15 @@ export function contextDocsCheck(cfg, env): Check | null {
 }
 ```
 
-Wired into `runDoctor` next to the other config-derived checks. `env` is injected (consistent with
-the other checks' testability). Never affects the exit code beyond the existing ok/warn/fail tally
-(it's always ok).
+Wired into `runDoctor` next to the other config-derived checks. Never affects the exit code beyond
+the existing ok/warn/fail tally (it's always `ok`).
+
+**Signature note (deliberate departure):** the other config checks take
+`(cfg, available: ProviderAvailable)` because they probe a *provider*; contextDocs only needs to read
+an env-var name, so this check takes `(cfg, env)` instead — `runDoctor` passes `process.env`. This is
+an intentional, minimal signature, not an oversight. `cd.apiKeyEnv` is non-empty whenever
+`cd.enabled` (zod `.default("CONTEXT7_API_KEY")` applied by `defineConfig`), so no `??` fallback is
+needed — `cfg` here is the validated effective config.
 
 ## 6. Module touchpoints
 
