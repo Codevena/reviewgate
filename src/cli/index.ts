@@ -8,7 +8,7 @@ import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
-import { runSetup } from "./commands/setup.ts";
+import { runSetup, setupTip } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 
 const init = defineCommand({
@@ -17,6 +17,8 @@ const init = defineCommand({
   async run({ args }) {
     await runInit({ repoRoot: process.cwd(), mode: args.mode as "agent-loop" });
     process.stdout.write("Reviewgate installed.\n");
+    const tip = setupTip(Boolean(process.stdout.isTTY));
+    if (tip) process.stdout.write(`${tip}\n`);
   },
 });
 
@@ -216,8 +218,15 @@ const report = defineCommand({
 
 const setup = defineCommand({
   meta: { name: "setup", description: "Interactive configuration wizard" },
-  async run() {
-    process.exit(await runSetup({ repoRoot: process.cwd() }));
+  args: { global: { type: "boolean" }, print: { type: "boolean" } },
+  async run({ args }) {
+    process.exit(
+      await runSetup({
+        repoRoot: process.cwd(),
+        global: args.global === true,
+        print: args.print === true,
+      }),
+    );
   },
 });
 
