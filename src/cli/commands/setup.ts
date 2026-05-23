@@ -214,14 +214,18 @@ async function runCustom(
     });
     if (isCancel(cp)) return null;
     const provider = cp as ProviderId;
-    const cm = await promptModelWithProbe(provider, authFor(provider), defaults.critic?.model);
+    const cm = await promptModelWithProbe(
+      provider,
+      authFor(provider),
+      defaults.critic?.model ?? MODEL_DEFAULT[provider],
+    );
     if (cm === null) return null;
     critic = { provider, persona: "fp-filter", model: cm };
   }
 
   const wantBrain = await confirm({
     message: "Enable the brain (repo memory + curator)?",
-    initialValue: defaults.brainCurator ? true : orKey,
+    initialValue: Boolean(defaults.brainCurator) || orKey,
   });
   if (isCancel(wantBrain)) return null;
   let brain: CustomAnswers["brain"] = null;
@@ -241,7 +245,7 @@ async function runCustom(
     const cm = await promptModelWithProbe(
       provider,
       authFor(provider),
-      defaults.brainCurator?.model,
+      defaults.brainCurator?.model ?? MODEL_DEFAULT[provider],
     );
     if (cm === null) return null;
     brain = { curator: { provider, persona: "fp-filter", model: cm } };
