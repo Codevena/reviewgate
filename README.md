@@ -22,8 +22,9 @@ hosted model by name.
 > an unpublished dependency). Use it on your own code, **not** on untrusted
 > repositories or diffs. See [Security](#security).
 
-<!-- TODO(demo): add a 30s asciinema/GIF here — edit → gate blocks → pending.md → fix → PASS.
-     This is the single highest-leverage thing for the public launch. -->
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="Reviewgate in action: Claude edits code, tries to finish, Reviewgate blocks on a CRITICAL finding, Claude fixes it, re-review passes." width="820">
+</p>
 
 > **Status: `0.1.0-alpha` (M1–M6 implemented).** Multi-reviewer panel
 > (Codex + Gemini + Claude + OpenRouter) · parallel execution · adversarial critic ·
