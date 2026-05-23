@@ -534,12 +534,13 @@ export class Orchestrator {
     // Quota cooldown: if the primary hit its cap on a prior review and the reset
     // time hasn't passed, skip the (futile, ~7s) primary attempt and go straight
     // to the fallback. A cooldown is only ACTED ON when the slot has a fallback —
-    // otherwise we still try the primary (its quota may have recovered). The clock
-    // is injectable for tests. Effects are collected and applied AFTER the panel
-    // (one writer; the panel runs in parallel).
+    // otherwise we still try the primary (its quota may have recovered). Every
+    // REPROBE_INTERVAL the provider is re-probed once (skipUntil returns null) to
+    // catch an early recovery before its quoted reset. The clock is injectable for
+    // tests. Effects are collected and applied AFTER the panel (one writer; the
+    // panel runs in parallel).
     const now = this.input.now?.() ?? new Date();
     const cooldownStore = new QuotaCooldownStore(repo);
-    const cooldownSnapshot = cooldownStore.activeSnapshot(now);
     type CooldownEffect =
       | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
       | { provider: ProviderId; clear: true };
@@ -579,11 +580,12 @@ export class Orchestrator {
         writeFileSync(promptFile, promptParts.join("\n"));
         writeFileSync(diffPath, this.input.diff);
 
-        // Quota cooldown skip: if the primary is still capped (reset not reached)
-        // AND this slot has a fallback, don't waste the futile primary attempt —
-        // synthesize a quota-exhausted result so the failover below runs. With no
-        // fallback we still try the primary (its quota may have recovered).
-        const cappedUntil = cooldownSnapshot[r.provider];
+        // Quota cooldown skip: if the primary is still capped (reset not reached
+        // AND within the re-probe window) AND this slot has a fallback, don't waste
+        // the futile primary attempt — synthesize a quota-exhausted result so the
+        // failover below runs. Past the re-probe window (or with no fallback) we try
+        // the primary, so an EARLY recovery is detected and clears the cooldown.
+        const cappedUntil = cooldownStore.skipUntil(r.provider, now);
         let run: ReviewerRun;
         let effect: CooldownEffect | null = null;
         if (cappedUntil && r.fallback?.length) {

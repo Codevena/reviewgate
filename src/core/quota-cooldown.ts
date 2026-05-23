@@ -12,6 +12,15 @@ import { type QuotaCooldown, QuotaCooldownSchema } from "../schemas/quota-cooldo
 export const DEFAULT_COOLDOWN_MS = 15 * 60_000;
 /** Reject a parsed reset further out than this (guards against garbage dates). */
 const MAX_COOLDOWN_MS = 30 * 24 * 60 * 60_000; // 30 days
+/**
+ * How long to keep SKIPPING a cooled-down provider before re-probing it once.
+ * A parsed reset can over-estimate (a provider often recovers BEFORE the time it
+ * quoted), and while skipping we never retry it — so without this the strongest
+ * reviewer stays idle for days after it is actually back. Re-probe at most once
+ * per window: one ~7s failed attempt if still capped, vs. early-recovery detection
+ * within the window.
+ */
+export const REPROBE_INTERVAL_MS = 30 * 60_000;
 
 /**
  * Extract the reset time from a quota/rate-limit error. Handles codex's
@@ -79,6 +88,23 @@ export class QuotaCooldownStore {
     const e = this.read().providers[provider];
     if (!e) return null;
     return Date.parse(e.reset_at) > now.getTime() ? e.reset_at : null;
+  }
+
+  /**
+   * The reset time to SKIP `provider` until, or null if it should be ATTEMPTED.
+   * Skips while the cooldown is active AND it was recorded within the last
+   * REPROBE_INTERVAL — so once that window elapses the provider is re-probed once
+   * (returns null → don't skip) to catch an early recovery before the parsed
+   * reset. A successful re-probe clears the cooldown; a still-capped one re-records
+   * it (resetting the window). Distinct from `activeUntil`, which `doctor` uses to
+   * SHOW the cooldown regardless of the re-probe window.
+   */
+  skipUntil(provider: string, now: Date): string | null {
+    const e = this.read().providers[provider];
+    if (!e) return null;
+    if (Date.parse(e.reset_at) <= now.getTime()) return null; // cooldown expired
+    if (now.getTime() - Date.parse(e.recorded_at) >= REPROBE_INTERVAL_MS) return null; // due to re-probe
+    return e.reset_at;
   }
 
   /** Record (or refresh) a cooldown for `provider` until `resetAt`. */

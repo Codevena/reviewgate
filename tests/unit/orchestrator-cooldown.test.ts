@@ -46,7 +46,7 @@ function countingStub(
 }
 
 function setup(opts: {
-  cooldownFile?: { reset_at: string };
+  cooldownFile?: { reset_at: string; recorded_at?: string };
   codexStatus: ReviewStatus;
   codexDetail?: string;
 }) {
@@ -61,7 +61,7 @@ function setup(opts: {
         providers: {
           codex: {
             reset_at: opts.cooldownFile.reset_at,
-            recorded_at: NOW.toISOString(),
+            recorded_at: opts.cooldownFile.recorded_at ?? NOW.toISOString(),
             source: "parsed",
           },
         },
@@ -120,6 +120,20 @@ describe("Orchestrator quota cooldown", () => {
     expect(codexCalls.n).toBe(0); // skipped — never invoked
     expect(geminiCalls.n).toBe(1); // fallback ran
     expect(readReviewer(repo).provider).toBe("gemini");
+  });
+
+  it("RE-PROBES a still-cooled primary past the re-probe window (early recovery) and clears it", async () => {
+    // reset is far off (3 days), but it was recorded > 30 min ago → re-probe due.
+    const future = new Date(NOW.getTime() + 3 * 24 * 3_600_000).toISOString();
+    const recordedOld = new Date(NOW.getTime() - 31 * 60_000).toISOString();
+    const { repo, orch, codexCalls } = setup({
+      cooldownFile: { reset_at: future, recorded_at: recordedOld },
+      codexStatus: "ok", // codex has recovered early
+    });
+    await orch.runIteration({ runId: "R", iter: 1 });
+    expect(codexCalls.n).toBe(1); // re-probed (NOT skipped) despite the future reset
+    expect(readReviewer(repo).provider).toBe("codex");
+    expect(readCooldown(repo).providers.codex).toBeUndefined(); // recovered → cleared
   });
 
   it("RESUMES the primary once the cooldown has expired (and clears it)", async () => {

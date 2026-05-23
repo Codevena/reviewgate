@@ -80,3 +80,32 @@ describe("QuotaCooldownStore", () => {
     expect(s.activeUntil("codex", NOW)).toBeNull();
   });
 });
+
+describe("QuotaCooldownStore.skipUntil (re-probe window)", () => {
+  const repo = () => mkdtempSync(join(tmpdir(), "rg-cd-skip-"));
+  const future = new Date(NOW.getTime() + 3 * 24 * 3_600_000).toISOString(); // 3 days out
+
+  test("skips while the cooldown is active AND recorded recently", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.record("codex", future, NOW); // recorded_at = NOW
+    expect(s.skipUntil("codex", new Date(NOW.getTime() + 10 * 60_000))).toBe(future); // 10 min later → still skip
+  });
+
+  test("RE-PROBES (returns null) once the re-probe window elapses, even if reset is far off", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.record("codex", future, NOW); // recorded_at = NOW, reset 3 days out
+    const after = new Date(NOW.getTime() + 31 * 60_000); // > 30-min re-probe window
+    expect(s.activeUntil("codex", after)).toBe(future); // doctor still SEES it
+    expect(s.skipUntil("codex", after)).toBeNull(); // but the gate re-probes (doesn't skip)
+  });
+
+  test("does not skip once the cooldown itself has expired", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.record("codex", new Date(NOW.getTime() + 1000).toISOString(), NOW);
+    expect(s.skipUntil("codex", new Date(NOW.getTime() + 5000))).toBeNull();
+  });
+
+  test("no entry → never skips", () => {
+    expect(new QuotaCooldownStore(repo()).skipUntil("codex", NOW)).toBeNull();
+  });
+});
