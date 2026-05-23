@@ -2,12 +2,13 @@
 
 ## ⭐ SESSION 7 (2026-05-22/23): CLI-adapter `complete()` (LLM judges for any provider) + follow-ups
 
-**origin/master = `e7e033b`** (everything through the doctor curator-check is PUSHED, user OK).
-**Local `master` is AHEAD of origin, NOT yet pushed** — `9e19e39` (gitignore `.antigravitycli/`) +
-`d53dce1` (doctor critic+embeddings checks) + this handoff commit. **Ask before pushing.**
-618 pass / 9 skip / 0 fail; typecheck + lint clean; binary rebuilt. Working tree: only the
+**origin/master = `4391265`** — everything below is PUSHED & in sync (user OK).
+627 pass / 9 skip / 0 fail; typecheck + lint clean; binary rebuilt. Working tree: only the
 pre-existing `M CLAUDE.md` (untouched, per user — do NOT commit it; `.antigravitycli/` is now
 gitignored).
+
+> **➡️ The headline NEXT topic is a `reviewgate setup` wizard — see the "NEXT" section at the
+> bottom; brainstorm it fresh in a new session.**
 
 **What shipped this session (the whole arc):**
 1. **CLI-adapter `complete()`** — the optional `ProviderAdapter.complete()` is now implemented by
@@ -60,17 +61,40 @@ reviewer that ran `git checkout <sha>` left HEAD detached → next implementer o
 (recovered via `git merge --ff-only`); forbid HEAD-moving git in every subagent prompt, use
 `git add <explicit files>` not `-A`. (b) biome `lint/performance/noDelete` blocks `delete
 process.env.X` → use `Reflect.deleteProperty(process.env,"X")` in tests. (c) codex needs
-`--skip-git-repo-check` outside a git repo.
+`--skip-git-repo-check` outside a git repo. (d) `spawnSafely` must settle on `"close"` (not
+`"exit"`) + await WriteStream flush, else capture files truncate under load.
 
-### ➡️ NEXT (open items)
-- **PUSH the local commits** (origin at `e7e033b`; local `master` has gitignore + doctor-broaden +
-  handoff + alias-fix + this update) once approved.
-- **Live observations A/B/C: DONE** (see above). Nothing owed there.
-- **contextDocs alias follow-up: DONE** (`233b2a7`) — `extractImportedLibs` now reads tsconfig
-  `compilerOptions.paths` and excludes ALL declared aliases (`~/`, `@app/`, exact, mid-pattern
-  `foo/*/bar`) via a string-aware JSONC stripper + per-key prefix/suffix matchers. Does NOT follow
-  tsconfig `extends` (root tsconfig only — remaining minor edge).
+**Also shipped (later in the session):** (7) contextDocs reads tsconfig `compilerOptions.paths` and
+excludes ALL declared path aliases (`~/`, mid-pattern `foo/*/bar`, exact) via a string-aware JSONC
+stripper (`233b2a7`). (8) **`spawnSafely` output-capture fix** (`4391265`) — found while stabilising
+a flaky test but a REAL product bug (reviewer output truncated under load); settles on `"close"` +
+flush, clears kill-timers on `"exit"` + settle fallback (no spurious `killedByTimeout`), spawns
+DETACHED and group-kills on timeout/watchdog so orphaned reviewer grandchildren can't hang the gate.
+New `tests/unit/spawn.test.ts`. (Watchdog still polls every 5s → `zeroByteWatchdogMs` < 5000 floored
+at ~5s; minor, untouched.)
+
+### ➡️ NEXT — the big one: a `reviewgate setup` WIZARD (brainstorm fresh)
+The headline next feature (the user calls it the gamechanger for onboarding): an interactive,
+polished config wizard so new users don't hand-edit `reviewgate.config.ts`. Run it through the repo's
+flow: **brainstorm → spec (Codex-reviewed) → plan → subagent-driven**. My recommended starting
+position (confirm in brainstorm):
+- **Separate `reviewgate setup` command** — NOT baked into `init` (init must stay fast/scriptable);
+  `init` can OFFER to launch it at the end. Re-runnable anytime to reconfigure.
+- **Phase 1 = project-level** (writes `reviewgate.config.ts`) — fits the existing per-repo deep-merge
+  model, no loader change. **Phase 2 (optional) = global defaults** (`~/.config/reviewgate/`) needs a
+  NEW config-precedence layer in the loader (global → project → defaults); bigger → defer.
+- **Reuse the new doctor probes** (`curatorCheck`/`criticCheck`/`brainEmbeddingsCheck` + the
+  CLI-availability resolver in `src/cli/commands/doctor.ts`) so the wizard only offers providers whose
+  CLI/key is actually present, and run `doctor` at the end to confirm green.
+- Steps: per-reviewer (provider → persona → model → oauth/apikey + key-env) · critic on/off ·
+  brain+curator on/off (prefer a non-reviewer judge like opencode) · fpLedger · contextDocs.
+- **TUI:** a polished prompts lib (e.g. `@clack/prompts`) bundled at build for the "visuell
+  ansprechend" feel — VERIFY it bundles into the `bun --compile` binary (cf. the M3 wasm lesson:
+  test the COMPILED binary, not just `bun test`).
+
+### Other open items (lower priority)
 - **Roadmap: native sandbox** still BLOCKED (`@anthropic-ai/sandbox-runtime` unpublished).
+- contextDocs does not follow tsconfig `extends` (root tsconfig only) — minor.
 - Pre-existing `M CLAUDE.md` in the working tree — leave it (user: do NOT commit). `.antigravitycli/`
   is now gitignored.
 
