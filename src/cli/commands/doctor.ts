@@ -131,6 +131,26 @@ export function brainEmbeddingsCheck(
   return { name, status: "ok", detail: `openrouter / ${brain.embeddings.model}` };
 }
 
+// contextDocs works keyless (lower rate limit), so this is informational (always ok) — it just
+// surfaces whether CONTEXT7_API_KEY is set. cfg is the validated effective config, so when
+// contextDocs is enabled cd.apiKeyEnv is always populated (schema default CONTEXT7_API_KEY).
+export function contextDocsCheck(
+  cfg: ReviewgateConfig,
+  env: Record<string, string | undefined>,
+): Check | null {
+  const cd = cfg.phases.contextDocs;
+  if (!cd?.enabled) return null;
+  const keyName = cd.apiKeyEnv;
+  const set = Boolean(env[keyName]);
+  return {
+    name: "contextDocs",
+    status: "ok",
+    detail: set
+      ? `enabled (${keyName} set)`
+      : `enabled (${keyName} unset — keyless works; set it for higher rate limits)`,
+  };
+}
+
 function checkBinary(bin: string, name: string): Check {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
   if (r.status === 0)
@@ -204,6 +224,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (emb) checks.push(emb);
     const cur = curatorCheck(cfg, curatorAvailable);
     if (cur) checks.push(cur);
+    const cd = contextDocsCheck(cfg, process.env as Record<string, string | undefined>);
+    if (cd) checks.push(cd);
   } catch (e) {
     checks.push({
       name: "reviewgate.config.ts load",
