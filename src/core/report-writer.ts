@@ -40,13 +40,25 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
   // prominently — a silently degraded panel could let a PASS through with less
   // scrutiny than configured.
   const degraded = r.reviewers.filter((x) => x.status !== "ok");
+  // Render the captured stderr reason (one line, trimmed) next to each degraded
+  // reviewer so a failure is self-explanatory in the report — without it a bare
+  // "gemini: error" forces the agent to go spelunking for WHY (quota? auth? a
+  // bad model id?). status_detail is persisted in pending.json but was never
+  // shown here before.
+  const degradedDetail = (x: PendingReport["reviewers"][number]): string => {
+    const reason = x.status_detail
+      ?.split("\n")
+      .find((l) => l.trim().length > 0)
+      ?.trim();
+    return reason ? `${x.id}: ${x.status} — ${reason.slice(0, 160)}` : `${x.id}: ${x.status}`;
+  };
   const coverageBanner =
     degraded.length > 0
       ? [
           `> ⚠ **Reduced coverage:** ${degraded.length} of ${r.reviewers.length} reviewers did not complete (${degraded
-            .map((x) => `${x.id}: ${x.status}`)
+            .map(degradedDetail)
             .join(
-              ", ",
+              "; ",
             )}). This verdict is based on the ${r.reviewers.length - degraded.length} reviewer(s) that finished.`,
           "",
         ]

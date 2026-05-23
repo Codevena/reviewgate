@@ -13,7 +13,8 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
-import { failureReason } from "./complete-helpers.ts";
+import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -110,13 +111,16 @@ export class CodexAdapter implements ProviderAdapter {
       timeoutMs: input.cfg.timeoutMs,
     });
 
-    const status: ReviewStatus = res.killedByTimeout
-      ? "timeout"
-      : res.killedByWatchdog
-        ? "timeout"
-        : res.exitCode === 0
-          ? "ok"
-          : "error";
+    const stderrText = readFileSafe(stderrFile);
+    // codex's usage-limit banner ("You've hit your usage limit") lands on STDOUT
+    // (the --json event stream), while stderr may only show the generic stdin
+    // notice — so scan BOTH before classifying as a generic error vs quota.
+    const baseStatus: ReviewStatus =
+      res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
+    const status: ReviewStatus =
+      baseStatus === "error" && isQuotaExhausted(stderrText + readFileSafe(eventsFile))
+        ? "quota-exhausted"
+        : baseStatus;
 
     if (status !== "ok") {
       return {
@@ -128,7 +132,7 @@ export class CodexAdapter implements ProviderAdapter {
         exitCode: res.exitCode,
         rawEventsPath: eventsFile,
         status,
-        statusDetail: readFileSync(stderrFile, "utf8").slice(0, 1000),
+        statusDetail: stderrText.slice(0, 1000),
       };
     }
 

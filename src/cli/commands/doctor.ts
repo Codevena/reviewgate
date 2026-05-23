@@ -1,6 +1,6 @@
 // src/cli/commands/doctor.ts
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
@@ -151,6 +151,58 @@ export function contextDocsCheck(
   };
 }
 
+// A reviewer's `fallback` chain only rescues a quota-exhausted primary if at
+// least one listed provider is BOTH configured (providers.<id> present) and
+// available (CLI/key resolves). A chain whose every candidate is missing is a
+// silent no-op — warn so the user fixes it before the primary actually caps out.
+export function fallbackChainCheck(
+  cfg: ReviewgateConfig,
+  available: ProviderAvailable,
+): Check | null {
+  const withChains = cfg.phases.review.reviewers.filter((r) => (r.fallback?.length ?? 0) > 0);
+  if (withChains.length === 0) return null;
+  const broken: string[] = [];
+  for (const r of withChains) {
+    const usable = (r.fallback ?? []).some(
+      (fb) => cfg.providers[fb] != null && available(fb, cfg.providers[fb]?.apiKeyEnv),
+    );
+    if (!usable) broken.push(r.provider);
+  }
+  if (broken.length === 0) {
+    return {
+      name: "reviewer fallback chains",
+      status: "ok",
+      detail: `${withChains.length} reviewer(s) have a usable quota-failover chain`,
+    };
+  }
+  return {
+    name: "reviewer fallback chains",
+    status: "warn",
+    detail: `no configured+available fallback for: ${broken.join(", ")} → a quota hit there means reduced coverage`,
+    hint: "Ensure each provider listed in `fallback` is present under providers.<id> and its CLI/key is reachable.",
+  };
+}
+
+// doctor cannot detect quota exhaustion proactively (a --version probe never
+// makes a billed call), so it surfaces it RETROSPECTIVELY: if the last review
+// recorded a `quota-exhausted` reviewer, warn that the provider was recently
+// capped. `readPending` is injected for testability (prod reads pending.json).
+export function recentQuotaCheck(
+  reviewers: Array<{ provider: string; status: string }> | null,
+): Check | null {
+  if (!reviewers) return null;
+  const capped = [
+    ...new Set(reviewers.filter((r) => r.status === "quota-exhausted").map((r) => r.provider)),
+  ];
+  if (capped.length === 0) return null;
+  return {
+    name: "provider quota",
+    status: "warn",
+    detail: `recently hit a usage limit: ${capped.join(", ")} (from the last review) → relies on the fallback chain until quota resets`,
+    hint: "This is transient; configure a `fallback` chain for affected reviewers so coverage holds while quota is exhausted.",
+  };
+}
+
 function checkBinary(bin: string, name: string): Check {
   const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
   if (r.status === 0)
@@ -226,12 +278,29 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (cur) checks.push(cur);
     const cd = contextDocsCheck(cfg, process.env as Record<string, string | undefined>);
     if (cd) checks.push(cd);
+    const fb = fallbackChainCheck(cfg, curatorAvailable);
+    if (fb) checks.push(fb);
   } catch (e) {
     checks.push({
       name: "reviewgate.config.ts load",
       status: "warn",
       detail: `failed to load — defaults will apply: ${(e as Error).message}`,
     });
+  }
+
+  // Retrospective quota warning from the last recorded review (best-effort —
+  // missing/unparseable pending.json is simply skipped).
+  try {
+    const pendingPath = join(input.repoRoot, ".reviewgate", "pending.json");
+    if (existsSync(pendingPath)) {
+      const parsed = JSON.parse(readFileSync(pendingPath, "utf8")) as {
+        reviewers?: Array<{ provider: string; status: string }>;
+      };
+      const q = recentQuotaCheck(parsed.reviewers ?? null);
+      if (q) checks.push(q);
+    }
+  } catch {
+    // ignore — quota hint is advisory
   }
 
   // Optional reviewer CLIs (M2). These are only needed if enabled in config;

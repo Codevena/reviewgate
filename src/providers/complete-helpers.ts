@@ -1,5 +1,15 @@
 // src/providers/complete-helpers.ts
 // Shared bits for the CLI adapters' complete() (judge) path.
+import { readFileSync } from "node:fs";
+
+/** Read a capture file, returning "" if it is missing/unreadable (best-effort). */
+export function readFileSafe(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
+}
 
 /**
  * Human-readable failure reason for a complete() spawn. A timeout/watchdog kill

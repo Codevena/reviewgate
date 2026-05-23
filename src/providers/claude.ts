@@ -13,7 +13,8 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
-import { failureReason } from "./complete-helpers.ts";
+import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
@@ -100,9 +101,21 @@ export class ClaudeAdapter implements ProviderAdapter {
       stdoutFile: outFile,
       stderrFile: errFile,
       timeoutMs: input.cfg.timeoutMs,
+      // `claude -p --output-format json` buffers: it emits NOTHING to stdout
+      // until the full result is ready, so the default 60s zero-byte idle
+      // watchdog would SIGKILL any review that thinks longer than a minute (and
+      // mislabel it "timeout"). Tie the idle watchdog to the wall-clock timeout
+      // so only a genuine hang past timeoutMs ends the run. (codex streams its
+      // --json events, so it keeps the shorter default watchdog.)
+      zeroByteWatchdogMs: input.cfg.timeoutMs,
     });
-    const status: ReviewStatus =
+    const errText = readFileSafe(errFile);
+    const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
+    const status: ReviewStatus =
+      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(outFile))
+        ? "quota-exhausted"
+        : baseStatus;
     if (status !== "ok") {
       return {
         reviewerId: input.reviewerId,
@@ -113,7 +126,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         exitCode: res.exitCode,
         rawEventsPath: outFile,
         status,
-        statusDetail: readFileSync(errFile, "utf8").slice(0, 1000),
+        statusDetail: errText.slice(0, 1000),
       };
     }
     const { findings, usage, rawText } = this.parse(
@@ -168,6 +181,8 @@ export class ClaudeAdapter implements ProviderAdapter {
         stdoutFile: outFile,
         stderrFile: errFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        // Buffered like review() — neutralise the idle watchdog (see review()).
+        zeroByteWatchdogMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
         let detail = "";

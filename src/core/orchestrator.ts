@@ -11,6 +11,7 @@ import { parseChangedRanges } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
+import { isProviderAvailable } from "../providers/availability.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
@@ -63,6 +64,9 @@ export interface OrchestratorInput {
   // tests drive the deterministic-source path with no real network/DNS. In
   // production this is omitted and safeFetch uses global fetch + node DNS.
   fetchOverrides?: { fetchImpl?: typeof fetch; resolve?: (host: string) => Promise<string[]> };
+  // Whether a fallback provider can actually run (CLI/key reachable). Injected
+  // for tests; production omits it and uses the real binary/key probe.
+  providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
 }
 
 export interface IterationResult {
@@ -447,17 +451,90 @@ export class Orchestrator {
       this.input.config.phases.review.fileContextBudgetBytes ?? 32_000,
     );
 
+    // Resolve the effective model for a provider, applying the host-tier override
+    // for claude-code (returns null when that tier is disabled → the slot/fallback
+    // candidate is skipped). Other providers use the configured model as-is.
+    const resolveReviewerModel = (provider: ProviderId, baseModel: string): string | null => {
+      if (provider === "claude-code") {
+        const tier = reviewerTierFor(this.input.hostTier);
+        if (tier === "disabled") return null;
+        return modelIdForTier(tier) ?? baseModel;
+      }
+      return baseModel;
+    };
+
+    const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null } as const;
+    // Run one provider for a slot, catch-wrapped so a THROWING adapter becomes a
+    // synthetic error run (not a Promise rejection allSettled would drop). okRuns
+    // still filters status==="ok", so a thrown/errored adapter never counts as a
+    // usable result — it only surfaces in `settled` (and the RunSummary).
+    const runProvider = async (
+      provider: ProviderId,
+      persona: string,
+      model: string,
+      providerCfg: ProviderConfig,
+      promptFile: string,
+      findingsPath: string,
+      diffPath: string,
+    ): Promise<ReviewerRun> => {
+      const adapter = this.input.adapters[provider];
+      const reviewStart = Date.now();
+      if (!adapter) {
+        return {
+          res: {
+            reviewerId: `${provider}-${persona}`,
+            verdict: "ERROR",
+            findings: [],
+            usage: { ...ZERO_USAGE },
+            durationMs: 0,
+            exitCode: -1,
+            rawEventsPath: "",
+            status: "error",
+            statusDetail: "adapter not registered",
+          },
+          provider,
+          persona,
+          model,
+        };
+      }
+      try {
+        const res = await adapter.review({
+          cfg: { ...providerCfg, model },
+          reviewerId: `${provider}-${persona}`,
+          promptFile,
+          workingDir: repo,
+          findingsPath,
+          persona,
+          diffPath,
+        });
+        return { res, provider, persona, model };
+      } catch (err) {
+        return {
+          res: {
+            reviewerId: `${provider}-${persona}`,
+            verdict: "ERROR",
+            findings: [],
+            usage: { ...ZERO_USAGE },
+            durationMs: Date.now() - reviewStart,
+            exitCode: -1,
+            rawEventsPath: "",
+            status: "error",
+            statusDetail: `threw: ${(err as Error).message}`.slice(0, 200),
+          },
+          provider,
+          persona,
+          model,
+        };
+      }
+    };
+
     const tasks = activeReviewers.map(async (r): Promise<ReviewerRun | null> => {
       const adapter = this.input.adapters[r.provider];
       const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
       if (!adapter || !providerCfg || !providerCfg.enabled) return null;
 
-      let model = r.model ?? providerCfg.model;
-      if (r.provider === "claude-code") {
-        const tier = reviewerTierFor(this.input.hostTier);
-        if (tier === "disabled") return null;
-        model = modelIdForTier(tier) ?? model;
-      }
+      const model = resolveReviewerModel(r.provider, r.model ?? providerCfg.model);
+      if (model === null) return null; // claude-code host-tier disabled
 
       const persona = docPersona ?? r.persona;
       const reaffirm = PERSONA_REAFFIRM[persona] ?? DEFAULT_REAFFIRM;
@@ -483,38 +560,42 @@ export class Orchestrator {
         );
       writeFileSync(promptFile, promptParts.join("\n"));
       writeFileSync(diffPath, this.input.diff);
-      // Catch-wrap so a THROWING adapter becomes an error run (a synthetic
-      // status:"error" ReviewResult) instead of a Promise rejection that
-      // Promise.allSettled would drop from `settled`. The fail-closed guard is
-      // unchanged — okRuns still filters status === "ok", so a thrown adapter
-      // does NOT count as a usable result; it only becomes visible in `settled`
-      // (and thus in the RunSummary's per-provider error count).
-      const reviewStart = Date.now();
-      let res: ReviewResult;
-      try {
-        res = await adapter.review({
-          cfg: { ...providerCfg, model },
-          reviewerId: `${r.provider}-${persona}`,
-          promptFile,
-          workingDir: repo,
-          findingsPath,
-          persona,
-          diffPath,
-        });
-      } catch (err) {
-        res = {
-          reviewerId: `${r.provider}-${persona}`,
-          verdict: "ERROR",
-          findings: [],
-          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-          durationMs: Date.now() - reviewStart,
-          exitCode: -1,
-          rawEventsPath: "",
-          status: "error",
-          statusDetail: `threw: ${(err as Error).message}`.slice(0, 200),
-        };
+
+      // Run the primary provider. The prompt depends only on the persona, so it
+      // is reused verbatim for any fallback run below.
+      let run = await runProvider(
+        r.provider,
+        persona,
+        model,
+        providerCfg,
+        promptFile,
+        findingsPath,
+        diffPath,
+      );
+
+      // Failover: ONLY when the primary is quota-exhausted (codex usage cap,
+      // gemini RESOURCE_EXHAUSTED, …) and the slot declares a fallback chain. A
+      // candidate runs if it is registered + configured + available; its own
+      // `enabled` flag is ignored (listing it in `fallback` IS the opt-in). Walk
+      // the chain until one actually runs (any status other than quota-exhausted).
+      if (run.res.status === "quota-exhausted" && r.fallback?.length) {
+        for (const fb of r.fallback) {
+          const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
+          if (!this.input.adapters[fb] || !fbCfg) continue;
+          const available = this.input.providerAvailable ?? isProviderAvailable;
+          if (!available(fb, fbCfg.apiKeyEnv)) continue;
+          const fbModel = resolveReviewerModel(fb, fbCfg.model);
+          if (fbModel === null) continue;
+          const exhaustedFrom = run.provider;
+          run = await runProvider(fb, persona, fbModel, fbCfg, promptFile, findingsPath, diffPath);
+          run.res.statusDetail =
+            `[fallback from ${exhaustedFrom}: quota-exhausted] ${run.res.statusDetail ?? ""}`
+              .trim()
+              .slice(0, 1000);
+          if (run.res.status !== "quota-exhausted") break;
+        }
       }
-      return { res, provider: r.provider, persona, model };
+      return run;
     });
 
     // allSettled (not all): a single adapter that THROWS (not just returns

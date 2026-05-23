@@ -65,6 +65,16 @@ describe("status_detail in PendingReport", () => {
     expect(json.reviewers[0].status_detail).toBe("codex exit=1: quota exhausted");
   });
 
+  it("renders status_detail in the pending.md coverage banner (degraded reviewer)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-status-detail-md-"));
+    const w = new ReportWriter(dir);
+    await w.write(baseReportWithError);
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    expect(md).toContain("Reduced coverage");
+    // The captured reason must be surfaced, not just the bare status.
+    expect(md).toContain("codex: error — codex exit=1: quota exhausted");
+  });
+
   it("ReportWriter omits status_detail key when not set (exactOptionalPropertyTypes-safe)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-status-detail-absent-"));
     const w = new ReportWriter(dir);

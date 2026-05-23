@@ -27,7 +27,19 @@ export const ConfigSchema = z.object({
     review: z.object({
       reviewers: z
         .array(
-          z.object({ provider: ProviderId, persona: z.string(), model: z.string().optional() }),
+          z.object({
+            provider: ProviderId,
+            persona: z.string(),
+            model: z.string().optional(),
+            // Ordered failover chain for THIS reviewer slot. When the primary
+            // provider returns `quota-exhausted` (e.g. codex hit its usage cap),
+            // the orchestrator re-runs the same persona on the first fallback
+            // provider that is configured (providers.<id> present) and available
+            // (its CLI/key resolves) — regardless of that provider's own
+            // `enabled` flag (listing it here IS the opt-in). Only quota
+            // exhaustion triggers failover; a normal error/timeout does not.
+            fallback: z.array(ProviderId).optional(),
+          }),
         )
         .min(1),
       // Max bytes of full changed-file content fed to each reviewer alongside the

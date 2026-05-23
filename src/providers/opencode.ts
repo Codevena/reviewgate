@@ -12,7 +12,8 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
-import { failureReason } from "./complete-helpers.ts";
+import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const COMPLETE_TIMEOUT_MS = 20_000;
@@ -91,10 +92,18 @@ export class OpenCodeAdapter implements ProviderAdapter {
       stdoutFile,
       stderrFile,
       timeoutMs: input.cfg.timeoutMs,
+      // opencode is the heavy fallback for long codex reviews; don't let the 60s
+      // idle watchdog cut it short — bound it by the wall-clock timeout instead.
+      zeroByteWatchdogMs: input.cfg.timeoutMs,
     });
 
-    const status: ReviewStatus =
+    const errText = readFileSafe(stderrFile);
+    const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
+    const status: ReviewStatus =
+      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(stdoutFile))
+        ? "quota-exhausted"
+        : baseStatus;
 
     if (status !== "ok") {
       return {
@@ -106,7 +115,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         exitCode: res.exitCode,
         rawEventsPath: stdoutFile,
         status,
-        statusDetail: readFileSync(stderrFile, "utf8").slice(0, 1000),
+        statusDetail: errText.slice(0, 1000),
       };
     }
 
@@ -156,6 +165,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
         stdoutFile,
         stderrFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        // Bound the idle watchdog by the wall-clock timeout (see review()).
+        zeroByteWatchdogMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
         let detail = "";

@@ -13,7 +13,8 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
-import { failureReason } from "./complete-helpers.ts";
+import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const COMPLETE_TIMEOUT_MS = 20_000;
@@ -96,9 +97,19 @@ export class GeminiAdapter implements ProviderAdapter {
       stdoutFile: outFile,
       stderrFile: errFile,
       timeoutMs: input.cfg.timeoutMs,
+      // `gemini -o json` buffers the whole response (no streamed stdout), so the
+      // default 60s zero-byte idle watchdog would SIGKILL any review that thinks
+      // longer than a minute — fatal for the slower gemini-3-pro-preview tier.
+      // Tie the idle watchdog to the wall-clock timeout. (See claude.ts/codex.ts.)
+      zeroByteWatchdogMs: input.cfg.timeoutMs,
     });
-    const status: ReviewStatus =
+    const errText = readFileSafe(errFile);
+    const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
+    const status: ReviewStatus =
+      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(outFile))
+        ? "quota-exhausted"
+        : baseStatus;
     if (status !== "ok") {
       return {
         reviewerId: input.reviewerId,
@@ -109,7 +120,7 @@ export class GeminiAdapter implements ProviderAdapter {
         exitCode: res.exitCode,
         rawEventsPath: outFile,
         status,
-        statusDetail: readFileSync(errFile, "utf8").slice(0, 1000),
+        statusDetail: errText.slice(0, 1000),
       };
     }
     const { findings, usage, rawText } = this.parse(
@@ -152,6 +163,8 @@ export class GeminiAdapter implements ProviderAdapter {
         stdoutFile: outFile,
         stderrFile: errFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        // Buffered like review() — neutralise the idle watchdog (see review()).
+        zeroByteWatchdogMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
         let detail = "";
