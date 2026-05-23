@@ -45,10 +45,27 @@ probe (spec §6) — `promptModelWithProbe` loops; verified in the compiled bina
 "…did not verify — what now?" select renders). Opus re-verification before this: **VERIFIED-SOLID**
 (0 critical/important; tests/build/binary-E2E/round-trip/serialize-injection all checked).
 
-**Deferred follow-ups:** (1) **re-run pre-fill** — prompts seed from `defaults.ts`, NOT the current
-effective config (spec §7 wanted current-config pre-fill; fine for first-run onboarding, nice-to-have
-for reconfigure). (2) critic/curator models are not live-probed (only reviewers are). (3) A contextDocs
-line in `doctor` (it has none today; wizard prints the keyless note itself).
+**Polish batch — DONE on branch `feat/setup-polish` (6 commits, NOT merged/pushed):** the three
+deferred follow-ups below are implemented (spec `…/specs/2026-05-23-reviewgate-setup-wizard-polish-design.md`
+[Opus-reviewed: READY], plan `…/plans/2026-05-23-reviewgate-setup-wizard-polish.md`, 5 TDD tasks,
+per-task spec+quality reviews). New pure `src/cli/setup/prefill.ts` (`answersFromConfig` +
+`WizardDefaults` + `RECOMMENDED_DEFAULTS` + the now-shared `MODEL_DEFAULT`). 668 pass / 0 fail; tsc +
+lint clean.
+  1. **re-run pre-fill** — `runSetup` loads the current effective config and (only when a config file
+     exists) seeds EVERY Custom prompt via `answersFromConfig`; fresh repos keep `RECOMMENDED_DEFAULTS`
+     (fpLedger recommended-ON), so onboarding is unchanged.
+  2. **critic/curator model prompt+probe** — both reuse `promptModelWithProbe` (gained an `initialModel`
+     param); model stored in `phases.{critic,brain.curator}.model` (orchestrator honors it —
+     verified `orchestrator.ts:620,790,917`).
+  3. **doctor contextDocs line** — `contextDocsCheck` (always-ok, surfaces CONTEXT7_API_KEY presence).
+- **Binary verification (Task 5):** `bun run build` clean (131 modules); `dist/reviewgate doctor`
+  prints the new contextDocs line. **Honest gap:** the *visual* pre-selected-multiselect and the
+  judge-probe TUI were NOT cleanly auto-verified — clack's redraw can't be linearised from a non-TTY
+  PTY here, and an accept-all drive desynced on confirm-key timing. The logic is fully unit-tested
+  (`answersFromConfig`) + spec/code-reviewed, and the binary runs the identical pure code
+  (`loadEffectiveConfig` + the clack flow are already binary-proven), but a **human spot-check** is
+  worthwhile: `dist/reviewgate setup` on an existing gemini+brain config → confirm gemini is
+  pre-checked and the brain prompt defaults to Yes.
 
 **DoD note:** codex ratelimited all session → used the OpenCode fallback; OpenCode was unreliable
 (hallucinated spec findings; the final whole-diff review **stalled 20 min / killed, exit 144**). The
