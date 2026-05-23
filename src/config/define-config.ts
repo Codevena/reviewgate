@@ -127,9 +127,9 @@ export const ConfigSchema = z.object({
 
 export type ReviewgateConfig = z.infer<typeof ConfigSchema>;
 
-type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
+export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
-function deepMerge<T>(base: T, override: DeepPartial<T>): T {
+export function deepMerge<T>(base: T, override: DeepPartial<T>): T {
   const out = Array.isArray(base) ? [...(base as unknown[])] : { ...(base as object) };
   for (const k of Object.keys(override) as Array<keyof T>) {
     const v = override[k];
