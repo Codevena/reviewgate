@@ -118,12 +118,13 @@ export const defaultConfig = {
     pendingPath: ".reviewgate/pending.md",
     pendingJsonPath: ".reviewgate/pending.json",
   },
-  // Optional plan/spec review. Default OFF = today's doc-skip behavior (no
-  // change for existing repos). When enabled, a doc-ONLY working-tree diff whose
-  // files match `globs` is reviewed with the `persona` reviewer instead of
-  // skipped. Glob matching uses Bun.Glob, repo-relative.
+  // Plan/spec review — default ON, but SCOPED to plan/spec globs only (NOT every
+  // doc): a doc-ONLY diff whose files match `globs` is reviewed with the `persona`
+  // reviewer instead of skipped. So specs/plans get gated before code is written,
+  // while trivial README/comment edits still skip at $0. Set enabled:false to opt
+  // out. Glob matching uses Bun.Glob, repo-relative.
   docReview: {
-    enabled: false,
+    enabled: true,
     globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
     persona: "plan",
   },

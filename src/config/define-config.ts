@@ -129,7 +129,7 @@ export const ConfigSchema = z.object({
       persona: z.string(),
     })
     .default({
-      enabled: false,
+      enabled: true,
       globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
       persona: "plan",
     }),
