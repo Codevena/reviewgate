@@ -40,6 +40,11 @@ per-task spec+quality reviews + an Opus final review = **APPROVED FOR MERGE**, 0
 - Enabling brain emits the whole resolved brain block incl. schema defaults (`maxPromptTokens` etc.)
   because `defaultConfig.phases.brain` is `null` — necessary for round-trip, harmless.
 
+**Done post-merge (`98b158c`):** the model probe now offers **re-enter / keep-anyway** on a failed
+probe (spec §6) — `promptModelWithProbe` loops; verified in the compiled binary via PTY (the
+"…did not verify — what now?" select renders). Opus re-verification before this: **VERIFIED-SOLID**
+(0 critical/important; tests/build/binary-E2E/round-trip/serialize-injection all checked).
+
 **Deferred follow-ups:** (1) **re-run pre-fill** — prompts seed from `defaults.ts`, NOT the current
 effective config (spec §7 wanted current-config pre-fill; fine for first-run onboarding, nice-to-have
 for reconfigure). (2) critic/curator models are not live-probed (only reviewers are). (3) A contextDocs
