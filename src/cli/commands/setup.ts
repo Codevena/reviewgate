@@ -208,7 +208,7 @@ async function runCustom(
       options: REVIEWER_PROVIDERS.map((p) => ({ value: p, label: p })),
     });
     if (isCancel(cp)) return null;
-    critic = { provider: cp as ProviderId, persona: "fp-filter" };
+    critic = { provider: cp as ProviderId, persona: "fp-filter", model: "" };
   }
 
   const wantBrain = await confirm({
@@ -229,7 +229,7 @@ async function runCustom(
       initialValue: "codex" as ProviderId,
     });
     if (isCancel(cur)) return null;
-    brain = { curator: { provider: cur as ProviderId, persona: "fp-filter" } };
+    brain = { curator: { provider: cur as ProviderId, persona: "fp-filter", model: "" } };
   }
 
   const fp = await confirm({

@@ -22,13 +22,13 @@ describe("buildQuickPreset", () => {
 });
 
 describe("buildCustomConfig", () => {
-  it("maps reviewers + critic + fpLedger toggles", () => {
+  it("maps reviewers + critic (with model) + fpLedger toggles", () => {
     const partial = buildCustomConfig({
       reviewers: [
         { provider: "codex", persona: "security", model: "gpt-5.4" },
         { provider: "gemini", persona: "architecture", model: "gemini-3-flash-preview" },
       ],
-      critic: { provider: "opencode", persona: "fp-filter" },
+      critic: { provider: "opencode", persona: "fp-filter", model: "default" },
       brain: null,
       fpLedger: true,
       contextDocs: false,
@@ -36,10 +36,30 @@ describe("buildCustomConfig", () => {
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.gemini?.enabled).toBe(true);
     expect(cfg.phases.review.reviewers).toHaveLength(2);
-    expect(cfg.phases.critic).toEqual({ provider: "opencode", persona: "fp-filter" });
+    expect(cfg.phases.critic).toEqual({
+      provider: "opencode",
+      persona: "fp-filter",
+      model: "default",
+    });
     expect(cfg.phases.fpLedger).toEqual({ enabled: true });
     expect(cfg.phases.brain).toBeNull();
     expect(cfg.phases.contextDocs).toBeNull();
+  });
+
+  it("emits the curator model in phases.brain.curator.model", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "gpt-5.4" }],
+      critic: null,
+      brain: { curator: { provider: "codex", persona: "fp-filter", model: "gpt-5.4-codex" } },
+      fpLedger: false,
+      contextDocs: false,
+    });
+    const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
+    expect(cfg.phases.brain?.curator).toEqual({
+      provider: "codex",
+      persona: "fp-filter",
+      model: "gpt-5.4-codex",
+    });
   });
 
   it("a per-reviewer model override lands in providers.<id>.model", () => {

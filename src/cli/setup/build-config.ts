@@ -10,8 +10,8 @@ export interface ReviewerAnswer {
 
 export interface CustomAnswers {
   reviewers: ReviewerAnswer[];
-  critic: { provider: ProviderId; persona: string } | null;
-  brain: { curator: { provider: ProviderId; persona: string } } | null;
+  critic: { provider: ProviderId; persona: string; model: string } | null;
+  brain: { curator: { provider: ProviderId; persona: string; model: string } } | null;
   fpLedger: boolean;
   contextDocs: boolean;
 }
@@ -79,8 +79,20 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
     review: { reviewers: a.reviewers.map((r) => ({ provider: r.provider, persona: r.persona })) },
     fpLedger: { enabled: a.fpLedger },
   };
-  if (a.critic) phases.critic = { provider: a.critic.provider, persona: a.critic.persona };
+  if (a.critic) {
+    const criticEntry: Record<string, unknown> = {
+      provider: a.critic.provider,
+      persona: a.critic.persona,
+    };
+    if (a.critic.model) criticEntry.model = a.critic.model;
+    phases.critic = criticEntry;
+  }
   if (a.brain) {
+    const curatorEntry: Record<string, unknown> = {
+      provider: a.brain.curator.provider,
+      persona: a.brain.curator.persona,
+    };
+    if (a.brain.curator.model) curatorEntry.model = a.brain.curator.model;
     phases.brain = {
       enabled: true,
       embeddings: {
@@ -88,7 +100,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
         model: "baai/bge-base-en-v1.5",
         apiKeyEnv: "OPENROUTER_API_KEY",
       },
-      curator: a.brain.curator,
+      curator: curatorEntry,
     };
   }
   phases.contextDocs = a.contextDocs ? { enabled: true } : null;
