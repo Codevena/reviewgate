@@ -13,18 +13,23 @@ import {
   spinner,
   text,
 } from "@clack/prompts";
-import { defaultConfig } from "../../config/defaults.ts";
 import {
   type DeepPartial,
   type ReviewgateConfig,
   defineConfig,
 } from "../../config/define-config.ts";
 import { diffFromDefaults } from "../../config/diff-defaults.ts";
-import { resolveGlobalConfigPath } from "../../config/global.ts";
+import { loadEffectiveConfig, resolveGlobalConfigPath } from "../../config/global.ts";
 import { serializeConfig } from "../../config/serialize.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { type CustomAnswers, buildCustomConfig, buildQuickPreset } from "../setup/build-config.ts";
+import {
+  MODEL_DEFAULT,
+  RECOMMENDED_DEFAULTS,
+  type WizardDefaults,
+  answersFromConfig,
+} from "../setup/prefill.ts";
 import { probeModel } from "../setup/probe.ts";
 import { runDoctor } from "./doctor.ts";
 
@@ -77,14 +82,6 @@ const REVIEWER_PROVIDERS: ProviderId[] = [
   "openrouter",
   "opencode",
 ];
-const MODEL_DEFAULT: Record<ProviderId, string> = {
-  codex: defaultConfig.providers.codex.model,
-  gemini: defaultConfig.providers.gemini.model,
-  "claude-code": defaultConfig.providers["claude-code"].model,
-  openrouter: defaultConfig.providers.openrouter.model,
-  opencode: defaultConfig.providers.opencode.model,
-};
-
 function authFor(p: ProviderId): "oauth" | "openrouter" {
   return p === "openrouter" ? "openrouter" : "oauth";
 }
@@ -103,6 +100,10 @@ export async function runSetup(input: SetupInput): Promise<number> {
   // 1. Target
   const globalPath = resolveGlobalConfigPath(env, home);
   let targetPath = join(input.repoRoot, "reviewgate.config.ts");
+  const hasExisting = existsSync(targetPath) || (globalPath !== null && existsSync(globalPath));
+  const defaults: WizardDefaults = hasExisting
+    ? answersFromConfig(await loadEffectiveConfig({ cwd: input.repoRoot, env, home }))
+    : RECOMMENDED_DEFAULTS;
   if (input.global) {
     if (!globalPath) {
       outro("setup aborted: no resolvable global config dir — set XDG_CONFIG_HOME or HOME");
@@ -139,7 +140,7 @@ export async function runSetup(input: SetupInput): Promise<number> {
     }
     partial = buildQuickPreset({ openrouterKeyPresent: orKey });
   } else {
-    const custom = await runCustom(env, orKey);
+    const custom = await runCustom(env, orKey, defaults);
     if (!custom) return cancelOut();
     partial = custom;
   }
@@ -169,6 +170,7 @@ export async function runSetup(input: SetupInput): Promise<number> {
 async function runCustom(
   env: Record<string, string | undefined>,
   orKey: boolean,
+  defaults: WizardDefaults,
 ): Promise<DeepPartial<ReviewgateConfig> | null> {
   const avail = (p: ProviderId) =>
     isProviderAvailable(p, p === "openrouter" ? "OPENROUTER_API_KEY" : undefined, { env });
@@ -179,26 +181,28 @@ async function runCustom(
       const hint = avail(p) ? undefined : p === "openrouter" ? "no API key" : "CLI not found";
       return hint !== undefined ? { value: p, label: p, hint } : { value: p, label: p };
     }),
-    initialValues: ["codex"] as ProviderId[],
+    initialValues: defaults.reviewerProviders,
     required: true,
   });
   if (isCancel(picked)) return null;
 
   const reviewers: CustomAnswers["reviewers"] = [];
   for (const p of picked as ProviderId[]) {
+    const seed = defaults.perReviewer[p];
     const persona = await select({
       message: `${p}: persona`,
       options: PERSONAS.map((x) => ({ value: x, label: x })),
+      initialValue: seed?.persona ?? "security",
     });
     if (isCancel(persona)) return null;
-    const model = await promptModelWithProbe(p, authFor(p));
+    const model = await promptModelWithProbe(p, authFor(p), seed?.model ?? MODEL_DEFAULT[p]);
     if (model === null) return null;
     reviewers.push({ provider: p, persona: String(persona), model });
   }
 
   const wantCritic = await confirm({
     message: "Enable the critic (demote-only FP pass)?",
-    initialValue: false,
+    initialValue: Boolean(defaults.critic),
   });
   if (isCancel(wantCritic)) return null;
   let critic: CustomAnswers["critic"] = null;
@@ -206,14 +210,18 @@ async function runCustom(
     const cp = await select({
       message: "Critic provider",
       options: REVIEWER_PROVIDERS.map((p) => ({ value: p, label: p })),
+      initialValue: defaults.critic?.provider ?? "codex",
     });
     if (isCancel(cp)) return null;
-    critic = { provider: cp as ProviderId, persona: "fp-filter", model: "" };
+    const provider = cp as ProviderId;
+    const cm = await promptModelWithProbe(provider, authFor(provider), defaults.critic?.model);
+    if (cm === null) return null;
+    critic = { provider, persona: "fp-filter", model: cm };
   }
 
   const wantBrain = await confirm({
     message: "Enable the brain (repo memory + curator)?",
-    initialValue: orKey,
+    initialValue: defaults.brainCurator ? true : orKey,
   });
   if (isCancel(wantBrain)) return null;
   let brain: CustomAnswers["brain"] = null;
@@ -226,21 +234,28 @@ async function runCustom(
     const cur = await select({
       message: "Curator (LLM judge — a non-reviewer like opencode is more independent)",
       options: REVIEWER_PROVIDERS.map((p) => ({ value: p, label: p })),
-      initialValue: "codex" as ProviderId,
+      initialValue: defaults.brainCurator?.provider ?? "codex",
     });
     if (isCancel(cur)) return null;
-    brain = { curator: { provider: cur as ProviderId, persona: "fp-filter", model: "" } };
+    const provider = cur as ProviderId;
+    const cm = await promptModelWithProbe(
+      provider,
+      authFor(provider),
+      defaults.brainCurator?.model,
+    );
+    if (cm === null) return null;
+    brain = { curator: { provider, persona: "fp-filter", model: cm } };
   }
 
   const fp = await confirm({
     message: "Enable the FP-ledger (learn rejected false positives)?",
-    initialValue: true,
+    initialValue: defaults.fpLedger,
   });
   if (isCancel(fp)) return null;
 
   const ctx = await confirm({
     message: "Enable contextDocs (inject current library docs)?",
-    initialValue: false,
+    initialValue: defaults.contextDocs,
   });
   if (isCancel(ctx)) return null;
   if (ctx) note("contextDocs works keyless; set CONTEXT7_API_KEY for higher rate limits.");
@@ -261,8 +276,9 @@ async function runCustom(
 async function promptModelWithProbe(
   provider: ProviderId,
   auth: "oauth" | "openrouter",
+  initialModel: string = MODEL_DEFAULT[provider],
 ): Promise<string | null> {
-  let initial = MODEL_DEFAULT[provider];
+  let initial = initialModel;
   for (;;) {
     const model = await text({ message: `${provider}: model`, initialValue: initial });
     if (isCancel(model)) return null;
