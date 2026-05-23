@@ -121,8 +121,13 @@ export async function enclosingSymbol(
   return hit ? { name: hit.name, startLine: hit.startLine } : null;
 }
 
-function ripgrepCallers(symbol: string, repoRoot: string): CallerRef[] {
+// Returns null when the `rg` binary is UNAVAILABLE (so the caller can fall back),
+// [] when rg ran but matched nothing (rg exits 1 on no matches), and the refs
+// otherwise. ripgrep is an OPTIONAL dependency — CI and minimal hosts may not have
+// it — so callers must not silently vanish when it is missing.
+function ripgrepCallers(symbol: string, repoRoot: string): CallerRef[] | null {
   const r = spawnSync("rg", ["-n", "--no-heading", "-w", symbol, repoRoot], { encoding: "utf8" });
+  if (r.error) return null; // ENOENT etc. → rg not installed
   if (r.status !== 0 || !r.stdout) return [];
   const refs: CallerRef[] = [];
   for (const ln of r.stdout.split("\n")) {
@@ -130,6 +135,48 @@ function ripgrepCallers(symbol: string, repoRoot: string): CallerRef[] {
     if (m?.[1] && m[2]) refs.push({ file: m[1], line: Number(m[2]) });
   }
   return refs;
+}
+
+const SCAN_FILE_CAP = 3000;
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Fallback when ripgrep is absent: a bounded built-in scan for word-boundary
+// references to `symbol` across the repo's source files (skipping vendored/build
+// dirs). Slower than rg, but keeps 1-hop caller detection working without the
+// optional binary. Exported for direct testing of the no-ripgrep path.
+export function scanCallersFallback(symbol: string, repoRoot: string): CallerRef[] {
+  const re = new RegExp(`\\b${escapeRegExp(symbol)}\\b`);
+  const refs: CallerRef[] = [];
+  let scanned = 0;
+  try {
+    for (const abs of new Bun.Glob("**/*.{ts,tsx,js,py}").scanSync({
+      cwd: repoRoot,
+      absolute: true,
+    })) {
+      if (/(?:^|\/)(?:node_modules|\.git|\.reviewgate|dist)\//.test(abs)) continue;
+      if (++scanned > SCAN_FILE_CAP) break;
+      let text: string;
+      try {
+        text = readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (re.test(lines[i] as string)) refs.push({ file: abs, line: i + 1 });
+      }
+    }
+  } catch {
+    // best-effort — a glob/read failure just yields fewer callers
+  }
+  return refs;
+}
+
+// rg if available, else the built-in scan.
+function findCallers(symbol: string, repoRoot: string): CallerRef[] {
+  return ripgrepCallers(symbol, repoRoot) ?? scanCallersFallback(symbol, repoRoot);
 }
 
 export async function buildSymbolGraph(input: {
@@ -143,7 +190,7 @@ export async function buildSymbolGraph(input: {
   }
   const callers: Record<string, CallerRef[]> = {};
   for (const s of symbols) {
-    const refs = ripgrepCallers(s.name, input.repoRoot).filter(
+    const refs = findCallers(s.name, input.repoRoot).filter(
       (r) =>
         r.file.endsWith(".ts") ||
         r.file.endsWith(".tsx") ||

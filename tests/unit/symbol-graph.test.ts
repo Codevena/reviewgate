@@ -1,7 +1,11 @@
 // tests/unit/symbol-graph.test.ts
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { buildSymbolGraph, enclosingSymbol } from "../../src/research/symbol-graph.ts";
+import {
+  buildSymbolGraph,
+  enclosingSymbol,
+  scanCallersFallback,
+} from "../../src/research/symbol-graph.ts";
 
 const DIR = join(process.cwd(), "tests/fixtures/symgraph");
 
@@ -17,6 +21,13 @@ describe("symbol-graph", () => {
     const alpha = g.symbols.find((s) => s.name === "alpha");
     expect(alpha?.callees).toContain("beta");
     expect(g.callers.alpha?.some((ref) => ref.file.endsWith("b.ts"))).toBe(true);
+  });
+
+  it("finds callers WITHOUT ripgrep via the built-in scan fallback (CI has no rg)", () => {
+    // Exercises the no-ripgrep path directly so a runner lacking `rg` still gets
+    // 1-hop callers (was: callers silently empty → CI failure at the rg assertion).
+    const refs = scanCallersFallback("alpha", DIR);
+    expect(refs.some((r) => r.file.endsWith("b.ts"))).toBe(true);
   });
 
   it("degrades gracefully for unsupported/missing files (no throw, array result)", async () => {
