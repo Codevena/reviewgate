@@ -61,7 +61,7 @@ describe("runInit", () => {
     const cfg = await loadConfig(cfgPath);
     expect(cfg.phases.fpLedger?.enabled).toBe(true);
     expect(cfg.phases.brain?.enabled).toBe(true);
-    expect(cfg.phases.brain?.curator?.provider).toBe("codex");
+    expect(cfg.phases.brain?.curator?.provider).toBe("opencode");
     // openrouter must be enabled — the brain's embeddings depend on it.
     expect(cfg.providers.openrouter?.enabled).toBe(true);
     expect(cfg.phases.brain?.embeddings.provider).toBe("openrouter");

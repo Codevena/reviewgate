@@ -19,7 +19,7 @@ describe("buildQuickPreset", () => {
       buildQuickPreset({ openrouterKeyPresent: true }) as Parameters<typeof defineConfig>[0],
     );
     expect(cfg.phases.brain?.enabled).toBe(true);
-    expect(cfg.phases.brain?.curator).toEqual({ provider: "codex", persona: "fp-filter" });
+    expect(cfg.phases.brain?.curator).toEqual({ provider: "opencode", persona: "fp-filter" });
   });
 });
 

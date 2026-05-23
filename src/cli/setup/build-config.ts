@@ -66,7 +66,10 @@ export function buildQuickPreset(input: QuickInput): DeepPartial<ReviewgateConfi
             model: "baai/bge-base-en-v1.5",
             apiKeyEnv: "OPENROUTER_API_KEY",
           },
-          curator: { provider: "codex" as const, persona: "fp-filter" },
+          // opencode = a NON-reviewer judge → more independent than reusing a
+          // reviewer (codex). Non-blocking: if opencode isn't installed the judge
+          // silently falls back to its default and `doctor` warns.
+          curator: { provider: "opencode" as const, persona: "fp-filter" },
         },
       }
     : {};
