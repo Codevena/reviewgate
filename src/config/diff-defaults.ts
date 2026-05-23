@@ -23,6 +23,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
 // is dropped); arrays + scalars + null compare whole and are emitted intact when
 // they differ. Operates on two fully-resolved configs (no explicit-vs-omitted
 // ambiguity). The result, fed back through defineConfig, reproduces the input.
+// Precondition: value and base are both fully-resolved configs (same key set).
 function diff(value: unknown, base: unknown): { changed: boolean; value: unknown } {
   if (isPlainObject(value) && isPlainObject(base)) {
     const out: Record<string, unknown> = {};

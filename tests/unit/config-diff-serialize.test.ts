@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig } from "../../src/config/defaults.ts";
 import { defineConfig } from "../../src/config/define-config.ts";
 import { diffFromDefaults } from "../../src/config/diff-defaults.ts";
 import { loadConfig } from "../../src/config/loader.ts";
