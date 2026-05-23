@@ -11,6 +11,7 @@ export interface ProbeInput {
 
 export interface ProbeResult {
   ok: boolean;
+  /** true = could not verify (no completion API); treat as "unknown", not failure. Always implies ok=false. */
   skipped: boolean;
   detail: string;
 }
@@ -37,6 +38,7 @@ export async function probeModel(input: ProbeInput, deps: ProbeDeps = {}): Promi
       return { ok: true, skipped: false, detail: "model responds" };
     return { ok: false, skipped: false, detail: "empty response" };
   } catch (e) {
-    return { ok: false, skipped: false, detail: (e as Error).message.slice(0, 200) };
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, skipped: false, detail: msg.slice(0, 200) };
   }
 }
