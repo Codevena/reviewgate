@@ -1,9 +1,10 @@
 // src/cli/commands/doctor.ts
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
-import { loadConfig } from "../../config/loader.ts";
+import { loadEffectiveConfig } from "../../config/global.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
@@ -185,7 +186,11 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   // providers (else the panel runs 0 reviewers → the gate ERRORs with no obvious
   // cause). A config that fails to load is surfaced as a warn rather than crashing.
   try {
-    const cfg = await loadConfig(cfgExists ? cfgPath : null);
+    const cfg = await loadEffectiveConfig({
+      cwd: input.repoRoot,
+      env: process.env as Record<string, string | undefined>,
+      home: homedir(),
+    });
     checks.push(reviewersEnabledCheck(cfg));
     // Provider availability: CLI providers need their CLI reachable; openrouter
     // needs its CONFIGURED key env var set (defaults to OPENROUTER_API_KEY, but a

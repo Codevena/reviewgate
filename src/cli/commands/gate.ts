@@ -1,9 +1,8 @@
 // src/cli/commands/gate.ts
-import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
-import type { ReviewgateConfig } from "../../config/define-config.ts";
-import { defaultConfigPath, loadConfig } from "../../config/loader.ts";
+import { loadEffectiveConfig } from "../../config/global.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import { StateStore } from "../../core/state-store.ts";
@@ -30,26 +29,17 @@ export interface GateOutput {
   stderr: string;
 }
 
-async function loadEffectiveConfig(repoRoot: string): Promise<ReviewgateConfig> {
-  const p = defaultConfigPath(repoRoot);
-  if (existsSync(p)) {
-    try {
-      return await loadConfig(p);
-    } catch {
-      // Config file present but failed to load (e.g. missing peer package in test env).
-      // Fall back to defaults so the gate remains functional.
-    }
-  }
-  return loadConfig(null);
-}
-
 function stopHookActiveFlag(parsed: unknown): boolean {
   const obj = parsed as { stop_hook_active?: boolean } | null;
   return Boolean(obj?.stop_hook_active);
 }
 
 export async function runGate(input: GateInput): Promise<GateOutput> {
-  const cfg = await loadEffectiveConfig(input.repoRoot);
+  const cfg = await loadEffectiveConfig({
+    cwd: input.repoRoot,
+    env: process.env as Record<string, string | undefined>,
+    home: homedir(),
+  });
   const audit = new AuditLogger(auditDir(input.repoRoot));
 
   if (input.hook === "reset") {
