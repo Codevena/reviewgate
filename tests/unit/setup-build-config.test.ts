@@ -62,6 +62,27 @@ describe("buildCustomConfig", () => {
     });
   });
 
+  it("omits an empty critic/curator model so defineConfig uses the provider default", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "" }],
+      critic: { provider: "opencode", persona: "fp-filter", model: "" },
+      brain: { curator: { provider: "codex", persona: "fp-filter", model: "" } },
+      fpLedger: false,
+      contextDocs: false,
+    });
+    // critic/curator entries present but WITHOUT an explicit model key (→ provider default)
+    const ph = (
+      partial as {
+        phases?: {
+          critic?: Record<string, unknown>;
+          brain?: { curator?: Record<string, unknown> };
+        };
+      }
+    ).phases;
+    expect(ph?.critic && "model" in ph.critic).toBe(false);
+    expect(ph?.brain?.curator && "model" in ph.brain.curator).toBe(false);
+  });
+
   it("a per-reviewer model override lands in providers.<id>.model", () => {
     const partial = buildCustomConfig({
       reviewers: [{ provider: "codex", persona: "security", model: "gpt-5.4-codex" }],

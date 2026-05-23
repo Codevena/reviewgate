@@ -10,8 +10,20 @@ export interface ReviewerAnswer {
 
 export interface CustomAnswers {
   reviewers: ReviewerAnswer[];
-  critic: { provider: ProviderId; persona: string; model: string } | null;
-  brain: { curator: { provider: ProviderId; persona: string; model: string } } | null;
+  critic: {
+    provider: ProviderId;
+    persona: string;
+    /** Empty string → omit it so defineConfig falls back to the provider default. */
+    model: string;
+  } | null;
+  brain: {
+    curator: {
+      provider: ProviderId;
+      persona: string;
+      /** Empty string → omit it so defineConfig falls back to the provider default. */
+      model: string;
+    };
+  } | null;
   fpLedger: boolean;
   contextDocs: boolean;
 }
