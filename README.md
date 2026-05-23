@@ -1,23 +1,36 @@
 # Reviewgate
 
-**A code-review gate that runs inside Claude Code's agent loop.**
+**Reviewgate prevents AI coding agents from ending a turn until independent LLM
+reviewers have checked the diff and every blocking finding is resolved.**
 
-When Claude Code edits files in a Reviewgate-initialised repo, Reviewgate spawns
-a heterogeneous LLM reviewer panel as isolated subprocesses, aggregates their
+It runs *inside* Claude Code's agent loop. When Claude edits files in a
+Reviewgate-initialised repo, a `Stop` hook spawns a heterogeneous LLM reviewer
+panel (Codex · Gemini · Claude · OpenRouter) as subprocesses, aggregates their
 findings under a severity-weighted veto, and **blocks Claude from ending its
 turn** until every finding is either fixed or rejected-with-reason. Findings live
 in files (`.reviewgate/pending.md`) that Claude reads with its normal Read tool —
 no chat-stream parsing, no flaky stdout scraping.
 
-Reviewers run the official provider CLIs (Codex, Gemini, Claude), so users on
-Claude Pro/Max, ChatGPT Plus/Pro and Gemini Advanced pay **$0 per review** within
-their subscription quotas (OAuth-first). OpenRouter reviewers use an API key and
-can target any hosted model by name.
+Reviewers run the official provider CLIs, so users on Claude Pro/Max, ChatGPT
+Plus/Pro and Gemini Advanced pay **$0 per review** within their subscription
+quotas (OAuth-first). OpenRouter reviewers use an API key and can target any
+hosted model by name.
 
-> **Status: M3 (Adaptive Pipeline).** Ships Codex + Gemini + Claude + OpenRouter
-> reviewers, a parallel panel, an adversarial critic phase, cost tracking, adaptive
-> triage, tree-sitter symbol graph, research context, and review cache.
-> See [Scope & limitations](#scope--limitations).
+> [!WARNING]
+> **Alpha — trusted local development only.** Reviewgate runs provider CLIs on
+> your working-tree diff *without sandbox isolation* (native isolation is pending
+> an unpublished dependency). Use it on your own code, **not** on untrusted
+> repositories or diffs. See [Security](#security).
+
+<!-- TODO(demo): add a 30s asciinema/GIF here — edit → gate blocks → pending.md → fix → PASS.
+     This is the single highest-leverage thing for the public launch. -->
+
+> **Status: `0.1.0-alpha` (M1–M6 implemented).** Multi-reviewer panel
+> (Codex + Gemini + Claude + OpenRouter) · parallel execution · adversarial critic ·
+> adaptive triage · tree-sitter symbol graph · research context · review cache ·
+> per-repo learning brain + curator · false-positive ledger · stats & weekly
+> reports · interactive `setup` wizard. The one piece **not** done yet: native
+> sandbox isolation. See [Scope & limitations](#scope--limitations).
 
 ---
 
@@ -49,20 +62,29 @@ can target any hosted model by name.
 ```
 
 \* Sandbox isolation requires `@anthropic-ai/sandbox-runtime`, which is not yet
-published at v1. **M1 runs the reviewer unisolated** under the honest default
-`sandbox.mode: "off"`; setting `"strict"`/`"permissive"` fails closed (refuses to
-review) rather than silently running unisolated. See [Security](#security).
+published at v1. Reviewgate currently runs the reviewer **unisolated** under the
+honest default `sandbox.mode: "off"`; setting `"strict"`/`"permissive"` fails
+closed (refuses to review) rather than silently running unisolated. See
+[Security](#security).
+
+> 📐 For the full control flow, module map and pipeline stages, see
+> [`docs/architecture.md`](docs/architecture.md).
 
 ---
 
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.0 (Node 20+ works for the compiled binary)
-- [Codex CLI](https://github.com/openai/codex) ≥ 0.130, logged in (`codex login`)
+- **At least one reviewer CLI**, installed and logged in:
+  - [Codex CLI](https://github.com/openai/codex) ≥ 0.130 (`codex login`) — recommended default
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (OAuth)
+  - [Claude Code](https://claude.com/claude-code) (OAuth)
+  - …or an [OpenRouter](https://openrouter.ai) API key for any hosted model
 - macOS or Linux (Windows: use WSL2)
 - git
 
-Check your environment at any time:
+You don't need all of them — one is enough to start. Check exactly which
+reviewers are ready on your machine at any time:
 
 ```bash
 reviewgate doctor
@@ -89,6 +111,13 @@ reviewgate init        # installs hooks into .claude/settings.json,
 
 `init` is idempotent and merges into existing `.claude/settings.json` without
 clobbering your other hooks.
+
+Prefer to be walked through provider/model/quota choices? Run the interactive
+wizard instead of hand-writing the config:
+
+```bash
+reviewgate setup       # interactive configuration wizard
+```
 
 ---
 
@@ -298,10 +327,15 @@ repeated stop-hooks instantaneous after a trivially clean re-run.
   prompt-injection planted in code.
 - **Tamper-evident audit log.** Every run appends a sha256 hash-chained JSONL
   event log; `reviewgate audit verify` detects any modification.
-- **Sandbox (partial in M1).** Full filesystem/network isolation needs
-  `@anthropic-ai/sandbox-runtime` (unpublished at v1). Until then M1 runs the
-  reviewer unisolated under the explicit `sandbox.mode: "off"`; other modes fail
-  closed. Treat M1 as suitable for trusted local development, not untrusted diffs.
+- **Sandbox (not yet isolated).** Full filesystem/network isolation needs
+  `@anthropic-ai/sandbox-runtime` (unpublished at v1). Until then Reviewgate runs
+  the reviewer unisolated under the explicit `sandbox.mode: "off"`; the
+  `"strict"`/`"permissive"` modes fail closed. **Treat the current release as
+  suitable for trusted local development only — not for reviewing untrusted
+  repositories or diffs.**
+
+See [`SECURITY.md`](SECURITY.md) for the full threat model and how to report a
+vulnerability.
 
 ---
 
@@ -349,8 +383,17 @@ bundled into `dist/grammars/` by `bun run build`.
 **In M4:** per-repo learning brain & Curator (see [Brain & Curator (M4)](#brain--curator-m4) below) ·
 `reviewgate brain list|show|revoke` CLI.
 
-**Not yet (M5–M6):** false-positive ledger · cassette replay & weekly reports ·
-native sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1).
+**In M5:** false-positive ledger (`reviewgate fp list|show|pin|unpin|audit` — known
+FPs are demoted on future runs) · cassette record/replay for deterministic
+provider testing · per-reviewer quota-failover chain.
+
+**In M6:** review stats (`reviewgate stats`) · weekly Markdown reports
+(`reviewgate report`) · one-shot plan/spec review (`reviewgate review-plan <file>`) ·
+optional Context7 documentation context · interactive `reviewgate setup` wizard.
+
+**Not yet:** native sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1) —
+this is why the gate is positioned for trusted local development only. See
+[Security](#security).
 
 ---
 
@@ -417,5 +460,19 @@ bun run build       # compile single binary
 REVIEWGATE_E2E=1 bun test tests/e2e   # real Codex end-to-end (uses your quota)
 ```
 
-The design spec lives in `docs/superpowers/specs/`, the M1 implementation plan in
+The design spec lives in `docs/superpowers/specs/`, the implementation plans in
 `docs/superpowers/plans/`, and spike findings in `docs/superpowers/spikes/`.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR.
+
+---
+
+## Contributing
+
+Bug reports, feedback, and small focused PRs are welcome — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md). For security issues, follow
+[`SECURITY.md`](SECURITY.md) (do not file them publicly).
+
+## License
+
+[MIT](LICENSE) © Markus Wiesecke
