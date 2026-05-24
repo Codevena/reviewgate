@@ -56,9 +56,19 @@ describe("ReportWriter", () => {
     const json = JSON.parse(readFileSync(join(dir, ".reviewgate", "pending.json"), "utf8"));
     expect(md).toContain("FAIL");
     expect(md).toContain("F-001");
-    expect(md).toContain("src/db.ts:42");
+    expect(md).toContain("src/db.ts:42"); // single-line finding → plain line
     expect(json.run_id).toBe("r1");
     expect(json.findings[0].id).toBe("F-001");
+  });
+
+  it("renders a line RANGE for a multi-line finding (line_start-line_end)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-rep-"));
+    const w = new ReportWriter(dir);
+    const f0 = baseReport.findings[0];
+    if (!f0) throw new Error("fixture missing finding");
+    await w.write({ ...baseReport, findings: [{ ...f0, line_start: 10, line_end: 18 }] });
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    expect(md).toContain("src/db.ts:10-18");
   });
 
   it("writes ESCALATION.md when verdict=ESCALATE", async () => {

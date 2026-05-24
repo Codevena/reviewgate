@@ -23,8 +23,10 @@ function fmtFinding(f: Finding): string {
     f.confirmed_by && f.confirmed_by.length > 1
       ? ` (confirmed by ${f.confirmed_by.join(", ")})`
       : "";
+  // Show a range (line_start-line_end) for multi-line findings, plain line otherwise.
+  const loc = f.line_end > f.line_start ? `${f.line_start}-${f.line_end}` : `${f.line_start}`;
   return [
-    `### ${f.id}  ${sym} ${f.severity}  ·  ${f.file}:${f.line_start}  ·  ${f.rule_id}`,
+    `### ${f.id}  ${sym} ${f.severity}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${confirmed}`,
     "",
     f.message,

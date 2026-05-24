@@ -165,9 +165,19 @@ are still **verify-first** before any change.
 - gate HEAD-advanced path computed `collectDiff(last)` twice → compute once + reuse.
 - DoD: Codex PASS + Claude PASS; 808 pass / 0 fail; binary smoked.
 
-### Still open (own PR, later)
+### PR F — optional multi-line finding ranges ✅ DONE (branch `phase4-multiline-ranges`)
 
-- `#2` codex single-line schema → optional multi-line ranges (real-codex verify).
+- `#2` Reviewers can now report a multi-line range. `REVIEW_OUTPUT_SCHEMA` findings
+  gain `line_end` (in `required`, nullable type `["integer","null"]` — strict-mode
+  compliant). `mapReviewOutputToFindings` resolves `line_end = max(line,
+  trunc(line_end))` when finite, else `line` (null/absent/backwards/garbage →
+  single-line, back-compatible — single-line signatures are byte-identical, so
+  cache/FP-ledger keys don't shift). Both prompt preambles document it;
+  report-writer renders `file:start-end` for multi-line. Verified strict-mode
+  validity with a REAL `codex exec --output-schema` call (emitted line/line_end,
+  no HTTP 400). DoD: Codex PASS + Claude PASS; 810 pass / 0 fail.
+
+**Backlog fully worked through (2026-05-24): Phases 1–4 + PR E cleanup + PR F.**
 
 NOTE (deferred, lower-priority follow-ups surfaced by PR B review): tree-sitter
 `parseFile` loop in `buildSymbolGraph` doesn't abort early; `spawnCapture` stderr

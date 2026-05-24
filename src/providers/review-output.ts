@@ -23,6 +23,7 @@ export const REVIEW_OUTPUT_SCHEMA = {
           "rule_id",
           "file",
           "line",
+          "line_end",
           "message",
           "details",
           "confidence",
@@ -44,6 +45,10 @@ export const REVIEW_OUTPUT_SCHEMA = {
           rule_id: { type: "string" },
           file: { type: "string" },
           line: { type: "integer" },
+          // The issue's START line. `line_end` is the optional END line for a
+          // multi-line issue (nullable per strict-mode: express optional via a
+          // nullable type, never by omission). null/absent → single-line (= line).
+          line_end: { type: ["integer", "null"] },
           message: { type: "string" },
           details: { type: "string" },
           confidence: { type: "number" },
@@ -107,6 +112,7 @@ export interface ReviewFinding {
   rule_id: string;
   file: string;
   line: number;
+  line_end?: number | null;
   message: string;
   details: string;
   confidence: number;
@@ -223,6 +229,13 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
     // the diff's changed-range keys (otherwise diff-scoping mis-fires on "./x").
     const file = normalizeRepoPath(cf.file, ctx.workingDir);
     const line = Math.max(1, Math.trunc(cf.line));
+    // Optional multi-line range: honour line_end only when it's a valid integer
+    // at or after the start (a reviewer that sends null/absent/garbage/backwards
+    // → single-line, the back-compatible default).
+    const lineEnd =
+      typeof cf.line_end === "number" && Number.isFinite(cf.line_end)
+        ? Math.max(line, Math.trunc(cf.line_end))
+        : line;
     const candidate = {
       id: `F-${String(n).padStart(3, "0")}`,
       signature: computeSignature({
@@ -230,14 +243,14 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
         ruleId: cf.rule_id ?? cf.severity,
         category: cf.category as FindingCategory,
         lineStart: line,
-        lineEnd: line,
+        lineEnd,
       }),
       severity: cf.severity,
       category: cf.category,
       rule_id: cf.rule_id && cf.rule_id.length > 0 ? cf.rule_id : "unspecified",
       file,
       line_start: line,
-      line_end: line,
+      line_end: lineEnd,
       message: cf.message.slice(0, 200),
       details: (cf.details ?? cf.message).slice(0, 2000),
       reviewer: { provider: ctx.provider, model: ctx.model, persona: ctx.persona },
