@@ -26,6 +26,10 @@ export interface ReviewInput {
   persona: string;
   diffPath: string;
   schemaPath?: string;
+  // Aborts the underlying CLI subprocess when the gate's self-deadline fires
+  // (loop.runTimeoutMs). Adapters MUST forward this to spawnSafely so in-flight
+  // reviewers are killed rather than left running orphaned past the deadline.
+  signal?: AbortSignal;
 }
 
 export type ReviewStatus = "ok" | "error" | "abstain" | "timeout" | "quota-exhausted";

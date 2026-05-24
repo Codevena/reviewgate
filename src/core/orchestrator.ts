@@ -84,6 +84,17 @@ export interface IterationResult {
   summary: RunSummary;
 }
 
+// Structural contract the LoopDriver depends on — lets the driver race a run
+// against its deadline (and tests inject a slow/fast stub) without coupling to
+// the concrete Orchestrator. `signal` aborts the in-flight reviewers on timeout.
+export interface IterationRunner {
+  runIteration(opts: {
+    runId: string;
+    iter: number;
+    signal?: AbortSignal;
+  }): Promise<IterationResult>;
+}
+
 const REVIEW_PROMPT_PREAMBLE = [
   "You are reviewing a code diff. Output ONLY a single JSON object — no prose, no",
   "markdown fences — of exactly this shape:",
@@ -212,7 +223,11 @@ interface ReviewerRun {
 export class Orchestrator {
   constructor(private readonly input: OrchestratorInput) {}
 
-  async runIteration(opts: { runId: string; iter: number }): Promise<IterationResult> {
+  async runIteration(opts: {
+    runId: string;
+    iter: number;
+    signal?: AbortSignal;
+  }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
 
@@ -514,6 +529,7 @@ export class Orchestrator {
           findingsPath,
           persona,
           diffPath,
+          ...(opts.signal ? { signal: opts.signal } : {}),
         });
         return { res, provider, persona, model };
       } catch (err) {
@@ -798,6 +814,7 @@ export class Orchestrator {
             findingsPath: join(cRun, "f.md"),
             persona: criticCfg.persona,
             diffPath: join(cRun, "d.patch"),
+            ...(opts.signal ? { signal: opts.signal } : {}),
           });
           criticCostUsd += cRes.usage.costUsd;
           const criticText = cRes.rawText ?? "";
@@ -880,6 +897,11 @@ export class Orchestrator {
     }
 
     // --- Cache store (only passing verdicts; FAIL must re-run to surface findings) ---
+    // No abort checkpoint here on purpose: the cache is only reached AFTER
+    // writeReport committed a real verdict (its guard threw otherwise), so a
+    // cached PASS reflects a genuinely completed review. If the deadline fired
+    // during this bounded post-verdict work, LoopDriver awaits the run, sees it
+    // resolve, and honors the verdict — the cache then makes the (rare) re-run cheap.
     if (cacheEnabled && (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")) {
       await putCachedReview(repo, cacheKey, { verdict: agg.verdict, counts: agg.counts }).catch(
         () => undefined,
@@ -1131,7 +1153,7 @@ export class Orchestrator {
   }
 
   private async writeReport(
-    opts: { runId: string; iter: number },
+    opts: { runId: string; iter: number; signal?: AbortSignal },
     start: number,
     runs: ReviewerRun[],
     findings: Finding[],
@@ -1144,6 +1166,12 @@ export class Orchestrator {
       demoted: number;
     },
   ): Promise<void> {
+    // Single chokepoint for the self-deadline: if the gate aborted this run
+    // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
+    // hit, zero-ok ERROR, or the main panel write — may persist pending.*, or it
+    // would clobber/contradict LoopDriver's "did not complete" decision (which
+    // already cleared pending.*). Guarding here covers every call site at once.
+    opts.signal?.throwIfAborted();
     const writer = new ReportWriter(this.input.repoRoot);
     const reviewers =
       runs.length > 0

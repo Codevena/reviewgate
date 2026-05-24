@@ -93,6 +93,15 @@ export class OpenRouterAdapter implements ProviderAdapter {
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.cfg.timeoutMs);
+    // OpenRouter is an HTTP adapter (no subprocess to SIGKILL), so it must wire
+    // the gate's self-deadline signal into THIS request's controller — otherwise
+    // an OpenRouter reviewer ignores loop.runTimeoutMs and keeps the Stop hook
+    // alive until the per-request timeout, reintroducing the silent fail-open.
+    const onExternalAbort = () => controller.abort();
+    if (input.signal) {
+      if (input.signal.aborted) controller.abort();
+      else input.signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
     let json: ChatResponse;
     try {
       const resp = await this.fetchImpl(ENDPOINT, {
@@ -111,6 +120,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       return errorResult(`OpenRouter request failed: ${(err as Error).message}`);
     } finally {
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onExternalAbort);
     }
     if (json.error?.message) return errorResult(`OpenRouter error: ${json.error.message}`);
 

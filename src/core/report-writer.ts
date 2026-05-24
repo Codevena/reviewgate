@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
 import type { PendingReport } from "../schemas/pending-report.ts";
+import type { EscalationReason } from "../schemas/state.ts";
 import {
   escalationMdPath,
   pendingJsonPath,
@@ -116,12 +117,7 @@ export interface EscalationInput {
   runId: string;
   iter: number;
   maxIter: number;
-  reasonCode:
-    | "max-iterations"
-    | "cost-cap"
-    | "stuck-signatures"
-    | "reject-rate-high"
-    | "decisions-unaddressed";
+  reasonCode: EscalationReason;
   summary: string;
   perIter: Array<{
     iter: number;

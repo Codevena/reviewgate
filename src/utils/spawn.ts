@@ -13,6 +13,10 @@ export interface SpawnInput {
   stderrFile: string;
   timeoutMs: number;
   zeroByteWatchdogMs?: number;
+  // When this fires, the child's whole process group is SIGKILLed at once. Used
+  // by the gate's self-deadline to abort in-flight reviewers when a run exceeds
+  // loop.runTimeoutMs (so they can't keep running orphaned or write late).
+  signal?: AbortSignal;
 }
 
 export interface SpawnResult {
@@ -21,12 +25,14 @@ export interface SpawnResult {
   durationMs: number;
   killedByWatchdog: boolean;
   killedByTimeout: boolean;
+  killedByAbort: boolean;
 }
 
 export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
   const start = Date.now();
   let killedByWatchdog = false;
   let killedByTimeout = false;
+  let killedByAbort = false;
 
   return new Promise<SpawnResult>((resolve, reject) => {
     const stdinStream = input.stdinFile ? createReadStream(input.stdinFile) : undefined;
@@ -58,6 +64,18 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
         }
       }
     };
+
+    // Caller-driven abort (gate self-deadline): SIGKILL the whole tree at once.
+    // If the signal is already aborted at spawn time, kill immediately. The
+    // listener is removed in settle() so an aborted run doesn't leak it.
+    const onAbort = () => {
+      killedByAbort = true;
+      killTree("SIGKILL");
+    };
+    if (input.signal) {
+      if (input.signal.aborted) onAbort();
+      else input.signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     if (stdinStream && child.stdin) {
       stdinStream.pipe(child.stdin);
@@ -117,6 +135,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       settled = true;
       clearInterval(watchdog);
       clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", onAbort);
       // Release our handles on the child's pipes (and unref the child) so an
       // orphaned grandchild still holding stdout/stderr open cannot keep THIS
       // process alive — without this the promise resolves but the gate can hang at
@@ -136,6 +155,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
             durationMs: Date.now() - start,
             killedByWatchdog,
             killedByTimeout,
+            killedByAbort,
           });
         }
       };

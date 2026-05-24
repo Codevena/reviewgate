@@ -109,6 +109,7 @@ export class CodexAdapter implements ProviderAdapter {
       stdoutFile: eventsFile,
       stderrFile,
       timeoutMs: input.cfg.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
 
     const stderrText = readFileSafe(stderrFile);

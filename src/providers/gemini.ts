@@ -102,6 +102,7 @@ export class GeminiAdapter implements ProviderAdapter {
       // longer than a minute — fatal for the slower gemini-3-pro-preview tier.
       // Tie the idle watchdog to the wall-clock timeout. (See claude.ts/codex.ts.)
       zeroByteWatchdogMs: input.cfg.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     const errText = readFileSafe(errFile);
     const baseStatus: ReviewStatus =

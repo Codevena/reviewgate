@@ -160,3 +160,41 @@ describe("OpenRouterAdapter (mocked fetch)", () => {
     expect(res.status).toBe("error");
   });
 });
+
+describe("OpenRouterAdapter.review (gate self-deadline abort)", () => {
+  it("aborts the in-flight request when the external deadline signal fires", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-abort-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    // A request that only settles when ITS signal aborts (models a hung call).
+    const fetchImpl = ((_url: string, init: { signal?: AbortSignal }) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      })) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    const ext = new AbortController();
+    setTimeout(() => ext.abort(), 50);
+    const start = Date.now();
+    const res = await adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "x/y",
+        timeoutMs: 30_000,
+      },
+      reviewerId: "openrouter-security",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+      signal: ext.signal,
+    });
+    // Returned via the external abort, NOT the 30s per-request timeout.
+    expect(Date.now() - start).toBeLessThan(3_000);
+    expect(res.verdict).toBe("ERROR");
+  });
+});

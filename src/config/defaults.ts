@@ -98,6 +98,9 @@ export const defaultConfig = {
     // the review passed (the Stop hook can't reach the agent on a silent
     // allow_stop). Costs one extra turn per pass. Default off.
     acknowledgePass: false,
+    // Self-imposed run deadline (ms), strictly below the Stop-hook timeout. The
+    // gate aborts + fails closed rather than being killed silently. See schema.
+    runTimeoutMs: 840_000,
   },
   sandbox: {
     // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished

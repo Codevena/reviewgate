@@ -108,6 +108,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // so only a genuine hang past timeoutMs ends the run. (codex streams its
       // --json events, so it keeps the shorter default watchdog.)
       zeroByteWatchdogMs: input.cfg.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     const errText = readFileSafe(errFile);
     const baseStatus: ReviewStatus =

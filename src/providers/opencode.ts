@@ -95,6 +95,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       // opencode is the heavy fallback for long codex reviews; don't let the 60s
       // idle watchdog cut it short — bound it by the wall-clock timeout instead.
       zeroByteWatchdogMs: input.cfg.timeoutMs,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
 
     const errText = readFileSafe(stderrFile);

@@ -5,11 +5,21 @@ import type { ReviewgateConfig } from "../config/define-config.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
-import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
+import {
+  type EscalationReason,
+  type ReviewgateState,
+  ReviewgateStateSchema,
+} from "../schemas/state.ts";
 import { maybeWriteWeeklySnapshot } from "../stats/snapshot.ts";
-import { decisionsDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../utils/paths.ts";
+import {
+  decisionsDir,
+  decisionsPath,
+  dirtyFlagPath,
+  pendingJsonPath,
+  pendingMdPath,
+} from "../utils/paths.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
-import type { Orchestrator } from "./orchestrator.ts";
+import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
 import type { StateStore } from "./state-store.ts";
 
@@ -17,12 +27,24 @@ import type { StateStore } from "./state-store.ts";
 // so a single (or couple of) reviewer_was_wrong rejection never escalates.
 const MIN_DECISIONS_FOR_REJECT_RATE = 4;
 
+// Consecutive incomplete (timed-out) runs before escalating to the human, so a
+// permanently-hanging provider can't loop the block→re-run forever.
+const MAX_CONSECUTIVE_INCOMPLETE_RUNS = 2;
+
+// Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
+// (a sub-second deadline must not round down to a confusing "0s").
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms / 60_000)}min`;
+}
+
 export interface LoopInput {
   repoRoot: string;
   config: ReviewgateConfig;
   state: StateStore;
   audit: AuditLogger;
-  orchestrator: Orchestrator;
+  orchestrator: IterationRunner;
   stopHookActive: boolean;
   // Current HEAD sha. When it differs from the last reviewed sha, a commit
   // landed and the gate re-arms (fresh budget for the next batch).
@@ -216,6 +238,11 @@ export class LoopDriver {
                 escalated: false,
                 escalation_reason: null,
                 escalation_announced: false,
+                // Reset the timeout streak too — otherwise a commit that recovers
+                // a review-timeout escalation leaves incomplete_runs at the cap, so
+                // the first timeout in the fresh cycle re-escalates immediately
+                // instead of honoring the consecutive-incomplete threshold.
+                incomplete_runs: 0,
               }
             : {}),
           last_reviewed_head_sha: headSha,
@@ -350,12 +377,64 @@ export class LoopDriver {
       }
     }
 
-    // Run a new iteration.
+    // Run a new iteration — but bounded by a self-imposed deadline strictly
+    // below the Stop-hook timeout. If the review can't finish in time we abort
+    // the in-flight reviewers and FAIL CLOSED (block "did not complete"), rather
+    // than letting Claude Code kill the hook (non-blocking → fail-open, turn
+    // ends un-reviewed). The abort signal lets runIteration stop writing
+    // pending/state so it can't clobber the incomplete decision after the race.
     const nextIter = state.iteration + 1;
-    const result = await this.i.orchestrator.runIteration({
-      runId: state.session_id,
-      iter: nextIter,
-    });
+    const runTimeoutMs = this.i.config.loop.runTimeoutMs;
+    let result: IterationResult;
+    if (runTimeoutMs > 0) {
+      const ac = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const runP = this.i.orchestrator.runIteration({
+        runId: state.session_id,
+        iter: nextIter,
+        signal: ac.signal,
+      });
+      let raced: "timeout" | { ok: true; r: IterationResult };
+      try {
+        const deadline = new Promise<"timeout">((resolve) => {
+          timer = setTimeout(() => resolve("timeout"), runTimeoutMs);
+        });
+        // try/finally so the deadline timer is ALWAYS cleared — even if runP
+        // rejects before the timeout. A leaked timer keeps the Stop-hook process
+        // alive until it fires (up to runTimeoutMs), reintroducing the very
+        // hang→silent-kill→fail-open this feature exists to prevent.
+        raced = await Promise.race([runP.then((r) => ({ ok: true as const, r })), deadline]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (raced === "timeout") {
+        // Deadline hit. Abort the panel, then await the run to settle: this
+        // distinguishes a review that DID complete from one that did not.
+        //  - Panel still running → its reviewers are SIGKILLed and writeReport's
+        //    abort guard throws → runP REJECTS → genuinely incomplete (fail closed).
+        //  - Verdict already written → only bounded post-verdict bookkeeping
+        //    (curator/cache) overran; it finishes and runP RESOLVES → honor the
+        //    real verdict instead of asking for a needless re-run.
+        // The post-verdict gravy is timeout-bounded (curatorTimeoutMs), and
+        // runTimeoutMs sits below the Stop-hook timeout with margin to absorb it.
+        ac.abort();
+        const settledRun = await runP.then(
+          (r) => ({ ok: true as const, r }),
+          () => null,
+        );
+        if (!settledRun) {
+          return await this.handleIncompleteRun(state, runTimeoutMs);
+        }
+        result = settledRun.r;
+      } else {
+        result = raced.r;
+      }
+    } else {
+      result = await this.i.orchestrator.runIteration({
+        runId: state.session_id,
+        iter: nextIter,
+      });
+    }
 
     // Best-effort stats emission: record the iteration's RunSummary as a
     // run.complete audit event. Wrapped in .catch so a logging failure can never
@@ -385,6 +464,9 @@ export class LoopDriver {
         escalated: passed ? false : cur.escalated,
         escalation_reason: passed ? null : cur.escalation_reason,
         escalation_announced: passed ? false : cur.escalation_announced,
+        // The review actually completed (any verdict) → the incomplete-run
+        // streak is broken; reset so a later timeout starts counting fresh.
+        incomplete_runs: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
         last_stop_ts: new Date().toISOString(),
       }),
@@ -449,6 +531,49 @@ export class LoopDriver {
     return decision;
   }
 
+  // A gate run hit loop.runTimeoutMs and was aborted before producing a verdict.
+  // Fail CLOSED: count the consecutive incomplete, keep the dirty.flag (so the
+  // re-run re-reviews the SAME diff), and block so the turn cannot end
+  // un-reviewed. After MAX_CONSECUTIVE_INCOMPLETE_RUNS in a row, escalate to the
+  // human — a provider that never finishes must not loop block→re-run forever.
+  private async handleIncompleteRun(
+    state: ReviewgateState,
+    runTimeoutMs: number,
+  ): Promise<LoopDecision> {
+    const incomplete = state.incomplete_runs + 1;
+    await this.i.state.update((cur) =>
+      ReviewgateStateSchema.parse({
+        ...cur,
+        incomplete_runs: incomplete,
+        last_stop_ts: new Date().toISOString(),
+      }),
+    );
+    // The aborted run produced no valid verdict. Remove any pending report so the
+    // gate's "incomplete — re-run" decision can't contradict a stale/late-written
+    // "completed" report left on disk (e.g. the deadline firing during the
+    // post-verdict curator/cache work that runs AFTER writeReport).
+    for (const p of [pendingMdPath(this.i.repoRoot), pendingJsonPath(this.i.repoRoot)]) {
+      try {
+        unlinkSync(p);
+      } catch {
+        /* not present → nothing to clear */
+      }
+    }
+    const dur = formatDuration(runTimeoutMs);
+    if (incomplete >= MAX_CONSECUTIVE_INCOMPLETE_RUNS) {
+      const fresh = await this.i.state.load();
+      return this.escalateAndDecide(
+        fresh,
+        "review-timeout",
+        `The review did not complete within ${dur} for ${incomplete} consecutive runs.`,
+      );
+    }
+    return {
+      kind: "block",
+      reason: `🔴 Reviewgate · GATE CLOSED — the review did not complete within ${dur} and was aborted (it would otherwise be killed by the Stop-hook timeout, ending your turn UN-reviewed). End your turn again to re-run the review. If it keeps timing out, raise the Stop-hook \`timeout\` in .claude/settings.json AND \`loop.runTimeoutMs\`, or check \`reviewgate doctor\` for a slow/hanging provider.`,
+    };
+  }
+
   // Escalate, then decide whether to BLOCK (to surface it to the agent) or
   // allow the stop. The gate blocks ONCE per escalation so the agent learns it
   // has stopped gating — an allow_stop alone is silent and indistinguishable
@@ -456,12 +581,7 @@ export class LoopDriver {
   // re-stop terminates. Re-arm (commit or PASS) clears escalation_announced.
   private async escalateAndDecide(
     state: ReviewgateState,
-    reasonCode:
-      | "max-iterations"
-      | "cost-cap"
-      | "stuck-signatures"
-      | "reject-rate-high"
-      | "decisions-unaddressed",
+    reasonCode: EscalationReason,
     summary: string,
   ): Promise<LoopDecision> {
     const firstAnnounce = !state.escalation_announced;
@@ -498,12 +618,7 @@ export class LoopDriver {
   private async escalate(
     runId: string,
     iter: number,
-    reasonCode:
-      | "max-iterations"
-      | "cost-cap"
-      | "stuck-signatures"
-      | "reject-rate-high"
-      | "decisions-unaddressed",
+    reasonCode: EscalationReason,
     summary: string,
     history: string[][],
   ): Promise<void> {

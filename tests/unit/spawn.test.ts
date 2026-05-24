@@ -100,4 +100,25 @@ describe("spawnSafely", () => {
     });
     expect(res.killedByTimeout).toBe(true);
   });
+
+  it("kills a running child promptly when its AbortSignal fires", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawn-"));
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 150);
+    const start = Date.now();
+    const res = await spawnSafely({
+      command: "bash",
+      // Sleep far longer than we'll wait — only the abort should end it.
+      args: ["-c", "sleep 30"],
+      stdoutFile: join(dir, "out"),
+      stderrFile: join(dir, "err"),
+      timeoutMs: 30_000,
+      signal: ac.signal,
+    });
+    const elapsed = Date.now() - start;
+    expect(res.killedByAbort).toBe(true);
+    expect(res.killedByTimeout).toBe(false);
+    // Returned because of the abort, NOT the 30s sleep/timeout.
+    expect(elapsed).toBeLessThan(3_000);
+  });
 });

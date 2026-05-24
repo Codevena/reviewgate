@@ -22,6 +22,10 @@ dist
 .reviewgate/.lock
 .reviewgate/cache/
 
+# Claude Code local runtime state (session/pid locks, scheduler) — never commit
+.claude/scheduled_tasks.lock
+.claude/*.lock
+
 # Spike artifacts
 /tmp/reviewgate-spike-*
 

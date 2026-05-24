@@ -7,6 +7,10 @@ export const EscalationReason = z.enum([
   "stuck-signatures",
   "reject-rate-high",
   "decisions-unaddressed",
+  // The review repeatedly could not finish within loop.runTimeoutMs (it would
+  // otherwise be killed by the Stop-hook timeout). Surfaced to the human after
+  // consecutive incomplete runs so a permanently-hanging provider can't loop.
+  "review-timeout",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 
@@ -39,6 +43,11 @@ export const ReviewgateStateSchema = z.object({
   // Whether the current escalation has already been surfaced to the agent via a
   // one-time block. Prevents the escalation block from looping; cleared on re-arm.
   escalation_announced: z.boolean().default(false),
+  // Consecutive gate runs that hit loop.runTimeoutMs without completing. NOT a
+  // review round (no findings produced), so it does not advance `iteration`;
+  // tracked separately to escalate after repeated timeouts. Reset to 0 whenever
+  // a review actually completes (any verdict).
+  incomplete_runs: z.number().int().nonnegative().default(0),
   recovered_from: z.enum(["crash", "corruption"]).optional(),
 });
 
@@ -61,5 +70,6 @@ export function initialState(sessionId: string): ReviewgateState {
     escalated: false,
     escalation_reason: null,
     escalation_announced: false,
+    incomplete_runs: 0,
   };
 }

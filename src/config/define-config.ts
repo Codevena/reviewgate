@@ -107,6 +107,15 @@ export const ConfigSchema = z.object({
     rejectRateEscalation: z.number().min(0).max(1),
     softPassPolicy: z.enum(["allow", "block", "ask-once"]),
     acknowledgePass: z.boolean().default(false),
+    // Self-imposed deadline (ms) for a single gate run, strictly BELOW the
+    // Stop-hook `timeout` in .claude/settings.json. If a review can't finish in
+    // time the gate aborts the in-flight reviewers and FAILS CLOSED (blocks
+    // "review did not complete — re-run") instead of being killed silently by
+    // Claude Code — a killed Stop hook is non-blocking, so the turn would end
+    // UN-reviewed (fail-open). Default 840_000 (14min): ~60s under the default
+    // 900s hook for teardown + state/audit writes. Raise BOTH together when you
+    // raise the hook timeout. 0 disables the deadline (legacy behavior).
+    runTimeoutMs: z.number().int().nonnegative().default(840_000),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),
