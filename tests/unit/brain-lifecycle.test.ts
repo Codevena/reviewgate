@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decayPass } from "../../src/core/brain/lifecycle.ts";
+import { decayPass, promoteIfReferenced } from "../../src/core/brain/lifecycle.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { BrainEntry } from "../../src/schemas/brain.ts";
 import { brainArchivePath } from "../../src/utils/paths.ts";
@@ -25,6 +25,42 @@ const mk = (o: Partial<BrainEntry>): BrainEntry => ({
   created_at: "2026-01-01T00:00:00Z",
   source_run_id: "r",
   ...o,
+});
+
+describe("promoteIfReferenced", () => {
+  it("promotes a candidate referenced ≥3 times by ≥2 distinct reviewers", () => {
+    // The default failover chain usually runs ONE reviewer/turn, so the old
+    // ≥3-DISTINCT-reviewer floor was structurally unreachable — ≥2 is reachable.
+    const e = mk({
+      status: "candidate",
+      referenced_count: 3,
+      referencing_reviewers: ["codex", "gemini"],
+    });
+    expect(promoteIfReferenced(e).status).toBe("active");
+  });
+
+  it("does NOT promote when only ONE distinct reviewer backs it (however many refs)", () => {
+    const e = mk({ status: "candidate", referenced_count: 9, referencing_reviewers: ["codex"] });
+    expect(promoteIfReferenced(e).status).toBe("candidate");
+  });
+
+  it("counts distinct PROVIDERS defensively (deduping a repeated entry)", () => {
+    const e = mk({
+      status: "candidate",
+      referenced_count: 3,
+      referencing_reviewers: ["codex", "codex"],
+    });
+    expect(promoteIfReferenced(e).status).toBe("candidate");
+  });
+
+  it("does NOT promote below 3 references", () => {
+    const e = mk({
+      status: "candidate",
+      referenced_count: 2,
+      referencing_reviewers: ["codex", "gemini"],
+    });
+    expect(promoteIfReferenced(e).status).toBe("candidate");
+  });
 });
 
 describe("decayPass", () => {

@@ -35,7 +35,16 @@ in-diff → BLOCK, out-of-diff → GATE OPEN.
   legitimate cross-file impact (changed export breaks untouched caller) is why we
   want the escape-hatch, not a blanket demote.
 
-## Phase 3 — Brain candidate→active promotion (verified DEAD)
+## Phase 3 — Brain candidate→active promotion ✅ DONE (branch `gate-brain-promotion`)
+
+Fixed: curator dup-merge now UNIONs new providers into `referencing_reviewers`;
+`promoteIfReferenced` floor is `referenced_count>=3 && distinct providers>=2`.
+End-to-end test proves a convention re-proposed across 3 runs by 2 providers
+reaches `active`. DoD: Codex PASS + Claude PASS. (Live LLM-driven promotion E2E
+remains cassette-territory per the nondeterminism note — the logic is now
+deterministically proven.)
+
+### Original analysis (verified DEAD before the fix)
 
 - `curator.ts:346-353` (dedup-merge on re-proposal) bumps `referenced_count` but
   does NOT add the new run's providers to `referencing_reviewers` → that set is

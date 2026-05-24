@@ -348,6 +348,12 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
         if (t) {
           t.referenced_count += 1;
           t.last_referenced_at = input.nowIso;
+          // UNION the re-proposing providers into referencing_reviewers (deduped,
+          // deterministic). Without this the set stays frozen at the creation
+          // providers and the candidate→active distinct-provider floor is never met.
+          t.referencing_reviewers = [
+            ...new Set([...t.referencing_reviewers, ...providersIn(mergedEvidence)]),
+          ].sort();
         }
         return { next: s, result: undefined };
       });

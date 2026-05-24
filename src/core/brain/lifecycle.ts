@@ -8,7 +8,14 @@ import type { BrainStore } from "./store.ts";
 const DAY = 86_400_000;
 
 export function promoteIfReferenced(e: BrainEntry): BrainEntry {
-  if (e.status === "candidate" && e.referenced_count >= 3 && e.referencing_reviewers.length >= 3) {
+  // A candidate is promoted once it has been referenced ≥3 times by ≥2 DISTINCT
+  // providers. The old ≥3-distinct-reviewer floor was structurally unreachable:
+  // the default failover chain runs one reviewer per turn, and the curator's
+  // merge path froze referencing_reviewers at the creation set. ≥2 (matching the
+  // creation quorum) makes "two providers independently converged, sustained over
+  // ≥3 references" promotable. Distinctness is computed defensively from the array.
+  const distinctReviewers = new Set(e.referencing_reviewers).size;
+  if (e.status === "candidate" && e.referenced_count >= 3 && distinctReviewers >= 2) {
     return { ...e, status: "active" };
   }
   return e;

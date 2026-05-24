@@ -9,6 +9,7 @@ import {
   runCurator,
 } from "../../src/core/brain/curator.ts";
 import type { Embedder } from "../../src/core/brain/embeddings.ts";
+import { decayPass } from "../../src/core/brain/lifecycle.ts";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { MemoryProposal } from "../../src/schemas/brain.ts";
 
@@ -66,6 +67,70 @@ describe("runCurator", () => {
       nowIso: "t",
     });
     expect(res.promoted).toBe(0);
+  });
+
+  it("END-TO-END: a convention re-proposed across 3 runs by ≥2 providers reaches active", async () => {
+    // The headline fix: candidate → active was previously unreachable. Re-proposing
+    // the same convention (dup-merge) across runs accrues references; once
+    // referenced_count≥3 with ≥2 distinct providers, decayPass promotes it.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-e2e-"));
+    const store = new BrainStore(repo);
+    const base = { repoRoot: repo, store, embedder: fakeEmbedder([1, 0]) };
+    const ev = (run: string, rid: string) => ({
+      kind: "reviewer-finding" as const,
+      run_id: run,
+      reviewer_id: rid,
+    });
+    for (const run of ["r1", "r2", "r3"]) {
+      await runCurator({
+        ...base,
+        runId: run,
+        nowIso: `2026-05-21T0${["r1", "r2", "r3"].indexOf(run)}:00:00Z`,
+        proposals: [p({ evidence: [ev(run, "codex-security"), ev(run, "gemini-architecture")] })],
+      });
+    }
+    expect((await store.snapshot()).entries[0]?.status).toBe("candidate");
+    expect((await store.snapshot()).entries[0]?.referenced_count).toBe(3);
+    await decayPass(store, repo, "2026-05-21T03:00:00Z");
+    expect((await store.snapshot()).entries[0]?.status).toBe("active");
+  });
+
+  it("unions new providers into referencing_reviewers on a duplicate re-proposal", async () => {
+    // The dup-merge path used to bump referenced_count only, freezing
+    // referencing_reviewers at the creation set → candidate→active was unreachable.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-union-"));
+    const store = new BrainStore(repo);
+    const base = { repoRoot: repo, store, embedder: fakeEmbedder([1, 0]) };
+    await runCurator({
+      ...base,
+      runId: "r1",
+      nowIso: "2026-05-21T00:00:00Z",
+      proposals: [
+        p({
+          evidence: [
+            { kind: "reviewer-finding", run_id: "r1", reviewer_id: "codex-security" },
+            { kind: "reviewer-finding", run_id: "r1", reviewer_id: "gemini-architecture" },
+          ],
+        }),
+      ],
+    });
+    const res2 = await runCurator({
+      ...base,
+      runId: "r2",
+      nowIso: "2026-05-22T00:00:00Z",
+      proposals: [
+        p({
+          evidence: [
+            { kind: "reviewer-finding", run_id: "r2", reviewer_id: "codex-security" },
+            { kind: "reviewer-finding", run_id: "r2", reviewer_id: "claude-adversarial" },
+          ],
+        }),
+      ],
+    });
+    expect(res2.merged).toBe(1);
+    const e = (await store.snapshot()).entries[0];
+    expect(e?.referenced_count).toBe(2);
+    expect(new Set(e?.referencing_reviewers)).toEqual(new Set(["codex", "gemini", "claude"]));
   });
 
   it("promotes when TWO providers each emit ONE evidence item for the same convention (realistic convergence)", async () => {
