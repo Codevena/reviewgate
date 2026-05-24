@@ -1,7 +1,7 @@
 // src/research/symbol-graph.ts
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { Language, Parser, Query } from "web-tree-sitter";
+import { spawnCapture } from "../utils/spawn-capture.ts";
 import {
   RUNTIME_WASM,
   grammarForFile,
@@ -125,9 +125,19 @@ export async function enclosingSymbol(
 // [] when rg ran but matched nothing (rg exits 1 on no matches), and the refs
 // otherwise. ripgrep is an OPTIONAL dependency — CI and minimal hosts may not have
 // it — so callers must not silently vanish when it is missing.
-function ripgrepCallers(symbol: string, repoRoot: string): CallerRef[] | null {
-  const r = spawnSync("rg", ["-n", "--no-heading", "-w", symbol, repoRoot], { encoding: "utf8" });
-  if (r.error) return null; // ENOENT etc. → rg not installed
+async function ripgrepCallers(
+  symbol: string,
+  repoRoot: string,
+  signal?: AbortSignal,
+): Promise<CallerRef[] | null> {
+  const r = await spawnCapture("rg", ["-n", "--no-heading", "-w", symbol, repoRoot], {
+    timeoutMs: 30_000,
+    signal,
+  });
+  // null = rg untrustworthy → caller falls back to the bounded scan. ENOENT (not
+  // installed), a timeout, AND an abort all qualify; rg exits 1 with no output on
+  // no-match (→ [] = "definitively no callers"), 0 with output → parsed refs.
+  if (r.spawnError || r.timedOut || r.aborted) return null;
   if (r.status !== 0 || !r.stdout) return [];
   const refs: CallerRef[] = [];
   for (const ln of r.stdout.split("\n")) {
@@ -174,14 +184,23 @@ export function scanCallersFallback(symbol: string, repoRoot: string): CallerRef
   return refs;
 }
 
-// rg if available, else the built-in scan.
-function findCallers(symbol: string, repoRoot: string): CallerRef[] {
-  return ripgrepCallers(symbol, repoRoot) ?? scanCallersFallback(symbol, repoRoot);
+// rg if available, else the built-in scan. On abort, return [] WITHOUT running
+// the fallback scan — we're past the deadline, so do no further work.
+async function findCallers(
+  symbol: string,
+  repoRoot: string,
+  signal?: AbortSignal,
+): Promise<CallerRef[]> {
+  const rg = await ripgrepCallers(symbol, repoRoot, signal);
+  if (rg) return rg;
+  if (signal?.aborted) return [];
+  return scanCallersFallback(symbol, repoRoot);
 }
 
 export async function buildSymbolGraph(input: {
   files: string[];
   repoRoot: string;
+  signal?: AbortSignal | undefined;
 }): Promise<SymbolGraph> {
   const symbols: SymbolInfo[] = [];
   for (const f of input.files) {
@@ -190,7 +209,10 @@ export async function buildSymbolGraph(input: {
   }
   const callers: Record<string, CallerRef[]> = {};
   for (const s of symbols) {
-    const refs = findCallers(s.name, input.repoRoot).filter(
+    // Stop launching more `rg` calls once the gate self-deadline has aborted —
+    // each is up to 30s, so N symbols could otherwise delay the fail-closed path.
+    if (input.signal?.aborted) break;
+    const refs = (await findCallers(s.name, input.repoRoot, input.signal)).filter(
       (r) =>
         r.file.endsWith(".ts") ||
         r.file.endsWith(".tsx") ||

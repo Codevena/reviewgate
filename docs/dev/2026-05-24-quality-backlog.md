@@ -79,13 +79,32 @@ Verified, by impact-to-effort. Grouped into PRs: **PR A** (hygiene: 1,2,5,6) ✅
    `export type … = typeof defaultConfig` removed. zod schema is the single source.
    DoD: Codex PASS + Claude PASS; full suite 764 pass / 0 fail; binary verified.
 
+### PR B — Sync-git → async ✅ DONE (branch `phase4-async-git`)
+
+3. ✅ All Stop-hook-hot-path `spawnSync` calls converted to async via a new
+   `src/utils/spawn-capture.ts` (`spawnCapture`: detached process group,
+   per-command SIGKILL timeout, bounded stdout w/ `truncated` flag, `AbortSignal`
+   support). Converted: `git.ts` (collectDiff/gitHeadSha/collectChangedFileContents/
+   collectGitInfo), `symbol-graph.ts` rg, `research-writer.ts` gitLog, and
+   `review-plan.ts` synthDiff. Now: a hung git/rg can't block the event loop, so
+   the `loop.runTimeoutMs` deadline CAN fire; the abort **propagates** into the
+   research subprocesses (loops break on `signal.aborted`, no fallback scan when
+   aborted). Hardening from review: `collectDiff` untracked loop has a 60s
+   aggregate budget; a truncated/timed-out/budget-capped diff is marked INCOMPLETE
+   and surfaced to reviewers as **TRUSTED** context BEFORE the untrusted fence
+   (not buried inside it). DoD: Codex PASS + Claude PASS; 777 pass / 0 fail; binary
+   E2E re-verified (async git/rg run correctly in the compiled binary).
+
 ### Remaining (own PRs)
 
-3. Sync git on the Stop-hook hot path (`utils/git.ts spawnSync`) — blocks the event
-   loop, can prevent `runTimeoutMs` firing. Convert hot-path calls to async. Medium risk.
 4. `flock.ts` — no stale-lock recovery (writes pid, never checks liveness/TTL).
 7. `confidence` field unused in verdict/dedup — **wire as a demotion signal**
    (user decision 2026-05-24: behaviour change, own PR).
+
+NOTE (deferred, lower-priority follow-ups surfaced by PR B review): tree-sitter
+`parseFile` loop in `buildSymbolGraph` doesn't abort early; `spawnCapture` stderr
+is unbounded (stdout is capped); the HEAD-advanced gate path calls `collectDiff`
+twice. None block the deadline; track for a later pass.
 
 Lower-confidence (agent-reported, not yet line-verified): greedy first-match
 clustering (`aggregator.ts:117`), `line_start/line_end` single-line schema,

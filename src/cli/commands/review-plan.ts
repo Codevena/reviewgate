@@ -1,5 +1,4 @@
 // src/cli/commands/review-plan.ts
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -11,6 +10,7 @@ import type { ProviderId } from "../../providers/registry.ts";
 import { collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { planReviewMdPath } from "../../utils/paths.ts";
+import { spawnCapture } from "../../utils/spawn-capture.ts";
 import { buildAdapters } from "../build-adapters.ts";
 
 export interface ReviewPlanInput {
@@ -43,13 +43,26 @@ function toRepoRelative(repoRoot: string, file: string): { rel: string } | { err
 
 // Synthesize a full-content diff for a single file via `git diff --no-index`.
 // Exit code 1 means "differences exist" (always true vs /dev/null) — success.
-function synthDiff(repoRoot: string, rel: string): { diff: string } | { error: string } {
-  const r = spawnSync("git", ["diff", "--no-color", "--no-index", "/dev/null", rel], {
+// Async (spawnCapture) for consistency with the rest of the git hardening: a
+// hung git can't block the event loop, and the per-command timeout bounds it.
+async function synthDiff(
+  repoRoot: string,
+  rel: string,
+): Promise<{ diff: string } | { error: string }> {
+  const r = await spawnCapture("git", ["diff", "--no-color", "--no-index", "/dev/null", rel], {
     cwd: repoRoot,
-    encoding: "utf8",
+    timeoutMs: 30_000,
   });
   if (r.status !== null && r.status > 1) {
     return { error: `git diff failed for ${rel}: ${r.stderr ?? ""}` };
+  }
+  if (r.timedOut) {
+    return { error: `git diff timed out for ${rel}` };
+  }
+  if (r.truncated) {
+    // >16 MiB single file → the tail was dropped; don't review a partial doc as
+    // if complete (an absurdly large plan/spec is better rejected than half-read).
+    return { error: `file too large to review (diff exceeded 16 MiB): ${rel}` };
   }
   const out = r.stdout ?? "";
   if (out.includes("Binary files")) {
@@ -75,7 +88,7 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   for (const f of input.files) {
     const norm = toRepoRelative(input.repoRoot, f);
     if ("error" in norm) return { exitCode: 2, stdout: "", stderr: `review-plan: ${norm.error}\n` };
-    const d = synthDiff(input.repoRoot, norm.rel);
+    const d = await synthDiff(input.repoRoot, norm.rel);
     if ("error" in d) return { exitCode: 2, stdout: "", stderr: `review-plan: ${d.error}\n` };
     diffs.push(d.diff);
   }
@@ -87,7 +100,7 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   const adapters = buildAdapters(cfg, input.providerOverrides, undefined, cfg.docReview.persona);
 
   const host = detectHostModel({ env: process.env as Record<string, string>, hookStdin: null });
-  const gitInfo = collectGitInfo(input.repoRoot);
+  const gitInfo = await collectGitInfo(input.repoRoot);
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,

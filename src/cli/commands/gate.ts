@@ -10,7 +10,7 @@ import { StateStore } from "../../core/state-store.ts";
 import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
-import { collectDiff, collectGitInfo } from "../../utils/git.ts";
+import { DIFF_INCOMPLETE_MARKER, collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
 import { auditDir, dirtyFlagPath } from "../../utils/paths.ts";
@@ -63,7 +63,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   });
 
   const adapters = buildAdapters(cfg, input.providerOverrides);
-  const gitInfo = collectGitInfo(input.repoRoot);
+  const gitInfo = await collectGitInfo(input.repoRoot);
   // Review base: the pre-batch HEAD captured in dirty.flag, so commit-per-task
   // work (committed mid-batch) is reviewed too — not just the working tree.
   const dp = dirtyFlagPath(input.repoRoot);
@@ -89,7 +89,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
       gitInfo.sha &&
       last &&
       gitInfo.sha !== last &&
-      collectDiff(input.repoRoot, last).trim().length > 0
+      (await collectDiff(input.repoRoot, last)).trim().length > 0
     ) {
       reviewBase = last;
       writeFileSync(
@@ -103,16 +103,20 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
       );
     }
   }
+  const diff = await collectDiff(input.repoRoot, reviewBase);
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,
     adapters,
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
-    diff: collectDiff(input.repoRoot, reviewBase),
+    diff,
     gitInfo,
     reasonOnFailEnabled: true,
     reviewBaseSha: reviewBase,
+    // Partial-diff guard: surfaced to reviewers as trusted context (not buried in
+    // the untrusted fence) so a truncated/timed-out diff isn't trusted as complete.
+    diffIncomplete: diff.includes(DIFF_INCOMPLETE_MARKER),
   });
 
   const driver = new LoopDriver({

@@ -1,9 +1,9 @@
 // src/research/research-writer.ts
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { TriageDecision } from "../schemas/triage.ts";
+import { spawnCapture } from "../utils/spawn-capture.ts";
 import type { RenderedContextDocs } from "./context7.ts";
 import type { Conventions } from "./conventions.ts";
 import type { DiffFacts } from "./diff-facts.ts";
@@ -19,6 +19,8 @@ export interface ResearchInput {
   contextDocs?: RenderedContextDocs | undefined;
   /** TOTAL byte cap for the rendered docs section (per-lib cap applied upstream). */
   contextDocsBudgetBytes?: number | undefined;
+  /** Gate self-deadline: aborts an in-flight `git log` and stops launching more. */
+  signal?: AbortSignal | undefined;
 }
 
 const DOCS_HEADING =
@@ -92,16 +94,28 @@ export function researchPath(repoRoot: string): string {
   return join(repoRoot, ".reviewgate", "research.md");
 }
 
-function gitLog(repoRoot: string, file: string): string {
-  const r = spawnSync("git", ["log", "-3", "--oneline", "--", file], {
+async function gitLog(repoRoot: string, file: string, signal?: AbortSignal): Promise<string> {
+  // Async + per-command timeout: this runs inside runIteration (on the gate's
+  // timed path), so a hung `git log` must not block the event loop / deadline.
+  // The signal lets the self-deadline abort an in-flight log promptly.
+  const r = await spawnCapture("git", ["log", "-3", "--oneline", "--", file], {
     cwd: repoRoot,
-    encoding: "utf8",
+    timeoutMs: 30_000,
+    signal,
   });
   if (r.status !== 0 || !r.stdout.trim()) return "";
   return r.stdout.trim().split("\n").slice(0, 3).join("; ");
 }
 
 export async function writeResearch(input: ResearchInput): Promise<string> {
+  // Precompute per-file git history sequentially (gitLog is async now) so the
+  // changed-files list below can stay a plain synchronous map.
+  const fileHistory = new Map<string, string>();
+  for (const f of input.facts.files) {
+    // Stop launching more `git log` calls once the self-deadline aborts.
+    if (input.signal?.aborted) break;
+    fileHistory.set(f.path, await gitLog(input.repoRoot, f.path, input.signal));
+  }
   const lines: string[] = [
     "# Reviewgate Research",
     "",
@@ -110,7 +124,7 @@ export async function writeResearch(input: ResearchInput): Promise<string> {
     "",
     "## Changed files",
     ...input.facts.files.map((f) => {
-      const hist = gitLog(input.repoRoot, f.path);
+      const hist = fileHistory.get(f.path) ?? "";
       return `- ${f.path} (${f.kind}, +${f.added}/-${f.removed})${hist ? ` — recent: ${hist}` : ""}`;
     }),
     "",

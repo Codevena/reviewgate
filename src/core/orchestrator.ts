@@ -75,6 +75,10 @@ export interface OrchestratorInput {
   // against, so full-file FP-suppression context covers committed-mid-batch files
   // too. Omitted → HEAD (working-tree only).
   reviewBaseSha?: string | null;
+  // True when collectDiff reported the diff as partial (truncated/timed-out/
+  // budget-capped). Surfaced to reviewers as TRUSTED context so a partial diff
+  // never earns a conclusive clean verdict. Set by the gate from the diff marker.
+  diffIncomplete?: boolean;
 }
 
 export interface IterationResult {
@@ -437,7 +441,11 @@ export class Orchestrator {
 
     // --- Research: symbol graph + research.md ---
     const changedAbs = facts.files.map((f) => join(repo, f.path));
-    const symbolGraph = await buildSymbolGraph({ files: changedAbs, repoRoot: repo }).catch(() => ({
+    const symbolGraph = await buildSymbolGraph({
+      files: changedAbs,
+      repoRoot: repo,
+      signal: opts.signal,
+    }).catch(() => ({
       symbols: [],
       callers: {},
     }));
@@ -449,6 +457,7 @@ export class Orchestrator {
       conventions: loadConventions(repo),
       contextDocs,
       contextDocsBudgetBytes: docsCfg?.budgetBytes,
+      signal: opts.signal,
     }).catch(() => "");
     let researchText = "";
     try {
@@ -467,10 +476,11 @@ export class Orchestrator {
 
     // Compute once per run: full content of every changed file, for false-positive
     // suppression. Reviewers can consult this before reporting a symbol as missing.
-    const fileContext = collectChangedFileContents(
+    const fileContext = await collectChangedFileContents(
       repo,
       this.input.config.phases.review.fileContextBudgetBytes ?? 32_000,
       this.input.reviewBaseSha,
+      opts.signal,
     );
 
     // Resolve the effective model for a provider, applying the host-tier override
@@ -597,6 +607,15 @@ export class Orchestrator {
           if (brainText) promptParts.push("## Brain context", brainText, "");
           if (fpFewShot)
             promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
+          // TRUSTED diff-completeness warning — placed BEFORE the untrusted fence so
+          // reviewers heed it (inside the fence it reads as inert data). A partial
+          // diff must never earn a conclusive clean verdict.
+          if (this.input.diffIncomplete)
+            promptParts.push(
+              "## Diff completeness (TRUSTED — system instruction, not diff data)",
+              "The diff below is INCOMPLETE: it was truncated or timed out during collection, so some changed code is NOT shown. Do NOT treat a clean result as conclusive — explicitly note in your review that the diff was partial.",
+              "",
+            );
           promptParts.push(sanitised.text);
           if (sanitisedCtx)
             promptParts.push(

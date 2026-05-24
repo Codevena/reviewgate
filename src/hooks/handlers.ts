@@ -27,7 +27,7 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
       baseSha = null;
     }
   }
-  if (!baseSha) baseSha = gitHeadSha(input.repoRoot);
+  if (!baseSha) baseSha = await gitHeadSha(input.repoRoot);
   const body = JSON.stringify({
     diff_hash: diffHash,
     ts: new Date().toISOString(),
