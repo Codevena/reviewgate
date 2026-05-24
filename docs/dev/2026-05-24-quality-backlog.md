@@ -207,3 +207,36 @@ Lower-confidence (agent-reported, not yet line-verified): greedy first-match
 clustering (`aggregator.ts:117`), `line_start/line_end` single-line schema,
 decisions-file read race, loop-driver test gaps (cost-cap/stuck/convergence/reject-rate),
 orchestrator god-class refactor, parse-cache staleness in a long-lived process.
+
+## Found via live dogfooding in `shoal` (2026-05-25) — VERIFIED, deferred
+
+Driving the real Stop-hook gate in shoal (reject-without-fix → escalation). The
+escalation safety net WORKS (a reasoned `rejected` decision can NOT bypass a real
+reproducible CRITICAL — it re-blocks each iteration and escalates to the human via
+`max-iterations`). Two real bugs surfaced, root-cause confirmed:
+
+- **Bug B (FUNCTIONAL, signature drift) — `src/diff/signature.ts:35`.** The finding
+  signature hashes the LLM-authored `rule_id` (via `normalizeRuleId`). For IDENTICAL
+  code across re-reviews the rule_id drifts ("command-injection-**via**-execsync" vs
+  "command-injection-execsync"; `normalizeRuleId` doesn't collapse the "via" infix),
+  so the signature changes run-to-run. Evidence: shoal `signature_history` =
+  `[142a…],[8517…],[8517…]` for one unchanged file. Impact: (1) **stuck-detection**
+  (identical-signature based, `loop-driver.ts:303+`) is unreliable → escalation falls
+  through to the slower `max-iterations` backstop; (2) **FP-ledger re-matching** across
+  runs is undermined (a `reviewer_was_wrong` rejection's signature may not match the
+  next review → no suppression) — relates to [[project-reviewer-fp-unchanged-code]].
+  Also: `max-iterations` is checked BEFORE `stuck-signatures` (`loop-driver.ts:288`
+  vs `:323`), so at the cap max-iter pre-empts stuck regardless. FIX (needs a design
+  call): drop `rule_id` from the signature (more stable, but risks over-merging
+  distinct co-located findings) OR normalize rule_id far more aggressively.
+- **Bug A (REPORTING) — `src/core/loop-driver.ts:639-640`.** The ESCALATION.md
+  per-iteration history hard-codes `crit`/`warn` to the CURRENT pending.json counts
+  for the LAST row only (`i === history.length - 1 ? pending.counts.x : 0`) and `0`
+  for all earlier iterations (only `findings: sigs.length` is right everywhere) —
+  past iterations' severity counts aren't persisted. Misleading table; no gate-logic
+  impact. FIX: persist per-iteration counts (alongside `signature_history` or via the
+  audit log) and read them back.
+
+Minor UX (same session): the `acknowledgePass` GATE-OPEN message says "Review is
+clean, no findings to address" even on a SOFT-PASS that carries a non-blocking WARN
+(`loop-driver.ts:499`) — should include the counts (e.g. "0 CRITICAL · 1 WARN advisory").
