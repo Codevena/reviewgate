@@ -144,15 +144,30 @@ All seven verified Phase-4 hardening points shipped across PRs A–D (each its o
 branch → green DoD → FF-merge to master). Remaining lower-confidence items below
 are still **verify-first** before any change.
 
-### Lower-confidence (verify at the code before touching — per session 2026-05-24)
+### Lower-confidence — VERIFIED at the code 2026-05-24
 
-- greedy first-match clustering (`aggregator.ts`)
-- `line_start/line_end` single-line schema at codex (`review-output`)
-- decisions-file read race (`loop-driver`)
-- loop-driver test gaps (cost-cap / stuck / convergence / reject-rate)
-- parse-cache staleness in a long-lived process (`symbol-graph`)
-- (from PR B review) tree-sitter `parseFile` loop doesn't abort early;
-  `spawnCapture` stderr unbounded; HEAD-advanced gate path calls `collectDiff` twice
+- greedy first-match clustering (`aggregator.ts`) — **by-design** (first-match+break,
+  but tight 5-line window + 0.6 jaccard → mis-merges rare). Not a bug; left as is.
+- `line_start/line_end` single-line schema at codex (`review-output`) — **REAL,
+  low-med**: reviewers emit a single `line` → `line_start===line_end`. Deferred to a
+  later PR (touches the codex strict-mode schema + prompt; needs a real-codex check).
+- decisions-file read race (`loop-driver`) — **NOT real**: the agent writes decisions
+  during its turn; the Stop hook reads after the turn ends (sequential).
+- parse-cache staleness (`symbol-graph`) — **NOT real**: `parseCache` is a per-process
+  Map and the gate is one-shot per Stop → always fresh.
+
+### PR E — backlog cleanup ✅ DONE (branch `phase4-cleanup`)
+
+- loop-driver **cost-cap** escalation was untested (stuck/convergence/reject-rate
+  already covered) → added tests.
+- `buildSymbolGraph` file-parse loop now breaks on `signal.aborted` (was rg-loop only).
+- `spawnCapture` stderr now bounded at `maxBytes` (was unbounded).
+- gate HEAD-advanced path computed `collectDiff(last)` twice → compute once + reuse.
+- DoD: Codex PASS + Claude PASS; 808 pass / 0 fail; binary smoked.
+
+### Still open (own PR, later)
+
+- `#2` codex single-line schema → optional multi-line ranges (real-codex verify).
 
 NOTE (deferred, lower-priority follow-ups surfaced by PR B review): tree-sitter
 `parseFile` loop in `buildSymbolGraph` doesn't abort early; `spawnCapture` stderr

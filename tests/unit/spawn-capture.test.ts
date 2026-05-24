@@ -80,6 +80,13 @@ describe("spawnCapture", () => {
     expect(r.stdout.length).toBeLessThanOrEqual(1024);
   });
 
+  it("bounds stderr at maxBytes too (not just stdout)", async () => {
+    // 200 KiB of stderr, capped at 1 KiB — stderr must be bounded as well, else a
+    // subprocess spewing diagnostics could grow memory unboundedly.
+    const r = await spawnCapture("sh", ["-c", "yes x | head -c 204800 1>&2"], { maxBytes: 1024 });
+    expect(r.stderr.length).toBeLessThanOrEqual(1024);
+  });
+
   it("captures large output fully when under the cap", async () => {
     const r = await spawnCapture("sh", ["-c", "printf '%0.sA' $(seq 1 5000)"], {
       maxBytes: 1024 * 1024,

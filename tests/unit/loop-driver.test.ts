@@ -960,3 +960,66 @@ describe("LoopDriver convergence-aware max-iterations", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 });
+
+describe("LoopDriver cost-cap escalation", () => {
+  it("escalates cost-cap once cost_usd_so_far reaches loop.costCapUsd", async () => {
+    // apikey/openrouter mode accrues cost; once it hits the cap the gate escalates
+    // to the human rather than burning more budget. (OAuth keeps cost 0, so this
+    // path never fires there — hence it needs an explicit test.)
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCOSTCAP");
+    // Default cap is $1.50; put accrued cost above it.
+    await state.update((cur) => ({ ...cur, cost_usd_so_far: 2.0 }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("ESCALATED");
+    expect((await state.load()).escalation_reason).toBe("cost-cap");
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("does NOT escalate cost-cap when costCapUsd is 0 (OAuth default — disabled)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQNOCAP");
+    await state.update((cur) => ({ ...cur, cost_usd_so_far: 99 }));
+    writeDirty(repo);
+    const cfg = { ...defaultConfig, loop: { ...defaultConfig.loop, costCapUsd: 0 } };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect((await state.load()).escalation_reason ?? "").not.toBe("cost-cap");
+    expect(decision.kind).toBe("allow_stop"); // doc-only diff PASSes; cost-cap disabled
+  });
+});

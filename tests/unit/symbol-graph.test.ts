@@ -23,6 +23,20 @@ describe("symbol-graph", () => {
     expect(g.callers.alpha?.some((ref) => ref.file.endsWith("b.ts"))).toBe(true);
   });
 
+  it("stops parsing immediately when the signal is already aborted (deadline)", async () => {
+    // An already-aborted signal must short-circuit the file-parse loop too (not
+    // just the rg loop), so a hung deadline doesn't pay for parsing every file.
+    const ac = new AbortController();
+    ac.abort();
+    const g = await buildSymbolGraph({
+      files: [join(DIR, "a.ts"), join(DIR, "b.ts")],
+      repoRoot: DIR,
+      signal: ac.signal,
+    });
+    expect(g.symbols).toEqual([]);
+    expect(g.callers).toEqual({});
+  });
+
   it("finds callers WITHOUT ripgrep via the built-in scan fallback (CI has no rg)", () => {
     // Exercises the no-ripgrep path directly so a runner lacking `rg` still gets
     // 1-hop callers (was: callers silently empty → CI failure at the rg assertion).

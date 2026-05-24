@@ -69,6 +69,9 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   const dp = dirtyFlagPath(input.repoRoot);
   const hasDirtyFlag = existsSync(dp);
   let reviewBase: string | null = null;
+  // Reused when the HEAD-advanced path already computed the since-base diff, so
+  // the gate doesn't run collectDiff twice for the same base.
+  let precomputedDiff: string | undefined;
   if (hasDirtyFlag) {
     try {
       reviewBase = (JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string }).base_sha ?? null;
@@ -85,13 +88,13 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     // have set last_reviewed_head_sha — the common case once the session is going.)
     const st = await state.load();
     const last = st.last_reviewed_head_sha;
-    if (
-      gitInfo.sha &&
-      last &&
-      gitInfo.sha !== last &&
-      (await collectDiff(input.repoRoot, last)).trim().length > 0
-    ) {
+    // Compute the since-`last` diff ONCE here and reuse it below when this path
+    // sets reviewBase = last (avoids a second identical collectDiff = duplicate git work).
+    const sinceLast =
+      gitInfo.sha && last && gitInfo.sha !== last ? await collectDiff(input.repoRoot, last) : "";
+    if (sinceLast.trim().length > 0) {
       reviewBase = last;
+      precomputedDiff = sinceLast;
       writeFileSync(
         dp,
         JSON.stringify({
@@ -103,7 +106,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
       );
     }
   }
-  const diff = await collectDiff(input.repoRoot, reviewBase);
+  const diff = precomputedDiff ?? (await collectDiff(input.repoRoot, reviewBase));
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,

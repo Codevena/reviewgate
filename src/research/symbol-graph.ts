@@ -204,6 +204,10 @@ export async function buildSymbolGraph(input: {
 }): Promise<SymbolGraph> {
   const symbols: SymbolInfo[] = [];
   for (const f of input.files) {
+    // Stop parsing once the gate self-deadline aborts — tree-sitter parsing is
+    // CPU-bound per file, so a large change set shouldn't be fully parsed after
+    // the deadline has already fired.
+    if (input.signal?.aborted) break;
     const parsed = await parseFile(f).catch(() => null);
     if (parsed) symbols.push(...parsed.symbols);
   }

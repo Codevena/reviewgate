@@ -81,6 +81,7 @@ export function spawnCapture(
     const outChunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
     let outLen = 0;
+    let errLen = 0;
     let timedOut = false;
     let truncated = false;
     let aborted = false;
@@ -157,7 +158,17 @@ export function spawnCapture(
       }
     });
     child.stderr?.on("data", (d: Buffer) => {
-      errChunks.push(d);
+      // Bound stderr the same way as stdout so a subprocess spewing diagnostics
+      // can't grow memory without limit (stderr isn't reported as truncated — it's
+      // only diagnostic — but it must still be capped).
+      if (errLen >= maxBytes) return;
+      if (errLen + d.length > maxBytes) {
+        errChunks.push(d.subarray(0, maxBytes - errLen));
+        errLen = maxBytes;
+      } else {
+        errChunks.push(d);
+        errLen += d.length;
+      }
     });
 
     // ENOENT (and other spawn failures) emit 'error' — possibly WITHOUT 'close'.
