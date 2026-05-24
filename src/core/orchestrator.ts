@@ -70,6 +70,10 @@ export interface OrchestratorInput {
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
   // Clock for quota-cooldown decisions. Injected for tests; production omits it.
   now?: () => Date;
+  // The review base (pre-batch HEAD from dirty.flag) the diff was collected
+  // against, so full-file FP-suppression context covers committed-mid-batch files
+  // too. Omitted → HEAD (working-tree only).
+  reviewBaseSha?: string | null;
 }
 
 export interface IterationResult {
@@ -452,6 +456,7 @@ export class Orchestrator {
     const fileContext = collectChangedFileContents(
       repo,
       this.input.config.phases.review.fileContextBudgetBytes ?? 32_000,
+      this.input.reviewBaseSha,
     );
 
     // Resolve the effective model for a provider, applying the host-tier override
@@ -546,7 +551,7 @@ export class Orchestrator {
       | { provider: ProviderId; clear: true };
 
     const tasks = activeReviewers.map(
-      async (r): Promise<{ run: ReviewerRun; effect: CooldownEffect | null } | null> => {
+      async (r): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
         const adapter = this.input.adapters[r.provider];
         const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
         if (!adapter || !providerCfg || !providerCfg.enabled) return null;
@@ -585,9 +590,28 @@ export class Orchestrator {
         // the futile primary attempt — synthesize a quota-exhausted result so the
         // failover below runs. Past the re-probe window (or with no fallback) we try
         // the primary, so an EARLY recovery is detected and clears the cooldown.
+        // The cooldown effect a finished run implies: record on quota-exhausted
+        // (parsed reset, else a default window), else clear (the provider works →
+        // quota isn't the problem). Applied for the primary AND every fallback
+        // tried, so a quota-capped FALLBACK is also cooled down (else it would be
+        // retried on every review).
+        const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect => {
+          if (res.status === "quota-exhausted") {
+            const parsed = parseQuotaResetAt(res.statusDetail, now);
+            return parsed
+              ? { provider, resetAt: parsed, source: "parsed" }
+              : {
+                  provider,
+                  resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
+                  source: "default",
+                };
+          }
+          return { provider, clear: true };
+        };
+
         const cappedUntil = cooldownStore.skipUntil(r.provider, now);
         let run: ReviewerRun;
-        let effect: CooldownEffect | null = null;
+        const effects: CooldownEffect[] = [];
         if (cappedUntil && r.fallback?.length) {
           run = {
             res: {
@@ -605,7 +629,7 @@ export class Orchestrator {
             persona,
             model,
           };
-          // effect stays null: the existing cooldown record is still valid.
+          // No effect for a skipped primary: its existing cooldown record stands.
         } else {
           // The prompt depends only on the persona, so it is reused for any fallback.
           run = await runProvider(
@@ -617,33 +641,23 @@ export class Orchestrator {
             findingsPath,
             diffPath,
           );
-          if (run.res.status === "quota-exhausted") {
-            const parsed = parseQuotaResetAt(run.res.statusDetail, now);
-            effect = parsed
-              ? { provider: r.provider, resetAt: parsed, source: "parsed" }
-              : {
-                  provider: r.provider,
-                  resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
-                  source: "default",
-                };
-          } else {
-            // Ran (ok, or a non-quota error) → quota isn't the problem; clear any
-            // stale cooldown so the provider is used normally next review.
-            effect = { provider: r.provider, clear: true };
-          }
+          effects.push(effectFor(r.provider, run.res));
         }
 
         // Failover: ONLY when the primary is quota-exhausted (codex usage cap,
         // gemini RESOURCE_EXHAUSTED, … OR a cooldown skip above) and the slot
         // declares a fallback chain. A candidate runs if it is registered +
-        // configured + available; its own `enabled` flag is ignored (listing it in
-        // `fallback` IS the opt-in). Walk until one actually runs.
+        // configured + available + NOT itself cooled-down; its own `enabled` flag
+        // is ignored (listing it in `fallback` IS the opt-in). Walk until one runs.
         if (run.res.status === "quota-exhausted" && r.fallback?.length) {
           for (const fb of r.fallback) {
             const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
             if (!this.input.adapters[fb] || !fbCfg) continue;
             const available = this.input.providerAvailable ?? isProviderAvailable;
             if (!available(fb, fbCfg.apiKeyEnv)) continue;
+            // Skip a fallback that is itself in its (non-re-probe) cooldown window,
+            // so we don't re-attempt a known-capped provider every review.
+            if (cooldownStore.skipUntil(fb, now)) continue;
             const fbModel = resolveReviewerModel(fb, fbCfg.model);
             if (fbModel === null) continue;
             const exhaustedFrom = run.provider;
@@ -660,10 +674,11 @@ export class Orchestrator {
               `[fallback from ${exhaustedFrom}: quota-exhausted] ${run.res.statusDetail ?? ""}`
                 .trim()
                 .slice(0, 1000);
+            effects.push(effectFor(fb, run.res)); // record/clear the fallback too
             if (run.res.status !== "quota-exhausted") break;
           }
         }
-        return { run, effect };
+        return { run, effects };
       },
     );
 
@@ -672,13 +687,15 @@ export class Orchestrator {
     const outcomes = await Promise.allSettled(tasks);
     const taskResults = outcomes
       .map((o) => (o.status === "fulfilled" ? o.value : null))
-      .filter((x): x is { run: ReviewerRun; effect: CooldownEffect | null } => x !== null);
+      .filter((x): x is { run: ReviewerRun; effects: CooldownEffect[] } => x !== null);
     const settled = taskResults.map((t) => t.run);
-    // Apply quota-cooldown effects once, after the parallel panel settles.
+    // Apply quota-cooldown effects once, after the parallel panel settles (one
+    // writer). Covers the primary AND every fallback tried this run.
     for (const t of taskResults) {
-      if (!t.effect) continue;
-      if ("clear" in t.effect) cooldownStore.clear(t.effect.provider);
-      else cooldownStore.record(t.effect.provider, t.effect.resetAt, now, t.effect.source);
+      for (const e of t.effects) {
+        if ("clear" in e) cooldownStore.clear(e.provider);
+        else cooldownStore.record(e.provider, e.resetAt, now, e.source);
+      }
     }
     const okRuns = settled.filter((s) => s.res.status === "ok");
 

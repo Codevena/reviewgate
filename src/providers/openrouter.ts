@@ -10,6 +10,7 @@ import type {
   ReviewInput,
   ReviewResult,
 } from "./adapter-base.ts";
+import { isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -65,7 +66,10 @@ export class OpenRouterAdapter implements ProviderAdapter {
   ): Promise<ReviewResult> {
     const start = Date.now();
     const key = input.cfg.apiKeyEnv ? process.env[input.cfg.apiKeyEnv] : undefined;
-    const errorResult = (detail: string): ReviewResult => ({
+    // A 429 (HTTP or in the body) is a quota/rate-limit hit → status
+    // "quota-exhausted" so the orchestrator cools OpenRouter down + fails over,
+    // instead of re-hitting it every review as a generic "error".
+    const errorResult = (detail: string, httpStatus?: number): ReviewResult => ({
       reviewerId: input.reviewerId,
       verdict: "ERROR",
       findings: [],
@@ -73,7 +77,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       durationMs: Date.now() - start,
       exitCode: -1,
       rawEventsPath: "",
-      status: "error",
+      status: httpStatus === 429 || isQuotaExhausted(detail) ? "quota-exhausted" : "error",
       statusDetail: detail.slice(0, 1000),
     });
     if (!key) return errorResult(`OpenRouter API key env '${input.cfg.apiKeyEnv}' is not set`);
@@ -98,7 +102,10 @@ export class OpenRouterAdapter implements ProviderAdapter {
         signal: controller.signal,
       });
       if (!resp.ok)
-        return errorResult(`OpenRouter HTTP ${resp.status}: ${(await resp.text()).slice(0, 500)}`);
+        return errorResult(
+          `OpenRouter HTTP ${resp.status}: ${(await resp.text()).slice(0, 500)}`,
+          resp.status,
+        );
       json = (await resp.json()) as ChatResponse;
     } catch (err) {
       return errorResult(`OpenRouter request failed: ${(err as Error).message}`);

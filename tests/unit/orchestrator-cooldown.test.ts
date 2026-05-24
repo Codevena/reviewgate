@@ -159,4 +159,51 @@ describe("Orchestrator quota cooldown", () => {
     expect(cd.source).toBe("parsed");
     expect(new Date(cd.reset_at).getTime()).toBeGreaterThan(NOW.getTime());
   });
+
+  it("records a cooldown for a FALLBACK that also hits quota (not just the primary)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cd-fb-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const calls = { codex: { n: 0 }, gemini: { n: 0 }, claude: { n: 0 } };
+    const config = {
+      ...defaultConfig,
+      providers: {
+        ...defaultConfig.providers,
+        gemini: { enabled: false, auth: "oauth" as const, model: "g", timeoutMs: 1000 },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            {
+              provider: "codex" as const,
+              persona: "security",
+              fallback: ["gemini" as const, "claude-code" as const],
+            },
+          ],
+        },
+        critic: null,
+        triage: null,
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      // biome-ignore lint/suspicious/noExplicitAny: test config shape
+      config: config as any,
+      adapters: {
+        codex: countingStub("codex", "quota-exhausted", calls.codex, "you've hit your usage limit"),
+        gemini: countingStub("gemini", "quota-exhausted", calls.gemini, "RESOURCE_EXHAUSTED 429"),
+        "claude-code": countingStub("claude-code", "ok", calls.claude),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+      providerAvailable: () => true,
+      now: () => NOW,
+    });
+    await orch.runIteration({ runId: "R", iter: 1 });
+    const cd = readCooldown(repo).providers;
+    expect(cd.codex).toBeDefined(); // primary quota recorded
+    expect(cd.gemini).toBeDefined(); // FALLBACK quota ALSO recorded (the fix)
+    expect(readReviewer(repo).provider).toBe("claude-code"); // walked to the working one
+  });
 });

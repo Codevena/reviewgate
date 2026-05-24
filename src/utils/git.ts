@@ -83,18 +83,27 @@ export function collectDiff(repoRoot: string, baseSha?: string | null): string {
 // the diff so they can verify a symbol exists before reporting it as missing — the
 // #1 source of false-positive "undefined" findings on refactors. Skips binaries
 // (read failure) and reviewgate-managed paths.
-export function collectChangedFileContents(repoRoot: string, maxBytes = 32_000): string {
-  const names = new Set<string>();
-  const tracked = git(repoRoot, [
+export function collectChangedFileContents(
+  repoRoot: string,
+  maxBytes = 32_000,
+  baseSha?: string | null,
+): string {
+  // Match collectDiff's base so committed-mid-batch files also get full-file
+  // context (for undefined-symbol FP suppression), not just working-tree changes.
+  const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
+  const nameArgs = (ref: string) => [
     "diff",
     "--name-only",
-    "HEAD",
+    ref,
     "--",
     ".",
     ":(exclude)reviewgate.config.ts",
     ":(exclude).reviewgate",
     ":(exclude).reviewgate/**",
-  ]);
+  ];
+  const names = new Set<string>();
+  let tracked = git(repoRoot, nameArgs(base));
+  if (tracked.status !== 0 && base !== "HEAD") tracked = git(repoRoot, nameArgs("HEAD"));
   if (tracked.status === 0) {
     for (const f of tracked.stdout
       .split("\n")

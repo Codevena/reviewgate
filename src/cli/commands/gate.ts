@@ -84,6 +84,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     diff: collectDiff(input.repoRoot, reviewBase),
     gitInfo,
     reasonOnFailEnabled: true,
+    reviewBaseSha: reviewBase,
   });
 
   const driver = new LoopDriver({

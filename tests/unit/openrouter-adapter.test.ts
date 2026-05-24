@@ -126,4 +126,37 @@ describe("OpenRouterAdapter (mocked fetch)", () => {
     expect(res.status).toBe("error");
     expect(res.verdict).toBe("ERROR");
   });
+
+  const reviewWith = async (status: number, bodyText: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-q-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const fetchImpl = (async () => new Response(bodyText, { status })) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    return adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "x/y",
+        timeoutMs: 1000,
+      },
+      reviewerId: "openrouter-security",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+  };
+
+  it("classifies a 429 as quota-exhausted (so the orchestrator cools it down + fails over)", async () => {
+    const res = await reviewWith(429, "rate limit exceeded");
+    expect(res.status).toBe("quota-exhausted");
+  });
+
+  it("keeps a non-quota HTTP error as a plain error", async () => {
+    const res = await reviewWith(500, "internal server error");
+    expect(res.status).toBe("error");
+  });
 });
