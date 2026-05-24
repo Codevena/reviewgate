@@ -252,6 +252,14 @@ export function aggregate(input: AggregateInput): AggregateResult {
         fail = true;
       } else if (f.consensus === "unanimous" || f.consensus === "majority") {
         fail = true;
+      } else if (input.reviewersTotal <= 1) {
+        // Single-reviewer panel (e.g. the only non-capped reviewer after a quota
+        // failover): `singleton` is the STRONGEST consensus achievable — there is
+        // no second opinion to corroborate or demote. Honour the lone reviewer's
+        // CRITICAL as a hard FAIL rather than letting it SOFT-PASS through. (With
+        // ≥2 reviewers the consensus gate above still guards against one reviewer's
+        // lone over-call.)
+        fail = true;
       }
     } else if (f.severity === "WARN") {
       warn++;

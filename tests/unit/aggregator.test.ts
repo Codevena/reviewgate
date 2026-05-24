@@ -50,6 +50,26 @@ describe("aggregate", () => {
     expect(r.verdict).toBe("FAIL");
   });
 
+  it("CRITICAL architecture from the SOLE reviewer → FAIL (single-reviewer panel honours it)", () => {
+    // The codex-capped → single-fallback reality: a lone reviewer's CRITICAL must
+    // block, not SOFT-PASS, since `singleton` is the max consensus possible.
+    const r = aggregate({
+      findings: [fin({ severity: "CRITICAL", category: "architecture", consensus: "singleton" })],
+      reviewersTotal: 1,
+    });
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("CRITICAL architecture flagged by ONE of several reviewers → NOT FAIL (anti-FP preserved)", () => {
+    // With a real multi-reviewer panel, one reviewer's lone CRITICAL outside
+    // security/correctness should NOT hard-block (the others didn't corroborate it).
+    const r = aggregate({
+      findings: [fin({ severity: "CRITICAL", category: "architecture", consensus: "minority" })],
+      reviewersTotal: 3,
+    });
+    expect(r.verdict).not.toBe("FAIL");
+  });
+
   it("signatures dedupe and accumulate confirmed_by", () => {
     const f1 = fin({
       id: "F-1",
