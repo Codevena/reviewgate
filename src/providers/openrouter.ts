@@ -232,6 +232,13 @@ export class OpenRouterAdapter implements ProviderAdapter {
     const body = { model: opts.model, messages: [{ role: "user", content: prompt }] };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? EMBED_TIMEOUT_MS);
+    // Forward the gate's self-deadline (loop.runTimeoutMs) into this request so a
+    // critic/judge running on OpenRouter is cut short too — no subprocess to kill.
+    const onExternalAbort = () => controller.abort();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener("abort", onExternalAbort, { once: true });
+    }
     let json: ChatResponse;
     try {
       const resp = await this.fetchImpl(ENDPOINT, {
@@ -248,6 +255,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       json = (await resp.json()) as ChatResponse;
     } finally {
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onExternalAbort);
     }
     if (json.error?.message) {
       throw new Error(`OpenRouter complete error: ${json.error.message}`);

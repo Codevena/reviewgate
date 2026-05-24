@@ -168,6 +168,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
         // Bound the idle watchdog by the wall-clock timeout (see review()).
         zeroByteWatchdogMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        ...(opts.signal ? { signal: opts.signal } : {}),
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
         let detail = "";

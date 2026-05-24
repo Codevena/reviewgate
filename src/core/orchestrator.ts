@@ -37,7 +37,7 @@ import { enrichProposal } from "./brain/enrich.ts";
 import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-coupling.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { BrainStore } from "./brain/store.ts";
-import { type CriticVerdict, buildCriticPrompt, parseCriticOutput } from "./critic.ts";
+import { type CriticVerdict, runCritic } from "./critic.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -794,7 +794,9 @@ export class Orchestrator {
     let criticInfo:
       | { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number }
       | undefined;
-    let criticCostUsd = 0;
+    // Critic cost is always 0: it runs via complete(), which returns only text
+    // (no usage envelope). Kept as a named field for the IterationResult shape.
+    const criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
     if (criticCfg && allFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
@@ -802,39 +804,24 @@ export class Orchestrator {
         | ProviderConfig
         | undefined;
       if (criticAdapter && cProviderCfg) {
-        const cRun = mkdtempSync(join(tmpdir(), "rg-critic-"));
-        const cPrompt = join(cRun, "prompt.txt");
-        writeFileSync(cPrompt, buildCriticPrompt(allFindings));
-        try {
-          const cRes = await criticAdapter.review({
-            cfg: { ...cProviderCfg, ...(criticCfg.model ? { model: criticCfg.model } : {}) },
-            reviewerId: `critic-${criticCfg.provider}`,
-            promptFile: cPrompt,
-            workingDir: repo,
-            findingsPath: join(cRun, "f.md"),
-            persona: criticCfg.persona,
-            diffPath: join(cRun, "d.patch"),
+        // Critic runs via the adapter's free-form complete() (see runCritic), NOT
+        // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter and
+        // makes the critic a silent no-op. No cost is attributed: complete()
+        // returns only text (no usage envelope), so the critic phase is $0 here.
+        const r = await runCritic(
+          criticAdapter,
+          criticCfg.provider,
+          {
+            model: criticCfg.model ?? cProviderCfg.model,
+            ...(cProviderCfg.apiKeyEnv ? { apiKeyEnv: cProviderCfg.apiKeyEnv } : {}),
+            ...(cProviderCfg.auth ? { auth: cProviderCfg.auth } : {}),
+            timeoutMs: cProviderCfg.timeoutMs,
             ...(opts.signal ? { signal: opts.signal } : {}),
-          });
-          criticCostUsd += cRes.usage.costUsd;
-          const criticText = cRes.rawText ?? "";
-          if (cRes.status !== "ok") {
-            criticInfo = { provider: criticCfg.provider, status: "error", verdicts: 0 };
-          } else if (!criticText) {
-            criticInfo = { provider: criticCfg.provider, status: "empty", verdicts: 0 };
-          } else {
-            criticMap = parseCriticOutput(criticText);
-            criticInfo = {
-              provider: criticCfg.provider,
-              status: criticMap.size > 0 ? "ran" : "empty",
-              verdicts: criticMap.size,
-            };
-          }
-        } catch {
-          // A throwing critic must not abort the run (it's demote-only). Leave
-          // criticMap undefined (no demotions applied) and record an error.
-          criticInfo = { provider: criticCfg.provider, status: "error", verdicts: 0 };
-        }
+          },
+          allFindings,
+        );
+        criticMap = r.map.size > 0 ? r.map : undefined;
+        criticInfo = r.info;
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
       }

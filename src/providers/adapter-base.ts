@@ -71,6 +71,10 @@ export interface CompleteOptions {
   apiKeyEnv?: string;
   timeoutMs?: number;
   auth?: "oauth" | "apikey" | "openrouter";
+  // Aborts the underlying call when the gate's self-deadline fires
+  // (loop.runTimeoutMs). Adapters MUST forward this to spawnSafely / their fetch
+  // controller so a judge or critic running under the deadline is cut short too.
+  signal?: AbortSignal;
 }
 
 export interface ProviderAdapter {

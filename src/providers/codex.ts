@@ -204,6 +204,7 @@ export class CodexAdapter implements ProviderAdapter {
         stdoutFile: eventsFile,
         stderrFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        ...(opts.signal ? { signal: opts.signal } : {}),
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
         let detail = "";

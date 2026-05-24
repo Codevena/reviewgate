@@ -8,7 +8,12 @@ import { Orchestrator } from "../../src/core/orchestrator.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
-function stub(id: ProviderAdapter["id"], findings: Finding[], rawText = ""): ProviderAdapter {
+function stub(
+  id: ProviderAdapter["id"],
+  findings: Finding[],
+  rawText = "",
+  completeText?: string,
+): ProviderAdapter {
   return {
     id,
     async preflight() {
@@ -27,6 +32,9 @@ function stub(id: ProviderAdapter["id"], findings: Finding[], rawText = ""): Pro
         status: "ok",
       } satisfies ReviewResult;
     },
+    // The critic runs via complete() (not review()); a critic-provider stub
+    // supplies its {verdicts:[...]} here.
+    ...(completeText !== undefined ? { complete: async () => completeText } : {}),
   };
 }
 
@@ -139,7 +147,7 @@ describe("Orchestrator panel", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-critic-"));
     writeFileSync(join(repo, "foo.ts"), "x");
     const finding = f("sigW", "codex", "security");
-    // critic returns its verdicts as the inner model text (rawText)
+    // critic returns its verdicts via complete() (free-form, not review())
     const criticText = `{"verdicts":[{"signature":"${finding.signature}","verdict":"likely_fp","reason":"stylistic only"}]}`;
     const config = {
       ...defaultConfig,
@@ -158,7 +166,7 @@ describe("Orchestrator panel", () => {
       config,
       adapters: {
         codex: stub("codex", [{ ...finding, severity: "WARN", category: "quality" }]),
-        gemini: stub("gemini", [], criticText),
+        gemini: stub("gemini", [], "", criticText),
       },
       sandboxMode: "off",
       hostTier: "opus",
