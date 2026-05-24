@@ -55,6 +55,13 @@ export const ConfigSchema = z.object({
       // export breaking an untouched caller). Default [] — every out-of-diff
       // finding demotes to INFO (maximal suppression of unchanged-code hallucinations).
       outOfDiffBlocking: z.array(FindingCategory).optional(),
+      // Phase 4 #7: reviewer-confidence floor (0..1). An uncorroborated finding
+      // below this is demoted to INFO (advisory) instead of blocking — so a
+      // reviewer's own low-confidence call no longer counts as much as a confident
+      // one. CRITICAL security/correctness and corroborated findings are exempt.
+      // 0 disables the signal. Default 0.3 (defaults.ts) — only quite-unsure
+      // findings are demoted.
+      confidenceFloor: z.number().min(0).max(1).optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

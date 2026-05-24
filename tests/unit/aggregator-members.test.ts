@@ -49,7 +49,7 @@ describe("aggregate member provenance (B0)", () => {
       reviewersTotal: 1,
     });
     expect(r.dedupedFindings[0]?.members).toEqual([
-      { signature: "sigZ", provider: "codex", rule_id: "r", category: "quality" },
+      { signature: "sigZ", provider: "codex", rule_id: "r", category: "quality", confidence: 0.8 },
     ]);
   });
 });

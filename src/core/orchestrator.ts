@@ -870,6 +870,7 @@ export class Orchestrator {
         this.input.reportMode !== "one-shot" &&
         this.input.config.phases.review.scopeToDiff !== false,
       outOfDiffBlocking: this.input.config.phases.review.outOfDiffBlocking ?? [],
+      confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
     });

@@ -43,6 +43,10 @@ export const FindingSchema = z.object({
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),
+  // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
+  // its reviewer-reported confidence fell below the configured floor AND it wasn't
+  // corroborated by other reviewers (advisory, non-blocking).
+  low_confidence: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base
@@ -55,6 +59,10 @@ export const FindingSchema = z.object({
         provider: z.string(),
         rule_id: z.string(),
         category: FindingCategory,
+        // Per-member reviewer confidence — so the confidence-demote uses the
+        // cluster MAX (a co-located high-confidence member isn't masked by a
+        // low-confidence representative). Optional for backward-compat.
+        confidence: z.number().min(0).max(1).optional(),
       }),
     )
     .optional(),

@@ -1,0 +1,223 @@
+// tests/unit/aggregator-confidence.test.ts
+// Phase 4 #7 — `confidence` was parsed into every Finding but NEVER used in the
+// verdict: a 0.2-confidence finding blocked exactly as hard as a 0.99 one. Wire
+// it as a demotion signal — a low-confidence, uncorroborated finding becomes
+// advisory (INFO) instead of blocking, EXCEPT a CRITICAL security/correctness
+// finding (always blocking, mirroring the critic carve-out).
+import { describe, expect, it } from "bun:test";
+import { aggregate } from "../../src/core/aggregator.ts";
+import type { Finding } from "../../src/schemas/finding.ts";
+
+function f(over: Partial<Finding>): Finding {
+  return {
+    id: "F",
+    signature: "sigX",
+    severity: "WARN",
+    category: "quality",
+    rule_id: "r",
+    file: "a.ts",
+    line_start: 1,
+    line_end: 1,
+    message: "m",
+    details: "d",
+    reviewer: { provider: "codex", model: "x", persona: "security" },
+    confidence: 0.9,
+    consensus: "singleton",
+    ...over,
+  } as Finding;
+}
+
+describe("aggregate confidence demote", () => {
+  it("demotes a low-confidence, uncorroborated WARN to INFO (advisory, non-blocking)", () => {
+    const r = aggregate({
+      findings: [f({ severity: "WARN", confidence: 0.2, consensus: "singleton" })],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.low_confidence).toBe(true);
+    expect(r.verdict).not.toBe("FAIL");
+  });
+
+  it("keeps a finding AT or ABOVE the floor blocking", () => {
+    const r = aggregate({
+      findings: [f({ severity: "WARN", confidence: 0.5, consensus: "majority" })],
+      reviewersTotal: 2,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
+  });
+
+  it("does NOT demote a CRITICAL security finding even at low confidence", () => {
+    const r = aggregate({
+      findings: [
+        f({ severity: "CRITICAL", category: "security", confidence: 0.1, consensus: "singleton" }),
+      ],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("does NOT demote a corroborated (majority/unanimous) low-confidence finding", () => {
+    // Two reviewers independently reported it → consensus overrides one reviewer's
+    // low self-rated confidence.
+    const r = aggregate({
+      findings: [
+        f({
+          signature: "s",
+          confidence: 0.2,
+          reviewer: { provider: "codex", model: "x", persona: "security" },
+        }),
+        f({
+          signature: "s",
+          confidence: 0.2,
+          reviewer: { provider: "gemini", model: "y", persona: "arch" },
+        }),
+      ],
+      reviewersTotal: 2,
+      confidenceFloor: 0.5,
+    });
+    const consensus = r.dedupedFindings[0]?.consensus;
+    expect(consensus === "majority" || consensus === "unanimous").toBe(true);
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
+  });
+
+  it("does NOT demote a CRITICAL cluster whose MEMBER (not representative) is security", () => {
+    // Two CRITICAL findings at the same line merge: the lower rule_id ("a-quality")
+    // becomes the representative, the security one a member. Low confidence on the
+    // rep must NOT demote the cluster — a security concern rides along in members.
+    const r = aggregate({
+      findings: [
+        f({
+          severity: "CRITICAL",
+          category: "quality",
+          rule_id: "a-quality",
+          message: "magic number here",
+          line_start: 1,
+          confidence: 0.1,
+          signature: "sq",
+        }),
+        f({
+          severity: "CRITICAL",
+          category: "security",
+          rule_id: "z-security",
+          message: "sql injection risk",
+          line_start: 1,
+          confidence: 0.1,
+          signature: "ss",
+        }),
+      ],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL"); // not demoted
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("does NOT demote a cluster when a co-located MEMBER has high confidence", () => {
+    // A low-confidence WARN representative merges with a high-confidence WARN
+    // member at the same line. The cluster's confidence is the MAX across members,
+    // so the high-confidence member must keep the cluster blocking (not masked by
+    // the representative's low self-rating).
+    const r = aggregate({
+      findings: [
+        f({
+          severity: "WARN",
+          rule_id: "a-rule",
+          message: "alpha issue at this spot",
+          line_start: 1,
+          confidence: 0.1,
+          signature: "a",
+        }),
+        f({
+          severity: "WARN",
+          rule_id: "b-rule",
+          message: "alpha issue at this spot too",
+          line_start: 1,
+          confidence: 0.95,
+          signature: "b",
+        }),
+      ],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN"); // high-conf member keeps it blocking
+    expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
+  });
+
+  it("verdict FAILs a CRITICAL cluster whose security concern is a MEMBER (reviewersTotal>1)", () => {
+    // A CRITICAL quality representative + CRITICAL security member, 2 reviewers,
+    // consensus singleton. The verdict's security/correctness auto-FAIL must
+    // consider member categories — else this dangerous finding silently PASSes.
+    const r = aggregate({
+      findings: [
+        f({
+          severity: "CRITICAL",
+          category: "quality",
+          rule_id: "a-quality",
+          message: "magic number",
+          line_start: 1,
+          confidence: 0.9,
+          signature: "q",
+        }),
+        f({
+          severity: "CRITICAL",
+          category: "security",
+          rule_id: "z-security",
+          message: "sql injection",
+          line_start: 1,
+          confidence: 0.9,
+          signature: "s",
+        }),
+      ],
+      reviewersTotal: 2,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("critic likely_fp does NOT demote a CRITICAL cluster whose security concern is a MEMBER", () => {
+    // The critic's CRITICAL-security exemption must also look past the
+    // representative category — else a likely_fp verdict could demote a cluster
+    // carrying a CRITICAL security member down to WARN/SOFT-PASS.
+    const r = aggregate({
+      findings: [
+        f({
+          severity: "CRITICAL",
+          category: "quality",
+          rule_id: "a-quality",
+          message: "magic number",
+          line_start: 1,
+          signature: "q",
+        }),
+        f({
+          severity: "CRITICAL",
+          category: "correctness",
+          rule_id: "z-correct",
+          message: "off by one",
+          line_start: 1,
+          signature: "c",
+        }),
+      ],
+      reviewersTotal: 2,
+      critic: new Map([["q", { verdict: "likely_fp" as const }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL"); // critic did not demote
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("no floor (or 0) → confidence is NOT used (back-compat: a 0.1 WARN still blocks)", () => {
+    const r = aggregate({
+      findings: [f({ severity: "WARN", confidence: 0.1, consensus: "singleton" })],
+      reviewersTotal: 1,
+      // confidenceFloor omitted
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
+  });
+});

@@ -64,6 +64,11 @@ export const defaultConfig = {
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.
       outOfDiffBlocking: [] as import("../schemas/finding.ts").FindingCategory[],
+      // Uncorroborated findings a reviewer rated below this confidence are demoted
+      // to INFO (advisory) — they no longer block as hard as confident ones.
+      // CRITICAL security/correctness and corroborated findings stay blocking. Set
+      // 0 to disable.
+      confidenceFloor: 0.3,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

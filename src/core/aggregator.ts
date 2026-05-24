@@ -22,6 +22,13 @@ export interface AggregateInput {
   // M5 Part B1: active/sticky FP-ledger entries keyed by signature. A finding
   // whose representative or any member signature matches is demoted to INFO.
   fpActive?: Map<string, { id: string }>;
+  // Phase 4 #7: reviewer-confidence floor (0..1). When > 0, an UNCORROBORATED
+  // finding whose confidence is below the floor is demoted to INFO (advisory) —
+  // so a reviewer's own low-confidence call no longer blocks as hard as a
+  // high-confidence one. A CRITICAL security/correctness finding is exempt (always
+  // blocks), and a corroborated finding (majority/unanimous) is exempt (consensus
+  // overrides one reviewer's low self-rating). 0/absent → confidence unused.
+  confidenceFloor?: number;
 }
 
 export interface AggregateResult {
@@ -91,12 +98,23 @@ interface Cluster {
   members: NonNullable<Finding["members"]>;
 }
 
+// True if the finding's representative OR any merged member is categorized
+// security/correctness. Clustering is category-independent, so such a concern can
+// ride as a member under, e.g., a quality representative — both the always-block
+// verdict gate and the confidence-demote exemption must look past the
+// representative's own category, or a dangerous finding silently goes advisory.
+function touchesSecurityOrCorrectness(f: Finding): boolean {
+  const cats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+  return cats.some((c) => c === "security" || c === "correctness");
+}
+
 function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
   return {
     signature: f.signature,
     provider: f.reviewer.provider,
     rule_id: f.rule_id,
     category: f.category,
+    confidence: f.confidence,
   };
 }
 
@@ -224,8 +242,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   for (const f of deduped) {
     const cv = critic?.get(f.signature);
     if (cv?.verdict === "likely_fp") {
-      const isCriticalSecurity =
-        f.severity === "CRITICAL" && (f.category === "security" || f.category === "correctness");
+      const isCriticalSecurity = f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f);
       const isUnanimous = f.consensus === "unanimous";
       if (!isCriticalSecurity && !isUnanimous) {
         const next = DEMOTE[f.severity];
@@ -276,15 +293,53 @@ export function aggregate(input: AggregateInput): AggregateResult {
       })
     : scoped;
 
+  // Phase 4 #7 — confidence demote: an uncorroborated finding below the floor is
+  // advisory only. Exempt: corroborated findings (majority/unanimous — multiple
+  // reviewers agreeing outweighs one's low self-rating) and CRITICAL clusters that
+  // touch security/correctness. The latter checks the representative AND every
+  // merged member category (clustering is category-independent, so a CRITICAL
+  // security/correctness concern can ride as a member under, e.g., a quality
+  // representative — demoting the cluster would hide it and could flip FAIL→PASS).
+  const floor = input.confidenceFloor ?? 0;
+  const confScoped: Finding[] =
+    floor > 0
+      ? fpScoped.map((f) => {
+          // Cluster confidence = MAX over the representative and all merged members,
+          // so a co-located high-confidence member is never masked by a
+          // low-confidence representative. (memberOf records each member's
+          // confidence; older/persisted members may omit it → ignored in the max.)
+          const memberConfs = (f.members ?? [])
+            .map((m) => m.confidence)
+            .filter((c): c is number => typeof c === "number");
+          const maxConfidence = Math.max(f.confidence, ...memberConfs);
+          if (maxConfidence >= floor) return f;
+          if (f.consensus === "unanimous" || f.consensus === "majority") return f;
+          if (f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f)) return f;
+          if (f.severity === "INFO") return { ...f, low_confidence: true };
+          const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — advisory only.`;
+          // Truncate the ORIGINAL (not the note) so the explanation is never lost
+          // — mirrors scopeFindings' demote() and stays within the 2000-char cap.
+          return {
+            ...f,
+            severity: "INFO" as const,
+            low_confidence: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : fpScoped;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of fpScoped) {
+  for (const f of confScoped) {
     if (f.severity === "CRITICAL") {
       critical++;
-      if (f.category === "security" || f.category === "correctness") {
+      if (touchesSecurityOrCorrectness(f)) {
+        // Always a hard FAIL — checks the representative AND merged member
+        // categories, so a security/correctness concern clustered under a
+        // different representative category is never silently non-blocking.
         fail = true;
       } else if (f.consensus === "unanimous" || f.consensus === "majority") {
         fail = true;
@@ -316,7 +371,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = fpScoped.map((f, i) => ({ ...f, id: `F-${String(i + 1).padStart(3, "0")}` }));
+  const renumbered = confScoped.map((f, i) => ({
+    ...f,
+    id: `F-${String(i + 1).padStart(3, "0")}`,
+  }));
 
   return { verdict, dedupedFindings: renumbered, counts: { critical, warn, info } };
 }

@@ -118,10 +118,41 @@ Verified, by impact-to-effort. Grouped into PRs: **PR A** (hygiene: 1,2,5,6) ✅
    - Known platform note: on Windows a dead pid may report EPERM (not ESRCH) → no
      fast reclaim, degrades to the acquire timeout (safe fallback).
 
-### Remaining (own PR)
+### PR D — confidence as a demote signal ✅ DONE (branch `phase4-confidence-demote`)
 
-7. `confidence` field unused in verdict/dedup — **wire as a demotion signal**
-   (user decision 2026-05-24: behaviour change, own PR).
+7. ✅ `confidence` is now wired into the verdict (was parsed but unused — a 0.2
+   finding blocked like a 0.99). `phases.review.confidenceFloor` (default **0.3**):
+   an UNCORROBORATED finding whose **cluster-max** confidence (representative +
+   all merged members) is below the floor is demoted to INFO + tagged
+   `low_confidence` (advisory, never dropped). Exempt: corroborated findings
+   (majority/unanimous) and CRITICAL clusters touching security/correctness.
+   `floor:0` disables (exact back-compat). Members now carry per-member
+   `confidence` so a co-located high-confidence member is never masked by a
+   low-confidence representative.
+   - Surfaced + fixed a LATENT pre-existing bug: the verdict's always-block
+     security/correctness FAIL (and the critic exemption) checked only the
+     representative category → a CRITICAL security/correctness concern merged as a
+     MEMBER under another category could PASS. All three sites (critic exemption,
+     confidence-demote exemption, verdict gate) now share one member-aware
+     `touchesSecurityOrCorrectness` helper.
+   - DoD: Codex PASS + Claude PASS (Codex found 3 escalating issues, Claude 2);
+     804 pass / 0 fail. User decision 2026-05-24: wire it (behaviour change).
+
+## Phase 4 — COMPLETE ✅
+
+All seven verified Phase-4 hardening points shipped across PRs A–D (each its own
+branch → green DoD → FF-merge to master). Remaining lower-confidence items below
+are still **verify-first** before any change.
+
+### Lower-confidence (verify at the code before touching — per session 2026-05-24)
+
+- greedy first-match clustering (`aggregator.ts`)
+- `line_start/line_end` single-line schema at codex (`review-output`)
+- decisions-file read race (`loop-driver`)
+- loop-driver test gaps (cost-cap / stuck / convergence / reject-rate)
+- parse-cache staleness in a long-lived process (`symbol-graph`)
+- (from PR B review) tree-sitter `parseFile` loop doesn't abort early;
+  `spawnCapture` stderr unbounded; HEAD-advanced gate path calls `collectDiff` twice
 
 NOTE (deferred, lower-priority follow-ups surfaced by PR B review): tree-sitter
 `parseFile` loop in `buildSymbolGraph` doesn't abort early; `spawnCapture` stderr
