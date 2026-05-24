@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
+import type { RunSummary } from "../schemas/audit-event.ts";
 import { DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import { type ReviewgateState, ReviewgateStateSchema } from "../schemas/state.ts";
@@ -145,6 +146,28 @@ function allDecisionsAddressed(repoRoot: string, iter: number, requiredIds: stri
     if (res.success) seen.add(res.data.finding_id);
   }
   return requiredIds.every((id) => seen.has(id));
+}
+
+// A compact panel breakdown for the block message — severity counts + which
+// reviewer flagged how many — so the agent/human sees the shape of the review at a
+// glance without opening pending.md. Per-reviewer counts attribute each merged
+// finding to its representative provider (cross-provider confirmations collapse to
+// one), so they may sum to ≤ the total; the severity counts are authoritative.
+function formatPanelSummary(summary: RunSummary): string {
+  const { critical, warn, info } = summary.counts;
+  const sev =
+    [
+      critical > 0 ? `${critical} CRITICAL` : null,
+      warn > 0 ? `${warn} WARN` : null,
+      info > 0 ? `${info} INFO` : null,
+    ]
+      .filter((x): x is string => x !== null)
+      .join(" · ") || "0 findings";
+  const perReviewer = summary.providers
+    .filter((p) => p.runs > 0)
+    .map((p) => `${p.provider} ${p.findings}${p.errors > 0 ? " ⚠" : ""}`)
+    .join(" · ");
+  return perReviewer ? `${sev}  ·  reviewers: ${perReviewer}` : sev;
 }
 
 export class LoopDriver {
@@ -386,7 +409,7 @@ export class LoopDriver {
     } else {
       decision = {
         kind: "block",
-        reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations} · ${result.signaturesThisIter.length} finding(s). See .reviewgate/pending.md · record per-finding decisions in .reviewgate/decisions/${nextIter}.jsonl.`,
+        reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations}\n   ${formatPanelSummary(result.summary)}\n   → record a decision per CRITICAL/WARN finding in .reviewgate/decisions/${nextIter}.jsonl  (details: .reviewgate/pending.md)`,
       };
     }
 

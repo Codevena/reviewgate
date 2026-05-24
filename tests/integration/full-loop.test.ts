@@ -60,6 +60,9 @@ describe("full loop integration", () => {
     const firstDecision = JSON.parse(firstStop.stdout);
     expect(firstDecision.decision).toBe("block");
     expect(existsSync(join(repo, ".reviewgate", "pending.md"))).toBe(true);
+    // Rich block message: severity + per-reviewer breakdown (not just a bare count).
+    expect(firstDecision.reason).toContain("reviewers: codex");
+    expect(firstDecision.reason).toMatch(/CRITICAL|WARN|INFO/);
 
     // 3. Claude "fixes" the issue and writes decisions/1.jsonl (using the F-001 ID
     //    emitted by fake-codex.sh).
