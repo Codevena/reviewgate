@@ -240,13 +240,37 @@ export class LoopDriver {
       );
     }
 
-    // Escalation precondition: iter cap reached before this iteration.
-    if (state.iteration >= this.i.config.loop.maxIterations) {
-      return this.escalateAndDecide(
-        state,
-        "max-iterations",
-        `Reached ${state.iteration} iterations without convergence.`,
-      );
+    // Escalation precondition: iteration cap reached. But a CONVERGING loop —
+    // where each round's finding count is strictly DECREASING (healthy spec/code
+    // refinement, e.g. 5 → 3 → 1 → 0) — is genuinely making progress, not stuck, so
+    // it is allowed to continue past maxIterations up to a hard backstop (2× the
+    // cap). Only a NON-progressing loop (findings flat or rising) escalates at the
+    // cap — which is what "without convergence" actually means. The hard backstop +
+    // cost-cap + stuck-signature detection remain as upper bounds so this can never
+    // run away. (Finding counts come from signature_history, one entry per iteration.)
+    const maxIter = this.i.config.loop.maxIterations;
+    if (state.iteration >= maxIter) {
+      const hist = state.signature_history;
+      const lastN = hist.at(-1)?.length ?? 0;
+      const prevN = hist.at(-2)?.length ?? Number.POSITIVE_INFINITY;
+      const progressing = hist.length >= 2 && lastN < prevN;
+      const hardCap = maxIter * 2;
+      if (state.iteration >= hardCap) {
+        return this.escalateAndDecide(
+          state,
+          "max-iterations",
+          `Reached the hard cap of ${hardCap} iterations.`,
+        );
+      }
+      if (!progressing) {
+        return this.escalateAndDecide(
+          state,
+          "max-iterations",
+          `Reached ${state.iteration} iterations without convergence (findings not decreasing).`,
+        );
+      }
+      // Converging (findings strictly fewer than the previous round) and below the
+      // hard cap → fall through and review another round toward a clean pass.
     }
 
     // Stuck-loop: the SAME non-empty signature set repeated for `stuckThreshold`

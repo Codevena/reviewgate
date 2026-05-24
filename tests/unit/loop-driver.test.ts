@@ -893,3 +893,70 @@ describe("LoopDriver stuck-signature threshold (configurable)", () => {
     expect((await state.load()).escalation_reason).toBe("stuck-signatures");
   });
 });
+
+describe("LoopDriver convergence-aware max-iterations", () => {
+  const cfgWith = (maxIterations: number) => ({
+    ...defaultConfig,
+    loop: { ...defaultConfig.loop, maxIterations, stuckThreshold: 99 },
+  });
+  async function drive(history: string[][], iteration: number, maxIterations = 3) {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCONV");
+    await state.update((cur) => ({ ...cur, iteration, signature_history: history }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfgWith(maxIterations),
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfgWith(maxIterations),
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    return { decision, state, repo };
+  }
+
+  it("a CONVERGING loop (findings decreasing) does NOT escalate at maxIterations", async () => {
+    // 5 → 3 findings: strictly decreasing → healthy progress → run another round.
+    const { state } = await drive(
+      [
+        ["a", "b", "c", "d", "e"],
+        ["a", "b", "c"],
+      ],
+      3,
+    );
+    expect((await state.load()).escalated).toBe(false);
+  });
+
+  it("a NON-progressing loop (findings rising/flat) escalates at maxIterations", async () => {
+    const { decision, state } = await drive([["a"], ["a", "b"]], 3); // 1 → 2, rising
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/ESCALATED/);
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
+  });
+
+  it("escalates at the hard cap (2× maxIterations) even while still converging", async () => {
+    // 6 → 5 (decreasing) but iteration == hard cap → backstop escalates anyway.
+    const { decision, state, repo } = await drive(
+      [
+        ["a", "b", "c", "d", "e", "f"],
+        ["a", "b", "c", "d", "e"],
+      ],
+      6,
+      3,
+    );
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/ESCALATED/);
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+});
