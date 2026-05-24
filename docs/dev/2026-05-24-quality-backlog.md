@@ -177,7 +177,26 @@ are still **verify-first** before any change.
   validity with a REAL `codex exec --output-schema` call (emitted line/line_end,
   no HTTP 400). DoD: Codex PASS + Claude PASS; 810 pass / 0 fail.
 
-**Backlog fully worked through (2026-05-24): Phases 1–4 + PR E cleanup + PR F.**
+### PR G — config-load freshness + non-silent failure ✅ DONE (branch `phase4-config-reload`)
+
+Found by the (previously-owed, now-done) retroactive codex review of the
+`setup` wizard / config-precedence code:
+- **ESM-cache staleness (verified real in Bun):** a config OVERWRITTEN in the same
+  process (`reviewgate setup` writes it, then doctor reloads it) was served the
+  STALE module — Bun caches dynamic `import()` by path; `?v=` query-bust is rejected
+  and a `data:` URL breaks on real-size configs (NameTooLong). FIX: new
+  `src/config/import-config.ts` `importConfigDefault` reads current content, copies
+  it to a UNIQUE mkdtemp path, imports THAT (never cached → fresh), rmSyncs in
+  finally (write inside the try → no leak on a failed write). Wired into BOTH
+  `global.ts` readRawPartial AND `loader.ts` loadConfig.
+- **Silent config drop:** `readRawPartial` now `console.warn`s on an import failure
+  (syntax/runtime) AND a non-object default export (was silent — only the zod path
+  warned; same class as PR A #2). A MISSING file still returns null silently.
+- DoD: Codex PASS + Claude PASS; 812 pass / 0 fail; verified in the COMPILED binary
+  (valid config honored by doctor; broken config prints the new warn → runtime
+  dynamic-import of a temp `.ts` works under `bun --compile`).
+
+**Backlog fully worked through (2026-05-24/25): Phases 1–4 + PR E cleanup + PR F + PR G.**
 
 NOTE (deferred, lower-priority follow-ups surfaced by PR B review): tree-sitter
 `parseFile` loop in `buildSymbolGraph` doesn't abort early; `spawnCapture` stderr

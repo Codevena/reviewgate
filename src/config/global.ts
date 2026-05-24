@@ -6,6 +6,7 @@ import {
   deepMerge,
   defineConfig,
 } from "./define-config.ts";
+import { importConfigDefault } from "./import-config.ts";
 
 export function resolveGlobalConfigPath(
   env: Record<string, string | undefined>,
@@ -18,18 +19,26 @@ export function resolveGlobalConfigPath(
   return join(base, "reviewgate", "reviewgate.config.ts");
 }
 
-// Reads a config file's RAW default-export partial (NOT through defineConfig). A file
-// that is missing, fails to import, or doesn't export an object yields null so the
-// layer is simply dropped — mirrors the gate's historical graceful fallback.
+// Reads a config file's RAW default-export partial (NOT through defineConfig). A
+// missing file yields null silently (that layer just isn't present). A file that
+// EXISTS but fails to import (syntax/runtime error) or doesn't export an object is
+// dropped too — but NOT silently: we warn, because a quietly-ignored config the
+// user actually wrote is the failure mode this tool exists to prevent. Imported
+// FRESH (importConfigDefault) so a same-process overwrite isn't served stale.
 async function readRawPartial(path: string | null): Promise<DeepPartial<ReviewgateConfig> | null> {
   if (!path || !existsSync(path)) return null;
   try {
-    const mod = (await import(resolve(path))) as { default?: unknown };
-    if (mod.default && typeof mod.default === "object") {
-      return mod.default as DeepPartial<ReviewgateConfig>;
+    const def = await importConfigDefault(resolve(path));
+    if (def && typeof def === "object") {
+      return def as DeepPartial<ReviewgateConfig>;
     }
-  } catch {
-    // fall through — broken layer is dropped
+    console.warn(
+      `[reviewgate] config at ${path} has no default-export object — ignoring it (using defaults/lower layers).`,
+    );
+  } catch (err) {
+    console.warn(
+      `[reviewgate] failed to load config at ${path} — ignoring it (using defaults/lower layers). ${(err as Error).message}`,
+    );
   }
   return null;
 }

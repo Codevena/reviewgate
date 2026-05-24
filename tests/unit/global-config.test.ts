@@ -73,6 +73,37 @@ describe("loadEffectiveConfig", () => {
     expect(cfg).toEqual(defineConfig({}));
   });
 
+  it("reflects an OVERWRITTEN config on a same-process reload (no ESM-cache staleness)", async () => {
+    // `reviewgate setup` writes the config then reloads it (doctor). A naive
+    // import() caches by path → the reload would see the OLD config. We must read
+    // the current content fresh.
+    const cwd = tmp();
+    const p = join(cwd, "reviewgate.config.ts");
+    writeFileSync(p, "export default { notify: { desktop: false } };");
+    const first = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
+    expect(first.notify.desktop).toBe(false);
+    writeFileSync(p, "export default { notify: { desktop: true } };");
+    const second = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
+    expect(second.notify.desktop).toBe(true); // fresh read, not the cached first load
+  });
+
+  it("warns (not silently) when a present config FAILS TO IMPORT (syntax error)", async () => {
+    const cwd = tmp();
+    writeFileSync(join(cwd, "reviewgate.config.ts"), "export default { oops:: }};; not valid");
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(" "));
+    try {
+      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
+      expect(cfg).toEqual(defineConfig({})); // still degrades to defaults
+    } finally {
+      console.warn = orig;
+    }
+    const joined = warnings.join("\n").toLowerCase();
+    expect(joined).toContain("reviewgate");
+    expect(joined).toContain("config"); // the broken config was surfaced, not silently dropped
+  });
+
   it("a schema-INVALID config warns (with the offending field) before degrading", async () => {
     // Imports fine (valid TS object) but violates the schema → defineConfig throws.
     // The silent fallback this tool exists to prevent must NOT happen quietly:
