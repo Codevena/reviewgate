@@ -6,7 +6,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate } from "../../src/cli/commands/gate.ts";
 import { runInit } from "../../src/cli/commands/init.ts";
+import { StateStore } from "../../src/core/state-store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
+
+function sha(repo: string): string {
+  return spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
+}
+function commit(repo: string, content: string): void {
+  writeFileSync(join(repo, "foo.ts"), content);
+  spawnSync("git", ["add", "-A"], { cwd: repo });
+  spawnSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", "commit", "-q", "-m", "change"], {
+    cwd: repo,
+  });
+}
 
 const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 
@@ -90,5 +102,53 @@ describe("full loop integration", () => {
     expect(secondStop.exitCode).toBe(0);
     const state = JSON.parse(readFileSync(join(repo, ".reviewgate", "state.json"), "utf8"));
     expect(state.iteration).toBe(2);
+  });
+
+  it("reviews committed work that arrived WITHOUT an Edit/Write (HEAD-advanced trigger)", async () => {
+    // Simulates a `git merge`/`git commit` via Bash (or a worktree merge): HEAD
+    // moves past the last reviewed sha with NO dirty.flag. The gate must still
+    // review it (synthesize the trigger), not silently allow the turn.
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const base = sha(repo); // "last reviewed" baseline
+    const st = new StateStore(repo);
+    await st.initialise("01HXQHEADADV");
+    await st.update((c) => ({ ...c, last_reviewed_head_sha: base }));
+
+    // Commit a change via git (no Edit/Write tool → no PostToolUse → no dirty.flag).
+    commit(repo, "function compare(a, b) { return a == b; } // committed via bash");
+    expect(sha(repo)).not.toBe(base);
+    expect(existsSync(join(repo, ".reviewgate", "dirty.flag"))).toBe(false);
+
+    const stop = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      sandboxModeOverride: "off",
+    });
+    // fake-codex always emits a finding → if the committed work was reviewed, BLOCK.
+    const decision = JSON.parse(stop.stdout || "{}");
+    expect(decision.decision).toBe("block");
+    expect(existsSync(join(repo, ".reviewgate", "pending.md"))).toBe(true);
+  });
+
+  it("does NOT review when HEAD == last reviewed and there is no dirty.flag (no false trigger)", async () => {
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const head = sha(repo);
+    const st = new StateStore(repo);
+    await st.initialise("01HXQNOADV");
+    await st.update((c) => ({ ...c, last_reviewed_head_sha: head }));
+
+    const stop = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      sandboxModeOverride: "off",
+    });
+    expect(stop.stdout).toBe(""); // allow_stop (no block JSON)
+    expect(stop.stderr).toContain("No code changes");
   });
 });

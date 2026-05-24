@@ -1,5 +1,5 @@
 // src/cli/commands/gate.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
@@ -66,14 +66,42 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   const gitInfo = collectGitInfo(input.repoRoot);
   // Review base: the pre-batch HEAD captured in dirty.flag, so commit-per-task
   // work (committed mid-batch) is reviewed too — not just the working tree.
+  const dp = dirtyFlagPath(input.repoRoot);
+  const hasDirtyFlag = existsSync(dp);
   let reviewBase: string | null = null;
-  try {
-    const dp = dirtyFlagPath(input.repoRoot);
-    if (existsSync(dp)) {
+  if (hasDirtyFlag) {
+    try {
       reviewBase = (JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string }).base_sha ?? null;
+    } catch {
+      reviewBase = null;
     }
-  } catch {
-    reviewBase = null;
+  } else {
+    // HEAD-advanced trigger: committed/merged work can arrive WITHOUT an Edit/Write
+    // — e.g. a `git merge` or `git commit` run via Bash, or a worktree merge into
+    // the watched checkout. No PostToolUse fires, so no dirty.flag, and the gate
+    // would allow the turn UNREVIEWED. If HEAD moved past the last reviewed sha AND
+    // there is a real diff since then, synthesize the trigger (base = last reviewed
+    // sha) so that committed work is actually reviewed. (Requires a prior review to
+    // have set last_reviewed_head_sha — the common case once the session is going.)
+    const st = await state.load();
+    const last = st.last_reviewed_head_sha;
+    if (
+      gitInfo.sha &&
+      last &&
+      gitInfo.sha !== last &&
+      collectDiff(input.repoRoot, last).trim().length > 0
+    ) {
+      reviewBase = last;
+      writeFileSync(
+        dp,
+        JSON.stringify({
+          diff_hash: gitInfo.sha.slice(0, 16),
+          ts: new Date().toISOString(),
+          base_sha: last,
+        }),
+        { mode: 0o600 },
+      );
+    }
   }
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
