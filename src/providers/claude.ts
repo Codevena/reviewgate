@@ -62,6 +62,8 @@ export class ClaudeAdapter implements ProviderAdapter {
       };
     } catch (err) {
       return { available: false, version: null, authMode: cfg.auth, error: (err as Error).message };
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
 

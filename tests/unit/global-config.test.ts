@@ -72,4 +72,28 @@ describe("loadEffectiveConfig", () => {
     const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
     expect(cfg).toEqual(defineConfig({}));
   });
+
+  it("a schema-INVALID config warns (with the offending field) before degrading", async () => {
+    // Imports fine (valid TS object) but violates the schema → defineConfig throws.
+    // The silent fallback this tool exists to prevent must NOT happen quietly:
+    // we degrade to defaults AND surface a console.warn naming the bad path.
+    const cwd = tmp();
+    writeFileSync(
+      join(cwd, "reviewgate.config.ts"),
+      'export default { providers: { codex: { timeoutMs: "not-a-number" } } };',
+    );
+    const warnings: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(" "));
+    try {
+      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
+      expect(cfg).toEqual(defineConfig({}));
+    } finally {
+      console.warn = orig;
+    }
+    const joined = warnings.join("\n");
+    expect(joined.toLowerCase()).toContain("reviewgate");
+    // The zod error must point at the actual offending field, not be opaque.
+    expect(joined).toContain("timeoutMs");
+  });
 });

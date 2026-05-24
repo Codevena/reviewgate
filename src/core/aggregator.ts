@@ -3,6 +3,7 @@ import { type Range, rangeOverlapsChanged } from "../diff/hunks.ts";
 import { normalizeRepoPath } from "../diff/repo-path.ts";
 import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 import type { CriticVerdict } from "./critic.ts";
 
 export interface AggregateInput {
@@ -150,11 +151,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // cluster seed is the representative and its token set is a stable anchor.
   const sorted = [...findings].sort(
     (a, b) =>
-      a.file.localeCompare(b.file) ||
+      compareCodeUnits(a.file, b.file) ||
       a.line_start - b.line_start ||
       SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] ||
-      a.rule_id.localeCompare(b.rule_id) ||
-      a.message.localeCompare(b.message),
+      compareCodeUnits(a.rule_id, b.rule_id) ||
+      compareCodeUnits(a.message, b.message),
   );
   const clusters: Cluster[] = [];
   for (const f of sorted) {

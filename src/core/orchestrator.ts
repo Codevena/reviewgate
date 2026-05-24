@@ -1,6 +1,6 @@
 // src/core/orchestrator.ts
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
@@ -29,6 +29,7 @@ import { collectChangedFileContents } from "../utils/git.ts";
 import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
+import { RG_VERSION } from "../version.ts";
 import { aggregate } from "./aggregator.ts";
 import { runCurator } from "./brain/curator.ts";
 import type { Embedder } from "./brain/embeddings.ts";
@@ -138,8 +139,6 @@ const PERSONA_REAFFIRM: Record<string, string> = {
   plan: "You are a meticulous staff engineer reviewing an implementation plan. Find gaps, contradictions, untestable steps, and unstated assumptions before code is written.",
 };
 const DEFAULT_REAFFIRM = PERSONA_REAFFIRM.security as string;
-
-const RG_VERSION = "0.1.0-m1";
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
 // cache ttlDays). Best-effort — a slow API never stalls a review.
@@ -582,119 +581,129 @@ export class Orchestrator {
           ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
           : "";
         const runDir = mkdtempSync(join(tmpdir(), `rg-rev-${r.provider}-`));
-        const promptFile = join(runDir, "prompt.txt");
-        const findingsPath = join(runDir, "findings.md");
-        const diffPath = join(runDir, "diff.patch");
-        // research.md goes BEFORE the untrusted-diff fence (trusted context).
-        const promptParts = [docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE, ""];
-        if (researchText) promptParts.push("## Research context", researchText, "");
-        if (brainText) promptParts.push("## Brain context", brainText, "");
-        if (fpFewShot)
-          promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
-        promptParts.push(sanitised.text);
-        if (sanitisedCtx)
-          promptParts.push(
+        // try/finally: the runDir holds the diff + prompt + reviewer output at
+        // default perms — it MUST be removed even on a thrown adapter, else every
+        // review leaks a /tmp dir with the (untrusted) diff in it.
+        try {
+          const promptFile = join(runDir, "prompt.txt");
+          const findingsPath = join(runDir, "findings.md");
+          const diffPath = join(runDir, "diff.patch");
+          // research.md goes BEFORE the untrusted-diff fence (trusted context).
+          const promptParts = [
+            docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE,
             "",
-            "## Full content of changed files (reference only — review the DIFF above; consult this to confirm a symbol exists before reporting it undefined/missing)",
-            sanitisedCtx,
-          );
-        writeFileSync(promptFile, promptParts.join("\n"));
-        writeFileSync(diffPath, this.input.diff);
+          ];
+          if (researchText) promptParts.push("## Research context", researchText, "");
+          if (brainText) promptParts.push("## Brain context", brainText, "");
+          if (fpFewShot)
+            promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
+          promptParts.push(sanitised.text);
+          if (sanitisedCtx)
+            promptParts.push(
+              "",
+              "## Full content of changed files (reference only — review the DIFF above; consult this to confirm a symbol exists before reporting it undefined/missing)",
+              sanitisedCtx,
+            );
+          writeFileSync(promptFile, promptParts.join("\n"));
+          writeFileSync(diffPath, this.input.diff);
 
-        // Quota cooldown skip: if the primary is still capped (reset not reached
-        // AND within the re-probe window) AND this slot has a fallback, don't waste
-        // the futile primary attempt — synthesize a quota-exhausted result so the
-        // failover below runs. Past the re-probe window (or with no fallback) we try
-        // the primary, so an EARLY recovery is detected and clears the cooldown.
-        // The cooldown effect a finished run implies: record on quota-exhausted
-        // (parsed reset, else a default window), else clear (the provider works →
-        // quota isn't the problem). Applied for the primary AND every fallback
-        // tried, so a quota-capped FALLBACK is also cooled down (else it would be
-        // retried on every review).
-        const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect => {
-          if (res.status === "quota-exhausted") {
-            const parsed = parseQuotaResetAt(res.statusDetail, now);
-            return parsed
-              ? { provider, resetAt: parsed, source: "parsed" }
-              : {
-                  provider,
-                  resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
-                  source: "default",
-                };
-          }
-          return { provider, clear: true };
-        };
-
-        const cappedUntil = cooldownStore.skipUntil(r.provider, now);
-        let run: ReviewerRun;
-        const effects: CooldownEffect[] = [];
-        if (cappedUntil && r.fallback?.length) {
-          run = {
-            res: {
-              reviewerId: `${r.provider}-${persona}`,
-              verdict: "ERROR",
-              findings: [],
-              usage: { ...ZERO_USAGE },
-              durationMs: 0,
-              exitCode: -1,
-              rawEventsPath: "",
-              status: "quota-exhausted",
-              statusDetail: `cooldown-skip: ${r.provider} capped until ${cappedUntil}`,
-            },
-            provider: r.provider,
-            persona,
-            model,
+          // Quota cooldown skip: if the primary is still capped (reset not reached
+          // AND within the re-probe window) AND this slot has a fallback, don't waste
+          // the futile primary attempt — synthesize a quota-exhausted result so the
+          // failover below runs. Past the re-probe window (or with no fallback) we try
+          // the primary, so an EARLY recovery is detected and clears the cooldown.
+          // The cooldown effect a finished run implies: record on quota-exhausted
+          // (parsed reset, else a default window), else clear (the provider works →
+          // quota isn't the problem). Applied for the primary AND every fallback
+          // tried, so a quota-capped FALLBACK is also cooled down (else it would be
+          // retried on every review).
+          const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect => {
+            if (res.status === "quota-exhausted") {
+              const parsed = parseQuotaResetAt(res.statusDetail, now);
+              return parsed
+                ? { provider, resetAt: parsed, source: "parsed" }
+                : {
+                    provider,
+                    resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
+                    source: "default",
+                  };
+            }
+            return { provider, clear: true };
           };
-          // No effect for a skipped primary: its existing cooldown record stands.
-        } else {
-          // The prompt depends only on the persona, so it is reused for any fallback.
-          run = await runProvider(
-            r.provider,
-            persona,
-            model,
-            providerCfg,
-            promptFile,
-            findingsPath,
-            diffPath,
-          );
-          effects.push(effectFor(r.provider, run.res));
-        }
 
-        // Failover: ONLY when the primary is quota-exhausted (codex usage cap,
-        // gemini RESOURCE_EXHAUSTED, … OR a cooldown skip above) and the slot
-        // declares a fallback chain. A candidate runs if it is registered +
-        // configured + available + NOT itself cooled-down; its own `enabled` flag
-        // is ignored (listing it in `fallback` IS the opt-in). Walk until one runs.
-        if (run.res.status === "quota-exhausted" && r.fallback?.length) {
-          for (const fb of r.fallback) {
-            const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
-            if (!this.input.adapters[fb] || !fbCfg) continue;
-            const available = this.input.providerAvailable ?? isProviderAvailable;
-            if (!available(fb, fbCfg.apiKeyEnv)) continue;
-            // Skip a fallback that is itself in its (non-re-probe) cooldown window,
-            // so we don't re-attempt a known-capped provider every review.
-            if (cooldownStore.skipUntil(fb, now)) continue;
-            const fbModel = resolveReviewerModel(fb, fbCfg.model);
-            if (fbModel === null) continue;
-            const exhaustedFrom = run.provider;
-            run = await runProvider(
-              fb,
+          const cappedUntil = cooldownStore.skipUntil(r.provider, now);
+          let run: ReviewerRun;
+          const effects: CooldownEffect[] = [];
+          if (cappedUntil && r.fallback?.length) {
+            run = {
+              res: {
+                reviewerId: `${r.provider}-${persona}`,
+                verdict: "ERROR",
+                findings: [],
+                usage: { ...ZERO_USAGE },
+                durationMs: 0,
+                exitCode: -1,
+                rawEventsPath: "",
+                status: "quota-exhausted",
+                statusDetail: `cooldown-skip: ${r.provider} capped until ${cappedUntil}`,
+              },
+              provider: r.provider,
               persona,
-              fbModel,
-              fbCfg,
+              model,
+            };
+            // No effect for a skipped primary: its existing cooldown record stands.
+          } else {
+            // The prompt depends only on the persona, so it is reused for any fallback.
+            run = await runProvider(
+              r.provider,
+              persona,
+              model,
+              providerCfg,
               promptFile,
               findingsPath,
               diffPath,
             );
-            run.res.statusDetail =
-              `[fallback from ${exhaustedFrom}: quota-exhausted] ${run.res.statusDetail ?? ""}`
-                .trim()
-                .slice(0, 1000);
-            effects.push(effectFor(fb, run.res)); // record/clear the fallback too
-            if (run.res.status !== "quota-exhausted") break;
+            effects.push(effectFor(r.provider, run.res));
           }
+
+          // Failover: ONLY when the primary is quota-exhausted (codex usage cap,
+          // gemini RESOURCE_EXHAUSTED, … OR a cooldown skip above) and the slot
+          // declares a fallback chain. A candidate runs if it is registered +
+          // configured + available + NOT itself cooled-down; its own `enabled` flag
+          // is ignored (listing it in `fallback` IS the opt-in). Walk until one runs.
+          if (run.res.status === "quota-exhausted" && r.fallback?.length) {
+            for (const fb of r.fallback) {
+              const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
+              if (!this.input.adapters[fb] || !fbCfg) continue;
+              const available = this.input.providerAvailable ?? isProviderAvailable;
+              if (!available(fb, fbCfg.apiKeyEnv)) continue;
+              // Skip a fallback that is itself in its (non-re-probe) cooldown window,
+              // so we don't re-attempt a known-capped provider every review.
+              if (cooldownStore.skipUntil(fb, now)) continue;
+              const fbModel = resolveReviewerModel(fb, fbCfg.model);
+              if (fbModel === null) continue;
+              const exhaustedFrom = run.provider;
+              run = await runProvider(
+                fb,
+                persona,
+                fbModel,
+                fbCfg,
+                promptFile,
+                findingsPath,
+                diffPath,
+              );
+              run.res.statusDetail =
+                `[fallback from ${exhaustedFrom}: quota-exhausted] ${run.res.statusDetail ?? ""}`
+                  .trim()
+                  .slice(0, 1000);
+              effects.push(effectFor(fb, run.res)); // record/clear the fallback too
+              if (run.res.status !== "quota-exhausted") break;
+            }
+          }
+          return { run, effects };
+        } finally {
+          rmSync(runDir, { recursive: true, force: true });
         }
-        return { run, effects };
       },
     );
 

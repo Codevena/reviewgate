@@ -1,3 +1,9 @@
+// The zod ConfigSchema (define-config.ts) is the single source of truth for the
+// config shape; `defaultConfig` must conform to it (`satisfies` below catches
+// drift at compile time). Type-only import → erased at runtime, so the
+// defaults ↔ define-config dependency stays one-directional (no value cycle).
+import type { ReviewgateConfig } from "./define-config.ts";
+
 export const defaultConfig = {
   version: 1 as const,
   providers: {
@@ -135,6 +141,4 @@ export const defaultConfig = {
     persona: "plan",
   },
   weeklyReport: null as null | { autoSnapshot: boolean },
-};
-
-export type ReviewgateConfig = typeof defaultConfig;
+} satisfies ReviewgateConfig;

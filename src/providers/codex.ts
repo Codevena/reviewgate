@@ -59,6 +59,8 @@ export class CodexAdapter implements ProviderAdapter {
       return { available: true, version, authMode: cfg.auth, error: null };
     } catch (err) {
       return { available: false, version: null, authMode: cfg.auth, error: (err as Error).message };
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
 

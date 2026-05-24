@@ -56,19 +56,36 @@ deterministically proven.)
   (b) lower the floor to `referenced_count>=3 && distinctProviders>=2`. Compute
   distinctness defensively in lifecycle. Update fixtures expecting the old floor.
 
-## Phase 4 — Hardening (DEFERRED, own round later)
+## Phase 4 — Hardening
 
-Verified, by impact-to-effort:
-1. Temp-dir leak `rg-rev-*` (`orchestrator.ts:584`) — `try/finally rmSync`.
-   (`rg-critic-*` already removed in Phase 1.)
-2. Silent config fallback to defaults on zod failure (`global.ts:62`) — add `console.warn`.
+Verified, by impact-to-effort. Grouped into PRs: **PR A** (hygiene: 1,2,5,6) ✅ DONE;
+**PR B** (sync-git 3); **PR C** (flock 4); **PR D** (confidence 7, wired as demote).
+
+### PR A — Hygiene ✅ DONE (branch `phase4-hygiene`)
+
+1. ✅ Temp-dir leak `rg-rev-*` (`orchestrator.ts`) — `try/finally rmSync` around the
+   per-reviewer runDir. ALSO fixed: all 4 adapter `preflight()` temp dirs
+   (`rg-{codex,gem,cl,oc}-pf-*`) now `finally rmSync`. (`rg-critic-*` already removed
+   in Phase 1.) Verified by `tests/unit/temp-cleanup.test.ts` (TMPDIR-isolation).
+2. ✅ Silent config fallback (`global.ts`) — `console.warn` with the offending zod
+   field path (`describeConfigError`) before degrading to defaults.
+5. ✅ Determinism: `localeCompare` → `compareCodeUnits` (`src/utils/compare.ts`,
+   locale-independent UTF-16 code-unit order) in `aggregator.ts`; `RG_VERSION`
+   derived from `package.json` (`src/version.ts`) — feeds cache key AND the CLI
+   `--version` (a SECOND hardcoded `0.1.0-m1` in `cli/index.ts` was also unified).
+   JSON import verified to survive `bun build --compile`.
+6. ✅ Dual `ReviewgateConfig` type — `defaults.ts` now `satisfies ReviewgateConfig`
+   (type-only import from `define-config.ts`, no runtime cycle); orphan
+   `export type … = typeof defaultConfig` removed. zod schema is the single source.
+   DoD: Codex PASS + Claude PASS; full suite 764 pass / 0 fail; binary verified.
+
+### Remaining (own PRs)
+
 3. Sync git on the Stop-hook hot path (`utils/git.ts spawnSync`) — blocks the event
    loop, can prevent `runTimeoutMs` firing. Convert hot-path calls to async. Medium risk.
 4. `flock.ts` — no stale-lock recovery (writes pid, never checks liveness/TTL).
-5. Determinism: `localeCompare` (`aggregator.ts:103`) → codepoint compare;
-   `RG_VERSION="0.1.0-m1"` (`orchestrator.ts:142`) → derive from package metadata.
-6. Dual `ReviewgateConfig` type (`defaults.ts:137` vs `define-config.ts:149`) — unify.
-7. `confidence` field unused in verdict/dedup — wire as a demotion signal OR rename advisory.
+7. `confidence` field unused in verdict/dedup — **wire as a demotion signal**
+   (user decision 2026-05-24: behaviour change, own PR).
 
 Lower-confidence (agent-reported, not yet line-verified): greedy first-match
 clustering (`aggregator.ts:117`), `line_start/line_end` single-line schema,

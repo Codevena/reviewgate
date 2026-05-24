@@ -56,8 +56,26 @@ export async function loadEffectiveConfig(input: EffectiveConfigInput): Promise<
   );
   try {
     return defineConfig(merged as Parameters<typeof defineConfig>[0]);
-  } catch {
-    // A merged config that fails validation degrades to defaults (gate stays functional).
+  } catch (err) {
+    // A merged config that fails validation degrades to defaults (gate stays
+    // functional) — but NOT silently: a quietly-ignored config is exactly the
+    // failure mode this tool exists to prevent. Surface the offending field(s).
+    console.warn(
+      `[reviewgate] invalid config ignored — using defaults instead. ${describeConfigError(err)}`,
+    );
     return defineConfig({});
   }
+}
+
+// Format a config-validation failure for the warning. ZodError carries an
+// `issues[]` with a `path` + `message` per violation; anything else stringifies.
+function describeConfigError(err: unknown): string {
+  if (err && typeof err === "object" && "issues" in err) {
+    const issues = (err as { issues: Array<{ path?: Array<string | number>; message: string }> })
+      .issues;
+    return issues
+      .map((i) => `${i.path && i.path.length > 0 ? i.path.join(".") : "(root)"}: ${i.message}`)
+      .join("; ");
+  }
+  return String((err as { message?: string })?.message ?? err);
 }

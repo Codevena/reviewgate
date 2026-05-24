@@ -61,6 +61,8 @@ export class OpenCodeAdapter implements ProviderAdapter {
         authMode: cfg.auth,
         error: (err as Error).message,
       };
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
 

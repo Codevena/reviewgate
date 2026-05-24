@@ -1,5 +1,6 @@
 // src/cli/index.ts
 import { defineCommand, runMain } from "citty";
+import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
@@ -231,7 +232,7 @@ const setup = defineCommand({
 });
 
 const main = defineCommand({
-  meta: { name: "reviewgate", version: "0.1.0-m1" },
+  meta: { name: "reviewgate", version: RG_VERSION },
   subCommands: {
     init,
     gate,
