@@ -58,14 +58,88 @@ describe("aggregate scopeToDiff", () => {
     expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
 
-  it("keeps a finding on a file not present in changedRanges (conservative)", () => {
+  it("demotes a finding whose file is not in the diff at all (default)", () => {
+    // A hallucinated finding on an untouched file is the dominant false-positive
+    // class. With the default (empty) outOfDiffBlocking it demotes to INFO.
     const r = aggregate({
       findings: [f({ file: "other.ts", line_start: 99 })],
       reviewersTotal: 1,
       changedRanges,
       scopeToDiff: true,
     });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBe(true);
+    expect(r.verdict).not.toBe("FAIL");
+  });
+
+  it("keeps a file-not-in-diff finding blocking when its category is in outOfDiffBlocking", () => {
+    // Escape hatch: legitimate cross-file impact (a changed export breaking an
+    // untouched caller) stays blocking for the configured categories.
+    const r = aggregate({
+      findings: [f({ file: "other.ts", line_start: 99, category: "security" })],
+      reviewersTotal: 1,
+      changedRanges,
+      scopeToDiff: true,
+      outOfDiffBlocking: ["security"],
+    });
     expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("merges findings that differ only by path shape (./a.ts vs a.ts)", () => {
+    // normalizeRepoPath must apply BEFORE clustering, not only at the scope lookup.
+    const r = aggregate({
+      findings: [
+        f({ file: "a.ts", line_start: 11, signature: "s1" }),
+        f({
+          file: "./a.ts",
+          line_start: 11,
+          signature: "s2",
+          reviewer: { provider: "gemini", model: "m", persona: "security" },
+        }),
+      ],
+      reviewersTotal: 2,
+      changedRanges,
+      scopeToDiff: true,
+    });
+    expect(r.dedupedFindings.length).toBe(1);
+  });
+
+  it("keeps an out-of-diff cluster blocking when a MERGED member category is listed", () => {
+    // The representative is quality, but a merged security member must keep the
+    // whole cluster blocking under outOfDiffBlocking:["security"].
+    const r = aggregate({
+      findings: [
+        f({ file: "other.ts", line_start: 99, category: "quality", signature: "q1" }),
+        f({
+          file: "other.ts",
+          line_start: 99,
+          category: "security",
+          signature: "q2",
+          reviewer: { provider: "gemini", model: "m", persona: "security" },
+        }),
+      ],
+      reviewersTotal: 2,
+      changedRanges,
+      scopeToDiff: true,
+      outOfDiffBlocking: ["security"],
+    });
+    expect(r.dedupedFindings[0]?.severity).not.toBe("INFO");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
+  });
+
+  it("normalizes the finding path so a ./-prefixed in-diff finding stays blocking", () => {
+    // "./a.ts" must match the changed-range key "a.ts" — otherwise an in-diff
+    // finding would be wrongly treated as out-of-diff and demoted.
+    const r = aggregate({
+      findings: [f({ file: "./a.ts", line_start: 11, line_end: 11 })],
+      reviewersTotal: 1,
+      changedRanges,
+      scopeToDiff: true,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
   });
 
   it("keeps demoted details within the 2000-char FindingSchema cap", async () => {

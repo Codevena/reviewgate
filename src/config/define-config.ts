@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FindingCategory } from "../schemas/finding.ts";
 import { defaultConfig } from "./defaults.ts";
 
 export const ProviderConfigSchema = z.object({
@@ -49,6 +50,11 @@ export const ConfigSchema = z.object({
       // M5 Part A: demote findings outside the changed hunks to INFO (advisory).
       // Default ON via defaults.ts (deep-merged) — the gate primarily reviews the change.
       scopeToDiff: z.boolean().optional(),
+      // Categories that stay BLOCKING even when the finding's file is not in the
+      // diff at ALL (escape hatch for legitimate cross-file impact, e.g. a changed
+      // export breaking an untouched caller). Default [] — every out-of-diff
+      // finding demotes to INFO (maximal suppression of unchanged-code hallucinations).
+      outOfDiffBlocking: z.array(FindingCategory).optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

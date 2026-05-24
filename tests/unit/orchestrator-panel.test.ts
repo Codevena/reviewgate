@@ -45,7 +45,9 @@ function f(sig: string, provider: string, persona: string): Finding {
     severity: "WARN",
     category: "security",
     rule_id: "r",
-    file: "a.ts",
+    // Anchored to the in-diff file (the tests use a foo.ts:1 diff) so findings
+    // stay blocking under diff-scoping; tests that need another file override it.
+    file: "foo.ts",
     line_start: 1,
     line_end: 1,
     message: "m",

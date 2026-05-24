@@ -55,6 +55,9 @@ export const defaultConfig = {
       ],
       fileContextBudgetBytes: 32_000,
       scopeToDiff: true,
+      // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
+      // ["security","correctness"]) to keep genuine cross-file impact blocking.
+      outOfDiffBlocking: [] as import("../schemas/finding.ts").FindingCategory[],
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

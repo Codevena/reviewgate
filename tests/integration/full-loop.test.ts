@@ -38,6 +38,11 @@ describe("full loop integration", () => {
     const repo = tmpRepo();
     await runInit({ repoRoot: repo, mode: "agent-loop" });
 
+    // A real (uncommitted) code change so the gate reviews foo.ts:1 — where
+    // fake-codex reports its finding — instead of only the init-created config.
+    // Without an in-diff change the finding would be diff-scope-demoted to INFO.
+    writeFileSync(join(repo, "foo.ts"), "function compare(a, b) { return a === b; } // edit");
+
     // 1. Simulate PostToolUse: write a dirty.flag.
     const triggerOut = await runGate({
       repoRoot: repo,

@@ -1,5 +1,5 @@
 // src/providers/review-output.ts
-import { isAbsolute, relative } from "node:path";
+import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { computeSignature } from "../diff/signature.ts";
 import { type Finding, type FindingCategory, FindingSchema } from "../schemas/finding.ts";
 
@@ -219,7 +219,9 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       continue;
     }
     n += 1;
-    const file = isAbsolute(cf.file) ? relative(ctx.workingDir, cf.file) || cf.file : cf.file;
+    // Canonicalize to repo-relative posix so the finding's file + signature match
+    // the diff's changed-range keys (otherwise diff-scoping mis-fires on "./x").
+    const file = normalizeRepoPath(cf.file, ctx.workingDir);
     const line = Math.max(1, Math.trunc(cf.line));
     const candidate = {
       id: `F-${String(n).padStart(3, "0")}`,

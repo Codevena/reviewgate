@@ -13,10 +13,14 @@ codex/openrouter → model can't emit `{verdicts:[...]}`). Fixed: `runCritic()` 
 into all 5 adapters' `complete()`. Critic is `null` by default, so this was
 latent (bit only a configured codex/openrouter critic). DoD: Codex PASS + Claude PASS.
 
-## Phase 2 — Diff-scoping + path normalization (NEXT)
+## Phase 2 — Diff-scoping + path normalization ✅ DONE (branch `gate-diff-scope-pathnorm`)
 
-**Decision: demote out-of-diff to INFO + config escape-hatch** (security/correctness
-or symbol-anchored findings stay configurably blocking).
+**Decision: demote out-of-diff to INFO + config escape-hatch** (default `[]` =
+demote all; set `phases.review.outOfDiffBlocking` to keep categories blocking).
+Shared `normalizeRepoPath` (src/diff/repo-path.ts) applied in review-output +
+aggregate (findings + changedRanges keys + merged member categories). One-shot
+reviews skip scoping. DoD: Codex PASS + Claude PASS. E2E on the compiled binary:
+in-diff → BLOCK, out-of-diff → GATE OPEN.
 
 - `aggregator.ts:205` `if (!ranges) return f` keeps a finding whose file is not in
   the diff at FULL severity → a hallucinated CRITICAL on an untouched file blocks.

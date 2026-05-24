@@ -835,7 +835,13 @@ export class Orchestrator {
       findings: allFindings,
       reviewersTotal: okRuns.length,
       changedRanges: parseChangedRanges(this.input.diff),
-      scopeToDiff: this.input.config.phases.review.scopeToDiff !== false,
+      // One-shot reviews (plan/spec) review a WHOLE document, not a code change —
+      // there are no "unchanged lines" to exclude, so diff-scoping must not apply
+      // (its synthetic full-file diff would otherwise mis-demote legit findings).
+      scopeToDiff:
+        this.input.reportMode !== "one-shot" &&
+        this.input.config.phases.review.scopeToDiff !== false,
+      outOfDiffBlocking: this.input.config.phases.review.outOfDiffBlocking ?? [],
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
     });

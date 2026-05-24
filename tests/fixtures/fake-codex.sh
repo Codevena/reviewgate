@@ -19,7 +19,7 @@ cat > "$LAST_MSG" <<'JSON'
       "severity": "CRITICAL",
       "category": "security",
       "rule_id": "fake-rule",
-      "file": "x.ts",
+      "file": "foo.ts",
       "line": 1,
       "message": "fake finding",
       "details": "fake details",

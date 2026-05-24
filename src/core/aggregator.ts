@@ -1,6 +1,7 @@
 // src/core/aggregator.ts
 import { type Range, rangeOverlapsChanged } from "../diff/hunks.ts";
-import type { Consensus, Finding } from "../schemas/finding.ts";
+import { normalizeRepoPath } from "../diff/repo-path.ts";
+import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
 import type { CriticVerdict } from "./critic.ts";
 
@@ -12,6 +13,11 @@ export interface AggregateInput {
   // scopeToDiff !== false, findings outside the changed hunks are demoted to INFO.
   changedRanges?: Map<string, Range[]>;
   scopeToDiff?: boolean;
+  // Categories whose findings stay BLOCKING even when their file is not in the
+  // diff at all (escape hatch for legitimate cross-file impact — e.g. a changed
+  // export breaking an untouched caller). Empty/absent → every out-of-diff
+  // finding demotes to INFO (the default, maximal hallucination suppression).
+  outOfDiffBlocking?: FindingCategory[];
   // M5 Part B1: active/sticky FP-ledger entries keyed by signature. A finding
   // whose representative or any member signature matches is demoted to INFO.
   fpActive?: Map<string, { id: string }>;
@@ -93,12 +99,56 @@ function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
   };
 }
 
+// Diff-scoping: demote findings that don't anchor to the changed lines to INFO
+// (advisory, never dropped) so a hallucination on unchanged code can't block.
+// Two cases: (1) the finding's FILE isn't in the diff at all — the strongest FP
+// signal — demoted unless its category is in `outOfDiffBlocking` (cross-file
+// escape hatch); (2) the file is in the diff but the finding's line range is
+// outside the changed hunks. Paths on both sides are normalized so a reviewer's
+// "./src/x.ts" matches the canonical "src/x.ts" diff key.
+function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
+  if (input.scopeToDiff === false || !input.changedRanges) return survivors;
+  const normalizedRanges = new Map<string, Range[]>();
+  for (const [k, v] of input.changedRanges) normalizedRanges.set(normalizeRepoPath(k), v);
+  const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+  // Keep details within FindingSchema's 2000-char cap (truncate the original,
+  // never the note) — appending blindly can overflow a finding already at the
+  // limit → schema-invalid pending.json.
+  const demote = (f: Finding, note: string): Finding => {
+    if (f.severity === "INFO") return { ...f, scope_demoted: true };
+    const details = `${f.details.slice(0, 2000 - note.length)}${note}`;
+    return { ...f, severity: "INFO" as const, scope_demoted: true, details };
+  };
+  return survivors.map((f) => {
+    if (!f.line_start) return f; // no usable line → keep (conservative)
+    const ranges = normalizedRanges.get(normalizeRepoPath(f.file));
+    if (!ranges) {
+      // Category-independent clustering can merge several categories into one
+      // finding, so honor the escape hatch if ANY merged member category (not just
+      // the representative's) is configured to stay blocking.
+      const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+      if (categories.some((c) => blocking.has(c))) return f;
+      return demote(f, "\n\n↓ not in the changed files — advisory only.");
+    }
+    if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
+    return demote(f, "\n\n↓ outside the changed lines — advisory only.");
+  });
+}
+
 export function aggregate(input: AggregateInput): AggregateResult {
+  // Canonicalize every finding's path up front so clustering/dedup, the emitted
+  // representative path, AND the diff-scope lookup all agree — otherwise "./x.ts"
+  // and "x.ts" from two reviewers would never merge and would scope inconsistently.
+  // (Built-in reviewers already normalize in review-output, but aggregate() is
+  // exported and must be robust to raw paths.)
+  const findings = input.findings.map((f) =>
+    f.file ? { ...f, file: normalizeRepoPath(f.file) } : f,
+  );
   // Sort into a fully deterministic order BEFORE greedy clustering — reviewers
   // return findings in an unstable order, and the cluster a finding lands in must
   // not depend on that order. Highest severity first within a file+line so the
   // cluster seed is the representative and its token set is a stable anchor.
-  const sorted = [...input.findings].sort(
+  const sorted = [...findings].sort(
     (a, b) =>
       a.file.localeCompare(b.file) ||
       a.line_start - b.line_start ||
@@ -197,22 +247,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // (advisory, never dropped). Cross-impact stays visible; only the BLOCKING
   // weight is removed. Range intersection (not line_start alone) keeps a finding
   // anchored to a declaration above the edit whose range overlaps the change.
-  const scoped: Finding[] =
-    input.scopeToDiff !== false && input.changedRanges
-      ? survivors.map((f) => {
-          if (!f.line_start) return f; // no usable line → keep (conservative)
-          const ranges = input.changedRanges?.get(f.file);
-          if (!ranges) return f; // file not in diff → keep (conservative)
-          if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
-          if (f.severity === "INFO") return { ...f, scope_demoted: true };
-          // Keep details within FindingSchema's 2000-char cap (truncate the
-          // original, never the note) — appending blindly can overflow a finding
-          // whose details are already at the limit → schema-invalid pending.json.
-          const note = "\n\n↓ outside the changed lines — advisory only.";
-          const details = `${f.details.slice(0, 2000 - note.length)}${note}`;
-          return { ...f, severity: "INFO" as const, scope_demoted: true, details };
-        })
-      : survivors;
+  const scoped: Finding[] = scopeFindings(survivors, input);
 
   // M5 Part B1 — reactive FP-ledger demote: a finding whose representative
   // signature (or any merged member signature) matches an active/sticky FP entry
