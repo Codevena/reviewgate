@@ -95,9 +95,31 @@ Verified, by impact-to-effort. Grouped into PRs: **PR A** (hygiene: 1,2,5,6) ✅
    (not buried inside it). DoD: Codex PASS + Claude PASS; 777 pass / 0 fail; binary
    E2E re-verified (async git/rg run correctly in the compiled binary).
 
-### Remaining (own PRs)
+### PR C — flock stale-lock recovery ✅ DONE (branch `phase4-flock-stale`)
 
-4. `flock.ts` — no stale-lock recovery (writes pid, never checks liveness/TTL).
+4. ✅ `flock.ts` rewritten with **provably race-safe** dead-holder recovery (5
+   review rounds; Codex found 4 successive races, Claude 1). Key decisions:
+   - Acquire via the atomic **link() protocol** (write full pid/ts/token to a
+     unique temp → `link()` into place) → the lock file is never observable
+     empty/partial (closes the create→write TOCTOU a plain `O_EXCL` open leaves).
+   - **Dead-pid-only reclaim** (`process.kill(pid,0)` → ESRCH). NO TTL stealing:
+     reclaiming a still-LIVE holder is a double-acquire by definition. A
+     crashed-then-pid-reused holder degrades to the acquire timeout (= old
+     behaviour, not a regression).
+   - One race-safe removal primitive `reclaimIfDead` (rename-to-private
+     single-winner → delete only the private copy → never `unlink(path)` after
+     vacating → a fresh legit lock at `path` is never clobbered; live-grab →
+     restore-or-orphan, never destroy a live lock), used for BOTH the main lock
+     AND the steal-mutex's own dead recovery.
+   - Steals serialized through a steal-mutex; `release()` ownership-token-checked.
+   - User decision 2026-05-24: chose the provably-safe path over a pragmatic+
+     documented one. DoD: Codex PASS + Claude PASS; 9 flock tests (incl. 8-way
+     concurrent steal, maxActive===1) stable 5×; full suite 785 pass / 0 fail.
+   - Known platform note: on Windows a dead pid may report EPERM (not ESRCH) → no
+     fast reclaim, degrades to the acquire timeout (safe fallback).
+
+### Remaining (own PR)
+
 7. `confidence` field unused in verdict/dedup — **wire as a demotion signal**
    (user decision 2026-05-24: behaviour change, own PR).
 
