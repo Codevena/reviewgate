@@ -284,7 +284,13 @@ export class LoopDriver {
       const hist = state.signature_history;
       const lastN = hist.at(-1)?.length ?? 0;
       const prevN = hist.at(-2)?.length ?? Number.POSITIVE_INFINITY;
-      const progressing = hist.length >= 2 && lastN < prevN;
+      // Genuine convergence = the finding count is dropping AND no confirmed reviewer
+      // false positives have accumulated this cycle. A single down-tick can otherwise
+      // be noise: a reviewer re-adding a (differently-phrased) FP each round makes the
+      // count fluctuate (e.g. 4→4→3→4), and the lone `lastN < prevN` tick would read
+      // as "progress" and extend the loop to the hard cap. If FPs are accumulating the
+      // loop is FP-driven, not converging — deny the grace and escalate at the cap.
+      const progressing = hist.length >= 2 && lastN < prevN && state.cumulative_fp_rejects === 0;
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(

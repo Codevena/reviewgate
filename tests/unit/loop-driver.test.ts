@@ -1208,3 +1208,120 @@ describe("LoopDriver softPassPolicy", () => {
     expect((await state.load()).iteration).toBe(0);
   });
 });
+
+describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
+  it("does NOT grant the convergence grace past the iter-cap when confirmed FPs are accumulating", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCONVFP");
+    writeDirty(repo);
+    // At the cap (iteration=3=maxIter) with a finding-count down-tick (3→2) that
+    // WOULD normally grant the convergence grace (continue past the cap). But
+    // confirmed FPs have accumulated this cycle → the loop is FP-driven, not
+    // genuinely converging, so the grace must be denied → escalate at the cap.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [
+        ["a", "b", "c"],
+        ["a", "b"],
+      ],
+      cumulative_fp_rejects: 2,
+      fp_counted_through_iter: 2,
+    }));
+    const config = {
+      ...defaultConfig,
+      // fpStreakThreshold high so the FP-streak breaker itself does NOT fire — this
+      // isolates the convergence-grace behaviour.
+      loop: { ...defaultConfig.loop, maxIterations: 3, fpStreakThreshold: 10 },
+    };
+    let ran = false;
+    const stub = {
+      runIteration: async () => {
+        ran = true;
+        return {
+          verdict: "PASS" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [],
+          summary: {
+            verdict: "PASS",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: [],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(decision.reason).toContain("ESCALATED");
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
+    expect(ran).toBe(false); // escalated BEFORE running another (wasteful) iteration
+  });
+
+  it("still grants the convergence grace when the cycle is clean (no confirmed FPs)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCONVOK");
+    writeDirty(repo);
+    // Same down-tick, but cumulative_fp_rejects=0 → genuine convergence → the grace
+    // applies, so the gate runs another iteration rather than escalating at the cap.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [
+        ["a", "b", "c"],
+        ["a", "b"],
+      ],
+      cumulative_fp_rejects: 0,
+      fp_counted_through_iter: 2,
+    }));
+    const config = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 3, fpStreakThreshold: 10 },
+    };
+    let ran = false;
+    const stub = {
+      runIteration: async () => {
+        ran = true;
+        return {
+          verdict: "PASS" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [],
+          summary: {
+            verdict: "PASS",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: [],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(ran).toBe(true); // grace applied → another iteration ran
+    expect(decision.reason).not.toContain("ESCALATED");
+  });
+});
