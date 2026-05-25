@@ -44,6 +44,7 @@ import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
+import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
 import { buildRunSummary } from "./run-summary.ts";
 
@@ -590,7 +591,32 @@ export class Orchestrator {
       | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
       | { provider: ProviderId; clear: true };
 
-    const tasks = activeReviewers.map(
+    // Reviewer quarantine (Slice C, opt-in): drop reviewer slots whose provider:persona is below
+    // the hard quarantine floor BEFORE running them. If that would empty the panel, run the full
+    // panel anyway (quarantine yields). repCfg is hoisted here so the demote pass below reuses it.
+    // Spec §4: quarantine CAN suppress a skipped reviewer's findings — opt-in, default off.
+    const repCfg = this.input.config.phases.reputation;
+    let panelReviewers = activeReviewers;
+    let panelNote: string | undefined;
+    if (repCfg?.enabled && repCfg.quarantine?.enabled) {
+      const quarantined = await new ReputationStore(repo)
+        .quarantinedReviewers(repCfg, now)
+        .catch(() => new Set<string>());
+      const keyOf = (r: { provider: ProviderId; persona: string }) =>
+        `${r.provider}:${docPersona ?? r.persona}`;
+      const sel = selectActiveReviewers(activeReviewers, quarantined, keyOf);
+      panelReviewers = sel.active;
+      if (sel.usedFullFallback) {
+        panelNote =
+          "All configured reviewers are quarantined (reputation below floor) — ran the full panel anyway this cycle. Review/replace these reviewers.";
+        console.warn(`[reviewgate] ${panelNote}`);
+      } else if (sel.dropped.length > 0) {
+        panelNote = `Quarantined (skipped) this cycle — reputation below floor: ${sel.dropped.join(", ")}`;
+        console.warn(`[reviewgate] ${panelNote}`);
+      }
+    }
+
+    const tasks = panelReviewers.map(
       async (r): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
         const adapter = this.input.adapters[r.provider];
         const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
@@ -806,7 +832,7 @@ export class Orchestrator {
     // unavailable / misconfigured panel silently pass every turn (Finding A).
     // ERROR makes the LoopDriver block with a reviewer-error message.
     if (okRuns.length === 0) {
-      await this.writeReport(opts, start, settled, [], "ERROR");
+      await this.writeReport(opts, start, settled, [], "ERROR", undefined, undefined, panelNote);
       return {
         verdict: "ERROR",
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
@@ -877,11 +903,11 @@ export class Orchestrator {
     // Reviewer reputation: read the per-repo store and pass the set of currently-unreliable
     // `provider:persona` reviewer keys so the aggregator can demote their lone, non-security
     // findings. Best-effort: never let a reputation read break a review.
-    const repCfg = this.input.config.phases.reputation;
+    // repCfg is hoisted to the quarantine block above — reuse it here.
     let repUnreliable: Set<string> | undefined;
     if (repCfg?.enabled) {
       repUnreliable = await new ReputationStore(repo)
-        .unreliableReviewers(repCfg, new Date())
+        .unreliableReviewers(repCfg, now)
         .catch(() => undefined);
     }
 
@@ -911,6 +937,7 @@ export class Orchestrator {
       agg.verdict,
       agg.counts,
       criticInfo ? { ...criticInfo, demoted } : undefined,
+      panelNote,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -1214,6 +1241,7 @@ export class Orchestrator {
       verdicts: number;
       demoted: number;
     },
+    panelNote?: string,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -1256,6 +1284,7 @@ export class Orchestrator {
         reviewers,
         findings,
         ...(critic ? { critic } : {}),
+        ...(panelNote ? { panel_note: panelNote } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),
