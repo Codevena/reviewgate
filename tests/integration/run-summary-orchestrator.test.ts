@@ -49,6 +49,7 @@ const config = {
   ...defaultConfig,
   cache: { enabled: false, reviewTtlDays: 7 },
   phases: {
+    ...defaultConfig.phases,
     review: { reviewers: [{ provider: "codex" as const, persona: "security" }], scopeToDiff: true },
     critic: null,
     triage: null,

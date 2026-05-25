@@ -44,6 +44,7 @@ function configWithDocs(enabled: boolean) {
   return {
     ...defaultConfig,
     phases: {
+      ...defaultConfig.phases,
       review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
       critic: null,
       triage: null,

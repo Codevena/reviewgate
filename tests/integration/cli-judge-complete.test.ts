@@ -153,6 +153,7 @@ describe("CLI provider (codex) as brain curator judge via complete()", () => {
         openrouter: { ...defaultConfig.providers.openrouter, enabled: true },
       },
       phases: {
+        ...defaultConfig.phases,
         review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
         critic: null,
         triage: null,

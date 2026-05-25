@@ -69,6 +69,7 @@ describe("Orchestrator panel", () => {
         gemini: { enabled: true, auth: "oauth" as const, model: "gemini-3-pro", timeoutMs: 1000 },
       },
       phases: {
+        ...defaultConfig.phases,
         review: {
           reviewers: [
             { provider: "codex" as const, persona: "security" },
@@ -109,6 +110,7 @@ describe("Orchestrator panel", () => {
         gemini: { enabled: true, auth: "oauth" as const, model: "gemini-3-pro", timeoutMs: 1000 },
       },
       phases: {
+        ...defaultConfig.phases,
         review: {
           reviewers: [
             { provider: "codex" as const, persona: "security" },
@@ -158,6 +160,7 @@ describe("Orchestrator panel", () => {
         gemini: { enabled: true, auth: "oauth" as const, model: "gemini-3-flash", timeoutMs: 1000 },
       },
       phases: {
+        ...defaultConfig.phases,
         review: { reviewers: [{ provider: "codex" as const, persona: "security" }] },
         critic: { provider: "gemini" as const, persona: "fp-filter" },
         triage: null,
