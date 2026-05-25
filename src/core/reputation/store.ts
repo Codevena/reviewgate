@@ -20,6 +20,28 @@ export interface ReputationConfig {
   halfLifeDays: number;
 }
 
+// Events whose time-decayed weight is negligible are dropped on write to keep
+// reputation.json bounded. At 6 half-lives the weight is 0.5^6 ≈ 0.0156; the effect
+// on the derived score is bounded and immaterial (both buckets prune proportionally,
+// so `trust` stays near-invariant). Storage hygiene, not a scoring change.
+const PRUNE_HALF_LIVES = 6;
+const DEFAULT_HALF_LIFE_DAYS = 45; // mirrors the phases.reputation schema default
+
+function pruneBucket(
+  events: { ts: string; eid: string }[],
+  now: Date,
+  halfLifeDays: number,
+): { ts: string; eid: string }[] {
+  const horizonMs = PRUNE_HALF_LIVES * halfLifeDays * 24 * 60 * 60 * 1000;
+  return events.filter((e) => {
+    const ageMs = now.getTime() - Date.parse(e.ts);
+    // Keep unparseable (NaN) and future/negative-age events — mirrors decayedCount,
+    // which treats a non-finite/negative age as "fresh" (weight 1); they never age out.
+    if (!Number.isFinite(ageMs) || ageMs < 0) return true;
+    return ageMs <= horizonMs;
+  });
+}
+
 export class ReputationStore {
   constructor(private readonly repoRoot: string) {}
 
@@ -33,8 +55,10 @@ export class ReputationStore {
     }
   }
 
-  async record(events: RecordInput[]): Promise<void> {
+  async record(events: RecordInput[], opts?: { now?: Date; halfLifeDays?: number }): Promise<void> {
     if (events.length === 0) return;
+    const now = opts?.now ?? new Date();
+    const halfLifeDays = opts?.halfLifeDays ?? DEFAULT_HALF_LIFE_DAYS;
     const lock = await flock(reputationLockPath(this.repoRoot));
     try {
       const rep = await this.snapshot();
@@ -47,6 +71,16 @@ export class ReputationStore {
         const bucket = ev.outcome === "correct" ? entry.correct : entry.wrong;
         if (bucket.some((e) => e.eid === ev.eid)) continue;
         bucket.push({ ts: ev.ts, eid: ev.eid });
+      }
+      // Prune every reviewer's buckets (the write is happening anyway → keep the whole
+      // file bounded). The *scoring* path uses decayed weights; a pruned event's weight is
+      // <0.5^6 ≈ 1.6% of the real value, so decayed trust shifts imperceptibly. Raw counts
+      // (shown by `doctor`) can visibly drop if old events are pruned. That is expected.
+      for (const provider of Object.keys(rep.reviewers)) {
+        const entry = rep.reviewers[provider];
+        if (!entry) continue;
+        entry.correct = pruneBucket(entry.correct, now, halfLifeDays);
+        entry.wrong = pruneBucket(entry.wrong, now, halfLifeDays);
       }
       this.writeAtomic(ReputationSchema.parse(rep));
     } finally {
