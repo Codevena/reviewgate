@@ -149,6 +149,128 @@ describe("ReputationStore", () => {
     expect((await s.snapshot()).reviewers["gemini:security"]?.wrong ?? []).toHaveLength(0);
   });
 
+  it("quarantinedReviewers returns only reviewers below the quarantine floor", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    await s.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "gemini:security" as const,
+        outcome: "wrong" as const,
+        eid: `g${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    await s.record(
+      [
+        ...Array.from({ length: 7 }, (_, i) => ({
+          reviewerKey: "codex:security" as const,
+          outcome: "wrong" as const,
+          eid: `cw${i}`,
+          ts: now.toISOString(),
+        })),
+        ...Array.from({ length: 3 }, (_, i) => ({
+          reviewerKey: "codex:security" as const,
+          outcome: "correct" as const,
+          eid: `cc${i}`,
+          ts: now.toISOString(),
+        })),
+      ],
+      { now, halfLifeDays: 45 },
+    );
+    const cfg = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
+    const q = await s.quarantinedReviewers(
+      { ...cfg, quarantine: { enabled: true, floor: 0.15 } },
+      now,
+    );
+    expect(q).toContain("gemini:security");
+    expect(q).not.toContain("codex:security"); // demote-range, not quarantine
+    const u = await s.unreliableReviewers(cfg, now);
+    expect(u).toContain("gemini:security");
+    expect(u).toContain("codex:security");
+  });
+
+  it("quarantinedReviewers ignores legacy bare keys and respects minSamples", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    await s.record(
+      [{ reviewerKey: "codex" as const, outcome: "wrong", eid: "x", ts: now.toISOString() }],
+      { now, halfLifeDays: 45 },
+    );
+    await s.record(
+      Array.from({ length: 3 }, (_, i) => ({
+        reviewerKey: "gemini:security" as const,
+        outcome: "wrong" as const,
+        eid: `s${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    const q = await s.quarantinedReviewers(
+      {
+        enabled: true,
+        minSamples: 8,
+        trustFloor: 0.35,
+        halfLifeDays: 45,
+        quarantine: { enabled: true, floor: 0.15 },
+      },
+      now,
+    );
+    expect(q.has("codex")).toBe(false);
+    expect(q.has("gemini:security")).toBe(false);
+  });
+
+  it("quarantinedReviewers returns empty when quarantine is disabled", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    await s.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "gemini:security" as const,
+        outcome: "wrong" as const,
+        eid: `g${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    const q = await s.quarantinedReviewers(
+      {
+        enabled: true,
+        minSamples: 8,
+        trustFloor: 0.35,
+        halfLifeDays: 45,
+        quarantine: { enabled: false, floor: 0.15 },
+      },
+      now,
+    );
+    expect(q.size).toBe(0);
+  });
+
+  it("forDoctor marks quarantined reviewers when quarantine is enabled", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    await s.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "gemini:security" as const,
+        outcome: "wrong" as const,
+        eid: `g${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    const base = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
+    const rowOn = (
+      await s.forDoctor({ ...base, quarantine: { enabled: true, floor: 0.15 } }, now)
+    ).find((x) => x.reviewer === "gemini:security");
+    expect(rowOn?.quarantined).toBe(true);
+    expect(rowOn?.demoting).toBe(true);
+    const rowOff = (await s.forDoctor(base, now)).find((x) => x.reviewer === "gemini:security");
+    expect(rowOff?.quarantined).toBe(false);
+  });
+
   it("ignores legacy bare-provider keys (no colon) in unreliableReviewers and forDoctor", async () => {
     const r = repo();
     const s = new ReputationStore(r);
