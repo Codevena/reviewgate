@@ -570,7 +570,7 @@ In `src/core/orchestrator.ts`, the demote-pass currently declares `const repCfg 
     let panelNote: string | undefined;
     if (repCfg?.enabled && repCfg.quarantine?.enabled) {
       const quarantined = await new ReputationStore(repo)
-        .quarantinedReviewers(repCfg, now, repCfg.quarantine.floor)
+        .quarantinedReviewers(repCfg, now)
         .catch(() => new Set<string>());
       const keyOf = (r: { provider: ProviderId; persona: string }) =>
         `${r.provider}:${docPersona ?? r.persona}`;
