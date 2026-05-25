@@ -144,7 +144,17 @@ async function reclaimDeadLock(path: string): Promise<void> {
   const mutexToken = newToken();
   if (!(await acquireStealMutex(mutexPath, mutexToken))) return; // someone else reclaiming → retry
   try {
-    await reclaimIfDead(path);
+    // Re-validate UNDER the mutex before removing anything. The caller decided `path`
+    // was reclaimable OUTSIDE this mutex; by the time we hold it, a faster reclaimer may
+    // have already removed the dead lock AND a normal acquirer taken `path` with a LIVE
+    // lock. The mutex blocks dead→live transitions (they require a reclaim, which only
+    // happens here), so this check is STABLE: a dead lock stays dead+present while we
+    // hold the mutex. Reclaiming unconditionally would `rename` that live lock away,
+    // briefly freeing `path` while its holder is active → a third contender could acquire
+    // concurrently (double-hold). Only reclaim if `path` is STILL a dead/stale lock.
+    if (await isReclaimable(path)) {
+      await reclaimIfDead(path);
+    }
   } finally {
     await releaseOwned(mutexPath, mutexToken);
   }
