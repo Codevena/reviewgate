@@ -18,6 +18,7 @@ export interface WizardDefaults {
   brainCurator: { provider: ProviderId; model: string } | null;
   fpLedger: boolean;
   contextDocs: boolean;
+  reputation: boolean;
 }
 
 // The fresh-setup recommendation (no existing config). Preserves today's wizard behavior —
@@ -32,6 +33,7 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   brainCurator: null,
   fpLedger: true,
   contextDocs: false,
+  reputation: true,
 };
 
 function modelFor(cfg: ReviewgateConfig, provider: ProviderId, override?: string): string {
@@ -66,5 +68,6 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     brainCurator,
     fpLedger: Boolean(cfg.phases.fpLedger?.enabled),
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
+    reputation: Boolean(cfg.phases.reputation?.enabled),
   };
 }

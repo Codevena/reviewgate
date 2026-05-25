@@ -25,6 +25,15 @@ describe("diffFromDefaults", () => {
     expect("brain" in (d.phases ?? {})).toBe(false);
   });
 
+  it("strips reputation enabled:true (default-on) and emits enabled:false", () => {
+    // reputation defaults ON, so enabling is default-equivalent → no diff line.
+    const on = defineConfig({ phases: { reputation: { enabled: true } } });
+    expect("reputation" in (diffFromDefaults(on).phases ?? {})).toBe(false);
+    // disabling differs from the default → one line.
+    const off = defineConfig({ phases: { reputation: { enabled: false } } });
+    expect(diffFromDefaults(off)).toEqual({ phases: { reputation: { enabled: false } } });
+  });
+
   it("re-emits the WHOLE reviewers array when any element differs", () => {
     const cfg = defineConfig({
       phases: {

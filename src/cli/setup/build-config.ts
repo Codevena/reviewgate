@@ -28,6 +28,7 @@ export interface CustomAnswers {
   } | null;
   fpLedger: boolean;
   contextDocs: boolean;
+  reputation: boolean;
 }
 
 const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter"> = {
@@ -84,6 +85,7 @@ export function buildQuickPreset(input: QuickInput): DeepPartial<ReviewgateConfi
         ],
       },
       fpLedger: { enabled: true },
+      reputation: { enabled: true },
       ...brainPhase,
     },
   } as DeepPartial<ReviewgateConfig>;
@@ -107,6 +109,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
       })),
     },
     fpLedger: { enabled: a.fpLedger },
+    reputation: { enabled: a.reputation },
   };
   if (a.critic) {
     const criticEntry: Record<string, unknown> = {

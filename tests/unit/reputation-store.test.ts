@@ -37,4 +37,95 @@ describe("ReputationStore", () => {
     await s.record([{ provider: "codex", outcome: "wrong", eid: "c1", ts: now.toISOString() }]);
     expect(await s.unreliableProviders(CFG, now)).not.toContain("codex");
   });
+
+  it("prunes events older than 6x halfLifeDays on write, keeps recent ones", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    const halfLifeDays = 45;
+    const DAY = 86_400_000;
+    const old = new Date(now.getTime() - 7 * halfLifeDays * DAY).toISOString(); // 315d > 270d horizon
+    const recent = new Date(now.getTime() - 10 * DAY).toISOString();
+    await s.record(
+      [
+        { provider: "codex", outcome: "wrong", eid: "old", ts: old },
+        { provider: "codex", outcome: "wrong", eid: "recent", ts: recent },
+      ],
+      { now, halfLifeDays },
+    );
+    const eids = ((await s.snapshot()).reviewers.codex?.wrong ?? []).map((e) => e.eid);
+    expect(eids).toContain("recent");
+    expect(eids).not.toContain("old");
+  });
+
+  it("keeps future-dated and unparseable ts events (treated as fresh)", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    const future = new Date(now.getTime() + 86_400_000).toISOString();
+    await s.record(
+      [
+        { provider: "codex", outcome: "correct", eid: "future", ts: future },
+        { provider: "codex", outcome: "correct", eid: "bad", ts: "not-a-date" },
+      ],
+      { now, halfLifeDays: 45 },
+    );
+    const eids = ((await s.snapshot()).reviewers.codex?.correct ?? []).map((e) => e.eid);
+    expect(eids).toContain("future");
+    expect(eids).toContain("bad");
+  });
+
+  it("pruning on a write does not drop another reviewer's recent events", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    await s.record([{ provider: "gemini", outcome: "wrong", eid: "g1", ts: now.toISOString() }], {
+      now,
+      halfLifeDays: 45,
+    });
+    await s.record([{ provider: "codex", outcome: "wrong", eid: "c1", ts: now.toISOString() }], {
+      now,
+      halfLifeDays: 45,
+    });
+    expect((await s.snapshot()).reviewers.gemini?.wrong).toHaveLength(1);
+  });
+
+  it("keeps an event exactly at the 6x horizon (inclusive boundary)", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    const halfLifeDays = 45;
+    const atHorizon = new Date(now.getTime() - 6 * halfLifeDays * 86_400_000).toISOString();
+    await s.record([{ provider: "codex", outcome: "wrong", eid: "edge", ts: atHorizon }], {
+      now,
+      halfLifeDays,
+    });
+    const eids = ((await s.snapshot()).reviewers.codex?.wrong ?? []).map((e) => e.eid);
+    expect(eids).toContain("edge");
+  });
+
+  it("prunes a stale event of a non-touched reviewer when another reviewer triggers a write", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const halfLifeDays = 45;
+    const seedNow = new Date("2025-01-01T00:00:00Z");
+    // Seed a gemini event without pruning it (contemporaneous now).
+    await s.record(
+      [{ provider: "gemini", outcome: "wrong", eid: "stale", ts: seedNow.toISOString() }],
+      {
+        now: seedNow,
+        halfLifeDays,
+      },
+    );
+    // A much later write for codex must prune gemini's now-stale event (>270d old).
+    const laterNow = new Date(seedNow.getTime() + 7 * halfLifeDays * 86_400_000);
+    await s.record(
+      [{ provider: "codex", outcome: "wrong", eid: "c1", ts: laterNow.toISOString() }],
+      {
+        now: laterNow,
+        halfLifeDays,
+      },
+    );
+    expect((await s.snapshot()).reviewers.gemini?.wrong ?? []).toHaveLength(0);
+  });
 });

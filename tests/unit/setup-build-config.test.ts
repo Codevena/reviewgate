@@ -14,6 +14,13 @@ describe("buildQuickPreset", () => {
     ]);
   });
 
+  it("enables reputation on the returned partial", () => {
+    const partial = buildQuickPreset({ openrouterKeyPresent: false }) as {
+      phases?: { reputation?: { enabled?: boolean } };
+    };
+    expect(partial.phases?.reputation?.enabled).toBe(true);
+  });
+
   it("OPENROUTER key present => brain ON with codex fp-filter curator", () => {
     const cfg = defineConfig(
       buildQuickPreset({ openrouterKeyPresent: true }) as Parameters<typeof defineConfig>[0],
@@ -24,6 +31,27 @@ describe("buildQuickPreset", () => {
 });
 
 describe("buildCustomConfig", () => {
+  it("emits phases.reputation.enabled reflecting the answer", () => {
+    const off = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "" }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: false,
+    }) as { phases?: { reputation?: { enabled?: boolean } } };
+    expect(off.phases?.reputation?.enabled).toBe(false);
+    const on = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "" }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: true,
+    }) as { phases?: { reputation?: { enabled?: boolean } } };
+    expect(on.phases?.reputation?.enabled).toBe(true);
+  });
+
   it("maps reviewers + critic (with model) + fpLedger toggles", () => {
     const partial = buildCustomConfig({
       reviewers: [
@@ -34,6 +62,7 @@ describe("buildCustomConfig", () => {
       brain: null,
       fpLedger: true,
       contextDocs: false,
+      reputation: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.gemini?.enabled).toBe(true);
@@ -55,6 +84,7 @@ describe("buildCustomConfig", () => {
       brain: { curator: { provider: "codex", persona: "fp-filter", model: "gpt-5.4-codex" } },
       fpLedger: false,
       contextDocs: false,
+      reputation: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.phases.brain?.curator).toEqual({
@@ -71,6 +101,7 @@ describe("buildCustomConfig", () => {
       brain: { curator: { provider: "codex", persona: "fp-filter", model: "" } },
       fpLedger: false,
       contextDocs: false,
+      reputation: false,
     });
     // critic/curator entries present but WITHOUT an explicit model key (→ provider default)
     const ph = (
@@ -92,6 +123,7 @@ describe("buildCustomConfig", () => {
       brain: null,
       fpLedger: false,
       contextDocs: false,
+      reputation: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.codex.model).toBe("gpt-5.4-codex");
@@ -106,6 +138,7 @@ describe("buildCustomConfig", () => {
       brain: null,
       fpLedger: false,
       contextDocs: false,
+      reputation: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.phases.review.reviewers[0]).toEqual({
@@ -122,6 +155,7 @@ describe("buildCustomConfig", () => {
       brain: null,
       fpLedger: false,
       contextDocs: false,
+      reputation: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(Object.hasOwn(cfg.phases.review.reviewers[0] ?? {}, "fallback")).toBe(false);
