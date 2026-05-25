@@ -98,6 +98,12 @@ export function brainArchivePath(repoRoot: string): string {
 export function brainLockPath(repoRoot: string): string {
   return join(brainDir(repoRoot), ".lock");
 }
+export function reputationJsonPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "reputation.json");
+}
+export function reputationLockPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "reputation.lock");
+}
 export function brainSnapshotsDir(repoRoot: string): string {
   return join(brainDir(repoRoot), "snapshots");
 }

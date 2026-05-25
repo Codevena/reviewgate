@@ -53,6 +53,7 @@ describe("cassette → orchestrator pipeline (deterministic)", () => {
       ...defaultConfig,
       cache: { enabled: false, reviewTtlDays: 7 },
       phases: {
+        ...defaultConfig.phases,
         review: {
           reviewers: [{ provider: "codex" as const, persona: "security" }],
           scopeToDiff: true,
@@ -83,6 +84,7 @@ describe("cassette → orchestrator pipeline (deterministic)", () => {
       ...defaultConfig,
       cache: { enabled: true, reviewTtlDays: 7 },
       phases: {
+        ...defaultConfig.phases,
         review: {
           reviewers: [{ provider: "codex" as const, persona: "security" }],
           scopeToDiff: true,

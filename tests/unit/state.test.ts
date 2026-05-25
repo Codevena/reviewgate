@@ -26,4 +26,15 @@ describe("ReviewgateStateSchema", () => {
     const s = { ...initialState("01HXQX"), escalation_reason: "bogus" as unknown };
     expect(() => ReviewgateStateSchema.parse(s)).toThrow();
   });
+
+  it("initialState seeds reputation_cycle_seq = 0 and the schema accepts it", () => {
+    const s = initialState("01HXQREP");
+    expect(s.reputation_cycle_seq).toBe(0);
+    expect(ReviewgateStateSchema.parse(s).reputation_cycle_seq).toBe(0);
+  });
+
+  it("defaults reputation_cycle_seq for back-compat state.json without the field", () => {
+    const { reputation_cycle_seq, ...withoutField } = initialState("01HXQREP2");
+    expect(ReviewgateStateSchema.parse(withoutField).reputation_cycle_seq).toBe(0);
+  });
 });

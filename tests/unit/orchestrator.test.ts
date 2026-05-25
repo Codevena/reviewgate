@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../../src/config/defaults.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
+import { ReputationStore } from "../../src/core/reputation/store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
 
 const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
@@ -29,6 +30,24 @@ exit 0
 `;
 const SOFT_DIFF =
   "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,1 @@\n-const a = 1;\n+const a = 2;\n";
+
+// Fake codex emitting a single CRITICAL quality finding on the changed line.
+// This is NOT a security/correctness category, so reputation demotion applies.
+const CRITICAL_QUALITY_CODEX_SCRIPT = `#!/usr/bin/env bash
+set -u
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && cat > "$LAST_MSG" <<'JSON'
+{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"quality","rule_id":"q1","file":"foo.ts","line":1,"message":"critical quality finding","details":"d","confidence":0.9}]}
+JSON
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":50}}'
+exit 0
+`;
 
 function fakeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-orch-"));
@@ -136,5 +155,92 @@ describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
     // cache so pending.json is repopulated with the WARN findings the gate needs.
     const r2 = await orchFor(repo, "block").runIteration({ runId: "01HXQB", iter: 2 });
     expect(r2.summary.source).toBe("panel");
+  });
+});
+
+describe("Orchestrator reputation demote integration", () => {
+  function criticalQualityBin(repo: string): string {
+    const p = join(repo, "fake-codex-critical-quality.sh");
+    writeFileSync(p, CRITICAL_QUALITY_CODEX_SCRIPT, { mode: 0o755 });
+    chmodSync(p, 0o755);
+    return p;
+  }
+
+  it("demotes a lone CRITICAL quality finding to WARN (SOFT-PASS) when codex is unreliable", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-rep-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+
+    // Seed reputation: 10 "wrong" outcomes → codex is unreliable
+    const store = new ReputationStore(repo);
+    await store.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        provider: "codex",
+        outcome: "wrong" as const,
+        eid: `w${i}`,
+        ts: new Date().toISOString(),
+      })),
+    );
+
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: {
+        ...defaultConfig,
+        // Disable cache so the panel always runs
+        cache: { ...defaultConfig.cache, enabled: false },
+        phases: {
+          ...defaultConfig.phases,
+          reputation: { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+        },
+      },
+      adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      // Diff touches foo.ts line 1, matching the finding
+      diff: SOFT_DIFF,
+      reasonOnFailEnabled: true,
+    });
+
+    const result = await orch.runIteration({ runId: "01HXQREP1", iter: 1 });
+    // The lone CRITICAL quality finding from codex (unreliable) should be demoted
+    // to WARN → lone WARN with single reviewer → SOFT-PASS (not FAIL)
+    expect(result.verdict).toBe("SOFT-PASS");
+  });
+
+  it("yields FAIL for a lone CRITICAL quality finding when reputation is disabled", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-rep-nodemo-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+
+    // Seed reputation (same as above) but disable the reputation phase in config
+    const store = new ReputationStore(repo);
+    await store.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        provider: "codex",
+        outcome: "wrong" as const,
+        eid: `w${i}`,
+        ts: new Date().toISOString(),
+      })),
+    );
+
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: {
+        ...defaultConfig,
+        cache: { ...defaultConfig.cache, enabled: false },
+        phases: {
+          ...defaultConfig.phases,
+          // Disable reputation so demotion does NOT happen
+          reputation: { enabled: false, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+        },
+      },
+      adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: SOFT_DIFF,
+      reasonOnFailEnabled: true,
+    });
+
+    const result = await orch.runIteration({ runId: "01HXQREP2", iter: 1 });
+    // Without reputation demotion, the lone CRITICAL should still FAIL
+    expect(result.verdict).toBe("FAIL");
   });
 });

@@ -95,6 +95,7 @@ export const defaultConfig = {
       egressAllowlist: string[];
       curatorTimeoutMs: number;
     },
+    reputation: { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
   },
   cache: { enabled: true, reviewTtlDays: 7 },
   research: { languages: ["typescript", "tsx", "python"] },

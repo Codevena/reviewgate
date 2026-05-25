@@ -84,6 +84,7 @@ function brainConfig() {
       openrouter: { ...defaultConfig.providers.openrouter, enabled: true },
     },
     phases: {
+      ...defaultConfig.phases,
       review: {
         reviewers: [
           { provider: "codex" as const, persona: "security" },

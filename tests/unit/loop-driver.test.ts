@@ -704,6 +704,50 @@ describe("LoopDriver", () => {
     expect(existsSync(stale)).toBe(false); // stale decision wiped at recovery
   });
 
+  it("increments reputation_cycle_seq on a commit-recovery re-arm", async () => {
+    // The commit-recovery re-arm (HEAD moved while ESCALATED) closes the cycle, so
+    // it must bump reputation_cycle_seq just like the clean-PASS re-arm — otherwise
+    // the recovered cycle's reputation event-ids would collide with the prior cycle's.
+    // Uses a CODE diff so the post-recovery iteration FAILs (panel runs) → the
+    // PASS-branch increment does NOT run, isolating the commit-recovery increment.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQREPCYCCOMMIT");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      escalated: true,
+      escalation_reason: "max-iterations",
+      escalation_announced: true,
+      last_reviewed_head_sha: "0000000aaaaaaa",
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      headSha: "1111111bbbbbbb", // HEAD moved → a commit landed
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        // Code diff → panel runs → FAIL, so only the recovery-path increment fires.
+        diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-x\n+y\n",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block"); // fresh iteration 1 FAILed
+    const after = await state.load();
+    expect(after.escalated).toBe(false); // re-armed on the commit
+    expect(after.reputation_cycle_seq).toBe(1); // bumped once on the commit-recovery
+  });
+
   it("a commit while mid-FAIL (not escalated) does NOT re-arm or bypass the decisions gate", async () => {
     // Security: an agent must not be able to land unaddressed findings by
     // committing them. A HEAD move while NOT escalated must keep the budget and
@@ -877,6 +921,40 @@ describe("LoopDriver", () => {
     // Escalated via the FP streak BELOW the iteration cap — not the max-iterations path.
     expect(after.iteration).toBeLessThan(5);
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQREPCYC");
+    writeDirty(repo);
+    const passOrch = {
+      runIteration: async () => ({
+        verdict: "PASS" as const,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: passOrch,
+      stopHookActive: false,
+    }).run();
+    expect((await state.load()).reputation_cycle_seq).toBe(1);
   });
 
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {

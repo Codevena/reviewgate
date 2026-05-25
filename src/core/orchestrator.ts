@@ -44,6 +44,7 @@ import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
+import { ReputationStore } from "./reputation/store.ts";
 import { buildRunSummary } from "./run-summary.ts";
 
 export interface OrchestratorInput {
@@ -873,6 +874,17 @@ export class Orchestrator {
       ? new Map([...fpActiveSnapshot].map(([sig, e]) => [sig, { id: e.id }]))
       : undefined;
 
+    // Reviewer reputation (Slice 1): read the per-repo store and pass the set of
+    // currently-unreliable providers so the aggregator can demote their lone,
+    // non-security findings. Best-effort: never let a reputation read break a review.
+    const repCfg = this.input.config.phases.reputation;
+    let repUnreliable: Set<string> | undefined;
+    if (repCfg?.enabled) {
+      repUnreliable = await new ReputationStore(repo)
+        .unreliableProviders(repCfg, new Date())
+        .catch(() => undefined);
+    }
+
     const agg = aggregate({
       findings: allFindings,
       reviewersTotal: okRuns.length,
@@ -887,6 +899,7 @@ export class Orchestrator {
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
+      ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
     });
 
     const demoted = agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length;

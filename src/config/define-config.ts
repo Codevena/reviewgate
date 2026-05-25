@@ -91,6 +91,15 @@ export const ConfigSchema = z.object({
       .optional(),
     // M5 Part B1: FP-ledger (signature-keyed false-positive learning). Opt-in.
     fpLedger: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
+    // Reviewer Reputation Slice 1: per-reviewer accuracy tracking. Default ON.
+    reputation: z
+      .object({
+        enabled: z.boolean(),
+        minSamples: z.number().int().nonnegative().default(8),
+        trustFloor: z.number().min(0).max(1).default(0.35),
+        halfLifeDays: z.number().positive().default(45),
+      })
+      .default({ enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 }),
     // M6: Context7 library-docs injection into the research phase. Opt-in.
     contextDocs: z
       .object({
