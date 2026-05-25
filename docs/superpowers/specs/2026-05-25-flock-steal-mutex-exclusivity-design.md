@@ -88,9 +88,46 @@ async function acquireStealMutex(mutexPath: string, token: string): Promise<bool
 }
 ```
 
-`reclaimDeadLock`, the main-lock re-check, `reclaimIfDead`, `tryCreate`, `releaseOwned`,
-`isReclaimable`, and `flock` are **unchanged**. (The `<mutexPath>.2` files are transient and
-cleaned by `releaseOwned`; a crash-orphaned `.2` is the rare degrade-to-timeout case.)
+`reclaimIfDead`, `tryCreate`, `releaseOwned`, `isReclaimable`, and the main-lock re-check are
+**unchanged**. (The `<mutexPath>.2` files are transient and cleaned by `releaseOwned`; a
+crash-orphaned `.2` is the rare degrade-to-timeout case.)
+
+**Avoid a busy-spin in the degrade case (addresses the one liveness gap).** When the L2 mutex is a
+crash-remnant, `recoverDeadStealMutex` backs off and `acquireStealMutex` returns false, so
+`reclaimDeadLock` makes no progress — but `flock`'s loop only sleeps in its *non*-reclaimable
+branch, so a still-reclaimable main lock would spin tight (no sleep) hammering fs syscalls until
+the timeout. Fix: `reclaimDeadLock` returns whether it **made progress** (acquired the L1 mutex and
+ran the reclaim), and `flock` backs off when it did not:
+
+```ts
+async function reclaimDeadLock(path: string): Promise<boolean> {
+  const mutexPath = `${path}.steal`;
+  const mutexToken = newToken();
+  if (!(await acquireStealMutex(mutexPath, mutexToken))) return false; // contended / L2-degrade → no progress
+  try {
+    if (await isReclaimable(path)) await reclaimIfDead(path);
+    return true; // held the mutex + ran the reclaim → caller may retry tryCreate immediately
+  } finally {
+    await releaseOwned(mutexPath, mutexToken);
+  }
+}
+```
+
+In `flock`'s loop, back off when reclaim made no progress (keeps the common reclaim fast — a
+successful reclaim returns true → immediate `tryCreate` retry, no added latency):
+
+```ts
+    if (await isReclaimable(path)) {
+      const progressed = await reclaimDeadLock(path);
+      if (!progressed) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 500);
+      }
+    } else {
+      await new Promise((r) => setTimeout(r, delay));
+      delay = Math.min(delay * 2, 500);
+    }
+```
 
 ## 3. Why this is airtight against double-hold
 
@@ -127,9 +164,10 @@ directly, decoupled from the main-lock machinery:
 
 ## 5. File map
 
-- **Modify:** `src/utils/flock.ts` — add `recoverDeadStealMutex`, change `acquireStealMutex`'s one
-  recovery call; export `acquireStealMutex` (+ `releaseOwned` or a test helper) for the exclusivity
-  test. No other function changes.
+- **Modify:** `src/utils/flock.ts` — add `recoverDeadStealMutex`; change `acquireStealMutex`'s one
+  recovery call; make `reclaimDeadLock` return a `boolean` progress signal and have `flock` back off
+  when reclaim made no progress (busy-spin fix); export `acquireStealMutex` (+ `releaseOwned` or a
+  test helper) for the exclusivity test.
 - **Tests:** `tests/unit/flock.test.ts` — add the steal-mutex exclusivity stress + the L2
   degrade-to-timeout-base-case test. (Fault-injection seams only if the stress proves unreliable.)
 
