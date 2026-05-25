@@ -74,6 +74,11 @@ export const ReviewgateStateSchema = z.object({
   // tracked separately to escalate after repeated timeouts. Reset to 0 whenever
   // a review actually completes (any verdict).
   incomplete_runs: z.number().int().nonnegative().default(0),
+  // Monotonic per-session counter, incremented on every re-arm (clean PASS /
+  // commit-recovery). Feeds the reputation event-id namespace so a re-armed cycle
+  // (iteration resets to 0, findings renumber from F-001) cannot collide with a
+  // prior cycle's events. NOT a gate; never reset to 0 within a session.
+  reputation_cycle_seq: z.number().int().nonnegative().default(0),
   recovered_from: z.enum(["crash", "corruption"]).optional(),
 });
 
@@ -100,5 +105,6 @@ export function initialState(sessionId: string): ReviewgateState {
     escalation_reason: null,
     escalation_announced: false,
     incomplete_runs: 0,
+    reputation_cycle_seq: 0,
   };
 }
