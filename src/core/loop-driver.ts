@@ -455,7 +455,14 @@ export class LoopDriver {
     // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
     // advances the counter toward the iter-cap escalation. Either way, record the
     // HEAD sha so a later commit can be detected and re-armed on.
-    const passed = result.verdict === "PASS" || result.verdict === "SOFT-PASS";
+    //
+    // SOFT-PASS (WARN findings, none reaching the hard-FAIL bar) is governed by
+    // loop.softPassPolicy: "allow"/"ask-once" keep it passing (re-arm); "block"
+    // demotes it to a FAIL-like blocking outcome (advance the counter, require a
+    // decision per WARN). PASS always passes regardless of policy.
+    const softPolicy = this.i.config.loop.softPassPolicy;
+    const softPassBlocks = result.verdict === "SOFT-PASS" && softPolicy === "block";
+    const passed = (result.verdict === "PASS" || result.verdict === "SOFT-PASS") && !softPassBlocks;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
@@ -488,7 +495,7 @@ export class LoopDriver {
     );
 
     let decision: LoopDecision;
-    if (result.verdict === "PASS" || result.verdict === "SOFT-PASS") {
+    if (passed) {
       try {
         unlinkSync(dirtyFlagPath(this.i.repoRoot));
       } catch {
@@ -508,15 +515,23 @@ export class LoopDriver {
       // flag is already deleted above, so the agent's re-stop hits the "no
       // changes" branch and allows the stop — no loop. Default off (silent pass)
       // to keep the happy path lean.
-      decision = this.i.config.loop.acknowledgePass
-        ? {
-            kind: "block",
-            reason: `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
-          }
-        : {
-            kind: "allow_stop",
-            reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
-          };
+      //
+      // softPassPolicy="ask-once" forces the same one-time block specifically for
+      // SOFT-PASS, so the WARNs are surfaced before the gate opens; the re-stop is
+      // clean (dirty flag deleted above) and allows. Reuses the acknowledge path.
+      const forceSoftAck = result.verdict === "SOFT-PASS" && softPolicy === "ask-once";
+      decision =
+        this.i.config.loop.acknowledgePass || forceSoftAck
+          ? {
+              kind: "block",
+              reason: forceSoftAck
+                ? `🟡 Reviewgate · GATE OPEN — ⚠️ SOFT-PASS (iteration ${nextIter}): ${formatPanelSummary(result.summary)}. These are non-blocking warnings — review them in .reviewgate/pending.md, then end your turn again to accept and pass through.`
+                : `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
+            }
+          : {
+              kind: "allow_stop",
+              reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
+            };
     } else if (result.verdict === "ERROR") {
       // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
       // Block — Reviewgate must never pass a turn it could not actually review —

@@ -1,6 +1,6 @@
 // tests/unit/orchestrator.test.ts
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig } from "../../src/config/defaults.ts";
@@ -9,6 +9,26 @@ import { CodexAdapter } from "../../src/providers/codex.ts";
 
 const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 const FAKE_CODEX_ERROR = join(process.cwd(), "tests/fixtures/fake-codex-error.sh");
+
+// Fake codex emitting a single WARN finding on the changed line → with a lone
+// reviewer the aggregator yields SOFT-PASS (WARN, no consensus to hard-FAIL).
+const WARN_CODEX_SCRIPT = `#!/usr/bin/env bash
+set -u
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && cat > "$LAST_MSG" <<'JSON'
+{"verdict":"FAIL","findings":[{"severity":"WARN","category":"quality","rule_id":"w1","file":"foo.ts","line":1,"message":"warn finding","details":"d","confidence":0.9}]}
+JSON
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":50}}'
+exit 0
+`;
+const SOFT_DIFF =
+  "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1,1 +1,1 @@\n-const a = 1;\n+const a = 2;\n";
 
 function fakeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-orch-"));
@@ -72,5 +92,49 @@ describe("Orchestrator", () => {
     // strict/permissive cannot be honored in M1, so the orchestrator must
     // refuse to review rather than silently run the reviewer unisolated.
     expect(result.verdict).toBe("ERROR");
+  });
+});
+
+describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
+  function warnBin(repo: string): string {
+    const p = join(repo, "fake-codex-warn.sh");
+    writeFileSync(p, WARN_CODEX_SCRIPT, { mode: 0o755 });
+    chmodSync(p, 0o755);
+    return p;
+  }
+  function orchFor(repo: string, policy: "allow" | "block") {
+    return new Orchestrator({
+      repoRoot: repo,
+      config: { ...defaultConfig, loop: { ...defaultConfig.loop, softPassPolicy: policy } },
+      adapters: { codex: new CodexAdapter({ binPath: warnBin(repo) }) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: SOFT_DIFF,
+      reasonOnFailEnabled: true,
+    });
+  }
+
+  it("a lone WARN finding yields SOFT-PASS and is cached", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-soft-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+    const r1 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 1 });
+    expect(r1.verdict).toBe("SOFT-PASS");
+    expect(r1.summary.source).toBe("panel");
+    // Second identical run under the SAME (allow) policy is served from cache.
+    const r2 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 2 });
+    expect(r2.summary.source).toBe("cache");
+  });
+
+  it("does NOT serve a cached SOFT-PASS under softPassPolicy=block (re-runs the panel)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-softblk-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+    // Run 1 (block) caches a SOFT-PASS under the block-policy cache key.
+    const r1 = await orchFor(repo, "block").runIteration({ runId: "01HXQB", iter: 1 });
+    expect(r1.verdict).toBe("SOFT-PASS");
+    expect(r1.summary.source).toBe("panel");
+    // Run 2 (block, same diff/config → same cache key): the guard must bypass the
+    // cache so pending.json is repopulated with the WARN findings the gate needs.
+    const r2 = await orchFor(repo, "block").runIteration({ runId: "01HXQB", iter: 2 });
+    expect(r2.summary.source).toBe("panel");
   });
 });

@@ -409,7 +409,17 @@ export class Orchestrator {
         cacheKey,
         this.input.config.cache.reviewTtlDays * 24 * 60 * 60 * 1000,
       );
-      if (cached && (cached.verdict === "PASS" || cached.verdict === "SOFT-PASS")) {
+      // A cached SOFT-PASS stores only counts, not findings, so serving it writes
+      // pending.json with no findings. Under softPassPolicy="block" the
+      // decisions-gate needs the WARN findings to require decisions on — so don't
+      // serve a cached SOFT-PASS then; fall through to a real panel run that
+      // repopulates pending.json. PASS (no findings) and allow/ask-once SOFT-PASS
+      // (no decisions required) are still served from cache.
+      const softPassBlocksCache = this.input.config.loop.softPassPolicy === "block";
+      if (
+        cached &&
+        (cached.verdict === "PASS" || (cached.verdict === "SOFT-PASS" && !softPassBlocksCache))
+      ) {
         await this.writeReport(opts, start, [], [], cached.verdict, cached.counts);
         return {
           verdict: cached.verdict,
