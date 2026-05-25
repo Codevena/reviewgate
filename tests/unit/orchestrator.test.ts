@@ -174,7 +174,7 @@ describe("Orchestrator reputation demote integration", () => {
     const store = new ReputationStore(repo);
     await store.record(
       Array.from({ length: 10 }, (_, i) => ({
-        provider: "codex",
+        reviewerKey: "codex:security",
         outcome: "wrong" as const,
         eid: `w${i}`,
         ts: new Date().toISOString(),
@@ -214,7 +214,7 @@ describe("Orchestrator reputation demote integration", () => {
     const store = new ReputationStore(repo);
     await store.record(
       Array.from({ length: 10 }, (_, i) => ({
-        provider: "codex",
+        reviewerKey: "codex:security",
         outcome: "wrong" as const,
         eid: `w${i}`,
         ts: new Date().toISOString(),

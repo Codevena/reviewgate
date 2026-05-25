@@ -9,7 +9,7 @@ export const ReputationEntrySchema = z.object({
 
 export const ReputationSchema = z.object({
   schema: z.literal("reviewgate.reputation.v1"),
-  // keyed by provider id (NOT provider::persona — merged members lack persona)
+  // keyed by `provider:persona` (Slice B); legacy bare-provider keys (pre-Slice B) are ignored on read
   reviewers: z.record(z.string(), ReputationEntrySchema).default({}),
 });
 

@@ -28,7 +28,7 @@ describe("reputationCheck", () => {
     const now = new Date();
     await new ReputationStore(repo).record(
       Array.from({ length: 10 }, (_, i) => ({
-        provider: "gemini" as const,
+        reviewerKey: "gemini:security" as const,
         outcome: "wrong" as const,
         eid: `w${i}`,
         ts: now.toISOString(),
@@ -36,7 +36,7 @@ describe("reputationCheck", () => {
     );
     const c = await reputationCheck(repo, cfgOn());
     expect(c?.status).toBe("warn");
-    expect(c?.detail).toContain("gemini");
+    expect(c?.detail).toContain("gemini:security");
     expect(c?.detail).toContain("demoting");
   });
 });

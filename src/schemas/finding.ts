@@ -48,7 +48,7 @@ export const FindingSchema = z.object({
   // corroborated by other reviewers (advisory, non-blocking).
   low_confidence: z.boolean().optional(),
   // Reviewer-reputation demote: set true when the aggregator demoted this finding
-  // one severity step because its sole (un-corroborated) provider is currently
+  // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters

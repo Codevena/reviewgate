@@ -29,9 +29,9 @@ export interface AggregateInput {
   // blocks), and a corroborated finding (majority/unanimous) is exempt (consensus
   // overrides one reviewer's low self-rating). 0/absent → confidence unused.
   confidenceFloor?: number;
-  // Providers currently below the reputation trust floor. A lone (un-corroborated),
-  // NON-security/correctness finding whose every contributing provider is in this set
-  // is demoted ONE step (CRITICAL→WARN, WARN→INFO; never below INFO). Empty/absent → off.
+  // Reviewer keys (`provider:persona`) currently below the reputation trust floor. A lone
+  // (un-corroborated), NON-security/correctness finding whose every contributing reviewer key
+  // is in this set is demoted ONE step (CRITICAL→WARN, WARN→INFO; never below INFO). Empty/absent → off.
   repUnreliable?: Set<string>;
 }
 
@@ -332,8 +332,8 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : fpScoped;
 
-  // Reviewer-reputation demote (Slice 1): an un-corroborated finding whose every
-  // contributing provider is currently unreliable is demoted one step. Mirrors the
+  // Reviewer-reputation demote (Slice B: provider:persona keys): an un-corroborated finding whose every
+  // contributing reviewer key is currently unreliable is demoted one step. Mirrors the
   // confidence-demote exemptions: corroborated (majority/unanimous) and any
   // security/correctness finding are NEVER reputation-demoted; INFO is untouched.
   const repUnreliable = input.repUnreliable;
@@ -343,8 +343,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
           if (f.severity === "INFO") return f;
           if (f.consensus === "unanimous" || f.consensus === "majority") return f;
           if (touchesSecurityOrCorrectness(f)) return f;
-          const provs = [f.reviewer.provider, ...(f.members?.map((m) => m.provider) ?? [])];
-          if (!provs.every((p) => repUnreliable.has(p))) return f;
+          const keys =
+            f.confirmed_by && f.confirmed_by.length > 0
+              ? f.confirmed_by
+              : [`${f.reviewer.provider}:${f.reviewer.persona}`];
+          if (!keys.every((k) => repUnreliable.has(k))) return f;
           const next = DEMOTE[f.severity];
           // INFO is already returned above, so "drop" is unreachable today; this
           // guard is purely defensive against future DEMOTE-table changes.

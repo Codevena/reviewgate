@@ -44,14 +44,21 @@ export async function learnReputationFromDecisions(input: {
     if (d.verdict === "accepted" && d.action === "fixed") outcome = "correct";
     else if (d.verdict === "rejected" && d.reviewer_was_wrong === true) outcome = "wrong";
     if (!outcome) continue;
-    const providers = [f.reviewer?.provider, ...(f.members ?? []).map((m) => m.provider)].filter(
-      (p): p is string => typeof p === "string" && p.length > 0,
-    );
-    for (const provider of new Set(providers)) {
+    const fallbackKey =
+      f.reviewer?.provider && f.reviewer?.persona
+        ? `${f.reviewer.provider}:${f.reviewer.persona}`
+        : null;
+    const keys =
+      f.confirmed_by && f.confirmed_by.length > 0
+        ? f.confirmed_by
+        : fallbackKey
+          ? [fallbackKey]
+          : [];
+    for (const reviewerKey of new Set(keys)) {
       events.push({
-        provider,
+        reviewerKey,
         outcome,
-        eid: `${sessionId}:${cycleSeq}:${iter}:${d.finding_id}:${d.verdict}:${provider}`,
+        eid: `${sessionId}:${cycleSeq}:${iter}:${d.finding_id}:${d.verdict}:${reviewerKey}`,
         ts: nowIso,
       });
     }

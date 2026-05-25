@@ -161,8 +161,8 @@ export async function brainMemoryCheck(
   return { name, status: "ok", detail: `${entries.length} memories (${parts.join(", ")})` };
 }
 
-// Reviewer reputation: surfaces per-provider trust scores from the reputation store.
-// Only runs when reputation is enabled; warns when any provider is in demoting state
+// Reviewer reputation: surfaces per-reviewer (provider:persona) trust scores from the reputation store.
+// Only runs when reputation is enabled; warns when any reviewer is in demoting state
 // (trust below floor with enough samples). Analogous to brainMemoryCheck.
 export async function reputationCheck(
   repoRoot: string,
@@ -179,7 +179,7 @@ export async function reputationCheck(
   const detail = rows
     .map(
       (r) =>
-        `${r.provider} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}`,
+        `${r.reviewer} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}`,
     )
     .join(" · ");
   return { name, status: demoting.length > 0 ? "warn" : "ok", detail };

@@ -12,30 +12,32 @@ describe("ReputationStore", () => {
     const r = repo();
     const s = new ReputationStore(r);
     await s.record([
-      { provider: "codex", outcome: "wrong", eid: "e1", ts: "2026-05-25T00:00:00Z" },
-      { provider: "codex", outcome: "wrong", eid: "e1", ts: "2026-05-25T00:00:00Z" },
-      { provider: "codex", outcome: "correct", eid: "e2", ts: "2026-05-25T00:00:00Z" },
+      { reviewerKey: "codex:security", outcome: "wrong", eid: "e1", ts: "2026-05-25T00:00:00Z" },
+      { reviewerKey: "codex:security", outcome: "wrong", eid: "e1", ts: "2026-05-25T00:00:00Z" },
+      { reviewerKey: "codex:security", outcome: "correct", eid: "e2", ts: "2026-05-25T00:00:00Z" },
     ]);
     const snap = await s.snapshot();
-    expect(snap.reviewers.codex?.wrong).toHaveLength(1);
-    expect(snap.reviewers.codex?.correct).toHaveLength(1);
+    expect(snap.reviewers["codex:security"]?.wrong).toHaveLength(1);
+    expect(snap.reviewers["codex:security"]?.correct).toHaveLength(1);
   });
 
-  it("unreliableProviders returns providers below floor with enough samples", async () => {
+  it("unreliableReviewers returns reviewers below floor with enough samples", async () => {
     const r = repo();
     const s = new ReputationStore(r);
     const now = new Date("2026-05-25T00:00:00Z");
     const events = (n: number, base: string) =>
       Array.from({ length: n }, (_, i) => ({
-        provider: "gemini" as const,
+        reviewerKey: "gemini:security" as const,
         outcome: "wrong" as const,
         eid: `${base}${i}`,
         ts: now.toISOString(),
       }));
     await s.record(events(10, "w"));
-    expect(await s.unreliableProviders(CFG, now)).toContain("gemini");
-    await s.record([{ provider: "codex", outcome: "wrong", eid: "c1", ts: now.toISOString() }]);
-    expect(await s.unreliableProviders(CFG, now)).not.toContain("codex");
+    expect(await s.unreliableReviewers(CFG, now)).toContain("gemini:security");
+    await s.record([
+      { reviewerKey: "codex:security", outcome: "wrong", eid: "c1", ts: now.toISOString() },
+    ]);
+    expect(await s.unreliableReviewers(CFG, now)).not.toContain("codex:security");
   });
 
   it("prunes events older than 6x halfLifeDays on write, keeps recent ones", async () => {
@@ -48,12 +50,12 @@ describe("ReputationStore", () => {
     const recent = new Date(now.getTime() - 10 * DAY).toISOString();
     await s.record(
       [
-        { provider: "codex", outcome: "wrong", eid: "old", ts: old },
-        { provider: "codex", outcome: "wrong", eid: "recent", ts: recent },
+        { reviewerKey: "codex:security", outcome: "wrong", eid: "old", ts: old },
+        { reviewerKey: "codex:security", outcome: "wrong", eid: "recent", ts: recent },
       ],
       { now, halfLifeDays },
     );
-    const eids = ((await s.snapshot()).reviewers.codex?.wrong ?? []).map((e) => e.eid);
+    const eids = ((await s.snapshot()).reviewers["codex:security"]?.wrong ?? []).map((e) => e.eid);
     expect(eids).toContain("recent");
     expect(eids).not.toContain("old");
   });
@@ -65,12 +67,14 @@ describe("ReputationStore", () => {
     const future = new Date(now.getTime() + 86_400_000).toISOString();
     await s.record(
       [
-        { provider: "codex", outcome: "correct", eid: "future", ts: future },
-        { provider: "codex", outcome: "correct", eid: "bad", ts: "not-a-date" },
+        { reviewerKey: "codex:security", outcome: "correct", eid: "future", ts: future },
+        { reviewerKey: "codex:security", outcome: "correct", eid: "bad", ts: "not-a-date" },
       ],
       { now, halfLifeDays: 45 },
     );
-    const eids = ((await s.snapshot()).reviewers.codex?.correct ?? []).map((e) => e.eid);
+    const eids = ((await s.snapshot()).reviewers["codex:security"]?.correct ?? []).map(
+      (e) => e.eid,
+    );
     expect(eids).toContain("future");
     expect(eids).toContain("bad");
   });
@@ -79,15 +83,21 @@ describe("ReputationStore", () => {
     const r = repo();
     const s = new ReputationStore(r);
     const now = new Date("2026-05-25T00:00:00Z");
-    await s.record([{ provider: "gemini", outcome: "wrong", eid: "g1", ts: now.toISOString() }], {
-      now,
-      halfLifeDays: 45,
-    });
-    await s.record([{ provider: "codex", outcome: "wrong", eid: "c1", ts: now.toISOString() }], {
-      now,
-      halfLifeDays: 45,
-    });
-    expect((await s.snapshot()).reviewers.gemini?.wrong).toHaveLength(1);
+    await s.record(
+      [{ reviewerKey: "gemini:security", outcome: "wrong", eid: "g1", ts: now.toISOString() }],
+      {
+        now,
+        halfLifeDays: 45,
+      },
+    );
+    await s.record(
+      [{ reviewerKey: "codex:security", outcome: "wrong", eid: "c1", ts: now.toISOString() }],
+      {
+        now,
+        halfLifeDays: 45,
+      },
+    );
+    expect((await s.snapshot()).reviewers["gemini:security"]?.wrong).toHaveLength(1);
   });
 
   it("keeps an event exactly at the 6x horizon (inclusive boundary)", async () => {
@@ -96,11 +106,14 @@ describe("ReputationStore", () => {
     const now = new Date("2026-05-25T00:00:00Z");
     const halfLifeDays = 45;
     const atHorizon = new Date(now.getTime() - 6 * halfLifeDays * 86_400_000).toISOString();
-    await s.record([{ provider: "codex", outcome: "wrong", eid: "edge", ts: atHorizon }], {
-      now,
-      halfLifeDays,
-    });
-    const eids = ((await s.snapshot()).reviewers.codex?.wrong ?? []).map((e) => e.eid);
+    await s.record(
+      [{ reviewerKey: "codex:security", outcome: "wrong", eid: "edge", ts: atHorizon }],
+      {
+        now,
+        halfLifeDays,
+      },
+    );
+    const eids = ((await s.snapshot()).reviewers["codex:security"]?.wrong ?? []).map((e) => e.eid);
     expect(eids).toContain("edge");
   });
 
@@ -111,7 +124,14 @@ describe("ReputationStore", () => {
     const seedNow = new Date("2025-01-01T00:00:00Z");
     // Seed a gemini event without pruning it (contemporaneous now).
     await s.record(
-      [{ provider: "gemini", outcome: "wrong", eid: "stale", ts: seedNow.toISOString() }],
+      [
+        {
+          reviewerKey: "gemini:security",
+          outcome: "wrong",
+          eid: "stale",
+          ts: seedNow.toISOString(),
+        },
+      ],
       {
         now: seedNow,
         halfLifeDays,
@@ -120,12 +140,31 @@ describe("ReputationStore", () => {
     // A much later write for codex must prune gemini's now-stale event (>270d old).
     const laterNow = new Date(seedNow.getTime() + 7 * halfLifeDays * 86_400_000);
     await s.record(
-      [{ provider: "codex", outcome: "wrong", eid: "c1", ts: laterNow.toISOString() }],
+      [{ reviewerKey: "codex:security", outcome: "wrong", eid: "c1", ts: laterNow.toISOString() }],
       {
         now: laterNow,
         halfLifeDays,
       },
     );
-    expect((await s.snapshot()).reviewers.gemini?.wrong ?? []).toHaveLength(0);
+    expect((await s.snapshot()).reviewers["gemini:security"]?.wrong ?? []).toHaveLength(0);
+  });
+
+  it("ignores legacy bare-provider keys (no colon) in unreliableReviewers and forDoctor", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    // Seed a below-floor LEGACY bare key ("codex", no persona segment).
+    await s.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "codex" as const,
+        outcome: "wrong" as const,
+        eid: `legacy${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    const cfg = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
+    expect(await s.unreliableReviewers(cfg, now)).not.toContain("codex");
+    expect((await s.forDoctor(cfg, now)).some((row) => row.reviewer === "codex")).toBe(false);
   });
 });

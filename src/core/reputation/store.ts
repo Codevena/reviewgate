@@ -7,7 +7,7 @@ import { reputationJsonPath, reputationLockPath } from "../../utils/paths.ts";
 import { type RepDerived, decayedCount, isUnreliable, trustScore } from "./score.ts";
 
 export interface RecordInput {
-  provider: string;
+  reviewerKey: string;
   outcome: "correct" | "wrong";
   eid: string;
   ts: string;
@@ -63,10 +63,10 @@ export class ReputationStore {
     try {
       const rep = await this.snapshot();
       for (const ev of events) {
-        let entry = rep.reviewers[ev.provider];
+        let entry = rep.reviewers[ev.reviewerKey];
         if (!entry) {
           entry = { correct: [], wrong: [] };
-          rep.reviewers[ev.provider] = entry;
+          rep.reviewers[ev.reviewerKey] = entry;
         }
         const bucket = ev.outcome === "correct" ? entry.correct : entry.wrong;
         if (bucket.some((e) => e.eid === ev.eid)) continue;
@@ -76,8 +76,8 @@ export class ReputationStore {
       // file bounded). The *scoring* path uses decayed weights; a pruned event's weight is
       // <0.5^6 ≈ 1.6% of the real value, so decayed trust shifts imperceptibly. Raw counts
       // (shown by `doctor`) can visibly drop if old events are pruned. That is expected.
-      for (const provider of Object.keys(rep.reviewers)) {
-        const entry = rep.reviewers[provider];
+      for (const reviewerKey of Object.keys(rep.reviewers)) {
+        const entry = rep.reviewers[reviewerKey];
         if (!entry) continue;
         entry.correct = pruneBucket(entry.correct, now, halfLifeDays);
         entry.wrong = pruneBucket(entry.wrong, now, halfLifeDays);
@@ -88,42 +88,50 @@ export class ReputationStore {
     }
   }
 
-  private derive(provider: string, rep: Reputation, now: Date, halfLifeDays: number): RepDerived {
-    const e = rep.reviewers[provider] ?? { correct: [], wrong: [] };
+  private derive(
+    reviewerKey: string,
+    rep: Reputation,
+    now: Date,
+    halfLifeDays: number,
+  ): RepDerived {
+    const e = rep.reviewers[reviewerKey] ?? { correct: [], wrong: [] };
     const trust = trustScore(e.correct, e.wrong, now, halfLifeDays);
     const samples =
       decayedCount(e.correct, now, halfLifeDays) + decayedCount(e.wrong, now, halfLifeDays);
     return { trust, samples };
   }
 
-  async unreliableProviders(cfg: ReputationConfig, now: Date): Promise<Set<string>> {
+  async unreliableReviewers(cfg: ReputationConfig, now: Date): Promise<Set<string>> {
     const rep = await this.snapshot();
     const out = new Set<string>();
-    for (const provider of Object.keys(rep.reviewers)) {
+    for (const reviewerKey of Object.keys(rep.reviewers)) {
+      if (!reviewerKey.includes(":")) continue; // legacy bare-provider key (pre-Slice-B) → inert
       if (
         isUnreliable(
-          this.derive(provider, rep, now, cfg.halfLifeDays),
+          this.derive(reviewerKey, rep, now, cfg.halfLifeDays),
           cfg.minSamples,
           cfg.trustFloor,
         )
       )
-        out.add(provider);
+        out.add(reviewerKey);
     }
     return out;
   }
 
   async forDoctor(cfg: ReputationConfig, now: Date) {
     const rep = await this.snapshot();
-    return Object.entries(rep.reviewers).map(([provider, e]) => {
-      const d = this.derive(provider, rep, now, cfg.halfLifeDays);
-      return {
-        provider,
-        correct: e.correct.length,
-        wrong: e.wrong.length,
-        trust: d.trust,
-        demoting: isUnreliable(d, cfg.minSamples, cfg.trustFloor),
-      };
-    });
+    return Object.entries(rep.reviewers)
+      .filter(([reviewerKey]) => reviewerKey.includes(":")) // hide legacy bare-provider keys
+      .map(([reviewerKey, e]) => {
+        const d = this.derive(reviewerKey, rep, now, cfg.halfLifeDays);
+        return {
+          reviewer: reviewerKey,
+          correct: e.correct.length,
+          wrong: e.wrong.length,
+          trust: d.trust,
+          demoting: isUnreliable(d, cfg.minSamples, cfg.trustFloor),
+        };
+      });
   }
 
   private writeAtomic(rep: Reputation): void {
