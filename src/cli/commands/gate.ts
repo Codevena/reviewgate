@@ -10,11 +10,20 @@ import { StateStore } from "../../core/state-store.ts";
 import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
+import { flock } from "../../utils/flock.ts";
 import { DIFF_INCOMPLETE_MARKER, collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
-import { auditDir, dirtyFlagPath } from "../../utils/paths.ts";
+import { auditDir, dirtyFlagPath, gateLockPath } from "../../utils/paths.ts";
 import { buildAdapters } from "../build-adapters.ts";
+
+// Lock-ACQUIRE timeout for the stop-hook gate lock. Deliberately short and NOT
+// tied to loop.runTimeoutMs (840_000ms default): a contended gate may hold the
+// lock for a full multi-minute review, and waiting that long would let the OS
+// Stop-hook timeout KILL this process before it can emit the fail-closed block
+// (→ fail OPEN). Instead we give up quickly and fail CLOSED with a "re-run"
+// block; the agent's re-stop retries, bounded by the holder's own self-deadline.
+const GATE_LOCK_ACQUIRE_TIMEOUT_MS = 10_000;
 
 export interface GateInput {
   repoRoot: string;
@@ -22,6 +31,9 @@ export interface GateInput {
   hookStdinRaw: string;
   providerOverrides?: Partial<Record<ProviderId, ProviderAdapter>>;
   sandboxModeOverride?: "strict" | "permissive" | "off";
+  // Override the gate-lock acquire timeout (ms). Tests pass a tiny value to
+  // exercise the fail-closed-on-contention path quickly.
+  lockTimeoutMs?: number;
 }
 
 export interface GateOutput {
@@ -53,7 +65,35 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 
-  // hook === 'stop'
+  // hook === 'stop' — serialize the whole pipeline so two stop-hooks on the same
+  // checkout can't run reviews in parallel and interleave writes to pending.*,
+  // decisions, and the dirty flag. Fail CLOSED on contention (never allow an
+  // unreviewed turn through).
+  let lock: { release: () => Promise<void> };
+  try {
+    lock = await flock(
+      gateLockPath(input.repoRoot),
+      input.lockTimeoutMs ?? GATE_LOCK_ACQUIRE_TIMEOUT_MS,
+    );
+  } catch {
+    const reason =
+      "🔴 Reviewgate · GATE CLOSED — another gate run is in progress (could not acquire the gate lock). Re-run to review once it finishes.";
+    return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+  }
+  try {
+    return await runStopGate(input, cfg, audit);
+  } finally {
+    await lock.release();
+  }
+}
+
+// The stop-hook review pipeline, run under the gate lock by runGate. Split out so
+// the lock acquire/release wraps the entire body without re-indenting it.
+async function runStopGate(
+  input: GateInput,
+  cfg: Awaited<ReturnType<typeof loadEffectiveConfig>>,
+  audit: AuditLogger,
+): Promise<GateOutput> {
   const parsedStdin = parseHookStdin(input.hookStdinRaw);
   const state = new StateStore(input.repoRoot);
   await state.loadOrRecover(ulid());
