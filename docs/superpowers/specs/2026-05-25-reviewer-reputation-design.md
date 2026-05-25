@@ -39,13 +39,29 @@ members, so Slice 1 tracks reputation per provider. (Persona granularity is a la
 refinement that would require adding `persona` to `members`.)
 
 **Event id (`eid`) for crash-safe idempotency:** each event carries a stable id
-`${session_id}:${iter}:${finding_id}:${verdict}`. Recording is **idempotent** — an event
-whose `eid` already exists is skipped. This removes the need for any `state.json`
-"counted-through" marker (the earlier marker design was broken: `state.iteration` resets
-to 0 on re-arm, so a high-water mark would never re-trigger in later cycles), and it is
-crash-safe: re-applying an iteration's decisions after a crash mid-write de-dupes by `eid`
-rather than double-counting. Events store a timestamp + eid only — the score is derived on
-read, so decay needs no rewrite.
+
+```
+eid = ${session_id}:${cycle_seq}:${iter}:${finding_id}:${verdict}
+```
+
+Recording is **idempotent** — an event whose `eid` already exists is skipped. The
+namespace components are chosen so it is unique per logical decision-event AND collision-
+free across cycles/sessions (the subtle bug an earlier draft had):
+- `session_id` — distinguishes sessions (reputation.json persists across sessions, so a
+  fresh session must not collide with an old one). Stable within a session.
+- `cycle_seq` — a **monotonic per-session counter** (new state field
+  `reputation_cycle_seq`, default 0) **incremented on every re-arm** (clean PASS /
+  commit-recovery). This is the cycle-stable component the earlier `session_id:iter:...`
+  key lacked: after re-arm, `iteration` resets to 0 and findings renumber from `F-001`
+  (`aggregator.ts:370-377`), so without `cycle_seq` cycle B's `F-001/wrong` would collide
+  with cycle A's and be wrongly skipped. `cycle_seq` only ever increments (never resets),
+  so each cycle gets a distinct namespace.
+- `iter` + `finding_id` + `verdict` — identify the decision within a cycle.
+
+This makes recording crash-safe (re-applying an iteration's decisions after a crash
+mid-write de-dupes by `eid`) and correct across cycles/sessions, with **no** "counted-
+through" marker needed. Events store `{ ts, eid }` only — the score is derived on read, so
+decay needs no rewrite.
 
 **Derived score (on read):**
 - Apply exponential time-decay to each event: `weight = 0.5 ^ (ageDays / halfLifeDays)`.
@@ -75,10 +91,12 @@ mirroring `learnFromDecisions`):
 
 **Update timing & idempotency:** updated once per iteration, at the decision-gate in
 `LoopDriver.run()` — the same point where the `fp-streak` accumulator folds in iteration
-`state.iteration`. Idempotency is by **`eid` dedup** in `reputation.json` (see §1), so
-**no `state.json` marker is added** and a re-stop / crash-retry of the same iteration
-cannot double-count. The `reputation.json` events are **per-repo and persistent** — NOT
-reset on re-arm / clean PASS / commit; they only fade via time-decay.
+`state.iteration` (apply only `decisions/<state.iteration>.jsonl`). Idempotency is by
+**`eid` dedup** in `reputation.json` (see §1); the only `state.json` addition is the
+monotonic `reputation_cycle_seq` (incremented on re-arm, feeds the `eid` namespace — it is
+NOT a "counted-through" gate and is never reset to 0 within a session). The
+`reputation.json` events are **per-repo and persistent** — NOT reset on re-arm / clean
+PASS / commit; they only fade via time-decay.
 
 ## 3. Effect (in the aggregator)
 
@@ -157,18 +175,24 @@ phases.reputation = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDa
 
 Neutral-start (`minSamples`) guarantees **no runtime effect** without accumulated data
 (no `reputation.json` → neutral → no demotion → no network, no verdict change), so
-existing behavior tests are runtime-unaffected. **However**, adding a default-on
-`phases.reputation` object changes the effective-config SHAPE, so config-shape / setup
-snapshot tests (e.g. `tests/unit/config-fpledger.test.ts`, `tests/unit/setup-prefill.test.ts`)
-**will need updating** — that's expected work in the plan, not a behavior regression.
+existing behavior tests are runtime-unaffected. **Scope decision:** Slice 1 ships
+reputation as a default-on, config-overridable feature **without** a setup-wizard prompt
+(unlike `fpLedger`, which `src/cli/setup/*` toggles) — to keep the slice focused. That
+means the plan does **not** touch `src/cli/setup/{prefill,build-config}.ts` /
+`setup.ts`, but it **does** need to update config-shape / serialization tests that assert
+the exact effective-config shape: `tests/unit/config-fpledger.test.ts`,
+`tests/unit/setup-prefill.test.ts`, `tests/unit/config-diff-serialize.test.ts`,
+`tests/unit/setup-build-config.test.ts` (verify each against the new `phases.reputation`
+default and adjust expectations; a setup toggle can be a later slice if wanted).
 `enabled:false` fully disables it.
 
 ## 6. Doctor surfacing
 
 Extend `reviewgate doctor` with a `reviewer reputation` line (analogous to the new
-`brain memory` line): per tracked reviewer, show `provider::persona N correct / M wrong
-(trust 0.NN)` and flag `⚠ demoting` for any that are currently unreliable. Informational
-(status ok), or `warn` when a reviewer is actively being demoted (so the human notices).
+`brain memory` line): per tracked **provider** (data model is provider-keyed, §1), show
+`<provider> N correct / M wrong (trust 0.NN)` and flag `⚠ demoting` for any that are
+currently unreliable (`samples >= minSamples && trust < trustFloor`). Status `ok`
+normally, `warn` when a provider is actively being demoted (so the human notices).
 
 ## 7. Testing
 
@@ -199,13 +223,17 @@ TDD, reproducing the real scenario first:
 - Create: `src/schemas/reputation.ts` (zod schema), `src/core/reputation/store.ts`
   (locked atomic read/write + derived score + decay), `src/core/reputation/score.ts`
   (pure decay/trust math — unit-testable in isolation).
-- Modify: `src/core/loop-driver.ts` (update reputation at the decision-gate via `eid`-dedup
-  — no `state.json` marker, no re-arm reset), `src/core/aggregator.ts` (reputation
-  demote-only pass before the verdict tally, with the security/correctness exemption +
-  `consensus ∈ {singleton, minority}` guard, reusing `touchesSecurityOrCorrectness`),
-  `src/config/defaults.ts` + `src/config/define-config.ts` (`phases.reputation` section),
-  `src/cli/commands/doctor.ts` (reputation line). Update config-shape/setup tests for the
-  new field.
+- Modify: `src/core/loop-driver.ts` (update reputation at the decision-gate via `eid`-dedup;
+  add `reputation_cycle_seq++` on re-arm — same spots as the fp-streak reset), `src/schemas/
+  state.ts` (`reputation_cycle_seq` field, default 0, monotonic — increments on re-arm,
+  never reset within a session), `src/core/aggregator.ts` (reputation demote-only pass
+  before the verdict tally, with the security/correctness exemption + `consensus ∈
+  {singleton, minority}` guard, reusing `touchesSecurityOrCorrectness`), `src/config/
+  defaults.ts` + `src/config/define-config.ts` (`phases.reputation` section),
+  `src/cli/commands/doctor.ts` (reputation line).
+- Update (config-shape assertions, for the new `phases.reputation` default): `tests/unit/
+  config-fpledger.test.ts`, `tests/unit/setup-prefill.test.ts`, `tests/unit/
+  config-diff-serialize.test.ts`, `tests/unit/setup-build-config.test.ts`.
 - Tests: `tests/unit/reputation-score.test.ts`, `tests/unit/reputation-store.test.ts`,
   `tests/unit/aggregator-reputation.test.ts`, `tests/unit/loop-driver.test.ts` (update
   timing), `tests/unit/doctor-reputation.test.ts`.
