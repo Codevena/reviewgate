@@ -34,6 +34,17 @@ describe("diffFromDefaults", () => {
     expect(diffFromDefaults(off)).toEqual({ phases: { reputation: { enabled: false } } });
   });
 
+  it("strips quarantine defaults and emits an enabled override", () => {
+    const def = defineConfig({ phases: { reputation: { enabled: true } } });
+    expect("reputation" in (diffFromDefaults(def).phases ?? {})).toBe(false);
+    const on = defineConfig({
+      phases: { reputation: { enabled: true, quarantine: { enabled: true } } },
+    });
+    expect(diffFromDefaults(on)).toEqual({
+      phases: { reputation: { quarantine: { enabled: true } } },
+    });
+  });
+
   it("re-emits the WHOLE reviewers array when any element differs", () => {
     const cfg = defineConfig({
       phases: {

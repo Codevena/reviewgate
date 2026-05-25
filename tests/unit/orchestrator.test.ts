@@ -189,7 +189,13 @@ describe("Orchestrator reputation demote integration", () => {
         cache: { ...defaultConfig.cache, enabled: false },
         phases: {
           ...defaultConfig.phases,
-          reputation: { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+          reputation: {
+            enabled: true,
+            minSamples: 8,
+            trustFloor: 0.35,
+            halfLifeDays: 45,
+            quarantine: { enabled: false, floor: 0.15 },
+          },
         },
       },
       adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
@@ -229,7 +235,13 @@ describe("Orchestrator reputation demote integration", () => {
         phases: {
           ...defaultConfig.phases,
           // Disable reputation so demotion does NOT happen
-          reputation: { enabled: false, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+          reputation: {
+            enabled: false,
+            minSamples: 8,
+            trustFloor: 0.35,
+            halfLifeDays: 45,
+            quarantine: { enabled: false, floor: 0.15 },
+          },
         },
       },
       adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
