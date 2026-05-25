@@ -1,12 +1,28 @@
 // tests/unit/codex-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../../src/providers/codex.ts";
 
 const PRETEND_CODEX_BIN = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 const FAKE_CODEX_COMPLETE = join(process.cwd(), "tests/fixtures/fake-codex-complete.sh");
+
+// Fake codex that exits 0 but writes NON-JSON to --output-last-message (mirrors a
+// truncated / malformed real run that still exits cleanly), plus a valid usage event.
+const GARBAGE_CODEX_SCRIPT = `#!/usr/bin/env bash
+set -u
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && printf '%s' 'this is not json {{{' > "$LAST_MSG"
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":50}}'
+exit 0
+`;
 
 describe("CodexAdapter (mocked binary)", () => {
   it("parses findings and usage from a fake codex run", async () => {
@@ -30,6 +46,31 @@ describe("CodexAdapter (mocked binary)", () => {
     expect(result.status).toBe("ok");
     expect(result.findings.length).toBeGreaterThanOrEqual(1);
     expect(result.usage.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("exit 0 with unparseable last-message → verdict ERROR (not empty PASS)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-garbage-"));
+    const binPath = join(dir, "fake-codex-garbage.sh");
+    writeFileSync(binPath, GARBAGE_CODEX_SCRIPT, { mode: 0o755 });
+    chmodSync(binPath, 0o755);
+    const promptFile = join(dir, "prompt.txt");
+    const diffPath = join(dir, "diff.patch");
+    writeFileSync(promptFile, "review this");
+    writeFileSync(diffPath, "diff --git a/x b/x");
+
+    const adapter = new CodexAdapter({ binPath });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 60_000 },
+      reviewerId: "codex-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "security",
+      diffPath,
+    });
+    expect(result.verdict).toBe("ERROR");
+    expect(result.status).toBe("error");
+    expect(result.findings).toEqual([]);
   });
 });
 
