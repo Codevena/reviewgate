@@ -4,7 +4,7 @@
 // every review) and automatically resume using it once the reset passes — no
 // timer, no config edit. The cooldown is best-effort: if the reset time can't be
 // parsed from the provider's error, a conservative DEFAULT window is used.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type QuotaCooldown, QuotaCooldownSchema } from "../schemas/quota-cooldown.ts";
 
@@ -80,7 +80,12 @@ export class QuotaCooldownStore {
   private write(c: QuotaCooldown): void {
     const dir = dirname(this.path);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(this.path, JSON.stringify(c, null, 2), { mode: 0o600 });
+    // Atomic: write to a unique temp, then rename into place — a process killed
+    // mid-write can never leave a truncated quota-cooldowns.json (mirrors
+    // StateStore.writeAtomic). Unique suffix so concurrent writers don't share a tmp.
+    const tmp = `${this.path}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tmp, JSON.stringify(c, null, 2), { mode: 0o600 });
+    renameSync(tmp, this.path);
   }
 
   /** ISO reset time if `provider` is still capped at `now`, else null. */
