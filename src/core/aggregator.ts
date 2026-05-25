@@ -29,6 +29,10 @@ export interface AggregateInput {
   // blocks), and a corroborated finding (majority/unanimous) is exempt (consensus
   // overrides one reviewer's low self-rating). 0/absent → confidence unused.
   confidenceFloor?: number;
+  // Providers currently below the reputation trust floor. A lone (un-corroborated),
+  // NON-security/correctness finding whose every contributing provider is in this set
+  // is demoted ONE step (CRITICAL→WARN, WARN→INFO; never below INFO). Empty/absent → off.
+  repUnreliable?: Set<string>;
 }
 
 export interface AggregateResult {
@@ -328,12 +332,37 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : fpScoped;
 
+  // Reviewer-reputation demote (Slice 1): an un-corroborated finding whose every
+  // contributing provider is currently unreliable is demoted one step. Mirrors the
+  // confidence-demote exemptions: corroborated (majority/unanimous) and any
+  // security/correctness finding are NEVER reputation-demoted; INFO is untouched.
+  const repUnreliable = input.repUnreliable;
+  const repScoped: Finding[] =
+    repUnreliable && repUnreliable.size > 0
+      ? confScoped.map((f) => {
+          if (f.severity === "INFO") return f;
+          if (f.consensus === "unanimous" || f.consensus === "majority") return f;
+          if (touchesSecurityOrCorrectness(f)) return f;
+          const provs = [f.reviewer.provider, ...(f.members?.map((m) => m.provider) ?? [])];
+          if (!provs.every((p) => repUnreliable.has(p))) return f;
+          const next = DEMOTE[f.severity];
+          if (next === "drop") return f;
+          const note = "\n\n↓ low reviewer reputation — advisory only.";
+          return {
+            ...f,
+            severity: next,
+            reputation_demoted: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : confScoped;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of confScoped) {
+  for (const f of repScoped) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (touchesSecurityOrCorrectness(f)) {
@@ -371,7 +400,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = confScoped.map((f, i) => ({
+  const renumbered = repScoped.map((f, i) => ({
     ...f,
     id: `F-${String(i + 1).padStart(3, "0")}`,
   }));

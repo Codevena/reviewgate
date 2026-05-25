@@ -47,6 +47,10 @@ export const FindingSchema = z.object({
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).
   low_confidence: z.boolean().optional(),
+  // Reviewer-reputation demote: set true when the aggregator demoted this finding
+  // one severity step because its sole (un-corroborated) provider is currently
+  // below the reputation trust floor. Advisory-leaning; never security/correctness.
+  reputation_demoted: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base
