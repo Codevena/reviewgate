@@ -76,7 +76,7 @@ async function tryCreate(path: string, token: string): Promise<boolean> {
   }
 }
 
-async function releaseOwned(path: string, token: string): Promise<void> {
+export async function releaseOwned(path: string, token: string): Promise<void> {
   try {
     const raw = await readFile(path, "utf8");
     if (raw.includes(`token=${token}`)) await unlink(path).catch(() => undefined);
@@ -115,6 +115,28 @@ async function reclaimIfDead(target: string): Promise<void> {
   }
 }
 
+// Recover a DEAD steal-mutex, serialized under a level-2 mutex (`<mutexPath>.2`) so the
+// recovery is exclusive: under L2, "the L1 steal-mutex is dead" is STABLE (its removal is
+// L2-gated, and a dead→live transition needs a removal first), so reclaimIfDead grabs only
+// the DEAD mutex — never a live one — and its restore branch is unreachable. The L2 mutex is
+// deliberately NOT recovered: if `<mutexPath>.2` is held (a live recoverer, or the rare
+// crash-remnant), we back off and skip the L1 recovery this cycle (the main lock degrades to
+// the acquire timeout — never a double-hold). This terminates the recursion at depth 2.
+// NOTE: a crash-orphaned `.2` is intentionally left un-reclaimed — reclaiming it would
+// itself need an L3 mutex (unbounded recursion). It only disables the FAST recovery of one
+// already-dead L1 steal-mutex (every future recover hits EEXIST → degrade to the acquire
+// timeout); it never blocks the main lock and never causes a double-hold.
+async function recoverDeadStealMutex(mutexPath: string): Promise<void> {
+  const l2 = `${mutexPath}.2`;
+  const l2Token = newToken();
+  if (!(await tryCreate(l2, l2Token))) return; // L2 busy/crash-remnant → degrade to timeout
+  try {
+    if (await isReclaimable(mutexPath)) await reclaimIfDead(mutexPath);
+  } finally {
+    await releaseOwned(l2, l2Token);
+  }
+}
+
 // The steal-mutex serializes reclaimers so at most ONE is removing a given dead
 // lock at a time. Grabbed via the same atomic-link protocol. If the mutex itself
 // is held by a DEAD process (a reclaimer that crashed mid-operation), we clear it
@@ -122,11 +144,11 @@ async function reclaimIfDead(target: string): Promise<void> {
 // able to delete each other's fresh mutex, which would put two reclaimers in
 // flight); if a live reclaim is in progress we return false so the caller backs
 // off (no second reclaimer — exactly the contention we're serializing away).
-async function acquireStealMutex(mutexPath: string, token: string): Promise<boolean> {
+export async function acquireStealMutex(mutexPath: string, token: string): Promise<boolean> {
   for (let attempt = 0; attempt < 4; attempt++) {
     if (await tryCreate(mutexPath, token)) return true;
     if (await isReclaimable(mutexPath)) {
-      await reclaimIfDead(mutexPath);
+      await recoverDeadStealMutex(mutexPath);
     } else {
       return false; // a live reclaim is in progress
     }
@@ -139,22 +161,18 @@ async function acquireStealMutex(mutexPath: string, token: string): Promise<bool
 // can't release, and a normal acquirer can't create over the still-present file).
 // The actual removal goes through reclaimIfDead (rename-to-private), so even the
 // crash-broken-mutex edge can't clobber a live lock.
-async function reclaimDeadLock(path: string): Promise<void> {
+// Returns true if we held the mutex and ran the reclaim attempt (caller may retry
+// tryCreate immediately); returns false if the mutex was contended or L2-blocked
+// (no progress this cycle → caller should back off with a delay).
+export async function reclaimDeadLock(path: string): Promise<boolean> {
   const mutexPath = `${path}.steal`;
   const mutexToken = newToken();
-  if (!(await acquireStealMutex(mutexPath, mutexToken))) return; // someone else reclaiming → retry
+  if (!(await acquireStealMutex(mutexPath, mutexToken))) return false; // contended / L2-degrade → no progress
   try {
-    // Re-validate UNDER the mutex before removing anything. The caller decided `path`
-    // was reclaimable OUTSIDE this mutex; by the time we hold it, a faster reclaimer may
-    // have already removed the dead lock AND a normal acquirer taken `path` with a LIVE
-    // lock. The mutex blocks dead→live transitions (they require a reclaim, which only
-    // happens here), so this check is STABLE: a dead lock stays dead+present while we
-    // hold the mutex. Reclaiming unconditionally would `rename` that live lock away,
-    // briefly freeing `path` while its holder is active → a third contender could acquire
-    // concurrently (double-hold). Only reclaim if `path` is STILL a dead/stale lock.
-    if (await isReclaimable(path)) {
-      await reclaimIfDead(path);
-    }
+    // Re-validate UNDER the mutex before removing anything (see fix/flock-steal-double-hold):
+    // the steal-mutex is now truly exclusive, so a dead `path` is stable here.
+    if (await isReclaimable(path)) await reclaimIfDead(path);
+    return true; // held the mutex + ran the reclaim → caller may retry tryCreate immediately
   } finally {
     await releaseOwned(mutexPath, mutexToken);
   }
@@ -179,7 +197,11 @@ export async function flock(path: string, timeoutMs = 30_000): Promise<FileLock>
       };
     }
     if (await isReclaimable(path)) {
-      await reclaimDeadLock(path);
+      const progressed = await reclaimDeadLock(path);
+      if (!progressed) {
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(delay * 2, 500);
+      }
     } else {
       await new Promise((r) => setTimeout(r, delay));
       delay = Math.min(delay * 2, 500);
