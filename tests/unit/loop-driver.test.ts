@@ -879,6 +879,40 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQREPCYC");
+    writeDirty(repo);
+    const passOrch = {
+      runIteration: async () => ({
+        verdict: "PASS" as const,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: passOrch,
+      stopHookActive: false,
+    }).run();
+    expect((await state.load()).reputation_cycle_seq).toBe(1);
+  });
+
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
     // The decisions-gate must take precedence: an agent cannot append unrelated
     // reviewer_was_wrong lines to force a reject-rate escape while leaving the

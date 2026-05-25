@@ -21,6 +21,8 @@ import {
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
+import { learnReputationFromDecisions } from "./reputation/learn.ts";
+import { ReputationStore } from "./reputation/store.ts";
 import type { StateStore } from "./state-store.ts";
 
 // Minimum decisions this cycle before the reject-rate circuit-breaker can fire,
@@ -247,6 +249,9 @@ export class LoopDriver {
                 // Fresh cycle → drop the cross-iteration confirmed-FP accumulator.
                 cumulative_fp_rejects: 0,
                 fp_counted_through_iter: 0,
+                // Bump the reputation cycle sequence so the new cycle's event-ids
+                // don't collide with the escalated cycle's events.
+                reputation_cycle_seq: cur.reputation_cycle_seq + 1,
               }
             : {}),
           last_reviewed_head_sha: headSha,
@@ -413,6 +418,20 @@ export class LoopDriver {
           );
         }
       }
+
+      // Side-effect: fold this iteration's decisions into the reputation store so
+      // the gate can learn which providers produce FPs and which are correct over
+      // time. Best-effort (.catch) — learning never affects the verdict.
+      if (this.i.config.phases.reputation?.enabled) {
+        await learnReputationFromDecisions({
+          repoRoot: this.i.repoRoot,
+          iter: state.iteration,
+          sessionId: state.session_id,
+          cycleSeq: state.reputation_cycle_seq,
+          store: new ReputationStore(this.i.repoRoot),
+          nowIso: new Date().toISOString(),
+        }).catch(() => undefined);
+      }
     }
 
     // Run a new iteration — but bounded by a self-imposed deadline strictly
@@ -532,6 +551,10 @@ export class LoopDriver {
         incomplete_runs: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
         last_stop_ts: new Date().toISOString(),
+        // On a clean pass (re-arm), bump the cycle sequence so the next cycle's
+        // reputation event-ids can't collide with this cycle's (F-001 renumbers).
+        // On a FAIL, keep the current seq — still the same cycle.
+        reputation_cycle_seq: passed ? cur.reputation_cycle_seq + 1 : cur.reputation_cycle_seq,
       }),
     );
 
