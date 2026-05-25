@@ -874,14 +874,14 @@ export class Orchestrator {
       ? new Map([...fpActiveSnapshot].map(([sig, e]) => [sig, { id: e.id }]))
       : undefined;
 
-    // Reviewer reputation (Slice 1): read the per-repo store and pass the set of
-    // currently-unreliable providers so the aggregator can demote their lone,
-    // non-security findings. Best-effort: never let a reputation read break a review.
+    // Reviewer reputation: read the per-repo store and pass the set of currently-unreliable
+    // `provider:persona` reviewer keys so the aggregator can demote their lone, non-security
+    // findings. Best-effort: never let a reputation read break a review.
     const repCfg = this.input.config.phases.reputation;
     let repUnreliable: Set<string> | undefined;
     if (repCfg?.enabled) {
       repUnreliable = await new ReputationStore(repo)
-        .unreliableProviders(repCfg, new Date())
+        .unreliableReviewers(repCfg, new Date())
         .catch(() => undefined);
     }
 

@@ -14,8 +14,20 @@ describe("learnReputationFromDecisions", () => {
       pendingJsonPath(repo),
       JSON.stringify({
         findings: [
-          { id: "F-001", severity: "CRITICAL", reviewer: { provider: "gemini" }, members: [] },
-          { id: "F-002", severity: "WARN", reviewer: { provider: "codex" }, members: [] },
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "gemini", persona: "security" },
+            confirmed_by: ["gemini:security"],
+            members: [],
+          },
+          {
+            id: "F-002",
+            severity: "WARN",
+            reviewer: { provider: "codex", persona: "quality" },
+            confirmed_by: ["codex:quality"],
+            members: [],
+          },
         ],
       }),
     );
@@ -56,8 +68,8 @@ describe("learnReputationFromDecisions", () => {
       nowIso: new Date().toISOString(),
     });
     const snap = await store.snapshot();
-    expect(snap.reviewers.gemini?.wrong).toHaveLength(1);
-    expect(snap.reviewers.codex?.correct).toHaveLength(1);
+    expect(snap.reviewers["gemini:security"]?.wrong).toHaveLength(1);
+    expect(snap.reviewers["codex:quality"]?.correct).toHaveLength(1);
     expect(snap.reviewers["F-999"]).toBeUndefined();
   });
 
@@ -68,7 +80,13 @@ describe("learnReputationFromDecisions", () => {
       pendingJsonPath(repo),
       JSON.stringify({
         findings: [
-          { id: "F-001", severity: "CRITICAL", reviewer: { provider: "gemini" }, members: [] },
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "gemini", persona: "security" },
+            confirmed_by: ["gemini:security"],
+            members: [],
+          },
         ],
       }),
     );
@@ -95,7 +113,7 @@ describe("learnReputationFromDecisions", () => {
     };
     await learnReputationFromDecisions(args);
     await learnReputationFromDecisions(args);
-    expect((await store.snapshot()).reviewers.gemini?.wrong).toHaveLength(1);
+    expect((await store.snapshot()).reviewers["gemini:security"]?.wrong).toHaveLength(1);
   });
 
   it("forwards halfLifeDays to record so stale events are pruned", async () => {
@@ -105,7 +123,13 @@ describe("learnReputationFromDecisions", () => {
       pendingJsonPath(repo),
       JSON.stringify({
         findings: [
-          { id: "F-001", severity: "CRITICAL", reviewer: { provider: "gemini" }, members: [] },
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "gemini", persona: "security" },
+            confirmed_by: ["gemini:security"],
+            members: [],
+          },
         ],
       }),
     );
@@ -124,7 +148,14 @@ describe("learnReputationFromDecisions", () => {
     const store = new ReputationStore(repo);
     // Seed a 26-year-old gemini event WITHOUT pruning it (large halfLife, contemporaneous now).
     await store.record(
-      [{ provider: "gemini", outcome: "wrong", eid: "stale", ts: "2000-01-01T00:00:00Z" }],
+      [
+        {
+          reviewerKey: "gemini:security",
+          outcome: "wrong",
+          eid: "stale",
+          ts: "2000-01-01T00:00:00Z",
+        },
+      ],
       { now: new Date("2000-01-02T00:00:00Z"), halfLifeDays: 45 },
     );
     // learn records a fresh event NOW with a tiny halfLifeDays → the stale event must be pruned.
@@ -137,8 +168,51 @@ describe("learnReputationFromDecisions", () => {
       nowIso: new Date().toISOString(),
       halfLifeDays: 1,
     });
-    const wrong = (await store.snapshot()).reviewers.gemini?.wrong ?? [];
+    const wrong = (await store.snapshot()).reviewers["gemini:security"]?.wrong ?? [];
     expect(wrong.map((e) => e.eid)).not.toContain("stale"); // pruned via forwarded halfLifeDays
     expect(wrong).toHaveLength(1); // only the freshly-learned event remains
+  });
+
+  it("credits each distinct provider:persona in confirmed_by separately", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn4-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "codex", persona: "security" },
+            confirmed_by: ["codex:security", "codex:architecture"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "false positive confirmed by reading the code",
+        reviewer_was_wrong: true,
+      })}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const snap = await store.snapshot();
+    expect(snap.reviewers["codex:security"]?.wrong).toHaveLength(1);
+    expect(snap.reviewers["codex:architecture"]?.wrong).toHaveLength(1);
   });
 });

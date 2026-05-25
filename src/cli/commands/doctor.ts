@@ -179,7 +179,7 @@ export async function reputationCheck(
   const detail = rows
     .map(
       (r) =>
-        `${r.provider} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}`,
+        `${r.reviewer} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}`,
     )
     .join(" · ");
   return { name, status: demoting.length > 0 ? "warn" : "ok", detail };

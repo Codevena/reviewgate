@@ -26,7 +26,7 @@ describe("aggregator reputation demote", () => {
     const agg = aggregate({
       findings: [finding({})],
       reviewersTotal: 2,
-      repUnreliable: new Set(["gemini"]),
+      repUnreliable: new Set(["gemini:security"]),
     });
     const f = agg.dedupedFindings[0];
     expect(f?.severity).toBe("WARN");
@@ -38,7 +38,7 @@ describe("aggregator reputation demote", () => {
     const agg = aggregate({
       findings: [finding({ category: "security" })],
       reviewersTotal: 2,
-      repUnreliable: new Set(["gemini"]),
+      repUnreliable: new Set(["gemini:security"]),
     });
     expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
     expect(agg.verdict).toBe("FAIL");
@@ -59,7 +59,7 @@ describe("aggregator reputation demote", () => {
     const agg = aggregate({
       findings: [f1, f2],
       reviewersTotal: 2,
-      repUnreliable: new Set(["gemini", "codex"]),
+      repUnreliable: new Set(["gemini:security", "codex:quality"]),
     });
     expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
@@ -77,7 +77,7 @@ describe("aggregator reputation demote", () => {
     const agg = aggregate({
       findings: [finding({ severity: "WARN" })],
       reviewersTotal: 2,
-      repUnreliable: new Set(["gemini"]),
+      repUnreliable: new Set(["gemini:security"]),
     });
     const f = agg.dedupedFindings[0];
     expect(f?.severity).toBe("INFO");
@@ -85,12 +85,12 @@ describe("aggregator reputation demote", () => {
     expect(agg.verdict).toBe("PASS");
   });
 
-  it("does NOT demote when only ONE of several contributing providers is unreliable", () => {
+  it("does NOT demote when only ONE of several contributing reviewer keys is unreliable", () => {
     // Two findings (same signature/location) from DIFFERENT providers cluster into one
     // representative whose `members` span both providers (gemini, codex). Only gemini
-    // is unreliable, so the `.every()` provider check fails → stays CRITICAL.
+    // is unreliable, so the `.every()` reviewer-key check fails → stays CRITICAL.
     // (Note: a 2-provider cluster also computes "majority" consensus, which is exempt
-    //  on its own — the provider check is defense-in-depth on the same finding.)
+    //  on its own — the reviewer-key check is defense-in-depth on the same finding.)
     const f1 = finding({
       signature: "sig-2",
       reviewer: { provider: "gemini", model: "x", persona: "security" },
@@ -102,11 +102,21 @@ describe("aggregator reputation demote", () => {
     const agg = aggregate({
       findings: [f1, f2],
       reviewersTotal: 2,
-      repUnreliable: new Set(["gemini"]),
+      repUnreliable: new Set(["gemini:security"]),
     });
     const f = agg.dedupedFindings[0];
     expect(f?.members?.map((m) => m.provider).sort()).toEqual(["codex", "gemini"]);
     expect(f?.severity).toBe("CRITICAL");
     expect(f?.reputation_demoted).toBeUndefined();
+  });
+
+  it("does NOT demote when repUnreliable holds only a legacy bare-provider key", () => {
+    const agg = aggregate({
+      findings: [finding({})],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini"]),
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(agg.dedupedFindings[0]?.reputation_demoted).toBeUndefined();
   });
 });
