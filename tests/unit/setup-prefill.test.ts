@@ -18,6 +18,7 @@ describe("RECOMMENDED_DEFAULTS", () => {
     expect(RECOMMENDED_DEFAULTS.brainCurator).toBeNull();
     expect(RECOMMENDED_DEFAULTS.fpLedger).toBe(true);
     expect(RECOMMENDED_DEFAULTS.contextDocs).toBe(false);
+    expect(RECOMMENDED_DEFAULTS.reputation).toBe(true);
   });
 });
 
@@ -35,6 +36,7 @@ describe("answersFromConfig", () => {
         critic: { provider: "opencode", persona: "fp-filter" },
         fpLedger: { enabled: true },
         contextDocs: { enabled: true },
+        reputation: { enabled: true },
         brain: {
           enabled: true,
           embeddings: {
@@ -58,6 +60,7 @@ describe("answersFromConfig", () => {
     expect(d.brainCurator?.provider).toBe("codex");
     expect(d.fpLedger).toBe(true);
     expect(d.contextDocs).toBe(true);
+    expect(d.reputation).toBe(true);
   });
 
   it("defaults/empty config => codex-only, no critic/brain, fpLedger off (schema default)", () => {
@@ -66,6 +69,8 @@ describe("answersFromConfig", () => {
     expect(d.critic).toBeNull();
     expect(d.brainCurator).toBeNull();
     expect(d.fpLedger).toBe(false);
+    // phases.reputation defaults ON in the schema, so a bare config reads back enabled.
+    expect(d.reputation).toBe(true);
   });
 
   it("honors a per-reviewer model override over providers.<id>.model", () => {
@@ -75,6 +80,13 @@ describe("answersFromConfig", () => {
       },
     } as Parameters<typeof defineConfig>[0]);
     expect(answersFromConfig(cfg).perReviewer.codex?.model).toBe("gpt-5.4-codex");
+  });
+
+  it("reads reputation:false when explicitly disabled", () => {
+    const cfg = defineConfig({
+      phases: { reputation: { enabled: false } },
+    } as Parameters<typeof defineConfig>[0]);
+    expect(answersFromConfig(cfg).reputation).toBe(false);
   });
 
   it("round-trips a per-reviewer fallback chain from the config", () => {

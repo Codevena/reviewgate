@@ -273,6 +273,12 @@ async function runCustom(
   });
   if (isCancel(fp)) return null;
 
+  const rep = await confirm({
+    message: "Enable reviewer reputation (down-weight a chronically-wrong reviewer)?",
+    initialValue: defaults.reputation,
+  });
+  if (isCancel(rep)) return null;
+
   const ctx = await confirm({
     message: "Enable contextDocs (inject current library docs)?",
     initialValue: defaults.contextDocs,
@@ -286,6 +292,7 @@ async function runCustom(
     brain,
     fpLedger: Boolean(fp),
     contextDocs: Boolean(ctx),
+    reputation: Boolean(rep),
   });
 }
 
