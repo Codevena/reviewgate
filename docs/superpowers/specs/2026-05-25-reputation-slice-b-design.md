@@ -27,11 +27,19 @@ already computes for clustering/consensus (`aggregator.ts:184`:
 `z.record(z.string(), ReputationEntrySchema)` (`schemas/reputation.ts:13`) — only the *values*
 of the keys change. No schema migration field.
 
-**Soft-reset of existing data (decided):** old bare-`provider` keys (e.g. `"codex"`) no longer
-match any `provider:persona` lookup, so they become inert and age out via the existing
+**Soft-reset of existing data (decided):** old bare-`provider` keys (e.g. `"codex"`) carry no
+persona segment. They are made inert **explicitly** — `unreliableReviewers` and `forDoctor`
+skip any key that does not contain a `:` (a legacy bare-provider key), so a leftover `"codex"`
+key can neither demote a finding (its key space never intersects the `provider:persona`
+`confirmed_by` keys anyway) **nor** show a phantom row in `doctor`. Their events also age out via
 time-decay + Slice-A pruning. No migration code — the persona of historical events is not
 reconstructable, and reputation is advisory, demote-only, and neutral-start, so a brief
-re-learning window is acceptable.
+re-learning window is acceptable. (The discriminator relies only on the fact that **provider
+IDs are a fixed enum with no colon** — `codex|gemini|claude-code|openrouter|opencode` — so a
+legacy bare-provider key never contains `:`, while a composite `provider:persona` key always
+does. Personas are free config strings, so the second colon-segment isn't schema-constrained,
+but that doesn't affect the discriminator: `key.includes(":")` separates legacy provider IDs
+from composite keys regardless of the persona's content.)
 
 **`eid`:** the event-id appends the composite key as its trailing segment —
 `${sessionId}:${cycleSeq}:${iter}:${finding_id}:${verdict}:${provider}:${persona}` (today it
@@ -89,8 +97,8 @@ exemption, one-step `DEMOTE`) are unchanged.
 ## 3. Renames (honesty — values are no longer bare providers)
 
 - `store.ts` `RecordInput.provider` → **`reviewerKey`** (string, holds `provider:persona`).
-- `store.ts` `unreliableProviders(cfg, now): Set<string>` → **`unreliableReviewers(cfg, now): Set<string>`** (returns composite keys). Internals (`derive`, the `Object.keys(rep.reviewers)` loop) are renamed from `provider` to `reviewer`/`reviewerKey` locals — purely cosmetic, the iteration is already generic.
-- `store.ts` `forDoctor` row field `provider` → **`reviewer`** (composite key string).
+- `store.ts` `unreliableProviders(cfg, now): Set<string>` → **`unreliableReviewers(cfg, now): Set<string>`** (returns composite keys). Internals (`derive`, the `Object.keys(rep.reviewers)` loop) are renamed from `provider` to `reviewer`/`reviewerKey` locals. **Skip legacy keys:** within the loop, `continue` on any key that does not contain `:` (a bare-provider key from before Slice B) so it never enters the returned set.
+- `store.ts` `forDoctor` row field `provider` → **`reviewer`** (composite key string). **Skip legacy keys** the same way — `forDoctor` only emits rows for keys containing `:`, so a leftover bare-provider key shows no phantom row.
 - `orchestrator.ts`: call site `.unreliableProviders(...)` → `.unreliableReviewers(...)`; the local/`AggregateInput` field stays **`repUnreliable`** (already generic). Update its doc comment to say "provider:persona keys".
 - `score.ts`: **no change** — it is pure event math (`decayedCount`/`trustScore`/`isUnreliable`/`RepDerived`) and never references `provider`.
 - `schemas/reputation.ts`: **no change** (generic `reviewers` record).
@@ -138,8 +146,10 @@ TDD. Reproduce the persona-granular scenario first:
 - **store:** `unreliableReviewers` returns composite keys; record/dedup/prune work on composite
   keys (Slice-A pruning unaffected).
 - **doctor:** renders a per-`provider:persona` row + `⚠ demoting`.
-- **soft-reset:** an old bare-`provider` key in `reputation.json` does not appear in
-  `unreliableReviewers` (no match) — i.e. it cannot demote anything.
+- **soft-reset:** seed a `reputation.json` with a below-floor legacy bare `"codex"` key →
+  `unreliableReviewers` excludes it (no `:`), `forDoctor` emits no row for it, AND a finding with
+  `confirmed_by: ["codex:security"]` is NOT demoted by it. (All three: store filter + structural
+  key-space non-intersection.)
 - Update existing Slice-1 reputation tests that asserted bare-`provider` keys/`unreliableProviders`
   to the composite-key API.
 - Full suite green; `bunx tsc --noEmit` + `bun run lint` clean.
@@ -152,8 +162,11 @@ TDD. Reproduce the persona-granular scenario first:
   comment), `src/cli/commands/doctor.ts` (`r.provider`→`r.reviewer`).
 - **No change:** `src/schemas/reputation.ts`, `src/schemas/finding.ts`, `src/core/reputation/score.ts`.
 - **Tests:** `tests/unit/reputation-store.test.ts`, `tests/unit/reputation-learn.test.ts`,
-  `tests/unit/aggregator-reputation.test.ts`, `tests/unit/doctor-reputation.test.ts`
-  (+ any Slice-1 test asserting the old bare-provider API).
+  `tests/unit/aggregator-reputation.test.ts`, `tests/unit/doctor-reputation.test.ts`, and
+  **`tests/unit/orchestrator.test.ts`** (has `RecordInput` object literals using `.provider`
+  ~lines 175-181 and 215-221 that the `provider`→`reviewerKey` rename breaks — `tsconfig.json`
+  includes `tests/**/*`, so these must be updated or typecheck fails). Grep the whole `tests/`
+  tree for `unreliableProviders` and `provider:` RecordInput literals to catch any other site.
 
 Related: `[[2026-05-25-reviewer-reputation-design]]`, `[[2026-05-25-reputation-slice-a-design]]`,
 `[[project_reviewer_reputation]]`, `[[reference_critical_single_reviewer]]`.
