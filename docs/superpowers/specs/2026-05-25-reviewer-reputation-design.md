@@ -23,17 +23,29 @@ reviewgate.reputation.v1
 {
   schema: "reviewgate.reputation.v1",
   reviewers: {
-    "<provider>::<persona>": {
-      correct: [ { ts: ISO } ],   // confirmed-correct events (accepted + action:fixed)
-      wrong:   [ { ts: ISO } ],   // confirmed-wrong events (rejected + reviewer_was_wrong:true)
+    "<provider>": {
+      correct: [ { ts: ISO, eid: string } ],  // confirmed-correct (accepted + action:fixed)
+      wrong:   [ { ts: ISO, eid: string } ],  // confirmed-wrong (rejected + reviewer_was_wrong)
     }
   }
 }
 ```
 
-Key = `provider::persona` (a reviewer = a provider running a persona; the same provider
-on a different persona is tracked separately). Events store only a timestamp — the score
-is derived on read, so decay needs no rewrite.
+**Key = `provider`** (NOT `provider::persona`). Rationale (verified against the code): a
+merged cross-provider finding's corroborating sources live in `finding.members[]`, which
+carry `provider` but **NOT** `persona` (`src/schemas/finding.ts:55-62`); only the
+representative has `reviewer.persona`. Persona-level reputation can't be reconstructed for
+members, so Slice 1 tracks reputation per provider. (Persona granularity is a later
+refinement that would require adding `persona` to `members`.)
+
+**Event id (`eid`) for crash-safe idempotency:** each event carries a stable id
+`${session_id}:${iter}:${finding_id}:${verdict}`. Recording is **idempotent** — an event
+whose `eid` already exists is skipped. This removes the need for any `state.json`
+"counted-through" marker (the earlier marker design was broken: `state.iteration` resets
+to 0 on re-arm, so a high-water mark would never re-trigger in later cycles), and it is
+crash-safe: re-applying an iteration's decisions after a crash mid-write de-dupes by `eid`
+rather than double-counting. Events store a timestamp + eid only — the score is derived on
+read, so decay needs no rewrite.
 
 **Derived score (on read):**
 - Apply exponential time-decay to each event: `weight = 0.5 ^ (ageDays / halfLifeDays)`.
@@ -48,29 +60,25 @@ on write to keep the file bounded — purely a storage optimization, no behavior
 ## 2. Signal source (anti-abuse anchored)
 
 Reputation is updated **only** from confirmed decisions bound to **real** `pending.json`
-finding ids — exactly the fabrication-proof anchor `computeRejectRate` uses. The
-`(provider, persona)` of each decided finding comes from the finding object in
-`pending.json` (panel-authored), **never** from agent-authored decision lines.
+finding ids — exactly the fabrication-proof anchor `computeRejectRate` /
+`learnFromDecisions` use. The `provider`(s) of each decided finding come from the finding
+object in `pending.json` (panel-authored: `finding.reviewer.provider` + every
+`finding.members[].provider`), **never** from agent-authored decision lines.
 
-Per finding id that has a valid `DecisionEntry`:
-- `verdict:"accepted"` with `action:"fixed"` → one **correct** event for that finding's
-  `(provider, persona)`.
+Per finding id that has a valid `DecisionEntry`, for **each distinct provider** that
+contributed to that finding (representative + members, deduped per provider per finding —
+mirroring `learnFromDecisions`):
+- `verdict:"accepted"` with `action:"fixed"` → one **correct** event.
 - `verdict:"rejected"` with `reviewer_was_wrong:true` → one **wrong** event.
 - any other decision (rejected without `reviewer_was_wrong`, e.g. won't-fix) → **neutral**
   (no event).
 
-A finding merged across providers (the aggregator clusters cross-provider confirmations)
-credits/debits **each** contributing `(provider, persona)` once (dedup per pair per
-finding), mirroring `learnFromDecisions` in the FP-ledger.
-
 **Update timing & idempotency:** updated once per iteration, at the decision-gate in
 `LoopDriver.run()` — the same point where the `fp-streak` accumulator folds in iteration
-`state.iteration`. Uses a **separate** `reputation_counted_through_iter` marker in
-`state.json` (NOT the `fp_counted_through_iter` one): the fp-streak marker resets on
-re-arm, but reputation is cross-cycle, so it must not be reset with it. The marker
-guarantees a re-stop of the same iteration cannot double-count within a cycle; the
-`reputation.json` events themselves are **per-repo and persistent** — **NOT** reset on
-re-arm / clean PASS / commit. Reputation only fades via time-decay.
+`state.iteration`. Idempotency is by **`eid` dedup** in `reputation.json` (see §1), so
+**no `state.json` marker is added** and a re-stop / crash-retry of the same iteration
+cannot double-count. The `reputation.json` events are **per-repo and persistent** — NOT
+reset on re-arm / clean PASS / commit; they only fade via time-decay.
 
 ## 3. Effect (in the aggregator)
 
@@ -81,21 +89,34 @@ aggregation:
 For a surviving finding, if **all** of these hold, demote it **one severity step**
 (`CRITICAL→WARN`, `WARN→INFO`; INFO unchanged — **never dropped, never below INFO**):
 1. reputation is enabled,
-2. the finding's consensus is **singleton** (this reviewer is its only source — a
-   corroborated finding, `unanimous`/`majority`, is **never** reputation-demoted),
-3. its sole `(provider, persona)` is **unreliable** (`samples >= minSamples && trust <
-   trustFloor`).
+2. **the finding is NOT security/correctness** — `touchesSecurityOrCorrectness(f)` (the
+   representative OR any merged member's category) must be false. This is a hard
+   exemption: a security/correctness CRITICAL is **never** reputation-demoted, because
+   the aggregator hard-FAILs those regardless of consensus (`aggregator.ts:339-343`) and
+   suppressing a real security finding because "this reviewer is often noisy" is exactly
+   the wrong trade. (This also shrinks the poisoning blast radius to non-security
+   findings — see §4.)
+3. the finding is **un-corroborated** — `consensus ∈ {singleton, minority}`. Verified
+   against `computeConsensus` (`aggregator.ts:46-52`): a lone flag is `singleton` on a
+   ≤2-reviewer panel and `minority` on a ≥3-reviewer panel; both mean "one reviewer's
+   un-backed call". `unanimous`/`majority` (corroborated) are **never** reputation-demoted.
+4. **every** contributing provider is **unreliable** (`samples >= minSamples && trust <
+   trustFloor`). For an un-corroborated finding there is effectively one provider; the
+   "every" guard ensures a finding that happens to list a reliable provider among members
+   is not demoted.
 
-Mark the demoted finding (e.g. `reputation_demoted: true` + a note in `details`) so
-`pending.md` and the audit show *why* it was demoted. A reputation-demoted finding still
-appears in the report; it just no longer hard-blocks alone.
+Mark the demoted finding (`reputation_demoted: true` + a note in `details`, like the
+existing `scope_demoted` / `low_confidence` flags) so `pending.md` and the audit show
+*why*. A reputation-demoted finding still appears in the report; it just no longer
+hard-blocks alone.
 
-Interaction with the singleton-CRITICAL rule
-([[reference_critical_single_reviewer]]): that rule makes a **lone** CRITICAL a hard FAIL
-when the panel collapsed to one reviewer. Reputation demotion runs **before** the verdict
-tally, so a lone CRITICAL from an *unreliable* sole reviewer becomes a lone WARN — which
-under `softPassPolicy:"block"` still blocks, and under `"allow"` soft-passes. This is the
-intended, bounded effect.
+Interaction with existing rules (all verified in `aggregator.ts:337-360`): demotion runs
+**before** the verdict tally. The security/correctness hard-FAIL is exempted (above). The
+singleton-CRITICAL-on-a-1-reviewer-panel hard-FAIL rule
+([[reference_critical_single_reviewer]]) then sees the already-demoted WARN — i.e. an
+*unreliable* lone reviewer's NON-security CRITICAL becomes a lone WARN. Under
+`softPassPolicy:"block"` that still blocks; under the default `"allow"` it soft-passes
+(see §4 for why this is acceptable).
 
 ## 4. Anti-abuse: reputation poisoning (accepted risk + mitigations)
 
@@ -103,20 +124,27 @@ intended, bounded effect.
 *real* CRITICALs as `reviewer_was_wrong`, tank that reviewer's reputation, and thereby
 get future *real* CRITICALs from it demoted to non-blocking — a persistent gate bypass.
 
-**Accepted for Slice 1, with layered mitigations:**
-- **Demote-only, one step, lone-only, never below INFO, never corroborated** — a poisoned
-  reviewer's CRITICAL becomes at most a lone WARN, which still blocks under
-  `softPassPolicy:"block"`; corroborated findings are untouched.
-- **Expensive & time-gated** — `trustFloor` requires *many* confirmed-wrong events,
-  decayed over time, so poisoning takes sustained effort across cycles.
+**Honest blast radius:** under the **default `softPassPolicy:"allow"`**, a poisoned
+reviewer's demoted lone CRITICAL→WARN yields SOFT-PASS → it **passes by default** (not only
+under an explicitly permissive config). So poisoning *can* make a reviewer's future
+**non-security** lone findings non-blocking. We accept this for Slice 1, bounded by:
+
+- **Security/correctness is fully exempt** (§3 rule 2) — the highest-stakes findings can
+  **never** be reputation-demoted, so poisoning cannot suppress a real security/correctness
+  CRITICAL regardless of policy. This is the key bound.
+- **Demote-only, one step, un-corroborated only, never below INFO** — a poisoned reviewer's
+  non-security CRITICAL becomes at most a lone WARN (still blocks under `"block"` policy);
+  corroborated findings are untouched.
+- **Expensive & time-gated** — `trustFloor` over `minSamples` decayed events requires
+  *sustained* confirmed-wrong rejections across cycles, not a one-off.
 - **Leaves a trail** — every rejection wave still feeds the per-cycle `reject-rate` and
-  cross-iteration `reviewer-fp-streak` escalations, so sustained mass-rejection surfaces
-  to the human regardless.
-- **`reviewer_was_wrong` is already a trusted channel** (that is how rejection works
-  today); reputation only makes it persistent, while the existing backstops remain.
+  cross-iteration `reviewer-fp-streak` escalations, so sustained mass-rejection surfaces to
+  the human regardless.
+- **`reviewer_was_wrong` is already a trusted channel** (that is how rejection works today);
+  reputation only makes it persistent, while the existing backstops remain.
 
 If field experience shows poisoning is a real problem, a later slice can require
-corroboration to *lower* reputation, or cap reputation's effect under `"allow"` policy.
+corroboration to *lower* reputation, or refuse demotion under `"allow"` policy.
 
 ## 5. Config & default
 
@@ -127,9 +155,13 @@ other learning subsystems `brain` / `fpLedger`):
 phases.reputation = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 }
 ```
 
-Neutral-start (`minSamples`) guarantees **no effect** without accumulated data,
-so the test suite and fresh repos are unaffected (no `reputation.json` → neutral → no
-demotion → no network, no behavior change). `enabled:false` fully disables it.
+Neutral-start (`minSamples`) guarantees **no runtime effect** without accumulated data
+(no `reputation.json` → neutral → no demotion → no network, no verdict change), so
+existing behavior tests are runtime-unaffected. **However**, adding a default-on
+`phases.reputation` object changes the effective-config SHAPE, so config-shape / setup
+snapshot tests (e.g. `tests/unit/config-fpledger.test.ts`, `tests/unit/setup-prefill.test.ts`)
+**will need updating** — that's expected work in the plan, not a behavior regression.
+`enabled:false` fully disables it.
 
 ## 6. Doctor surfacing
 
@@ -141,16 +173,25 @@ Extend `reviewgate doctor` with a `reviewer reputation` line (analogous to the n
 ## 7. Testing
 
 TDD, reproducing the real scenario first:
-- **Demotes a lone CRITICAL** from a reviewer whose `reputation.json` is below floor →
-  becomes WARN (verdict SOFT-PASS instead of FAIL).
-- **Does NOT demote a corroborated CRITICAL** (≥2 reviewers) even if one is unreliable.
+- **Demotes a lone non-security CRITICAL** from a below-floor reviewer → becomes WARN
+  (verdict SOFT-PASS instead of FAIL).
+- **NEVER demotes a security/correctness CRITICAL** even from a below-floor reviewer
+  (hard exemption — verdict stays FAIL).
+- **Does NOT demote a corroborated finding** (`unanimous`/`majority`) even if a contributing
+  provider is unreliable.
+- **Un-corroborated covers both** `singleton` (≤2-reviewer panel) and `minority`
+  (≥3-reviewer panel) — a real lone flag in a 3-reviewer panel IS demotable.
 - **Neutral-start:** below `minSamples`, no demotion (trust ignored).
 - **Decay/recovery:** a reviewer with old wrong events + recent correct events climbs back
   above floor → no longer demoted.
 - **Anti-abuse anchor:** reputation updates ignore decision lines for finding ids not in
-  `pending.json` (no fabrication), and credit the correct `(provider, persona)`.
-- **Persistence:** reputation survives a clean PASS / re-arm (NOT reset), unlike fp-streak.
-- **Doctor line** renders counts + `⚠ demoting`.
+  `pending.json` (no fabrication), and credit/debit every contributing `provider`.
+- **`eid`-dedup idempotency:** re-applying the same iteration's decisions (re-stop /
+  crash-retry) does not double-count.
+- **Persistence:** reputation events survive a clean PASS / re-arm (NOT reset), unlike the
+  fp-streak counter.
+- **Score math (pure unit):** decay half-life, Beta smoothing, floor/min-samples boundaries.
+- **Doctor line** renders per-provider counts + `⚠ demoting`.
 - Full suite green; `bunx tsc --noEmit` + `bun run lint` clean.
 
 ## 8. File map
@@ -158,11 +199,13 @@ TDD, reproducing the real scenario first:
 - Create: `src/schemas/reputation.ts` (zod schema), `src/core/reputation/store.ts`
   (locked atomic read/write + derived score + decay), `src/core/reputation/score.ts`
   (pure decay/trust math — unit-testable in isolation).
-- Modify: `src/core/loop-driver.ts` (update reputation at the decision-gate, no re-arm
-  reset), `src/core/aggregator.ts` (reputation demote-only pass, before the verdict
-  tally), `src/schemas/state.ts` (`reputation_counted_through_iter` marker, default 0,
-  NOT reset on re-arm), `src/config/defaults.ts` + `src/config/define-config.ts`
-  (`phases.reputation` section), `src/cli/commands/doctor.ts` (reputation line).
+- Modify: `src/core/loop-driver.ts` (update reputation at the decision-gate via `eid`-dedup
+  — no `state.json` marker, no re-arm reset), `src/core/aggregator.ts` (reputation
+  demote-only pass before the verdict tally, with the security/correctness exemption +
+  `consensus ∈ {singleton, minority}` guard, reusing `touchesSecurityOrCorrectness`),
+  `src/config/defaults.ts` + `src/config/define-config.ts` (`phases.reputation` section),
+  `src/cli/commands/doctor.ts` (reputation line). Update config-shape/setup tests for the
+  new field.
 - Tests: `tests/unit/reputation-score.test.ts`, `tests/unit/reputation-store.test.ts`,
   `tests/unit/aggregator-reputation.test.ts`, `tests/unit/loop-driver.test.ts` (update
   timing), `tests/unit/doctor-reputation.test.ts`.
