@@ -139,28 +139,40 @@ successful reclaim returns true → immediate `tryCreate` retry, no added latenc
   the acquire timeout. **No path produces a double-hold; the worst case is a (vanishingly rare)
   liveness degrade to timeout** — consistent with the existing dead-pid-only philosophy.
 
-## 4. Verification (the hard part — must be REAL)
+## 4. Verification (Option A — deterministic mechanism tests; chosen)
 
-In-process *end-to-end* stress of the deep race is **not viable**: seeding a dead `.steal` + dead
-main lock under heavy contention wedges into a timeout rather than emitting a clean double-hold
-signal (verified empirically). So we verify the **exact defect** — steal-mutex mutual exclusion —
-directly, decoupled from the main-lock machinery:
+The emergent double-hold is **not reproducible by stress** — verified empirically: a targeted
+in-process exclusivity stress (10 workers × 30 rounds, seeded dead steal-mutex) stays `worst=1`
+pre-fix because the live-move window is too tight for the single-process event-loop scheduler to
+hit; the e2e variant just wedges to a timeout. The race is only reachable cross-process with a
+crash. Forcing it deterministically would require fault-injection await-seams **in correctness-
+critical production code** — disproportionate machinery for an unstressable race. Instead we verify
+the **exact new mechanism deterministically** (real tests of real new code, no fakes), and lean on
+Codex's structural proof that the mechanism implies the safety property.
 
-1. **Targeted exclusivity test (primary).** Export `acquireStealMutex` + a release for testing (or
-   a thin test-only wrapper). Seed a dead `<path>.steal` (dead pid). Run N concurrent workers that
-   loop: `acquireStealMutex` → if won, increment a holder counter, hold briefly, decrement,
-   `releaseOwned`. Assert the holder counter never exceeds 1 (mutual exclusion), over enough
-   rounds. **Pre-fix** (leaky recovery) this can reach 2; **post-fix** it stays 1. During
-   implementation, confirm this reproduces pre-fix; **if the targeted stress is also unreliable**,
-   fall back to **fault-injection await-seams** (test-only optional hooks at the
-   isReclaimable→rename boundary) to force the interleaving deterministically.
-2. **Main path unchanged.** The existing `flock.test.ts` "never double-hold" test + the 12-worker
-   stress (used to verify the prior fix) must stay green — the main path and fast path are untouched.
-3. **No-recovery degrade.** A test that a dead `<path>.steal.2` makes `recoverDeadStealMutex` back
-   off (returns without throwing) and the caller proceeds (does not double-hold; may time out) —
-   asserting the terminating base case.
-4. **Codex design + code review.** Codex found the residual; it reviews the fix design AND the diff.
-5. Full suite green; `bunx tsc --noEmit` + `bun run lint` clean.
+1. **L2-gating, recover branch (deterministic).** Export `acquireStealMutex` + `releaseOwned` (or a
+   thin test helper). Seed a dead `<m>` steal-mutex (dead pid), NO `<m>.2`. Call
+   `recoverDeadStealMutex(m)` (or `acquireStealMutex(m,…)` which invokes it). Assert: `<m>` is
+   removed (dead reclaimed) and `<m>.2` is gone (L2 released). Verifies the happy recovery.
+2. **L2-gating, back-off branch (deterministic — the terminating base case).** Seed a dead `<m>`
+   AND a **held** `<m>.2` (create it with a live token, simulating another recoverer mid-recovery).
+   Call `recoverDeadStealMutex(m)`. Assert: it returns **without throwing** and leaves `<m>`
+   **unchanged** (the dead mutex is NOT touched — recovery is L2-gated, so no live-move can happen).
+   This is the structural heart of the fix: recovery only proceeds when it holds L2.
+3. **No-progress backoff (deterministic).** With `<m>.2` held (degrade case), assert
+   `reclaimDeadLock(path)` returns `false` (no progress) so `flock` backs off rather than busy-spins.
+4. **Main path + exclusivity sanity.** The existing `flock.test.ts` "never double-hold" test must
+   stay green (main path untouched), and the targeted exclusivity stress is kept as a **non-
+   regression sanity** check (it passes pre- and post-fix — it guards against an OBVIOUS exclusivity
+   break, not the tight race).
+5. **Codex design + code review.** Codex found the residual and PASS'd this design; it also reviews
+   the diff.
+6. Full suite green; `bunx tsc --noEmit` + `bun run lint` clean.
+
+**Honest limitation (documented):** no test reproduces the full emergent cross-process double-hold
+(it is not feasibly reproducible). Confidence rests on: deterministic tests of the L2-gating
+mechanism (1–3) + Codex's structural proof that L2-serialized recovery ⟹ no live-move ⟹ exclusive
+steal-mutex ⟹ airtight main re-check. This is recorded in `[[reference_flock_steal_mutex_deep_race]]`.
 
 ## 5. File map
 
