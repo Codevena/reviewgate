@@ -430,6 +430,7 @@ export class LoopDriver {
           cycleSeq: state.reputation_cycle_seq,
           store: new ReputationStore(this.i.repoRoot),
           nowIso: new Date().toISOString(),
+          halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
         }).catch(() => undefined);
       }
     }

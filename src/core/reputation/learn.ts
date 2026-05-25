@@ -11,8 +11,9 @@ export async function learnReputationFromDecisions(input: {
   cycleSeq: number;
   store: ReputationStore;
   nowIso: string;
+  halfLifeDays?: number;
 }): Promise<void> {
-  const { repoRoot, iter, sessionId, cycleSeq, store, nowIso } = input;
+  const { repoRoot, iter, sessionId, cycleSeq, store, nowIso, halfLifeDays } = input;
   if (iter < 1) return;
   const dp = decisionsPath(repoRoot, iter);
   const pp = pendingJsonPath(repoRoot);
@@ -55,5 +56,8 @@ export async function learnReputationFromDecisions(input: {
       });
     }
   }
-  await store.record(events);
+  await store.record(events, {
+    now: new Date(nowIso),
+    ...(halfLifeDays !== undefined ? { halfLifeDays } : {}),
+  });
 }
