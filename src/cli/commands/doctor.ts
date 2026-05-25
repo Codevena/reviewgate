@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
+import { BrainStore } from "../../core/brain/store.ts";
 import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
@@ -130,6 +131,33 @@ export function brainEmbeddingsCheck(
     };
   }
   return { name, status: "ok", detail: `openrouter / ${brain.embeddings.model}` };
+}
+
+// What the brain has actually LEARNED in this repo (reads .reviewgate/brain/brain.json).
+// Distinct from brainEmbeddingsCheck (which only reports whether the embedder COULD run):
+// this answers "is the gate accumulating memory?". Informational (always ok) — an empty
+// brain is normal early on (promotion needs ≥2 reviewers to converge on a convention).
+export async function brainMemoryCheck(
+  repoRoot: string,
+  cfg: ReviewgateConfig,
+): Promise<Check | null> {
+  if (!cfg.phases.brain?.enabled) return null;
+  const name = "brain memory";
+  const entries = (await new BrainStore(repoRoot).snapshot()).entries;
+  if (entries.length === 0) {
+    return {
+      name,
+      status: "ok",
+      detail:
+        "enabled — no memories learned yet (promotion needs ≥2 reviewers to converge on a convention)",
+    };
+  }
+  const by = (s: string) => entries.filter((e) => e.status === s).length;
+  const parts = (["active", "candidate", "stale", "archived"] as const)
+    .map((s) => ({ s, n: by(s) }))
+    .filter(({ n }) => n > 0)
+    .map(({ s, n }) => `${n} ${s}`);
+  return { name, status: "ok", detail: `${entries.length} memories (${parts.join(", ")})` };
 }
 
 // contextDocs works keyless (lower rate limit), so this is informational (always ok) — it just
@@ -291,6 +319,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (crit) checks.push(crit);
     const emb = brainEmbeddingsCheck(cfg, curatorAvailable);
     if (emb) checks.push(emb);
+    const mem = await brainMemoryCheck(input.repoRoot, cfg);
+    if (mem) checks.push(mem);
     const cur = curatorCheck(cfg, curatorAvailable);
     if (cur) checks.push(cur);
     const cd = contextDocsCheck(cfg, process.env as Record<string, string | undefined>);
