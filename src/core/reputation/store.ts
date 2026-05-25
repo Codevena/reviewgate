@@ -105,6 +105,7 @@ export class ReputationStore {
     const rep = await this.snapshot();
     const out = new Set<string>();
     for (const reviewerKey of Object.keys(rep.reviewers)) {
+      if (!reviewerKey.includes(":")) continue; // legacy bare-provider key (pre-Slice-B) → inert
       if (
         isUnreliable(
           this.derive(reviewerKey, rep, now, cfg.halfLifeDays),
@@ -119,16 +120,18 @@ export class ReputationStore {
 
   async forDoctor(cfg: ReputationConfig, now: Date) {
     const rep = await this.snapshot();
-    return Object.entries(rep.reviewers).map(([reviewerKey, e]) => {
-      const d = this.derive(reviewerKey, rep, now, cfg.halfLifeDays);
-      return {
-        reviewer: reviewerKey,
-        correct: e.correct.length,
-        wrong: e.wrong.length,
-        trust: d.trust,
-        demoting: isUnreliable(d, cfg.minSamples, cfg.trustFloor),
-      };
-    });
+    return Object.entries(rep.reviewers)
+      .filter(([reviewerKey]) => reviewerKey.includes(":")) // hide legacy bare-provider keys
+      .map(([reviewerKey, e]) => {
+        const d = this.derive(reviewerKey, rep, now, cfg.halfLifeDays);
+        return {
+          reviewer: reviewerKey,
+          correct: e.correct.length,
+          wrong: e.wrong.length,
+          trust: d.trust,
+          demoting: isUnreliable(d, cfg.minSamples, cfg.trustFloor),
+        };
+      });
   }
 
   private writeAtomic(rep: Reputation): void {

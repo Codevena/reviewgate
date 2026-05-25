@@ -148,4 +148,23 @@ describe("ReputationStore", () => {
     );
     expect((await s.snapshot()).reviewers["gemini:security"]?.wrong ?? []).toHaveLength(0);
   });
+
+  it("ignores legacy bare-provider keys (no colon) in unreliableReviewers and forDoctor", async () => {
+    const r = repo();
+    const s = new ReputationStore(r);
+    const now = new Date("2026-05-25T00:00:00Z");
+    // Seed a below-floor LEGACY bare key ("codex", no persona segment).
+    await s.record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "codex" as const,
+        outcome: "wrong" as const,
+        eid: `legacy${i}`,
+        ts: now.toISOString(),
+      })),
+      { now, halfLifeDays: 45 },
+    );
+    const cfg = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
+    expect(await s.unreliableReviewers(cfg, now)).not.toContain("codex");
+    expect((await s.forDoctor(cfg, now)).some((row) => row.reviewer === "codex")).toBe(false);
+  });
 });
