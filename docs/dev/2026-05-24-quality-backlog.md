@@ -215,7 +215,16 @@ escalation safety net WORKS (a reasoned `rejected` decision can NOT bypass a rea
 reproducible CRITICAL — it re-blocks each iteration and escalates to the human via
 `max-iterations`). Two real bugs surfaced, root-cause confirmed:
 
-- **Bug B (FUNCTIONAL, signature drift) — `src/diff/signature.ts:35`.** The finding
+- **Bug B (FUNCTIONAL, signature drift) — ✅ FIXED (branch `phase4-signature-stability`).**
+  `normalizeRuleId` (`src/diff/signature.ts`) is now drift-tolerant: lowercase →
+  tokenize on any non-alnum → drop connector/noise words (RULE_ID_NOISE) → dedupe →
+  SORT → rejoin. Collapses connector-insertion / reorder / noise-suffix / dupe /
+  separator drift (incl. the verified `…-via-execsync` case) while keeping distinct
+  rules distinct. One-time self-healing cost: existing FP-ledger entries keyed by
+  old signatures won't re-match until re-accumulated. DoD: Codex PASS + Claude PASS;
+  817 pass / 0 fail. Known residual (expected): can't collapse true synonyms
+  (`sqli` vs `sql-injection`) or a meaningful token present-in-one-run/absent-next.
+  (Original analysis kept below for context.) The finding
   signature hashes the LLM-authored `rule_id` (via `normalizeRuleId`). For IDENTICAL
   code across re-reviews the rule_id drifts ("command-injection-**via**-execsync" vs
   "command-injection-execsync"; `normalizeRuleId` doesn't collapse the "via" infix),

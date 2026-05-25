@@ -85,4 +85,35 @@ describe("computeSignature", () => {
     });
     expect(a).not.toBe(b);
   });
+
+  // Bug B (found via shoal dogfooding): the rule_id is LLM-authored and drifts
+  // between runs for IDENTICAL code, which destabilized the signature →
+  // undermined stuck-detection + FP-ledger re-matching. normalizeRuleId must be
+  // tolerant to that drift (connector words, token order, generic noise, dupes).
+  const sig = (ruleId: string) =>
+    computeSignature({ file: "a.ts", ruleId, category: "security", lineStart: 10, lineEnd: 10 });
+
+  it("is stable across a connector-word drift (the verified shoal case)", () => {
+    // exactly what happened: "...-via-execsync" vs "...-execsync"
+    expect(sig("command-injection-via-execsync")).toBe(sig("command-injection-execsync"));
+  });
+
+  it("is order-insensitive (token reordering by the LLM)", () => {
+    expect(sig("sql-injection")).toBe(sig("injection-sql"));
+  });
+
+  it("drops generic noise suffixes the LLM appends inconsistently", () => {
+    expect(sig("xss-risk")).toBe(sig("xss"));
+    expect(sig("path-traversal-vulnerability")).toBe(sig("path-traversal"));
+  });
+
+  it("collapses duplicate tokens and separator variants", () => {
+    expect(sig("open_redirect")).toBe(sig("open-redirect"));
+    expect(sig("redirect-open-redirect")).toBe(sig("open-redirect"));
+  });
+
+  it("still keeps GENUINELY different rules distinct", () => {
+    expect(sig("command-injection")).not.toBe(sig("path-traversal"));
+    expect(sig("sql-injection")).not.toBe(sig("xss"));
+  });
 });
