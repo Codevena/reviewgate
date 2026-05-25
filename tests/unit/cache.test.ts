@@ -1,6 +1,6 @@
 // tests/unit/cache.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../../src/cache/cache.ts";
@@ -36,5 +36,23 @@ describe("cache", () => {
     });
     const got = await getCachedReview(repo, key);
     expect(got?.verdict).toBe("PASS");
+  });
+  it("getCachedReview honours a caller-supplied TTL (expires before the 7-day default)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-cache-ttl-"));
+    const key = "k-ttl";
+    mkdirSync(join(repo, ".reviewgate", "cache", "reviews"), { recursive: true });
+    // Written 3 days ago.
+    const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
+    writeFileSync(
+      join(repo, ".reviewgate", "cache", "reviews", `${key}.json`),
+      JSON.stringify({
+        ts: threeDaysAgo,
+        review: { verdict: "PASS", counts: { critical: 0, warn: 0, info: 0 } },
+      }),
+    );
+    // 1-day TTL → expired.
+    expect(await getCachedReview(repo, key, 1 * 24 * 60 * 60 * 1000)).toBeNull();
+    // 7-day TTL → still valid.
+    expect(await getCachedReview(repo, key, 7 * 24 * 60 * 60 * 1000)).not.toBeNull();
   });
 });

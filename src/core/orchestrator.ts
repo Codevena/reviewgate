@@ -404,7 +404,11 @@ export class Orchestrator {
     });
 
     if (cacheEnabled) {
-      const cached = await getCachedReview(repo, cacheKey);
+      const cached = await getCachedReview(
+        repo,
+        cacheKey,
+        this.input.config.cache.reviewTtlDays * 24 * 60 * 60 * 1000,
+      );
       if (cached && (cached.verdict === "PASS" || cached.verdict === "SOFT-PASS")) {
         await this.writeReport(opts, start, [], [], cached.verdict, cached.counts);
         return {

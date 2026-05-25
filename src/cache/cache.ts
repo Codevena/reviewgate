@@ -34,14 +34,18 @@ function reviewCachePath(repoRoot: string, key: string): string {
   return join(repoRoot, ".reviewgate", "cache", "reviews", `${key}.json`);
 }
 
-const TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-export async function getCachedReview(repoRoot: string, key: string): Promise<CachedReview | null> {
+export async function getCachedReview(
+  repoRoot: string,
+  key: string,
+  ttlMs: number = DEFAULT_TTL_MS,
+): Promise<CachedReview | null> {
   const p = reviewCachePath(repoRoot, key);
   if (!existsSync(p)) return null;
   try {
     const o = JSON.parse(readFileSync(p, "utf8")) as { ts: number; review: CachedReview };
-    if (Date.now() - o.ts > TTL_MS) return null;
+    if (Date.now() - o.ts > ttlMs) return null;
     return o.review;
   } catch {
     return null;
