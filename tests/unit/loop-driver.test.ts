@@ -807,6 +807,78 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("escalates reviewer-fp-streak when confirmed FPs accumulate ACROSS iterations (below the iter-cap)", async () => {
+    // Reproduces the dogfood bug: a reviewer that hallucinates a FRESH confirmed-FP
+    // CRITICAL each iteration (mutating signature) evades the signature-keyed
+    // FP-ledger/stuck-detection AND the single-iteration reject-rate (1 FP/iter never
+    // reaches the sample floor). With maxIterations raised (5) the iter-cap is NOT the
+    // trigger — the cross-iteration FP streak (threshold 3) must escalate by itself.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQFPSTREAK");
+    writeDirty(repo);
+    const config = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 5, fpStreakThreshold: 3 },
+    };
+    // Stub orchestrator: writes pending.json with ONE fresh CRITICAL each iteration
+    // and returns FAIL with a DISTINCT signature (so stuck-detection never fires).
+    const stub = {
+      runIteration: async (opts: { runId: string; iter: number; signal?: AbortSignal }) => {
+        writeFileSync(
+          pendingJsonPath(repo),
+          JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+        );
+        const summary: RunSummary = {
+          verdict: "FAIL",
+          source: "panel",
+          counts: { critical: 1, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [`sig-${opts.iter}`],
+          providers: [],
+        };
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [`sig-${opts.iter}`],
+          summary,
+        };
+      },
+    };
+    const mkDriver = () =>
+      new LoopDriver({
+        repoRoot: repo,
+        config,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: stub,
+        stopHookActive: false,
+      });
+    // Drive the FAIL → reject-as-confirmed-FP → re-review loop. Each round the agent
+    // rejects the (fresh) finding with reviewer_was_wrong, exactly as in the dogfood.
+    let decision = await mkDriver().run();
+    for (let i = 1; i <= 6 && !decision.reason.includes("ESCALATED"); i++) {
+      const dp = decisionsPath(repo, i);
+      mkdirSync(dirname(dp), { recursive: true });
+      writeFileSync(
+        dp,
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "confirmed false positive, verified by grep at this commit xx", reviewer_was_wrong: true })}\n`,
+      );
+      decision = await mkDriver().run();
+    }
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("ESCALATED");
+    expect(decision.reason).toContain("reviewer-fp-streak");
+    const after = await state.load();
+    expect(after.escalation_reason).toBe("reviewer-fp-streak");
+    // Escalated via the FP streak BELOW the iteration cap — not the max-iterations path.
+    expect(after.iteration).toBeLessThan(5);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
     // The decisions-gate must take precedence: an agent cannot append unrelated
     // reviewer_was_wrong lines to force a reject-rate escape while leaving the
