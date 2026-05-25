@@ -149,6 +149,23 @@ export class CodexAdapter implements ProviderAdapter {
       input.persona,
       input.workingDir,
     );
+    if (findings === null) {
+      // Exit 0 but the last-message was unreadable or not a parseable review
+      // (truncated/malformed JSON). This is NOT a clean review — treat it as an
+      // ERROR (status !== "ok" → excluded from okRuns → feeds the fail-closed
+      // guard) rather than letting findings=[] silently become a PASS.
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage,
+        durationMs: res.durationMs,
+        exitCode: res.exitCode,
+        rawEventsPath: eventsFile,
+        status: "error",
+        statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+      };
+    }
     let rawText = "";
     try {
       rawText = readFileSync(lastMsgFile, "utf8");
@@ -271,20 +288,23 @@ export class CodexAdapter implements ProviderAdapter {
 
   // Maps codex's review-schema output into the richer Reviewgate Finding via
   // the shared review-output module. Malformed entries are dropped.
+  // Returns the parsed findings (possibly empty for a clean review), or `null`
+  // when the last-message could not be read or did not parse as a review — the
+  // caller turns `null` into an ERROR rather than a silent empty PASS.
   private extractFindings(
     lastMsgFile: string,
     model: string,
     persona: string,
     workingDir: string,
-  ): Finding[] {
+  ): Finding[] | null {
     let raw: string;
     try {
       raw = readFileSync(lastMsgFile, "utf8");
     } catch {
-      return [];
+      return null;
     }
     const out = parseReviewOutput(raw);
-    if (!out) return [];
+    if (!out) return null;
     return mapReviewOutputToFindings(out, { provider: "codex", model, persona, workingDir });
   }
 }

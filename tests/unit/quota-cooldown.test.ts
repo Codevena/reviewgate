@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaCooldownStore, parseQuotaResetAt } from "../../src/core/quota-cooldown.ts";
@@ -46,6 +46,16 @@ describe("parseQuotaResetAt", () => {
 
 describe("QuotaCooldownStore", () => {
   const repo = () => mkdtempSync(join(tmpdir(), "rg-cd-"));
+
+  test("write is atomic: leaves no stray .tmp and produces a readable file", () => {
+    const r = repo();
+    const s = new QuotaCooldownStore(r);
+    s.record("codex", new Date(NOW.getTime() + 60_000).toISOString(), NOW);
+    const dir = join(r, ".reviewgate");
+    const leftovers = readdirSync(dir).filter((f) => f.endsWith(".tmp"));
+    expect(leftovers).toEqual([]);
+    expect(s.activeUntil("codex", NOW)).not.toBeNull();
+  });
 
   test("records a cooldown and reports it active until the reset time", () => {
     const r = repo();

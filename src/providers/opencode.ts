@@ -124,14 +124,28 @@ export class OpenCodeAdapter implements ProviderAdapter {
 
     const stdout = readFileSync(stdoutFile, "utf8");
     const out = parseReviewOutput(stdout);
-    const findings = out
-      ? mapReviewOutputToFindings(out, {
-          provider: "opencode",
-          model: input.cfg.model,
-          persona: input.persona,
-          workingDir: input.workingDir,
-        })
-      : [];
+    if (!out) {
+      // Exit 0 but stdout is not a parseable review (opencode/MiniMax can
+      // truncate before emitting valid JSON). NOT a clean review → ERROR
+      // (status !== "ok" → excluded from okRuns) rather than a silent empty PASS.
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+        durationMs: res.durationMs,
+        exitCode: res.exitCode,
+        rawEventsPath: stdoutFile,
+        status: "error",
+        statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+      };
+    }
+    const findings = mapReviewOutputToFindings(out, {
+      provider: "opencode",
+      model: input.cfg.model,
+      persona: input.persona,
+      workingDir: input.workingDir,
+    });
 
     return {
       reviewerId: input.reviewerId,

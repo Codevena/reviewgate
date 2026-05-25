@@ -33,7 +33,10 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
     ts: new Date().toISOString(),
     ...(baseSha ? { base_sha: baseSha } : {}),
   });
-  const tmp = `${p}.tmp`;
+  // Unique temp name (not a shared `${p}.tmp`) so parallel PostToolUse triggers
+  // on the same checkout can't clobber each other's in-flight write before the
+  // atomic rename completes.
+  const tmp = `${p}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
   if (!existsSync(dirname(p))) mkdirSync(dirname(p), { recursive: true });
   writeFileSync(tmp, body, { mode: 0o600 });
   const { renameSync } = await import("node:fs");

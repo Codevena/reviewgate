@@ -13,6 +13,14 @@ export function lockPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), ".lock");
 }
 
+// Serializes the whole stop-hook gate run (LoopDriver + Orchestrator), so two
+// stop-hooks on the same checkout can't run reviews in parallel and interleave
+// writes to pending.*, decisions, and the dirty flag. Distinct from `lockPath`,
+// which only guards individual state.json writes.
+export function gateLockPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "gate.lock");
+}
+
 export function dirtyFlagPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "dirty.flag");
 }

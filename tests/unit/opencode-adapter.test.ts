@@ -102,6 +102,33 @@ describe("OpenCodeAdapter (mocked binary)", () => {
     process.env.OC_ARGS_FILE = undefined;
   });
 
+  it("exit 0 with unparseable stdout → verdict ERROR (not empty PASS)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-garbage-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-opencode-garbage.sh",
+      `#!/usr/bin/env bash\nprintf '%s\\n' 'garbage, not a review'\nexit 0\n`,
+    );
+    const promptFile = join(dir, "prompt.txt");
+    const diffPath = join(dir, "diff.patch");
+    writeFileSync(promptFile, "review this");
+    writeFileSync(diffPath, "diff --git a/a.ts b/a.ts");
+
+    const adapter = new OpenCodeAdapter({ binPath });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "minimax/minimax-m2.7", timeoutMs: 60_000 },
+      reviewerId: "opencode-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "security",
+      diffPath,
+    });
+    expect(result.verdict).toBe("ERROR");
+    expect(result.status).toBe("error");
+    expect(result.findings).toEqual([]);
+  });
+
   it("returns status=error and verdict=ERROR when opencode exits non-zero", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-oc-err-"));
     const binPath = makeFakeBin(dir, "fake-opencode-err.sh", FAIL_SCRIPT);

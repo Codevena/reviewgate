@@ -7,8 +7,10 @@ import { AuditLogger } from "../../src/audit/logger.ts";
 import { defaultConfig } from "../../src/config/defaults.ts";
 import { LoopDriver } from "../../src/core/loop-driver.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
+import type { IterationResult } from "../../src/core/orchestrator.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
+import type { RunSummary } from "../../src/schemas/audit-event.ts";
 import { auditDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../../src/utils/paths.ts";
 
 // A documentation-only diff: triage skips the panel → PASS without a reviewer.
@@ -1065,5 +1067,72 @@ describe("LoopDriver cost-cap escalation", () => {
     const decision = await driver.run();
     expect((await state.load()).escalation_reason ?? "").not.toBe("cost-cap");
     expect(decision.kind).toBe("allow_stop"); // doc-only diff PASSes; cost-cap disabled
+  });
+});
+
+describe("LoopDriver softPassPolicy", () => {
+  const SOFT_SUMMARY: RunSummary = {
+    verdict: "SOFT-PASS",
+    source: "panel",
+    counts: { critical: 0, warn: 1, info: 0 },
+    cost_usd: 0,
+    duration_ms: 1,
+    demoted: 0,
+    signatures: ["sig-w1"],
+    providers: [],
+  };
+  const SOFT_RESULT: IterationResult = {
+    verdict: "SOFT-PASS",
+    costUsd: 0,
+    durationMs: 1,
+    signaturesThisIter: ["sig-w1"],
+    summary: SOFT_SUMMARY,
+  };
+  const softOrch = { runIteration: async () => SOFT_RESULT };
+
+  function softDriver(repo: string, state: StateStore, policy: "allow" | "block" | "ask-once") {
+    return new LoopDriver({
+      repoRoot: repo,
+      config: { ...defaultConfig, loop: { ...defaultConfig.loop, softPassPolicy: policy } },
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: softOrch,
+      stopHookActive: false,
+    });
+  }
+
+  it("allow: SOFT-PASS opens the gate (allow_stop) and re-arms", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSOFTA");
+    writeDirty(repo);
+    const decision = await softDriver(repo, state, "allow").run();
+    expect(decision.kind).toBe("allow_stop");
+    expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+    expect((await state.load()).iteration).toBe(0);
+  });
+
+  it("block: SOFT-PASS blocks the turn, keeps the dirty flag, advances iteration", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSOFTB");
+    writeDirty(repo);
+    const decision = await softDriver(repo, state, "block").run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("GATE CLOSED");
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    expect((await state.load()).iteration).toBe(1);
+  });
+
+  it("ask-once: SOFT-PASS blocks ONCE, deletes dirty flag (re-stop allows), re-arms", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQSOFTC");
+    writeDirty(repo);
+    const decision = await softDriver(repo, state, "ask-once").run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("SOFT-PASS");
+    expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+    expect((await state.load()).iteration).toBe(0);
   });
 });

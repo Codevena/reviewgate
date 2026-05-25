@@ -42,6 +42,20 @@ describe("StateStore", () => {
     expect(files.some((f) => f.startsWith("state.json.corrupt."))).toBe(true);
   });
 
+  it("rethrows a genuine I/O error instead of wiping state (not corruption)", async () => {
+    const dir = tmp();
+    const store = new StateStore(dir);
+    await store.initialise("01HXQIO");
+    // Force load() to throw a non-parse, non-schema error (e.g. EBUSY / AV lock).
+    // load is a public method, so reassigning it is type-compatible — no
+    // type-suppression directive needed (an unused one would fail tsc).
+    const ioErr = Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+    store.load = async () => {
+      throw ioErr;
+    };
+    await expect(store.loadOrRecover("01HXQIO2")).rejects.toThrow("EBUSY");
+  });
+
   it("updates state atomically", async () => {
     const dir = tmp();
     const store = new StateStore(dir);
