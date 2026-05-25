@@ -4,8 +4,16 @@
 
 **Goal:** Below a hard trust floor (well under the demote floor), **skip a reviewer entirely**
 for the cycle — don't even run it — instead of merely demoting its findings. Saves time/quota on
-a chronically-wrong reviewer. Opt-in, default OFF, and fails safe: it can only shrink the panel,
-never open the gate.
+a chronically-wrong reviewer. Opt-in, default OFF.
+
+**Honest safety scope (important):** unlike the Slice-1 demote pass — which *never* demotes a
+security/correctness finding — quarantine removes **all** of the skipped reviewer's findings,
+including security/correctness CRITICALs (the reviewer didn't run, so they don't exist). Quarantine
+**can therefore move a verdict toward PASS by omission.** This is an accepted, bounded opt-in risk
+(see §4), not a "can never open the gate" guarantee. The justification: a reviewer below
+`quarantineFloor` (0.15) has been confirmed wrong on ~85%+ of its findings over ≥`minSamples`
+decisions, so its findings — security included — are no longer credible *here*; the operator opts
+in to stop trusting that source.
 
 **Non-goals:** changing the scoring math, the demote pass (Slice 1), the persona keying (Slice B),
 or consensus; cross-repo reputation; a setup-wizard toggle; emitting a full `ESCALATION.md`
@@ -75,8 +83,13 @@ export function selectActiveReviewers<R>(
 ```
 
 **Orchestrator wiring** (`orchestrator.ts`): `activeReviewers` is currently `const` at line ~490 and
-consumed by the `tasks` map at line ~593. Do NOT mutate it — derive a `panelReviewers`:
+consumed by the `tasks` map at line ~593. Do NOT mutate it — derive a `panelReviewers`. **Reuse the
+single `repCfg`** the function already declares for the demote pass (line ~880,
+`const repCfg = this.input.config.phases.reputation`): **hoist that one declaration up** to before
+the run loop and reference it in both places — do NOT declare a second `const repCfg` (duplicate
+block-scoped identifier = compile error).
 ```ts
+// repCfg hoisted here (was declared at ~880 for the demote pass; now one declaration serves both)
 const repCfg = this.input.config.phases.reputation;
 let panelReviewers = activeReviewers;
 let panelNote: string | undefined;
@@ -112,18 +125,22 @@ lone non-security findings. **Never** un-reviewed, **never** a permanent hard bl
 ## 4. Safety & anti-abuse
 
 - **Default OFF** (`quarantine.enabled:false`) → zero behavior change unless opted in; existing
-  behavior tests unaffected.
-- **Expensive to earn:** sustained `trust < 0.15` over `>= minSamples` (8) decayed events.
-- **Only shrinks the panel; never opens the gate.** Interactions, all preserved:
-  - shrink to 1 reviewer → the singleton-CRITICAL hard-FAIL rule still blocks a lone CRITICAL
-    (`[[reference_critical_single_reviewer]]`);
-  - shrink to 0 → the empty-panel fallback runs the full panel (NOT the 0-run ERROR), so no
-    un-reviewed pass and no permanent block;
-  - a quarantined reviewer's findings simply never exist (it didn't run) — it cannot flip a verdict
-    toward PASS beyond removing its own (already demote-eligible) noise.
-- **Poisoning bound:** even if the agent tanks a reviewer to the quarantine floor, the empty-panel
-  fallback + the Slice-1 demote backstop prevent an un-reviewed pass; sustained mass-rejection still
-  feeds the reject-rate / fp-streak escalations.
+  behavior tests unaffected. This is the primary bound.
+- **Accepted risk — quarantine CAN move a verdict toward PASS by omission.** Removing a reviewer
+  removes its findings, INCLUDING security/correctness CRITICALs (which the demote pass never
+  suppresses). This is the deliberate trade of "skip entirely" and the reason it is opt-in. It is
+  bounded by:
+  - **Expensive to earn:** sustained `trust < 0.15` over `>= minSamples` (8) decayed events — the
+    reviewer has been confirmed wrong on ~85%+ of its findings *here*, so its findings (security
+    included) are no longer credible. Quarantine formalizes "this source is not trustworthy here."
+  - **Other reviewers still run** — only the confirmed-bad `provider:persona` is skipped; the rest
+    of the panel (and their security findings) are unaffected.
+  - **Empty-panel fallback:** if skipping would empty the panel, the full panel runs anyway (NOT the
+    0-run ERROR) — so no un-reviewed pass and no permanent block.
+  - **Reversible:** decays/recovers; auto-clears when the reviewer climbs back above the floor.
+- **Panel-shrink interactions preserved:** shrink to 1 reviewer → the singleton-CRITICAL hard-FAIL
+  rule still blocks a lone CRITICAL (`[[reference_critical_single_reviewer]]`); the per-cycle
+  reject-rate / fp-streak escalations still fire on sustained mass-rejection.
 - **Legacy keys** are already inert (Slice-B `:` filter, inherited via `reviewersBelow`).
 
 ## 5. Config
@@ -143,10 +160,13 @@ only, like the tuning knobs) given default-off + the elevated risk.
 ## 6. Report surfacing
 
 Add an optional `panel_note?: z.string()` to `PendingReportSchema`. `Orchestrator.writeReport`
-gains a trailing optional `panelNote?: string` param; only the main-panel call (line ~906) passes
-it. `ReportWriter` renders it as a prominent line near the top of `pending.md` (above the findings)
-so the agent sees why the panel shrank. Other `writeReport` call sites (early ERROR/PASS, cache)
-omit it (optional). This is the "escalation": agent-visible report note + operator `console.warn`.
+gains a trailing optional `panelNote?: string` param. **Pass `panelNote` to BOTH** the main-panel
+write (line ~906) **AND the zero-ok ERROR write (line ~809/812)** — a quarantine/full-fallback run
+whose remaining reviewers all error exits via the zero-ok ERROR path first, and the note must not be
+lost exactly when the panel was degraded. (Compute `panelNote` before the run loop so it is in scope
+at both writes.) Other call sites (early triage ERROR/PASS, cache) omit it (optional). `ReportWriter`
+renders it as a prominent line near the top of `pending.md` (above the findings) so the agent sees
+why the panel shrank. This is the "escalation": agent-visible report note + operator `console.warn`.
 
 ## 7. Doctor
 
@@ -188,8 +208,11 @@ TDD. Reproduce the skip scenario first:
   side; the demote pass is untouched).
 - **Tests:** `tests/unit/reputation-store.test.ts`, new `tests/unit/reputation-quarantine.test.ts`,
   `tests/unit/orchestrator.test.ts`, `tests/unit/doctor-reputation.test.ts`,
-  `tests/unit/config-diff-serialize.test.ts` (+ any config-shape test asserting the
-  `phases.reputation` shape, e.g. the setup/config tests Slice A touched).
+  `tests/unit/config-diff-serialize.test.ts`, and **`tests/unit/reputation-config.test.ts`** (its
+  "enabled by default with the spec's defaults" and "validates and is overridable" cases assert the
+  exact `phases.reputation` shape → must include the new `quarantine` default `{enabled:false,
+  floor:0.15}`). Grep `tests/` for `phases.reputation` / `reputation:` config literals to catch any
+  other shape assertion.
 
 Related: `[[2026-05-25-reviewer-reputation-design]]`, `[[2026-05-25-reputation-slice-b-design]]`,
 `[[reference_critical_single_reviewer]]`, `[[project_gate_fail_open]]`,
