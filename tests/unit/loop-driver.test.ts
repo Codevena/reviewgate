@@ -404,6 +404,50 @@ describe("LoopDriver", () => {
     expect(md).toContain("| 3    | FAIL    | 1    |"); // last iter CRIT = 1, not 0
   });
 
+  it("escalation history shows REAL per-iteration CRIT/WARN for EARLIER iterations (Bug A)", async () => {
+    // Earlier rows used to be hardcoded to 0 (only the last iter had real counts).
+    // With iteration_stats persisted, every row shows its actual severity split.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQESCSTATS");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["s1"], ["s1"], ["s1"]],
+      iteration_stats: [
+        { critical: 2, warn: 1, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 1, warn: 0, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 1, warn: 0, info: 0, cost_usd: 0, verdict: "FAIL" },
+      ],
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [], counts: { critical: 1, warn: 0, info: 0 } }),
+    );
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const md = readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8");
+    expect(md).toContain("| 1    | FAIL    | 2    | 1    |"); // iter1 CRIT=2 WARN=1 (was 0/0)
+    expect(md).toContain("| 2    | FAIL    | 1    |"); // iter2 CRIT=1 (was 0)
+  });
+
   it("decisions-gate ignores INFO/scope_demoted findings (only CRITICAL/WARN need decisions)", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

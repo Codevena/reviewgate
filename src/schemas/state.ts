@@ -24,6 +24,21 @@ export const ReviewgateStateSchema = z.object({
     output: z.number().int().nonnegative(),
   }),
   signature_history: z.array(z.array(z.string())),
+  // Per-iteration severity counts + verdict + cost, kept length-aligned with
+  // signature_history (appended and reset at the same points). Lets the escalation
+  // report show ACCURATE CRIT/WARN per iteration instead of 0 for the non-final
+  // rows. `.default([])` for back-compat with state.json written before this field.
+  iteration_stats: z
+    .array(
+      z.object({
+        critical: z.number().int().nonnegative(),
+        warn: z.number().int().nonnegative(),
+        info: z.number().int().nonnegative(),
+        cost_usd: z.number().nonnegative(),
+        verdict: z.string(),
+      }),
+    )
+    .default([]),
   decision_history: z.array(
     z.object({
       iter: z.number().int().nonnegative(),
@@ -61,6 +76,7 @@ export function initialState(sessionId: string): ReviewgateState {
     cost_usd_so_far: 0,
     tokens_so_far: { input: 0, output: 0 },
     signature_history: [],
+    iteration_stats: [],
     decision_history: [],
     last_diff_hash: null,
     last_stop_ts: null,

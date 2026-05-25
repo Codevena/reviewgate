@@ -238,13 +238,15 @@ reproducible CRITICAL — it re-blocks each iteration and escalates to the human
   vs `:323`), so at the cap max-iter pre-empts stuck regardless. FIX (needs a design
   call): drop `rule_id` from the signature (more stable, but risks over-merging
   distinct co-located findings) OR normalize rule_id far more aggressively.
-- **Bug A (REPORTING) — `src/core/loop-driver.ts:639-640`.** The ESCALATION.md
-  per-iteration history hard-codes `crit`/`warn` to the CURRENT pending.json counts
-  for the LAST row only (`i === history.length - 1 ? pending.counts.x : 0`) and `0`
-  for all earlier iterations (only `findings: sigs.length` is right everywhere) —
-  past iterations' severity counts aren't persisted. Misleading table; no gate-logic
-  impact. FIX: persist per-iteration counts (alongside `signature_history` or via the
-  audit log) and read them back.
+- **Bug A (REPORTING) — ✅ FIXED (branch `phase4-escalation-counts`).** The
+  ESCALATION.md per-iteration history used to hard-code `crit`/`warn`=0 for every
+  row but the last (past iterations' severity counts weren't persisted). FIX: new
+  `state.iteration_stats` field (`src/schemas/state.ts`, `.default([])` for
+  back-compat) — per-iteration `{critical,warn,info,cost_usd,verdict}` appended and
+  reset length-aligned with `signature_history`; the escalation `perIter` now reads
+  real counts/verdict/cost from it (falls back to the old last-iter-only behaviour
+  for pre-existing state.json). Bonus: a reviewer-ERROR iteration now shows `ERROR`
+  (was hardcoded `FAIL`). DoD: Codex PASS + Claude PASS; 818 pass / 0 fail.
 
 Minor UX (same session): the `acknowledgePass` GATE-OPEN message says "Review is
 clean, no findings to address" even on a SOFT-PASS that carries a non-blocking WARN

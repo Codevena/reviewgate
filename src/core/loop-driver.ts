@@ -235,6 +235,7 @@ export class LoopDriver {
                 iteration: 0,
                 cost_usd_so_far: 0,
                 signature_history: [],
+                iteration_stats: [],
                 escalated: false,
                 escalation_reason: null,
                 escalation_announced: false,
@@ -461,6 +462,20 @@ export class LoopDriver {
         iteration: passed ? 0 : nextIter,
         cost_usd_so_far: passed ? 0 : cur.cost_usd_so_far + result.costUsd,
         signature_history: passed ? [] : [...cur.signature_history, result.signaturesThisIter],
+        // Length-aligned with signature_history: one entry per non-passing iteration
+        // so the escalation report can show this iteration's real severity split.
+        iteration_stats: passed
+          ? []
+          : [
+              ...cur.iteration_stats,
+              {
+                critical: result.summary.counts.critical,
+                warn: result.summary.counts.warn,
+                info: result.summary.counts.info,
+                cost_usd: result.costUsd,
+                verdict: result.verdict,
+              },
+            ],
         escalated: passed ? false : cur.escalated,
         escalation_reason: passed ? null : cur.escalation_reason,
         escalation_announced: passed ? false : cur.escalation_announced,
@@ -595,6 +610,7 @@ export class LoopDriver {
         reasonCode,
         summary,
         state.signature_history,
+        state.iteration_stats,
       );
       await this.i.state.update((cur) => ({ ...cur, escalation_announced: true }));
     }
@@ -621,6 +637,7 @@ export class LoopDriver {
     reasonCode: EscalationReason,
     summary: string,
     history: string[][],
+    stats: ReviewgateState["iteration_stats"],
   ): Promise<void> {
     const w = new ReportWriter(this.i.repoRoot);
     const pending = readPendingReport(this.i.repoRoot);
@@ -630,17 +647,22 @@ export class LoopDriver {
       maxIter: this.i.config.loop.maxIterations,
       reasonCode,
       summary,
-      // Per-iteration history is reconstructed from signature_history, which only
-      // stores finding COUNT per iter — not severity. Only the LAST iteration's
-      // severity split is recoverable (from pending.json); earlier rows stay 0.
-      perIter: history.map((sigs, i) => ({
-        iter: i + 1,
-        verdict: "FAIL",
-        crit: i === history.length - 1 ? pending.counts.critical : 0,
-        warn: i === history.length - 1 ? pending.counts.warn : 0,
-        costUsd: 0,
-        findings: sigs.length,
-      })),
+      // Per-iteration history: finding COUNT from signature_history, severity split
+      // + verdict + cost from the length-aligned iteration_stats (persisted per
+      // iteration). Falls back to the last iter's pending.json counts / FAIL / 0 for
+      // any row missing stats (e.g. state.json written before iteration_stats existed).
+      perIter: history.map((sigs, i) => {
+        const s = stats[i];
+        const isLast = i === history.length - 1;
+        return {
+          iter: i + 1,
+          verdict: s?.verdict ?? "FAIL",
+          crit: s?.critical ?? (isLast ? pending.counts.critical : 0),
+          warn: s?.warn ?? (isLast ? pending.counts.warn : 0),
+          costUsd: s?.cost_usd ?? 0,
+          findings: sigs.length,
+        };
+      }),
       topFindings: pending.findings,
       triggeredAt: new Date().toISOString(),
     });
