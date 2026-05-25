@@ -7,7 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flock } from "../../src/utils/flock.ts";
+import { acquireStealMutex, flock, reclaimDeadLock, releaseOwned } from "../../src/utils/flock.ts";
 
 function lockPath(): string {
   return join(mkdtempSync(join(tmpdir(), "rg-flock-")), "x.lock");
@@ -125,5 +125,46 @@ describe("flock", () => {
     const b = await bPromise;
     expect(bAcquired).toBe(true);
     await b.release();
+  });
+});
+
+describe("flock steal-mutex exclusivity (L2)", () => {
+  const liveToken = () => `${process.pid}-live-${Math.random().toString(36).slice(2)}`;
+
+  it("recovers a dead steal-mutex when L2 is free (acquireStealMutex succeeds, L2 released)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-l2-"));
+    const m = join(dir, "x.steal");
+    writeFileSync(m, `pid=${deadPid()}\nts=${new Date().toISOString()}\ntoken=stale\n`);
+    const tok = liveToken();
+    expect(await acquireStealMutex(m, tok)).toBe(true);
+    expect(readFileSync(m, "utf8")).toContain(`token=${tok}`);
+    expect(existsSync(`${m}.2`)).toBe(false);
+    await releaseOwned(m, tok);
+    expect(existsSync(m)).toBe(false);
+  });
+
+  it("does NOT touch a dead steal-mutex while L2 is held (no live-move; back off)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-l2held-"));
+    const m = join(dir, "x.steal");
+    const dead = `pid=${deadPid()}\nts=${new Date().toISOString()}\ntoken=stale\n`;
+    writeFileSync(m, dead);
+    writeFileSync(
+      `${m}.2`,
+      `pid=${process.pid}\nts=${new Date().toISOString()}\ntoken=${liveToken()}\n`,
+    );
+    expect(await acquireStealMutex(m, liveToken())).toBe(false);
+    expect(readFileSync(m, "utf8")).toBe(dead);
+  });
+
+  it("reclaimDeadLock returns false (no progress) when steal-mutex recovery is blocked by a held L2", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-noprog-"));
+    const p = join(dir, "lock");
+    writeFileSync(p, `pid=${deadPid()}\nts=${new Date().toISOString()}\n`);
+    writeFileSync(`${p}.steal`, `pid=${deadPid()}\nts=${new Date().toISOString()}\ntoken=stale\n`);
+    writeFileSync(
+      `${p}.steal.2`,
+      `pid=${process.pid}\nts=${new Date().toISOString()}\ntoken=${liveToken()}\n`,
+    );
+    expect(await reclaimDeadLock(p)).toBe(false);
   });
 });
