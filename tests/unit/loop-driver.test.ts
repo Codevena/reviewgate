@@ -807,6 +807,78 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("escalates reviewer-fp-streak when confirmed FPs accumulate ACROSS iterations (below the iter-cap)", async () => {
+    // Reproduces the dogfood bug: a reviewer that hallucinates a FRESH confirmed-FP
+    // CRITICAL each iteration (mutating signature) evades the signature-keyed
+    // FP-ledger/stuck-detection AND the single-iteration reject-rate (1 FP/iter never
+    // reaches the sample floor). With maxIterations raised (5) the iter-cap is NOT the
+    // trigger — the cross-iteration FP streak (threshold 3) must escalate by itself.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQFPSTREAK");
+    writeDirty(repo);
+    const config = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 5, fpStreakThreshold: 3 },
+    };
+    // Stub orchestrator: writes pending.json with ONE fresh CRITICAL each iteration
+    // and returns FAIL with a DISTINCT signature (so stuck-detection never fires).
+    const stub = {
+      runIteration: async (opts: { runId: string; iter: number; signal?: AbortSignal }) => {
+        writeFileSync(
+          pendingJsonPath(repo),
+          JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+        );
+        const summary: RunSummary = {
+          verdict: "FAIL",
+          source: "panel",
+          counts: { critical: 1, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [`sig-${opts.iter}`],
+          providers: [],
+        };
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [`sig-${opts.iter}`],
+          summary,
+        };
+      },
+    };
+    const mkDriver = () =>
+      new LoopDriver({
+        repoRoot: repo,
+        config,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: stub,
+        stopHookActive: false,
+      });
+    // Drive the FAIL → reject-as-confirmed-FP → re-review loop. Each round the agent
+    // rejects the (fresh) finding with reviewer_was_wrong, exactly as in the dogfood.
+    let decision = await mkDriver().run();
+    for (let i = 1; i <= 6 && !decision.reason.includes("ESCALATED"); i++) {
+      const dp = decisionsPath(repo, i);
+      mkdirSync(dirname(dp), { recursive: true });
+      writeFileSync(
+        dp,
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "confirmed false positive, verified by grep at this commit xx", reviewer_was_wrong: true })}\n`,
+      );
+      decision = await mkDriver().run();
+    }
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("ESCALATED");
+    expect(decision.reason).toContain("reviewer-fp-streak");
+    const after = await state.load();
+    expect(after.escalation_reason).toBe("reviewer-fp-streak");
+    // Escalated via the FP streak BELOW the iteration cap — not the max-iterations path.
+    expect(after.iteration).toBeLessThan(5);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
     // The decisions-gate must take precedence: an agent cannot append unrelated
     // reviewer_was_wrong lines to force a reject-rate escape while leaving the
@@ -1134,5 +1206,122 @@ describe("LoopDriver softPassPolicy", () => {
     expect(decision.reason).toContain("SOFT-PASS");
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
     expect((await state.load()).iteration).toBe(0);
+  });
+});
+
+describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
+  it("does NOT grant the convergence grace past the iter-cap when confirmed FPs are accumulating", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCONVFP");
+    writeDirty(repo);
+    // At the cap (iteration=3=maxIter) with a finding-count down-tick (3→2) that
+    // WOULD normally grant the convergence grace (continue past the cap). But
+    // confirmed FPs have accumulated this cycle → the loop is FP-driven, not
+    // genuinely converging, so the grace must be denied → escalate at the cap.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [
+        ["a", "b", "c"],
+        ["a", "b"],
+      ],
+      cumulative_fp_rejects: 2,
+      fp_counted_through_iter: 2,
+    }));
+    const config = {
+      ...defaultConfig,
+      // fpStreakThreshold high so the FP-streak breaker itself does NOT fire — this
+      // isolates the convergence-grace behaviour.
+      loop: { ...defaultConfig.loop, maxIterations: 3, fpStreakThreshold: 10 },
+    };
+    let ran = false;
+    const stub = {
+      runIteration: async () => {
+        ran = true;
+        return {
+          verdict: "PASS" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [],
+          summary: {
+            verdict: "PASS",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: [],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(decision.reason).toContain("ESCALATED");
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
+    expect(ran).toBe(false); // escalated BEFORE running another (wasteful) iteration
+  });
+
+  it("still grants the convergence grace when the cycle is clean (no confirmed FPs)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCONVOK");
+    writeDirty(repo);
+    // Same down-tick, but cumulative_fp_rejects=0 → genuine convergence → the grace
+    // applies, so the gate runs another iteration rather than escalating at the cap.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [
+        ["a", "b", "c"],
+        ["a", "b"],
+      ],
+      cumulative_fp_rejects: 0,
+      fp_counted_through_iter: 2,
+    }));
+    const config = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 3, fpStreakThreshold: 10 },
+    };
+    let ran = false;
+    const stub = {
+      runIteration: async () => {
+        ran = true;
+        return {
+          verdict: "PASS" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [],
+          summary: {
+            verdict: "PASS",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: [],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(ran).toBe(true); // grace applied → another iteration ran
+    expect(decision.reason).not.toContain("ESCALATED");
   });
 });

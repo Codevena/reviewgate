@@ -6,6 +6,10 @@ export const EscalationReason = z.enum([
   "cost-cap",
   "stuck-signatures",
   "reject-rate-high",
+  // A reviewer produced a streak of CONFIRMED false positives accumulated ACROSS
+  // iterations (each a fresh, differently-phrased FP → signature-keyed defenses
+  // and the single-iteration reject-rate all miss it). Surfaces a faulty reviewer.
+  "reviewer-fp-streak",
   "decisions-unaddressed",
   // The review repeatedly could not finish within loop.runTimeoutMs (it would
   // otherwise be killed by the Stop-hook timeout). Surfaced to the human after
@@ -46,6 +50,13 @@ export const ReviewgateStateSchema = z.object({
       rejected: z.array(z.string()),
     }),
   ),
+  // Cross-iteration confirmed-FP accumulator for the reviewer-fp-streak breaker.
+  // `cumulative_fp_rejects` sums (reviewer_was_wrong) rejects of REAL findings over
+  // the cycle; `fp_counted_through_iter` is the highest iteration already folded in
+  // (idempotency guard so a re-stop of the same iteration can't double-count). Both
+  // reset to 0 on re-arm (clean PASS / commit-recovery). `.default(0)` for back-compat.
+  cumulative_fp_rejects: z.number().int().nonnegative().default(0),
+  fp_counted_through_iter: z.number().int().nonnegative().default(0),
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
@@ -78,6 +89,8 @@ export function initialState(sessionId: string): ReviewgateState {
     signature_history: [],
     iteration_stats: [],
     decision_history: [],
+    cumulative_fp_rejects: 0,
+    fp_counted_through_iter: 0,
     last_diff_hash: null,
     last_stop_ts: null,
     last_pass_diff_hash: null,

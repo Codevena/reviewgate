@@ -107,6 +107,7 @@ export const defaultConfig = {
     costCapUsd: 1.5,
     stuckThreshold: 2,
     rejectRateEscalation: 0.8,
+    fpStreakThreshold: 3,
     softPassPolicy: "allow" as const,
     // When true, the gate blocks ONCE on a passing verdict so the agent is told
     // the review passed (the Stop hook can't reach the agent on a silent

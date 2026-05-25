@@ -244,6 +244,9 @@ export class LoopDriver {
                 // the first timeout in the fresh cycle re-escalates immediately
                 // instead of honoring the consecutive-incomplete threshold.
                 incomplete_runs: 0,
+                // Fresh cycle → drop the cross-iteration confirmed-FP accumulator.
+                cumulative_fp_rejects: 0,
+                fp_counted_through_iter: 0,
               }
             : {}),
           last_reviewed_head_sha: headSha,
@@ -281,7 +284,13 @@ export class LoopDriver {
       const hist = state.signature_history;
       const lastN = hist.at(-1)?.length ?? 0;
       const prevN = hist.at(-2)?.length ?? Number.POSITIVE_INFINITY;
-      const progressing = hist.length >= 2 && lastN < prevN;
+      // Genuine convergence = the finding count is dropping AND no confirmed reviewer
+      // false positives have accumulated this cycle. A single down-tick can otherwise
+      // be noise: a reviewer re-adding a (differently-phrased) FP each round makes the
+      // count fluctuate (e.g. 4→4→3→4), and the lone `lastN < prevN` tick would read
+      // as "progress" and extend the loop to the hard cap. If FPs are accumulating the
+      // loop is FP-driven, not converging — deny the grace and escalate at the cap.
+      const progressing = hist.length >= 2 && lastN < prevN && state.cumulative_fp_rejects === 0;
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(
@@ -356,23 +365,51 @@ export class LoopDriver {
         };
       }
 
-      // Escalation precondition: reviewers are producing a high rate of confirmed
-      // false positives this cycle → stop nagging and surface to the human. Runs
-      // AFTER the decisions-gate so an unaddressed-findings block always takes
-      // precedence (it must not be masked by a high reject rate). Guarded by a
-      // minimum sample, and computeRejectRate dedups by finding_id + restricts to
-      // these real `requiredIds`, so the agent (which authors the decisions files)
-      // cannot pad duplicate/fabricated lines to manufacture this escape-hatch.
-      if (this.i.config.loop.rejectRateEscalation > 0) {
-        const rr = computeRejectRate(this.i.repoRoot, state.iteration, requiredIds);
-        if (
-          rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
-          rr.rate >= this.i.config.loop.rejectRateEscalation
-        ) {
+      // Confirmed-FP signal for the PRIOR iteration. computeRejectRate dedups by
+      // finding_id + restricts to the real `requiredIds`, so the agent (which authors
+      // the decisions files) cannot pad duplicate/fabricated lines to manufacture an
+      // escape-hatch — it can only move the numbers by rejecting REAL findings.
+      const rr = computeRejectRate(this.i.repoRoot, state.iteration, requiredIds);
+
+      // (a) Single-iteration burst: a high confirmed-FP RATE within ONE iteration →
+      // stop nagging and surface to the human. Runs AFTER the decisions-gate so an
+      // unaddressed-findings block always takes precedence. Guarded by a min sample.
+      if (
+        this.i.config.loop.rejectRateEscalation > 0 &&
+        rr.total >= MIN_DECISIONS_FOR_REJECT_RATE &&
+        rr.rate >= this.i.config.loop.rejectRateEscalation
+      ) {
+        return this.escalateAndDecide(
+          state,
+          "reject-rate-high",
+          `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
+        );
+      }
+
+      // (b) Cross-iteration slow drip: a reviewer that hallucinates a FRESH confirmed-FP
+      // each iteration evades (a) (1 FP/iter never reaches the sample floor), the
+      // signature-keyed FP-ledger + stuck-detection (mutating signature), AND the
+      // iter-cap (noisy convergence). Accumulate confirmed FPs ACROSS the cycle —
+      // folded in ONCE per iteration (fp_counted_through_iter guard → idempotent on a
+      // re-stop) — and escalate at fpStreakThreshold so a faulty reviewer surfaces to
+      // the human instead of nagging to the hard cap. Same fabrication-proofing as (a)
+      // (each increment is the real-id-anchored computeRejectRate of one iteration).
+      const fpThreshold = this.i.config.loop.fpStreakThreshold;
+      if (fpThreshold > 0 && state.iteration > state.fp_counted_through_iter) {
+        const cumulativeFp = state.cumulative_fp_rejects + rr.wrongRejects;
+        await this.i.state.update((cur) =>
+          ReviewgateStateSchema.parse({
+            ...cur,
+            cumulative_fp_rejects: cur.cumulative_fp_rejects + rr.wrongRejects,
+            fp_counted_through_iter: Math.max(cur.fp_counted_through_iter, state.iteration),
+          }),
+        );
+        state = await this.i.state.load();
+        if (cumulativeFp >= fpThreshold) {
           return this.escalateAndDecide(
             state,
-            "reject-rate-high",
-            `${rr.wrongRejects}/${rr.total} decisions this cycle were confirmed reviewer false positives (rate ${(rr.rate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%).`,
+            "reviewer-fp-streak",
+            `${cumulativeFp} confirmed reviewer false positives accumulated across ${state.iteration} iterations (threshold ${fpThreshold}) — a reviewer appears to be producing persistent false positives. See .reviewgate/pending.md for the rejected findings and their provider; consider disabling or replacing that reviewer in reviewgate.config.ts.`,
           );
         }
       }
@@ -486,6 +523,10 @@ export class LoopDriver {
         escalated: passed ? false : cur.escalated,
         escalation_reason: passed ? null : cur.escalation_reason,
         escalation_announced: passed ? false : cur.escalation_announced,
+        // Re-arm resets the cross-iteration FP accumulator; a non-pass preserves it
+        // (the streak builds across the cycle's iterations).
+        cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
+        fp_counted_through_iter: passed ? 0 : cur.fp_counted_through_iter,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,

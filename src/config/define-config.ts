@@ -118,6 +118,11 @@ export const ConfigSchema = z.object({
     costCapUsd: z.number().nonnegative(),
     stuckThreshold: z.number().int().positive(),
     rejectRateEscalation: z.number().min(0).max(1),
+    // Cross-iteration confirmed-FP streak: escalate once this many reviewer_was_wrong
+    // rejects of REAL findings accumulate over a review cycle (catches a reviewer that
+    // hallucinates a fresh FP each iteration, which the per-iteration reject-rate and
+    // signature-keyed FP-ledger/stuck-detection all miss). 0 disables. Default 3.
+    fpStreakThreshold: z.number().int().nonnegative().default(3),
     softPassPolicy: z.enum(["allow", "block", "ask-once"]),
     acknowledgePass: z.boolean().default(false),
     // Self-imposed deadline (ms) for a single gate run, strictly BELOW the
