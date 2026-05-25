@@ -33,6 +33,9 @@ export const PendingReportSchema = z.object({
     }),
   ),
   findings: z.array(FindingSchema),
+  // Slice C: a human/agent-visible note when the reviewer panel was degraded this
+  // cycle (reviewers quarantined, or all-quarantined → full panel ran anyway).
+  panel_note: z.string().optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)

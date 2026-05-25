@@ -189,7 +189,13 @@ describe("Orchestrator reputation demote integration", () => {
         cache: { ...defaultConfig.cache, enabled: false },
         phases: {
           ...defaultConfig.phases,
-          reputation: { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+          reputation: {
+            enabled: true,
+            minSamples: 8,
+            trustFloor: 0.35,
+            halfLifeDays: 45,
+            quarantine: { enabled: false, floor: 0.15 },
+          },
         },
       },
       adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
@@ -204,6 +210,48 @@ describe("Orchestrator reputation demote integration", () => {
     // The lone CRITICAL quality finding from codex (unreliable) should be demoted
     // to WARN → lone WARN with single reviewer → SOFT-PASS (not FAIL)
     expect(result.verdict).toBe("SOFT-PASS");
+  });
+
+  it("quarantines a sub-floor reviewer: skips its run and notes it (panel_note)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-quar-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+    await new ReputationStore(repo).record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "codex:security" as const,
+        outcome: "wrong" as const,
+        eid: `w${i}`,
+        ts: new Date().toISOString(),
+      })),
+    );
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: {
+        ...defaultConfig,
+        cache: { ...defaultConfig.cache, enabled: false },
+        phases: {
+          ...defaultConfig.phases,
+          reputation: {
+            enabled: true,
+            minSamples: 8,
+            trustFloor: 0.35,
+            halfLifeDays: 45,
+            quarantine: { enabled: true, floor: 0.15 },
+          },
+        },
+      },
+      adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: SOFT_DIFF,
+      reasonOnFailEnabled: true,
+    });
+    const result = await orch.runIteration({ runId: "01HXQUAR1", iter: 1 });
+    // Only configured reviewer (codex:security) is sub-floor → filtering would empty the panel →
+    // FULL panel runs anyway → codex runs → its lone CRITICAL quality finding is still demoted by
+    // Slice 1 (codex unreliable) → SOFT-PASS, with a panel_note about quarantine.
+    expect(result.verdict).toBe("SOFT-PASS");
+    const pending = JSON.parse(readFileSync(join(repo, ".reviewgate/pending.json"), "utf8"));
+    expect(pending.panel_note).toContain("ran the full panel");
   });
 
   it("yields FAIL for a lone CRITICAL quality finding when reputation is disabled", async () => {
@@ -229,7 +277,13 @@ describe("Orchestrator reputation demote integration", () => {
         phases: {
           ...defaultConfig.phases,
           // Disable reputation so demotion does NOT happen
-          reputation: { enabled: false, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 },
+          reputation: {
+            enabled: false,
+            minSamples: 8,
+            trustFloor: 0.35,
+            halfLifeDays: 45,
+            quarantine: { enabled: false, floor: 0.15 },
+          },
         },
       },
       adapters: { codex: new CodexAdapter({ binPath: criticalQualityBin(repo) }) },

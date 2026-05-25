@@ -87,6 +87,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
     ...coverageBanner,
+    ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",
     "",

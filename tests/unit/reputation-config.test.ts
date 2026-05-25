@@ -9,6 +9,7 @@ describe("phases.reputation config", () => {
       minSamples: 8,
       trustFloor: 0.35,
       halfLifeDays: 45,
+      quarantine: { enabled: false, floor: 0.15 },
     });
   });
   it("validates and is overridable", () => {
@@ -18,5 +19,16 @@ describe("phases.reputation config", () => {
     });
     expect(parsed.phases.reputation.enabled).toBe(false);
     expect(parsed.phases.reputation.minSamples).toBe(8);
+    expect(parsed.phases.reputation.quarantine).toEqual({ enabled: false, floor: 0.15 });
+  });
+  it("accepts a quarantine override", () => {
+    const parsed = ConfigSchema.parse({
+      ...defaultConfig,
+      phases: {
+        ...defaultConfig.phases,
+        reputation: { enabled: true, quarantine: { enabled: true, floor: 0.2 } },
+      },
+    });
+    expect(parsed.phases.reputation.quarantine).toEqual({ enabled: true, floor: 0.2 });
   });
 });

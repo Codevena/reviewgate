@@ -39,4 +39,22 @@ describe("reputationCheck", () => {
     expect(c?.detail).toContain("gemini:security");
     expect(c?.detail).toContain("demoting");
   });
+
+  it("flags a quarantined reviewer with ⛔ when quarantine is enabled", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-docrep-quar-"));
+    const now = new Date();
+    await new ReputationStore(repo).record(
+      Array.from({ length: 10 }, (_, i) => ({
+        reviewerKey: "gemini:security" as const,
+        outcome: "wrong" as const,
+        eid: `w${i}`,
+        ts: now.toISOString(),
+      })),
+    );
+    const cfg = {
+      phases: { reputation: { ...repCfg, quarantine: { enabled: true, floor: 0.15 } } },
+    } as unknown as ReviewgateConfig;
+    const c = await reputationCheck(repo, cfg);
+    expect(c?.detail).toContain("⛔ quarantined");
+  });
 });

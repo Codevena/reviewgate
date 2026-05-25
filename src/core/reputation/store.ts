@@ -18,6 +18,7 @@ export interface ReputationConfig {
   minSamples: number;
   trustFloor: number;
   halfLifeDays: number;
+  quarantine?: { enabled: boolean; floor: number };
 }
 
 // Events whose time-decayed weight is negligible are dropped on write to keep
@@ -101,25 +102,33 @@ export class ReputationStore {
     return { trust, samples };
   }
 
-  async unreliableReviewers(cfg: ReputationConfig, now: Date): Promise<Set<string>> {
+  private async reviewersBelow(
+    floor: number,
+    cfg: ReputationConfig,
+    now: Date,
+  ): Promise<Set<string>> {
     const rep = await this.snapshot();
     const out = new Set<string>();
     for (const reviewerKey of Object.keys(rep.reviewers)) {
       if (!reviewerKey.includes(":")) continue; // legacy bare-provider key (pre-Slice-B) → inert
-      if (
-        isUnreliable(
-          this.derive(reviewerKey, rep, now, cfg.halfLifeDays),
-          cfg.minSamples,
-          cfg.trustFloor,
-        )
-      )
+      if (isUnreliable(this.derive(reviewerKey, rep, now, cfg.halfLifeDays), cfg.minSamples, floor))
         out.add(reviewerKey);
     }
     return out;
   }
 
+  async unreliableReviewers(cfg: ReputationConfig, now: Date): Promise<Set<string>> {
+    return this.reviewersBelow(cfg.trustFloor, cfg, now);
+  }
+
+  async quarantinedReviewers(cfg: ReputationConfig, now: Date): Promise<Set<string>> {
+    if (!cfg.quarantine?.enabled) return new Set<string>();
+    return this.reviewersBelow(cfg.quarantine.floor, cfg, now);
+  }
+
   async forDoctor(cfg: ReputationConfig, now: Date) {
     const rep = await this.snapshot();
+    const qFloor = cfg.quarantine?.enabled ? cfg.quarantine.floor : null;
     return Object.entries(rep.reviewers)
       .filter(([reviewerKey]) => reviewerKey.includes(":")) // hide legacy bare-provider keys
       .map(([reviewerKey, e]) => {
@@ -130,6 +139,7 @@ export class ReputationStore {
           wrong: e.wrong.length,
           trust: d.trust,
           demoting: isUnreliable(d, cfg.minSamples, cfg.trustFloor),
+          quarantined: qFloor !== null && isUnreliable(d, cfg.minSamples, qFloor),
         };
       });
   }
