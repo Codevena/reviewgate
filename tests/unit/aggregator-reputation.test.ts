@@ -72,4 +72,41 @@ describe("aggregator reputation demote", () => {
     });
     expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
+
+  it("demotes a lone WARN from an unreliable provider → INFO (PASS)", () => {
+    const agg = aggregate({
+      findings: [finding({ severity: "WARN" })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini"]),
+    });
+    const f = agg.dedupedFindings[0];
+    expect(f?.severity).toBe("INFO");
+    expect(f?.reputation_demoted).toBe(true);
+    expect(agg.verdict).toBe("PASS");
+  });
+
+  it("does NOT demote when only ONE of several contributing providers is unreliable", () => {
+    // Two findings (same signature/location) from DIFFERENT providers cluster into one
+    // representative whose `members` span both providers (gemini, codex). Only gemini
+    // is unreliable, so the `.every()` provider check fails → stays CRITICAL.
+    // (Note: a 2-provider cluster also computes "majority" consensus, which is exempt
+    //  on its own — the provider check is defense-in-depth on the same finding.)
+    const f1 = finding({
+      signature: "sig-2",
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const f2 = finding({
+      signature: "sig-2",
+      reviewer: { provider: "codex", model: "y", persona: "quality" },
+    });
+    const agg = aggregate({
+      findings: [f1, f2],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini"]),
+    });
+    const f = agg.dedupedFindings[0];
+    expect(f?.members?.map((m) => m.provider).sort()).toEqual(["codex", "gemini"]);
+    expect(f?.severity).toBe("CRITICAL");
+    expect(f?.reputation_demoted).toBeUndefined();
+  });
 });

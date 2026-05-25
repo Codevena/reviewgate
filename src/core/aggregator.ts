@@ -346,6 +346,8 @@ export function aggregate(input: AggregateInput): AggregateResult {
           const provs = [f.reviewer.provider, ...(f.members?.map((m) => m.provider) ?? [])];
           if (!provs.every((p) => repUnreliable.has(p))) return f;
           const next = DEMOTE[f.severity];
+          // INFO is already returned above, so "drop" is unreachable today; this
+          // guard is purely defensive against future DEMOTE-table changes.
           if (next === "drop") return f;
           const note = "\n\n↓ low reviewer reputation — advisory only.";
           return {
