@@ -1,21 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
-import { z } from "zod";
+import { DecisionEntrySchema } from "../../schemas/decision.ts";
 import type { Finding } from "../../schemas/finding.ts";
 import { decisionsPath, pendingJsonPath } from "../../utils/paths.ts";
 import type { RecordInput, ReputationStore } from "./store.ts";
-
-// Loose schema for reputation learning — we care about the structural fields
-// (finding_id, verdict, action, reviewer_was_wrong) but do NOT enforce the
-// human-facing reason min-length (that's a gate-UX requirement, not a data
-// integrity requirement for learning). Using DecisionEntrySchema here would
-// silently discard valid decisions that have a short reason.
-const LooseDecisionSchema = z.object({
-  schema: z.literal("reviewgate.decision.v1"),
-  finding_id: z.string(),
-  verdict: z.enum(["accepted", "rejected"]),
-  action: z.string().optional(),
-  reviewer_was_wrong: z.boolean().optional(),
-});
 
 export async function learnReputationFromDecisions(input: {
   repoRoot: string;
@@ -47,7 +34,7 @@ export async function learnReputationFromDecisions(input: {
     } catch {
       continue;
     }
-    const res = LooseDecisionSchema.safeParse(parsed);
+    const res = DecisionEntrySchema.safeParse(parsed);
     if (!res.success) continue;
     const d = res.data;
     const f = byId.get(d.finding_id);

@@ -41,7 +41,7 @@ describe("learnReputationFromDecisions", () => {
           schema: "reviewgate.decision.v1",
           finding_id: "F-999",
           verdict: "rejected",
-          reason: "not a real id xx",
+          reason: "not a real finding id here xx",
           reviewer_was_wrong: true,
         }),
       ].join("\n")}\n`,
@@ -80,7 +80,7 @@ describe("learnReputationFromDecisions", () => {
         schema: "reviewgate.decision.v1",
         finding_id: "F-001",
         verdict: "rejected",
-        reason: "fp verified xx",
+        reason: "fp verified, checked by grep",
         reviewer_was_wrong: true,
       })}\n`,
     );
