@@ -7,6 +7,7 @@ import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
 import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
+import { ReputationStore } from "../../core/reputation/store.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
@@ -158,6 +159,30 @@ export async function brainMemoryCheck(
     .filter(({ n }) => n > 0)
     .map(({ s, n }) => `${n} ${s}`);
   return { name, status: "ok", detail: `${entries.length} memories (${parts.join(", ")})` };
+}
+
+// Reviewer reputation: surfaces per-provider trust scores from the reputation store.
+// Only runs when reputation is enabled; warns when any provider is in demoting state
+// (trust below floor with enough samples). Analogous to brainMemoryCheck.
+export async function reputationCheck(
+  repoRoot: string,
+  cfg: ReviewgateConfig,
+): Promise<Check | null> {
+  const rep = cfg.phases.reputation;
+  if (!rep?.enabled) return null;
+  const name = "reviewer reputation";
+  const rows = await new ReputationStore(repoRoot).forDoctor(rep, new Date());
+  if (rows.length === 0) {
+    return { name, status: "ok", detail: "enabled — no reputation data yet" };
+  }
+  const demoting = rows.filter((r) => r.demoting);
+  const detail = rows
+    .map(
+      (r) =>
+        `${r.provider} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}`,
+    )
+    .join(" · ");
+  return { name, status: demoting.length > 0 ? "warn" : "ok", detail };
 }
 
 // contextDocs works keyless (lower rate limit), so this is informational (always ok) — it just
@@ -321,6 +346,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (emb) checks.push(emb);
     const mem = await brainMemoryCheck(input.repoRoot, cfg);
     if (mem) checks.push(mem);
+    const rep = await reputationCheck(input.repoRoot, cfg);
+    if (rep) checks.push(rep);
     const cur = curatorCheck(cfg, curatorAvailable);
     if (cur) checks.push(cur);
     const cd = contextDocsCheck(cfg, process.env as Record<string, string | undefined>);
