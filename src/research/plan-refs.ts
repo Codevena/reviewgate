@@ -1,4 +1,7 @@
 // src/research/plan-refs.ts
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
+
 const CODE_EXT = "ts|tsx|js|jsx|py|go|rs|java|kt|c|cc|cpp|h|hpp|rb|php|cs";
 const EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`);
 const PATH_CHARS = /[^A-Za-z0-9_./-]+/; // anything NOT allowed in a path token = a delimiter
@@ -20,4 +23,73 @@ export function extractReferencedPaths(text: string): string[] {
     if (out.length >= MAX_CANDIDATES) break;
   }
   return out;
+}
+
+export interface ReferencedFilesInput {
+  repoRoot: string;
+  planText: string;
+  budgetBytes: number;
+  maxFiles?: number;
+  excludePaths?: string[];
+  signal?: AbortSignal;
+}
+
+const PROTECTED_PREFIXES = [".reviewgate/", ".git/", ".hg/", ".svn/"];
+const PROTECTED_FILES = ["reviewgate.config.ts"];
+
+export async function collectReferencedFileContents(input: ReferencedFilesInput): Promise<string> {
+  try {
+    const { repoRoot, planText } = input;
+    const exclude = new Set((input.excludePaths ?? []).map((p) => p.toLowerCase()));
+    let repoReal: string;
+    try {
+      repoReal = realpathSync(repoRoot);
+    } catch {
+      return "";
+    }
+    const candidates = extractReferencedPaths(planText);
+    let out = "";
+    for (const rel of candidates) {
+      if (input.signal?.aborted) break;
+      const lower = rel.toLowerCase();
+      if (exclude.has(lower)) continue;
+      if (PROTECTED_FILES.includes(lower)) continue;
+      if (PROTECTED_PREFIXES.some((p) => lower.startsWith(p))) continue;
+
+      const abs = join(repoRoot, rel);
+      const relCheck = relative(repoRoot, abs);
+      if (relCheck.startsWith("..") || isAbsolute(relCheck)) continue;
+
+      // realpath containment — catches intermediate-dir-symlink escape that lstat misses.
+      let rp: string;
+      try {
+        rp = realpathSync(abs);
+      } catch {
+        continue; // non-existent
+      }
+      const relReal = relative(repoReal, rp);
+      if (relReal.startsWith("..") || isAbsolute(relReal)) continue;
+
+      let st: ReturnType<typeof lstatSync>;
+      try {
+        st = lstatSync(abs);
+      } catch {
+        continue;
+      }
+      if (!st.isFile()) continue; // reject symlink/dir/special final component
+
+      let content: string;
+      try {
+        content = readFileSync(abs, "utf8");
+      } catch {
+        continue;
+      }
+      if (content.includes("\0")) continue; // required binary guard
+
+      out += `### ${relCheck}\n\`\`\`\n${content}\n\`\`\`\n`;
+    }
+    return out;
+  } catch {
+    return ""; // fail-safe: never throw
+  }
 }
