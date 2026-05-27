@@ -1,7 +1,8 @@
 // tests/unit/orchestrator-fallback.test.ts
-// Quota-failover routing: when the primary reviewer is quota-exhausted and the
-// slot declares a `fallback` chain, the orchestrator re-runs the SAME persona on
-// the first available fallback provider. Only quota exhaustion triggers it.
+// Failover routing: when the primary reviewer produces a non-ok result
+// (quota-exhausted, timeout, or error) and the slot declares a `fallback`
+// chain, the orchestrator re-runs the SAME persona on the first available
+// fallback provider that returns "ok".
 import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,13 +99,17 @@ describe("Orchestrator quota failover", () => {
     expect(report.reviewers[0].status_detail).toContain("fallback from codex");
   });
 
-  it("does NOT fail over on a plain error (only quota triggers it)", async () => {
+  // Updated: failover now triggers on ANY non-ok primary status (not only quota).
+  // A primary that errors should also try its declared fallback chain.
+  it("DOES fail over on a plain error (any non-ok status now triggers failover)", async () => {
     const report = await runWith(makeConfig(["gemini"]), {
       codex: fixedStatus("codex", "error"),
       gemini: fixedStatus("gemini", "ok"),
     });
-    expect(report.reviewers[0].provider).toBe("codex");
-    expect(report.reviewers[0].status).toBe("error");
+    // Failover happened — gemini result is recorded, not the errored codex.
+    expect(report.reviewers[0].provider).toBe("gemini");
+    expect(report.reviewers[0].status).toBe("ok");
+    expect(report.reviewers[0].status_detail).toContain("fallback from codex");
   });
 
   it("keeps the quota-exhausted result when no fallback chain is declared", async () => {
@@ -114,5 +119,125 @@ describe("Orchestrator quota failover", () => {
     });
     expect(report.reviewers[0].provider).toBe("codex");
     expect(report.reviewers[0].status).toBe("quota-exhausted");
+  });
+
+  // Step B — NEW: primary timeout triggers failover
+  it("fails over to opencode when claude-code times out", async () => {
+    const config = {
+      ...makeConfig(),
+      providers: {
+        ...defaultConfig.providers,
+        "claude-code": {
+          enabled: true as true,
+          auth: "oauth" as const,
+          model: "claude-sonnet-4-6",
+          timeoutMs: 1000,
+        },
+        opencode: { enabled: false, auth: "oauth" as const, model: "default", timeoutMs: 1000 },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            {
+              provider: "claude-code" as const,
+              persona: "security" as const,
+              fallback: ["opencode" as const],
+            },
+          ],
+        },
+        critic: null,
+        triage: null,
+      },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test config override — enabled:true vs enabled:false literal conflict
+    const report = await runWith(config as any, {
+      "claude-code": fixedStatus("claude-code", "timeout"),
+      opencode: fixedStatus("opencode", "ok"),
+    });
+    expect(report.reviewers[0].provider).toBe("opencode");
+    expect(report.reviewers[0].status).toBe("ok");
+    expect(report.reviewers[0].status_detail).toContain("fallback from claude-code");
+    expect(report.reviewers[0].status_detail).toContain("timeout");
+  });
+
+  // Step B — NEW: primary error triggers failover
+  it("fails over to opencode when claude-code returns error", async () => {
+    const config = {
+      ...makeConfig(),
+      providers: {
+        ...defaultConfig.providers,
+        "claude-code": {
+          enabled: true as true,
+          auth: "oauth" as const,
+          model: "claude-sonnet-4-6",
+          timeoutMs: 1000,
+        },
+        opencode: { enabled: false, auth: "oauth" as const, model: "default", timeoutMs: 1000 },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            {
+              provider: "claude-code" as const,
+              persona: "security" as const,
+              fallback: ["opencode" as const],
+            },
+          ],
+        },
+        critic: null,
+        triage: null,
+      },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test config override — enabled:true vs enabled:false literal conflict
+    const report = await runWith(config as any, {
+      "claude-code": fixedStatus("claude-code", "error"),
+      opencode: fixedStatus("opencode", "ok"),
+    });
+    expect(report.reviewers[0].provider).toBe("opencode");
+    expect(report.reviewers[0].status).toBe("ok");
+    expect(report.reviewers[0].status_detail).toContain("fallback from claude-code");
+    expect(report.reviewers[0].status_detail).toContain("error");
+  });
+
+  // Step B — NEW: when a fallback also fails, walk to the next one
+  it("continues to the next fallback when an intermediate fallback also fails", async () => {
+    const config = {
+      ...makeConfig(),
+      providers: {
+        ...defaultConfig.providers,
+        "claude-code": {
+          enabled: true as true,
+          auth: "oauth" as const,
+          model: "claude-sonnet-4-6",
+          timeoutMs: 1000,
+        },
+        opencode: { enabled: false, auth: "oauth" as const, model: "default", timeoutMs: 1000 },
+      },
+      phases: {
+        review: {
+          reviewers: [
+            {
+              provider: "claude-code" as const,
+              persona: "security" as const,
+              fallback: ["opencode" as const, "codex" as const],
+            },
+          ],
+        },
+        critic: null,
+        triage: null,
+      },
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test config override — enabled:true vs enabled:false literal conflict
+    const report = await runWith(config as any, {
+      "claude-code": fixedStatus("claude-code", "timeout"),
+      opencode: fixedStatus("opencode", "error"),
+      codex: fixedStatus("codex", "ok"),
+    });
+    // Walked past opencode (error) to codex (ok).
+    // statusDetail records the IMMEDIATE predecessor in the chain (opencode failed,
+    // so codex's annotation says "fallback from opencode").
+    expect(report.reviewers[0].provider).toBe("codex");
+    expect(report.reviewers[0].status).toBe("ok");
+    expect(report.reviewers[0].status_detail).toContain("fallback from opencode");
   });
 });

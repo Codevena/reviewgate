@@ -797,12 +797,12 @@ export class Orchestrator {
             effects.push(effectFor(r.provider, run.res));
           }
 
-          // Failover: ONLY when the primary is quota-exhausted (codex usage cap,
-          // gemini RESOURCE_EXHAUSTED, … OR a cooldown skip above) and the slot
-          // declares a fallback chain. A candidate runs if it is registered +
-          // configured + available + NOT itself cooled-down; its own `enabled` flag
-          // is ignored (listing it in `fallback` IS the opt-in). Walk until one runs.
-          if (run.res.status === "quota-exhausted" && r.fallback?.length) {
+          // Failover: when the primary did NOT produce a usable review (quota-exhausted,
+          // timeout, or error) and the slot declares a fallback chain, walk the chain
+          // until one returns "ok". A candidate runs if registered + configured +
+          // available + not itself cooled-down. Quota cooldown effects are still
+          // recorded per-provider via effectFor.
+          if (run.res.status !== "ok" && r.fallback?.length) {
             for (const fb of r.fallback) {
               const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
               if (!this.input.adapters[fb] || !fbCfg) continue;
@@ -813,7 +813,8 @@ export class Orchestrator {
               if (cooldownStore.skipUntil(fb, now)) continue;
               const fbModel = resolveReviewerModel(fb, fbCfg.model);
               if (fbModel === null) continue;
-              const exhaustedFrom = run.provider;
+              const fromProvider = run.provider;
+              const fromStatus = run.res.status;
               run = await runProvider(
                 fb,
                 persona,
@@ -824,11 +825,11 @@ export class Orchestrator {
                 diffPath,
               );
               run.res.statusDetail =
-                `[fallback from ${exhaustedFrom}: quota-exhausted] ${run.res.statusDetail ?? ""}`
+                `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
                   .trim()
                   .slice(0, 1000);
               effects.push(effectFor(fb, run.res)); // record/clear the fallback too
-              if (run.res.status !== "quota-exhausted") break;
+              if (run.res.status === "ok") break;
             }
           }
           return { run, effects };
