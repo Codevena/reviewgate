@@ -34,6 +34,7 @@ export function computeBehaviorHash(input: {
   brain: BrainHashEntry[];
   fp: FpHashEntry[];
   docs?: DocsHashEntry[] | undefined;
+  // Slice 2: sha256 hex of injected referenced-file content (doc reviews) — invalidates the cache when that source changes.
   refs?: string | undefined;
 }): string {
   const brainPart = input.brain

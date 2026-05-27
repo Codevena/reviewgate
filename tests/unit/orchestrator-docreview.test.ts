@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig } from "../../src/config/define-config.ts";
@@ -71,5 +71,59 @@ describe("Orchestrator doc review", () => {
     });
     await orch.runIteration({ runId: "RUN", iter: 1 });
     expect(seen.persona).toBe("plan");
+  });
+
+  it("injects referenced source for a doc review whose plan names an existing file", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-docref-"));
+    // git init so gitignoreGate (git check-ignore) returns exit 1 (no ignores) rather than 128
+    await Bun.$`git -C ${repo} init -q`.quiet().nothrow();
+    mkdirSync(join(repo, "src/components/ui"), { recursive: true });
+    writeFileSync(
+      join(repo, "src/components/ui/card.tsx"),
+      "export const cardVariants = cva('', { variants: { variant: { glass: '' } } });",
+    );
+    // the changed doc file (full content names the source path)
+    mkdirSync(join(repo, "docs/superpowers/specs"), { recursive: true });
+    writeFileSync(
+      join(repo, "docs/superpowers/specs/p.md"),
+      "Plan: use `src/components/ui/card.tsx` with variant=glass.",
+    );
+    const diff =
+      "diff --git a/docs/superpowers/specs/p.md b/docs/superpowers/specs/p.md\n--- a/docs/superpowers/specs/p.md\n+++ b/docs/superpowers/specs/p.md\n@@ -0,0 +1 @@\n+Plan: use `src/components/ui/card.tsx` with variant=glass.\n";
+    const seen: { persona?: string; prompt?: string } = {};
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: defineConfig({ cache: { enabled: false, reviewTtlDays: 7 } }),
+      adapters: { codex: recordingStub(seen) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff,
+      reasonOnFailEnabled: true,
+      forcePersona: "plan",
+    });
+    await orch.runIteration({ runId: "RUN", iter: 1 });
+    expect(seen.prompt).toContain("## Referenced source files");
+    expect(seen.prompt).toContain("cardVariants");
+  });
+
+  it("does NOT inject referenced source for a code (non-doc) review", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-coderef-"));
+    await Bun.$`git -C ${repo} init -q`.quiet().nothrow();
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src/dep.ts"), "export const DEP = 1;");
+    const diff =
+      "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -0,0 +1 @@\n+import { DEP } from './dep'; // see src/dep.ts\n";
+    const seen: { persona?: string; prompt?: string } = {};
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: defineConfig({ cache: { enabled: false, reviewTtlDays: 7 } }),
+      adapters: { codex: recordingStub(seen) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff,
+      reasonOnFailEnabled: true,
+    });
+    await orch.runIteration({ runId: "RUN", iter: 1 });
+    expect(seen.prompt ?? "").not.toContain("## Referenced source files");
   });
 });
