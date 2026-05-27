@@ -133,3 +133,28 @@ describe("collectReferencedFileContents — resolution & safety", () => {
     ).toBe("");
   });
 });
+
+describe("collectReferencedFileContents — budget & maxFiles", () => {
+  it("bounds output to ~budgetBytes via per-file omission markers (8a)", async () => {
+    const big = "x".repeat(5000);
+    const repo = repoWith({ "src/a.ts": big, "src/b.ts": big, "src/c.ts": big });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "`src/a.ts` `src/b.ts` `src/c.ts`",
+      budgetBytes: 8000,
+    });
+    expect(out.length).toBeLessThanOrEqual(8000 + 80); // at most one omission marker over
+    expect(out).toContain("(omitted — context budget exceeded)");
+  });
+  it("renders at most maxFiles files then silently stops (8b — maxFiles)", async () => {
+    const repo = repoWith({ "src/a.ts": "A", "src/b.ts": "B", "src/c.ts": "C" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "`src/a.ts` `src/b.ts` `src/c.ts`",
+      budgetBytes: 32_000,
+      maxFiles: 2,
+    });
+    expect((out.match(/^### /gm) ?? []).length).toBe(2);
+    expect(out).not.toContain("(omitted"); // maxFiles is a silent break, not a marker
+  });
+});

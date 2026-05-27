@@ -48,9 +48,20 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       return "";
     }
     const candidates = extractReferencedPaths(planText);
+    const budget = input.budgetBytes;
+    const maxFiles = input.maxFiles ?? 20;
     let out = "";
+    let used = 0;
+    let rendered = 0;
+    const omit = (f: string): boolean => {
+      const note = `### ${f}\n(omitted — context budget exceeded)\n`;
+      out += note;
+      used += note.length;
+      return used >= budget;
+    };
     for (const rel of candidates) {
       if (input.signal?.aborted) break;
+      if (rendered >= maxFiles) break; // silent cap — no marker
       const lower = rel.toLowerCase();
       if (exclude.has(lower)) continue;
       if (PROTECTED_FILES.includes(lower)) continue;
@@ -78,6 +89,12 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       }
       if (!st.isFile()) continue; // reject symlink/dir/special final component
 
+      // pre-read size guard: never load a file that can't fit the remaining budget
+      if (st.size > budget - used) {
+        if (omit(relCheck)) break;
+        continue;
+      }
+
       let content: string;
       try {
         content = readFileSync(abs, "utf8");
@@ -86,7 +103,14 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       }
       if (content.includes("\0")) continue; // required binary guard
 
-      out += `### ${relCheck}\n\`\`\`\n${content}\n\`\`\`\n`;
+      const block = `### ${relCheck}\n\`\`\`\n${content}\n\`\`\`\n`;
+      if (used + block.length > budget) {
+        if (omit(relCheck)) break;
+        continue;
+      }
+      out += block;
+      used += block.length;
+      rendered += 1;
     }
     return out;
   } catch {
