@@ -152,6 +152,7 @@ export const defaultConfig = {
     enabled: true,
     globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
     persona: "plan",
+    referencedFilesBudgetBytes: 32_000,
   },
   weeklyReport: null as null | { autoSnapshot: boolean },
 } satisfies ReviewgateConfig;

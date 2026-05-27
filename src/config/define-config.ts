@@ -177,11 +177,13 @@ export const ConfigSchema = z.object({
       enabled: z.boolean(),
       globs: z.array(z.string()),
       persona: z.string(),
+      referencedFilesBudgetBytes: z.number().int().positive().optional(),
     })
     .default({
       enabled: true,
       globs: ["docs/superpowers/specs/**", "docs/**/plan*.md", "docs/**/*spec*.md"],
       persona: "plan",
+      referencedFilesBudgetBytes: 32_000,
     }),
   // Weekly report auto-snapshot-on-rollover. Opt-in.
   weeklyReport: z.object({ autoSnapshot: z.boolean() }).nullable().default(null).optional(),
