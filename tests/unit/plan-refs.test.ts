@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +36,9 @@ function repoWith(files: Record<string, string>): string {
     mkdirSync(join(abs, ".."), { recursive: true });
     writeFileSync(abs, c);
   }
+  // git-init so the gitignore gate sees a real repo (check-ignore exits 0/1,
+  // never 128). Without a .gitignore it exits 1 → keep all → other tests unchanged.
+  execFileSync("git", ["init", "-q"], { cwd: repo });
   return repo;
 }
 
@@ -184,5 +188,27 @@ describe("collectReferencedFileContents — injection hardening (9b)", () => {
     });
     expect(out).toContain("### src/fence.ts");
     expect(out).not.toContain("```js evil"); // a 3+ backtick run no longer survives in content
+  });
+});
+
+describe("collectReferencedFileContents — gitignore gate", () => {
+  it("drops a gitignored referenced file", async () => {
+    const repo = repoWith({ "src/a.ts": "AA", "secret.ts": "SECRET", ".gitignore": "secret.ts\n" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "`src/a.ts` `secret.ts`",
+      budgetBytes: 32_000,
+    });
+    expect(out).toContain("AA");
+    expect(out).not.toContain("SECRET");
+  });
+  it("an absolute-path reference does not suppress valid relative candidates", async () => {
+    const repo = repoWith({ "src/a.ts": "AA" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "see /etc/passwd.ts and `src/a.ts`",
+      budgetBytes: 32_000,
+    });
+    expect(out).toContain("AA");
   });
 });
