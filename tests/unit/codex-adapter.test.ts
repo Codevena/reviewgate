@@ -160,6 +160,94 @@ exit 0
   });
 });
 
+// ---------------------------------------------------------------------------
+// Retry-once tests (Task 4)
+// ---------------------------------------------------------------------------
+
+function spawnCount(counter: string): number {
+  return readFileSync(counter, "utf8").trim().split("\n").filter(Boolean).length;
+}
+
+async function runWithModes(a1: string, a2: string, prefix: string) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const counter = join(dir, "count.txt");
+  writeFileSync(counter, "");
+  process.env.RG_FAKE_COUNTER = counter;
+  process.env.RG_FAKE_A1 = a1;
+  process.env.RG_FAKE_A2 = a2;
+  try {
+    const adapter = new CodexAdapter({ binPath: ATTEMPT_BIN });
+    const result = await adapter.review(makeReviewInput(dir));
+    return { result, spawns: spawnCount(counter) };
+  } finally {
+    Reflect.deleteProperty(process.env, "RG_FAKE_COUNTER");
+    Reflect.deleteProperty(process.env, "RG_FAKE_A1");
+    Reflect.deleteProperty(process.env, "RG_FAKE_A2");
+  }
+}
+
+describe("CodexAdapter retry-once", () => {
+  it("3: unparseable then valid → retries once, status ok, two spawns", async () => {
+    const { result, spawns } = await runWithModes("garbage", "ok", "rg-codex-3-");
+    expect(result.status).toBe("ok");
+    expect(spawns).toBe(2);
+  });
+
+  it("3b: non-zero exit then valid → retries once, status ok, two spawns", async () => {
+    const { result, spawns } = await runWithModes("exit7", "ok", "rg-codex-3b-");
+    expect(result.status).toBe("ok");
+    expect(spawns).toBe(2);
+  });
+
+  it("3c: unparseable then no-output → error (no stale parse), two spawns", async () => {
+    const { result, spawns } = await runWithModes("garbage", "none", "rg-codex-3c-");
+    expect(result.status).toBe("error");
+    expect(spawns).toBe(2);
+    expect(result.statusDetail ?? "").toContain("(after retry)");
+  });
+
+  it("3d: error then quota on retry → quota-exhausted unchanged (no suffix), two spawns", async () => {
+    const { result, spawns } = await runWithModes("garbage", "quota", "rg-codex-3d-");
+    expect(result.status).toBe("quota-exhausted");
+    expect(spawns).toBe(2);
+    expect(result.statusDetail ?? "").not.toContain("(after retry)");
+  });
+
+  it("3e: both non-zero error → error with (after retry) suffix, two spawns", async () => {
+    const { result, spawns } = await runWithModes("exit7", "exit7", "rg-codex-3e-");
+    expect(result.status).toBe("error");
+    expect(spawns).toBe(2);
+    expect(result.statusDetail ?? "").toContain("(after retry)");
+  });
+
+  it("valid first time → no retry, one spawn", async () => {
+    const { result, spawns } = await runWithModes("ok", "none", "rg-codex-ok-");
+    expect(result.status).toBe("ok");
+    expect(spawns).toBe(1);
+  });
+
+  it("abort: pre-aborted signal → no retry (one spawn)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-abort-"));
+    const counter = join(dir, "count.txt");
+    writeFileSync(counter, "");
+    process.env.RG_FAKE_COUNTER = counter;
+    process.env.RG_FAKE_A1 = "exit7";
+    process.env.RG_FAKE_A2 = "ok";
+    try {
+      const adapter = new CodexAdapter({ binPath: ATTEMPT_BIN });
+      const ac = new AbortController();
+      ac.abort();
+      const result = await adapter.review({ ...makeReviewInput(dir), signal: ac.signal });
+      expect(spawnCount(counter)).toBeLessThanOrEqual(1);
+      expect(result.status).not.toBe("ok");
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_COUNTER");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A1");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A2");
+    }
+  });
+});
+
 describe("CodexAdapter.complete (judge completion)", () => {
   it("returns the last-message text and passes NO --output-schema", async () => {
     // If complete() wrongly passed --output-schema, the fake exits 3 -> throw.

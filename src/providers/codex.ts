@@ -23,6 +23,9 @@ import {
 
 const COMPLETE_TIMEOUT_MS = 20_000;
 
+const RETRY_DIRECTIVE =
+  "\n\nIMPORTANT: Output ONLY the single JSON object of the required schema now. Do not call any tools or explain.";
+
 export interface CodexAdapterOptions {
   binPath?: string;
 }
@@ -229,8 +232,30 @@ export class CodexAdapter implements ProviderAdapter {
       };
     };
 
-    const first = await runOnce(1, readFileSync(input.promptFile, "utf8"));
-    return first.result;
+    const basePrompt = readFileSync(input.promptFile, "utf8");
+    const first = await runOnce(1, basePrompt);
+
+    // Retry exactly once ONLY on a generic error / unparseable outcome. Never on
+    // quota (cooldown owns it), timeout/watchdog (a rerun won't help), or abort:
+    // killedByAbort covers a mid-run abort; signal?.aborted guards the pre-aborted
+    // case (belt-and-suspenders — spawnSafely sets killedByAbort there too, but the
+    // explicit check documents intent and survives a spawnSafely refactor).
+    const retriable =
+      first.result.status === "error" && !first.killedByAbort && !input.signal?.aborted;
+    if (!retriable) return first.result;
+
+    const second = await runOnce(2, basePrompt + RETRY_DIRECTIVE);
+    // Only the generic-error outcome gets the "(after retry)" marker; a terminal
+    // quota/timeout status on the retry is returned unchanged so its detail stays
+    // parseable by the cooldown.
+    if (second.result.status === "error") {
+      const base = second.result.statusDetail?.trim() ?? "";
+      return {
+        ...second.result,
+        statusDetail: `${base ? `${base} ` : ""}(after retry)`.slice(0, 1000),
+      };
+    }
+    return second.result;
   }
 
   async complete(prompt: string, opts: CompleteOptions): Promise<string> {
