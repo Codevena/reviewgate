@@ -34,6 +34,7 @@ export function computeBehaviorHash(input: {
   brain: BrainHashEntry[];
   fp: FpHashEntry[];
   docs?: DocsHashEntry[] | undefined;
+  refs?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -56,6 +57,9 @@ export function computeBehaviorHash(input: {
       .sort()
       .join(",");
     out += `|docs:${docsPart}`;
+  }
+  if (input.refs) {
+    out += `|refs:${input.refs}`;
   }
   return out;
 }

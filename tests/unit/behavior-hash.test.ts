@@ -88,4 +88,14 @@ describe("computeBehaviorHash", () => {
     });
     expect(h).toBe("|docs:left-pad@:hh");
   });
+
+  it("refs segment: absent → byte-identical to no-refs; present → distinct", () => {
+    const base = { brain: [], fp: [] };
+    const noRefs = computeBehaviorHash(base);
+    expect(computeBehaviorHash({ ...base, refs: undefined })).toBe(noRefs);
+    const a = computeBehaviorHash({ ...base, refs: "hashA" });
+    const b = computeBehaviorHash({ ...base, refs: "hashB" });
+    expect(a).not.toBe(noRefs);
+    expect(a).not.toBe(b);
+  });
 });
