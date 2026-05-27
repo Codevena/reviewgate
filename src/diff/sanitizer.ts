@@ -43,6 +43,13 @@ export function neutralizeInjectionMarkers(text: string): string {
   return body;
 }
 
+// Collapse backtick runs of length ≥3 so untrusted content cannot escape a
+// wrapping code fence. A negated/escaped class only — no literal control bytes
+// (which would make git treat this source as binary).
+export function neutralizeFences(s: string): string {
+  return s.replace(/`{3,}/g, "``");
+}
+
 function shannonEntropy(s: string): number {
   if (s.length === 0) return 0;
   const counts: Record<string, number> = {};

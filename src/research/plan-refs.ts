@@ -1,6 +1,13 @@
 // src/research/plan-refs.ts
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
+
+function defangSentinels(s: string): string {
+  return s
+    .replace(/<<UNTRUSTED_DIFF>>/gi, "<!UNTRUSTED_DIFF!>")
+    .replace(/<<END_UNTRUSTED>>/gi, "<!END_UNTRUSTED!>");
+}
 
 const CODE_EXT = "ts|tsx|js|jsx|py|go|rs|java|kt|c|cc|cpp|h|hpp|rb|php|cs";
 const EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`);
@@ -102,6 +109,8 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
         continue;
       }
       if (content.includes("\0")) continue; // required binary guard
+
+      content = neutralizeFences(defangSentinels(neutralizeInjectionMarkers(content)));
 
       const block = `### ${relCheck}\n\`\`\`\n${content}\n\`\`\`\n`;
       if (used + block.length > budget) {
