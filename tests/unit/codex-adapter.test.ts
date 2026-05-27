@@ -1,6 +1,6 @@
 // tests/unit/codex-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../../src/providers/codex.ts";
@@ -71,6 +71,56 @@ describe("CodexAdapter (mocked binary)", () => {
     expect(result.verdict).toBe("ERROR");
     expect(result.status).toBe("error");
     expect(result.findings).toEqual([]);
+  });
+
+  it("B: review() passes --disable shell_tool before the prompt positional", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-args-"));
+    const argvFile = join(dir, "argv.txt");
+    const bin = join(dir, "fake-argv.sh");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && printf '%s' '{"verdict":"PASS","findings":[]}' > "$LAST_MSG"
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"cached_input_tokens":0}}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    chmodSync(bin, 0o755);
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "REVIEW_PROMPT_BODY");
+    writeFileSync(join(dir, "diff.patch"), "diff");
+
+    const adapter = new CodexAdapter({ binPath: bin });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 60_000 },
+      reviewerId: "codex-plan",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "plan",
+      diffPath: join(dir, "diff.patch"),
+    });
+    expect(result.status).toBe("ok");
+
+    const argv = readFileSync(argvFile, "utf8").split("\n");
+    const di = argv.indexOf("--disable");
+    expect(di).toBeGreaterThanOrEqual(0);
+    expect(argv[di + 1]).toBe("shell_tool");
+    expect(argv).toContain("--output-schema");
+    expect(argv).toContain("--output-last-message");
+    expect(argv.filter((x) => x.length > 0).pop()).toBe("REVIEW_PROMPT_BODY");
+    expect(di).toBeLessThan(argv.lastIndexOf("REVIEW_PROMPT_BODY"));
   });
 });
 

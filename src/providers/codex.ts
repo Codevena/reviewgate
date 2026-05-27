@@ -82,6 +82,8 @@ export class CodexAdapter implements ProviderAdapter {
 
     const args = [
       "exec",
+      "--disable",
+      "shell_tool",
       "--sandbox",
       "read-only",
       "--json",
