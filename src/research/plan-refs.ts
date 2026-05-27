@@ -1,5 +1,13 @@
 // src/research/plan-refs.ts
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
@@ -139,11 +147,14 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       }
 
       // Open + fstat + read on the SAME inode to close the lstat→read TOCTOU window.
+      // O_NOFOLLOW: atomically refuses a final-component symlink (ELOOP on Darwin/Linux),
+      // closing the lstat→open race — even if a symlink is swapped in between our
+      // lstatSync check and the open, this open will fail rather than follow it.
       let fd: number;
       try {
-        fd = openSync(abs, "r");
+        fd = openSync(abs, constants.O_RDONLY | constants.O_NOFOLLOW);
       } catch {
-        continue;
+        continue; // ELOOP (final-component symlink) or ENOENT/EACCES → skip
       }
       let content: string;
       try {

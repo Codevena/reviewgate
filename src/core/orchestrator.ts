@@ -1,6 +1,14 @@
 // src/core/orchestrator.ts
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
@@ -379,18 +387,40 @@ export class Orchestrator {
     if (docPersona) {
       const PLAN_SCAN_CAP = 256_000;
       let planText = "";
-      for (const f of facts.files) {
-        if (planText.length >= PLAN_SCAN_CAP) break;
-        const abs = join(repo, f.path);
-        const rel = relative(repo, abs);
-        if (rel.startsWith("..") || isAbsolute(rel)) continue;
-        try {
-          const st = lstatSync(abs);
-          if (!st.isFile()) continue;
-          const remaining = PLAN_SCAN_CAP - planText.length;
-          planText += `${await Bun.file(abs).slice(0, remaining).text()}\n`;
-        } catch {
-          /* deleted/unreadable — skip */
+      // Realpath containment: resolve the repo root once so intermediate-dir
+      // symlinks in a changed file's path cannot redirect reads outside the repo.
+      // If realpathSync throws (corrupted/missing repo), skip the scan entirely
+      // and fall back to the diff below.
+      let repoReal: string | null = null;
+      try {
+        repoReal = realpathSync(repo);
+      } catch {
+        repoReal = null;
+      }
+      if (repoReal !== null) {
+        for (const f of facts.files) {
+          if (planText.length >= PLAN_SCAN_CAP) break;
+          const abs = join(repo, f.path);
+          const rel = relative(repo, abs);
+          if (rel.startsWith("..") || isAbsolute(rel)) continue;
+          // Realpath containment: reject if the resolved path escapes the repo
+          // (catches intermediate-directory symlink escape that lstatSync misses).
+          let rp: string;
+          try {
+            rp = realpathSync(abs);
+          } catch {
+            continue;
+          }
+          const relReal = relative(repoReal, rp);
+          if (relReal.startsWith("..") || isAbsolute(relReal)) continue;
+          try {
+            const st = lstatSync(abs);
+            if (!st.isFile()) continue;
+            const remaining = PLAN_SCAN_CAP - planText.length;
+            planText += `${await Bun.file(abs).slice(0, remaining).text()}\n`;
+          } catch {
+            /* deleted/unreadable — skip */
+          }
         }
       }
       if (!planText) planText = this.input.diff; // fallback: changed hunks only
