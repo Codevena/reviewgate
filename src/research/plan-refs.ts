@@ -1,5 +1,5 @@
 // src/research/plan-refs.ts
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
@@ -105,7 +105,7 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
     const omit = (f: string): boolean => {
       const note = `### ${f}\n(omitted — context budget exceeded)\n`;
       out += note;
-      used += note.length;
+      used += Buffer.byteLength(note, "utf8");
       return used >= budget;
     };
     for (const rel of gated) {
@@ -130,37 +130,44 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       const relReal = relative(repoReal, rp);
       if (relReal.startsWith("..") || isAbsolute(relReal)) continue;
 
-      let st: ReturnType<typeof lstatSync>;
+      // lstatSync (no-follow): reject a final-component symlink/dir/special.
+      // This must stay BEFORE the open so we never open a symlink target.
       try {
-        st = lstatSync(abs);
+        if (!lstatSync(abs).isFile()) continue;
       } catch {
         continue;
       }
-      if (!st.isFile()) continue; // reject symlink/dir/special final component
 
-      // pre-read size guard: never load a file that can't fit the remaining budget
-      if (st.size > budget - used) {
-        if (omit(relCheck)) break;
+      // Open + fstat + read on the SAME inode to close the lstat→read TOCTOU window.
+      let fd: number;
+      try {
+        fd = openSync(abs, "r");
+      } catch {
         continue;
       }
-
       let content: string;
       try {
-        content = readFileSync(abs, "utf8");
-      } catch {
-        continue;
+        const fst = fstatSync(fd);
+        if (!fst.isFile()) continue; // defensive: opened inode must be a regular file
+        if (fst.size > budget - used) {
+          if (omit(relCheck)) break;
+          continue;
+        }
+        content = readFileSync(fd, "utf8"); // read the SAME opened inode (no path re-resolution)
+      } finally {
+        closeSync(fd);
       }
       if (content.includes("\0")) continue; // required binary guard
 
       content = neutralizeFences(defangSentinels(neutralizeInjectionMarkers(content)));
 
       const block = `### ${relCheck}\n\`\`\`\n${content}\n\`\`\`\n`;
-      if (used + block.length > budget) {
+      if (used + Buffer.byteLength(block, "utf8") > budget) {
         if (omit(relCheck)) break;
         continue;
       }
       out += block;
-      used += block.length;
+      used += Buffer.byteLength(block, "utf8");
       rendered += 1;
     }
     return out;
