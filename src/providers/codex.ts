@@ -68,9 +68,6 @@ export class CodexAdapter implements ProviderAdapter {
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
     const run = mkdtempSync(join(tmpdir(), "rg-codex-run-"));
-    const lastMsgFile = join(run, "last.md");
-    const eventsFile = join(run, "events.jsonl");
-    const stderrFile = join(run, "stderr.log");
 
     // Always constrain codex to our review schema so the response shape is
     // predictable. Caller may override with their own schema file.
@@ -80,24 +77,6 @@ export class CodexAdapter implements ProviderAdapter {
       writeFileSync(schemaPath, JSON.stringify(REVIEW_OUTPUT_SCHEMA));
     }
 
-    const args = [
-      "exec",
-      "--disable",
-      "shell_tool",
-      "--sandbox",
-      "read-only",
-      "--json",
-      "--output-last-message",
-      lastMsgFile,
-      "--output-schema",
-      schemaPath,
-      "--cd",
-      input.workingDir,
-      "--model",
-      input.cfg.model,
-    ];
-    args.push(readFileSync(input.promptFile, "utf8"));
-
     const env = { ...process.env } as Record<string, string>;
     if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
       const key = process.env[input.cfg.apiKeyEnv];
@@ -105,88 +84,153 @@ export class CodexAdapter implements ProviderAdapter {
     }
     // OAuth mode relies on codex's own credential store; no env change.
 
-    const res = await spawnSafely({
-      command: this.binPath,
-      args,
-      env,
-      cwd: input.workingDir,
-      stdoutFile: eventsFile,
-      stderrFile,
-      timeoutMs: input.cfg.timeoutMs,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
+    // One codex invocation. Per-attempt filenames so a retry can never read a
+    // previous attempt's stale last-message (see spec "stale-output guard").
+    const runOnce = async (
+      attempt: 1 | 2,
+      promptText: string,
+    ): Promise<{ result: ReviewResult; killedByAbort: boolean }> => {
+      const lastMsgFile = join(run, `last.${attempt}.md`);
+      const eventsFile = join(run, `events.${attempt}.jsonl`);
+      const stderrFile = join(run, `stderr.${attempt}.log`);
 
-    const stderrText = readFileSafe(stderrFile);
-    // codex's usage-limit banner ("You've hit your usage limit … try again at
-    // <date>") lands on STDOUT (the --json event stream), while stderr may only
-    // show the generic stdin notice — so scan BOTH before classifying, and when
-    // it IS a quota hit surface the events' banner (with the reset time) as
-    // statusDetail so the cooldown can parse when codex's limit resets.
-    const quotaText = `${stderrText}\n${readFileSafe(eventsFile)}`;
-    const baseStatus: ReviewStatus =
-      res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
-    const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(quotaText) ? "quota-exhausted" : baseStatus;
+      const args = [
+        "exec",
+        "--disable",
+        "shell_tool",
+        "--sandbox",
+        "read-only",
+        "--json",
+        "--output-last-message",
+        lastMsgFile,
+        "--output-schema",
+        schemaPath,
+        "--cd",
+        input.workingDir,
+        "--model",
+        input.cfg.model,
+        promptText,
+      ];
 
-    if (status !== "ok") {
-      const detail =
-        status === "quota-exhausted" ? (extractQuotaMessage(quotaText) ?? stderrText) : stderrText;
+      const res = await spawnSafely({
+        command: this.binPath,
+        args,
+        env,
+        cwd: input.workingDir,
+        stdoutFile: eventsFile,
+        stderrFile,
+        timeoutMs: input.cfg.timeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+
+      const stderrText = readFileSafe(stderrFile);
+      // codex's usage-limit banner lands on STDOUT (the --json event stream),
+      // not stderr — so scan BOTH before classifying a quota hit.
+      const quotaText = `${stderrText}\n${readFileSafe(eventsFile)}`;
+      const baseStatus: ReviewStatus =
+        res.killedByTimeout || res.killedByWatchdog
+          ? "timeout"
+          : res.exitCode === 0
+            ? "ok"
+            : "error";
+      const status: ReviewStatus =
+        baseStatus === "error" && isQuotaExhausted(quotaText) ? "quota-exhausted" : baseStatus;
+
+      if (status !== "ok") {
+        const detail =
+          status === "quota-exhausted"
+            ? (extractQuotaMessage(quotaText) ?? stderrText)
+            : stderrText;
+        return {
+          result: {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: res.durationMs,
+            exitCode: res.exitCode,
+            rawEventsPath: eventsFile,
+            status,
+            statusDetail: detail.slice(0, 1000),
+          },
+          killedByAbort: res.killedByAbort,
+        };
+      }
+
+      const usage = this.extractUsage(eventsFile);
+      const findings = this.extractFindings(
+        lastMsgFile,
+        input.cfg.model,
+        input.persona,
+        input.workingDir,
+      );
+      if (findings === null) {
+        // Exit 0 but no parseable review. If codex actually printed a usage-limit
+        // banner (which lands on exit 0 here, not the exit!=0 path above), classify
+        // it as quota-exhausted so the cooldown handles it and we don't retry into
+        // the cap. Otherwise it's a genuine unparseable run (retry candidate).
+        if (isQuotaExhausted(quotaText)) {
+          return {
+            result: {
+              reviewerId: input.reviewerId,
+              verdict: "ERROR",
+              findings: [],
+              usage,
+              durationMs: res.durationMs,
+              exitCode: res.exitCode,
+              rawEventsPath: eventsFile,
+              status: "quota-exhausted",
+              statusDetail: (extractQuotaMessage(quotaText) ?? "codex usage limit reached").slice(
+                0,
+                1000,
+              ),
+            },
+            killedByAbort: res.killedByAbort,
+          };
+        }
+        return {
+          result: {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage,
+            durationMs: res.durationMs,
+            exitCode: res.exitCode,
+            rawEventsPath: eventsFile,
+            status: "error",
+            statusDetail:
+              "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+          },
+          killedByAbort: res.killedByAbort,
+        };
+      }
+
+      let rawText = "";
+      try {
+        rawText = readFileSync(lastMsgFile, "utf8");
+      } catch {
+        rawText = "";
+      }
       return {
-        reviewerId: input.reviewerId,
-        verdict: "ERROR",
-        findings: [],
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-        durationMs: res.durationMs,
-        exitCode: res.exitCode,
-        rawEventsPath: eventsFile,
-        status,
-        statusDetail: detail.slice(0, 1000),
+        result: {
+          reviewerId: input.reviewerId,
+          verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+            ? "FAIL"
+            : "PASS",
+          findings,
+          usage,
+          durationMs: res.durationMs,
+          exitCode: 0,
+          rawEventsPath: eventsFile,
+          rawText,
+          status: "ok",
+        },
+        killedByAbort: res.killedByAbort,
       };
-    }
-
-    const usage = this.extractUsage(eventsFile);
-    const findings = this.extractFindings(
-      lastMsgFile,
-      input.cfg.model,
-      input.persona,
-      input.workingDir,
-    );
-    if (findings === null) {
-      // Exit 0 but the last-message was unreadable or not a parseable review
-      // (truncated/malformed JSON). This is NOT a clean review — treat it as an
-      // ERROR (status !== "ok" → excluded from okRuns → feeds the fail-closed
-      // guard) rather than letting findings=[] silently become a PASS.
-      return {
-        reviewerId: input.reviewerId,
-        verdict: "ERROR",
-        findings: [],
-        usage,
-        durationMs: res.durationMs,
-        exitCode: res.exitCode,
-        rawEventsPath: eventsFile,
-        status: "error",
-        statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
-      };
-    }
-    let rawText = "";
-    try {
-      rawText = readFileSync(lastMsgFile, "utf8");
-    } catch {
-      rawText = "";
-    }
-    return {
-      reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-        ? "FAIL"
-        : "PASS",
-      findings,
-      usage,
-      durationMs: res.durationMs,
-      exitCode: 0,
-      rawEventsPath: eventsFile,
-      rawText,
-      status: "ok",
     };
+
+    const first = await runOnce(1, readFileSync(input.promptFile, "utf8"));
+    return first.result;
   }
 
   async complete(prompt: string, opts: CompleteOptions): Promise<string> {
