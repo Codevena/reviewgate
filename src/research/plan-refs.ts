@@ -138,6 +138,17 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       const relReal = relative(repoReal, rp);
       if (relReal.startsWith("..") || isAbsolute(relReal)) continue;
 
+      // ACCEPTED residual: a narrow intermediate-directory symlink TOCTOU remains —
+      // between this realpath check and the open below, an attacker with write access
+      // to the working tree could swap an intermediate path component to a symlink that
+      // openSync (which follows intermediate components; O_NOFOLLOW only guards the
+      // final one) then traverses outside the repo. Fully closing it needs per-component
+      // openat(O_NOFOLLOW) / Linux RESOLVE_BENEATH, neither portable nor exposed by
+      // Bun/Node fs. This is immaterial at our threat model (the attacker already has
+      // working-tree write access to the repo under review) and matches the existing
+      // collectChangedFileContents (git.ts) posture; this is best-effort context, not an
+      // auth boundary.
+
       // lstatSync (no-follow): reject a final-component symlink/dir/special.
       // This must stay BEFORE the open so we never open a symlink target.
       try {
