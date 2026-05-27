@@ -126,4 +126,64 @@ describe("Orchestrator doc review", () => {
     await orch.runIteration({ runId: "RUN", iter: 1 });
     expect(seen.prompt ?? "").not.toContain("## Referenced source files");
   });
+
+  it("a referenced-file content change invalidates the cached doc-review verdict", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-doccache-"));
+    // git-init so gitignoreGate (git check-ignore) exits 0/1 not 128 →
+    // refs content is collected and fed into the behavior-hash cache key.
+    await Bun.$`git -C ${repo} init -q`.quiet().nothrow();
+    mkdirSync(join(repo, "src"), { recursive: true });
+    mkdirSync(join(repo, "docs/superpowers/specs"), { recursive: true });
+    writeFileSync(join(repo, "src/dep.ts"), "export const V = 1;");
+    writeFileSync(join(repo, "docs/superpowers/specs/p.md"), "Plan references `src/dep.ts`.");
+    // The plan diff is IDENTICAL across both runs — the only varying input is dep.ts.
+    const diff =
+      "diff --git a/docs/superpowers/specs/p.md b/docs/superpowers/specs/p.md\n--- a/docs/superpowers/specs/p.md\n+++ b/docs/superpowers/specs/p.md\n@@ -0,0 +1 @@\n+Plan references `src/dep.ts`.\n";
+    let calls = 0;
+    const stub = (): ProviderAdapter => ({
+      id: "codex",
+      async preflight() {
+        return { available: true, version: "x", authMode: "oauth", error: null };
+      },
+      async review(inp) {
+        calls += 1;
+        return {
+          reviewerId: inp.reviewerId,
+          verdict: "PASS",
+          findings: [],
+          usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+          durationMs: 1,
+          exitCode: 0,
+          rawEventsPath: "",
+          status: "ok",
+        } satisfies ReviewResult;
+      },
+    });
+    const mk = () =>
+      new Orchestrator({
+        repoRoot: repo,
+        config: defineConfig({ cache: { enabled: true, reviewTtlDays: 7 } }),
+        adapters: { codex: stub() },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff,
+        reasonOnFailEnabled: true,
+        forcePersona: "plan",
+      });
+    // First run — reviewer is called, result is cached.
+    await mk().runIteration({ runId: "R1", iter: 1 });
+    expect(calls).toBe(1); // first run: panel ran + result cached
+
+    // CONTROL: identical input (dep.ts unchanged) → cache hit → calls stays 1.
+    // Proves the doc-review verdict is actually cacheable, so the miss below is
+    // attributable to the refs change (not "the cache never hits in this path").
+    await mk().runIteration({ runId: "R1b", iter: 1 });
+    expect(calls).toBe(1); // served from cache (refs digest unchanged)
+
+    // Now change the referenced source file (plan diff is unchanged) and prove invalidation.
+    writeFileSync(join(repo, "src/dep.ts"), "export const V = 999; // changed");
+    // The refs digest has changed, so the cache key is different → reviewer runs again.
+    await mk().runIteration({ runId: "R2", iter: 1 });
+    expect(calls).toBe(2); // cache MISS — refs digest changed → re-review
+  });
 });
