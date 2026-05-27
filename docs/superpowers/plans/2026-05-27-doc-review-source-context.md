@@ -14,7 +14,7 @@
 
 ## File Structure
 
-- **Create:** `src/research/plan-refs.ts` — `extractReferencedPaths` + `collectReferencedFileContents` (+ private helpers `defangSentinels`, `omit`). One responsibility: untrusted plan text → trusted bounded "referenced source files" block.
+- **Create:** `src/research/plan-refs.ts` — `extractReferencedPaths` + `collectReferencedFileContents` (+ private helpers `defangSentinels`, `collapseFences`, `omit`, `gitignoreGate`). One responsibility: untrusted plan text → trusted bounded "referenced source files" block.
 - **Modify:** `src/config/define-config.ts` + `src/config/defaults.ts` — add `docReview.referencedFilesBudgetBytes`.
 - **Modify:** `src/cache/behavior-hash.ts` — add optional `refs?: string` segment.
 - **Modify:** `src/core/orchestrator.ts` — pre-cache compute (doc-only), fold `refs` into behavior-hash, inject prompt section.
@@ -430,11 +430,11 @@ git commit -m "feat(plan-refs): budget bound via omit() markers + pre-read size 
 
 ---
 
-## Task 5: Neutralize injection markers + defang fence sentinels
+## Task 5: Neutralize injection markers + defang fence sentinels + collapse code fences
 
 **Files:** Modify `src/research/plan-refs.ts`; Test `tests/unit/plan-refs.test.ts`.
 
-A referenced file's content is chosen by the untrusted plan, so before rendering it must be (1) run through `neutralizeInjectionMarkers` and (2) have the fence sentinels `<<UNTRUSTED_DIFF>>` / `<<END_UNTRUSTED>>` defanged (which `neutralizeInjectionMarkers` does NOT cover — `sanitizer.ts:2-14` vs `:117-119`).
+A referenced file's content is chosen by the untrusted plan, so before rendering it must be (1) run through `neutralizeInjectionMarkers`, (2) have the fence sentinels `<<UNTRUSTED_DIFF>>` / `<<END_UNTRUSTED>>` defanged (which `neutralizeInjectionMarkers` does NOT cover — `sanitizer.ts:2-14` vs `:117-119`), AND (3) have runs of 3+ backticks collapsed so a referenced file containing ```` ``` ```` cannot break the per-file ` ``` ` fence we wrap it in. Step (3) mirrors the `neutralizeFences` helper that `research-writer.ts:63` applies for the same reason (it is a local one-liner there, not exported — replicate it).
 
 - [ ] **Step 1: Write the failing test** (append):
 
@@ -451,10 +451,18 @@ describe("collectReferencedFileContents — injection hardening (9b)", () => {
     expect(out).not.toContain("<<END_UNTRUSTED>>"); // sentinel defanged → can't break the fence
     expect(out).toContain("before"); // content still present
   });
+  it("collapses 3+ backtick runs so content can't break the per-file fence", async () => {
+    const repo = repoWith({ "src/fence.ts": "const s = `\`\`\`js evil`;" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo, planText: "`src/fence.ts`", budgetBytes: 32_000,
+    });
+    expect(out).toContain("### src/fence.ts");
+    expect(out).not.toContain("```js evil"); // a 3+ backtick run no longer survives in content
+  });
 });
 ```
 
-- [ ] **Step 2: Run — FAIL** (content still contains `<<END_UNTRUSTED>>`).
+- [ ] **Step 2: Run — FAIL** (content still contains `<<END_UNTRUSTED>>` / the triple-backtick run).
 
 - [ ] **Step 3: Implement** — add the helper + apply it to `content` right after the NUL check, before building `block`:
 
@@ -466,11 +474,17 @@ function defangSentinels(s: string): string {
     .replace(/<<UNTRUSTED_DIFF>>/gi, "<!UNTRUSTED_DIFF!>")
     .replace(/<<END_UNTRUSTED>>/gi, "<!END_UNTRUSTED!>");
 }
+
+// Collapse runs of 3+ backticks so referenced content can't break the per-file
+// ``` fence (mirrors the local neutralizeFences in research-writer.ts:63).
+function collapseFences(s: string): string {
+  return s.replace(/`{3,}/g, "``");
+}
 ```
 
 In the loop, after `if (content.includes("\0")) continue;`:
 ```ts
-      content = defangSentinels(neutralizeInjectionMarkers(content));
+      content = collapseFences(defangSentinels(neutralizeInjectionMarkers(content)));
 ```
 (`content` must be declared `let`.)
 
