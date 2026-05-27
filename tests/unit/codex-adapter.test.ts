@@ -7,6 +7,22 @@ import { CodexAdapter } from "../../src/providers/codex.ts";
 
 const PRETEND_CODEX_BIN = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 const FAKE_CODEX_COMPLETE = join(process.cwd(), "tests/fixtures/fake-codex-complete.sh");
+const ATTEMPT_BIN = join(process.cwd(), "tests/fixtures/fake-codex-attempt.sh");
+
+function makeReviewInput(dir: string, persona = "plan") {
+  const promptFile = join(dir, "prompt.txt");
+  writeFileSync(promptFile, "REVIEW_PROMPT_BODY");
+  writeFileSync(join(dir, "diff.patch"), "diff");
+  return {
+    cfg: { enabled: true, auth: "oauth" as const, model: "gpt-5.4", timeoutMs: 60_000 },
+    reviewerId: "codex-plan",
+    promptFile,
+    workingDir: dir,
+    findingsPath: join(dir, "findings.md"),
+    persona,
+    diffPath: join(dir, "diff.patch"),
+  };
+}
 
 // Fake codex that exits 0 but writes NON-JSON to --output-last-message (mirrors a
 // truncated / malformed real run that still exits cleanly), plus a valid usage event.
@@ -121,6 +137,26 @@ exit 0
     expect(argv).toContain("--output-last-message");
     expect(argv.filter((x) => x.length > 0).pop()).toBe("REVIEW_PROMPT_BODY");
     expect(di).toBeLessThan(argv.lastIndexOf("REVIEW_PROMPT_BODY"));
+  });
+
+  it("3f: exit-0 empty last-message with quota banner → quota-exhausted, one spawn", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-q-"));
+    const counter = join(dir, "count.txt");
+    writeFileSync(counter, "");
+    process.env.RG_FAKE_COUNTER = counter;
+    process.env.RG_FAKE_A1 = "quota";
+    process.env.RG_FAKE_A2 = "none";
+    try {
+      const adapter = new CodexAdapter({ binPath: ATTEMPT_BIN });
+      const result = await adapter.review(makeReviewInput(dir));
+      expect(result.status).toBe("quota-exhausted");
+      expect(readFileSync(counter, "utf8").trim().split("\n").filter(Boolean).length).toBe(1);
+      expect(result.statusDetail ?? "").not.toContain("(after retry)");
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_COUNTER");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A1");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A2");
+    }
   });
 });
 
