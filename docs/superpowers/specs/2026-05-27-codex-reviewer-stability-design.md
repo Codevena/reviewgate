@@ -93,16 +93,57 @@ helper and call it up to **twice**:
    appended to the prompt, e.g.:
    `"\n\nIMPORTANT: Output ONLY the single JSON object of the required schema now. Do not call any tools or explain."`
    (The retry prompt file is written to the same run dir.)
-3. If the retry also produces no parseable JSON → return the non-ok status
-   exactly as today (`statusDetail` notes "after retry").
+3. The retry's result is returned as-is, with one exception: if the retry again
+   ends in the **generic error/unparseable** outcome, suffix its `statusDetail`
+   with `" (after retry)"`. If the retry **itself** returns `quota-exhausted`,
+   `"timeout"`, or aborts (`killedByAbort`), return it **unchanged** — do not
+   suffix — so quota `statusDetail` stays parseable by `parseQuotaResetAt` for
+   the cooldown. (The no-retry conditions below gate whether a *second* attempt
+   starts at all; this rule governs how a second attempt's own terminal status is
+   reported.) First-attempt no-retry statuses likewise keep their original
+   `statusDetail` unchanged.
 
-**No-retry conditions** (return the first attempt's result unchanged):
-- `status === "quota-exhausted"` (cooldown handles it; retry wastes quota),
-- `killedByTimeout` / `killedByWatchdog` (`status:"timeout"`; retry can't help),
-- the abort `signal` has fired (loop self-deadline) — respect cancellation.
+**No-retry conditions** (return the first attempt's result unchanged) — detect
+each from the spawn result / signal directly, **not** by inferring from
+`status`, because an abort currently surfaces as plain `status:"error"`:
+- `res.killedByAbort === true` **or** `input.signal?.aborted === true` — the loop
+  self-deadline fired; respect cancellation, do not start a second run.
+- `res.killedByTimeout` / `res.killedByWatchdog` (`status:"timeout"`; retry can't help).
+- `status === "quota-exhausted"` (cooldown handles it; retry wastes quota).
+- **Quota on the exit-0 unparseable path:** the adapter only promotes quota when
+  `baseStatus === "error"` (exit≠0; `src/providers/codex.ts:124-127`). An exit-0
+  run that emitted a quota/limit banner but **no** parseable `last.md` falls
+  through to the `findings === null` branch as a generic error and would be
+  retried — wasting quota. The retry predicate MUST therefore also run
+  `isQuotaExhausted(quotaText)` on the unparseable exit-0 result and, if true,
+  return `quota-exhausted` (with its parseable detail) instead of retrying.
 
-Retry adds at most one extra codex run on the failure path; the common (success)
-path is unchanged.
+> Implementation guard: `spawnSafely` exposes `killedByAbort`
+> (`src/utils/spawn.ts:28`), but `review()` today classifies only
+> timeout/watchdog → `"timeout"` (`src/providers/codex.ts:124-127`). The plan
+> must add an explicit abort check; otherwise an aborted run looks like an
+> ordinary error and would be retried after the deadline.
+
+**Temp-dir / no-leak / stale-file requirement:** `review()` deliberately does
+**not** remove its `mkdtempSync` run dir (`src/providers/codex.ts:70`) —
+`rawEventsPath` points inside it for post-hoc inspection. The retry MUST **reuse
+the same run dir**; `rawEventsPath` then references the **last** attempt. Creating
+a second uncleaned `mkdtempSync` dir is a regression (temp leak) and is forbidden.
+**Stale-output guard (critical):** codex writes `last.md` only when it emits a
+final message, so before **each** spawn the attempt's `last.md` (and
+`events.jsonl`) MUST be **truncated/unlinked**. Otherwise a second attempt that
+again produces no final message would leave attempt-1's `last.md` in place and
+the parser would read **stale** content as if it were the retry's output. Use
+attempt-suffixed filenames (`last.1.md`, `last.2.md`) or explicit truncate-before-
+spawn; the plan must pick one and test the stale-file case.
+
+**Retry budget semantics:** `timeoutMs` is applied **per attempt** (each
+`spawnSafely` call gets the full `input.cfg.timeoutMs`), so the failure path can
+roughly double adapter wall time. This is bounded by the orchestrator's loop
+self-deadline: `input.signal` aborts an in-flight attempt, and a fired
+signal/`killedByAbort` is a no-retry condition (above), so the second attempt is
+never started past the deadline. The common (success) path runs exactly one
+attempt and is unchanged.
 
 ## Files touched
 
@@ -117,14 +158,37 @@ Unit (stubbed `spawnSafely`, deterministic):
    no retry.
 2. First attempt returns empty/unparseable `last.md` (exit 0) → **two** spawns;
    second returns valid JSON → `status:"ok"`.
-3. Both attempts unparseable → `status:"error"`, `statusDetail` mentions retry;
-   exactly **two** spawns.
-4. First attempt `status:"quota-exhausted"` / `timeout` / aborted signal →
-   **no** retry (one spawn), status preserved.
-5. Args assertion: `review()` passes `--disable shell_tool` to `spawnSafely`.
+3. Both attempts unparseable → `status:"error"`, `statusDetail` suffixed
+   `" (after retry)"`; exactly **two** spawns.
+3b. First attempt **non-zero exit** generic `status:"error"` (not quota/timeout/
+   abort), second attempt returns valid JSON → **two** spawns, `status:"ok"`.
+   (Covers the transient exit≠0 retry path, distinct from the exit-0 case.)
+3c. Stale-file guard: first attempt writes a `last.md`, second attempt produces
+   **no** final message (does not rewrite `last.md`) → result is `status:"error"`,
+   **not** a spurious parse of attempt-1's stale `last.md`.
+3d. Retry returns terminal status: first attempt generic error → retry returns
+   `quota-exhausted` (or `timeout`/abort) → that retry status is returned
+   **unchanged** (no `" (after retry)"` suffix; quota detail preserved for cooldown).
+3e. Generic error on retry: both attempts exit non-zero generic `status:"error"`
+   → `status:"error"` with `statusDetail` suffixed `" (after retry)"`; two spawns.
+3f. Quota on exit-0 unparseable: first attempt exits 0, empty `last.md`, but
+   events/stderr carry a quota banner → classified `quota-exhausted`, **no** retry
+   (one spawn), reset detail preserved.
+4. First attempt `status:"quota-exhausted"` / `killedByTimeout`/`killedByWatchdog`
+   / `killedByAbort` (or pre-aborted `input.signal`) → **no** retry (one spawn),
+   original `statusDetail` preserved unchanged.
+5. Args structure: `review()` passes `--disable shell_tool` as **two** args
+   (`"--disable"`, `"shell_tool"`) inserted **before** the final prompt positional
+   (`src/providers/codex.ts:83-97`), and `--output-schema` / `--output-last-message`
+   remain intact.
+6. Retry prompt correctness: on retry, the stronger directive modifies the **final
+   positional prompt only** (not appended as trailing flags, not left in an unused
+   prompt file), and the retry reuses the **same run dir** (no second `mkdtempSync`).
+   Note: `tests/fixtures/fake-codex.sh` may need arg-position awareness to assert
+   this — extend it rather than assuming positional parsing.
 
 Real-codex smoke test (guarded; skipped when `codex` is absent / no auth):
-6. `--disable shell_tool` against a fixture plan → `last.md` parses as a review,
+7. `--disable shell_tool` against a fixture plan → `last.md` parses as a review,
    event stream contains **0** `exec_command` / `function_call` events and ≥1
    `agent_message`. (Mirrors the manual verification above.)
 
