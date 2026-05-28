@@ -10,6 +10,7 @@ import {
   VALID_EVIDENCE_KINDS,
 } from "../../schemas/brain.ts";
 import { curatorDecisionsPath } from "../../utils/paths.ts";
+import { GROUP_THRESHOLD } from "./constants.ts";
 import { type Embedder, cosineSimilarity } from "./embeddings.ts";
 import type { BrainStore } from "./store.ts";
 
@@ -93,13 +94,13 @@ export function normalizeProposal(p: unknown): MemoryProposal | null {
 }
 
 const DEDUP_THRESHOLD = 0.85;
-// Looser than DEDUP: paraphrases of the SAME convention from different reviewers
-// embed to similar-but-not-identical vectors. At 0.85 they stayed separate
-// single-provider singletons and never reached cross-provider quorum; 0.78 lets
-// genuine paraphrases cluster while still separating distinct concepts. (Dedup
-// vs EXISTING brain entries stays strict at 0.85 to avoid collapsing distinct
-// memories.)
-const GROUP_THRESHOLD = 0.78;
+// GROUP_THRESHOLD (0.78) is looser than DEDUP_THRESHOLD: paraphrases of the SAME
+// convention from different reviewers embed to similar-but-not-identical vectors.
+// At 0.85 they stayed separate single-provider singletons and never reached
+// cross-provider quorum; 0.78 lets genuine paraphrases cluster while still
+// separating distinct concepts. (Dedup vs EXISTING brain entries stays strict at
+// 0.85 to avoid collapsing distinct memories.) The constant lives in
+// `./constants.ts` so candidate-store.ts can reuse it without an import cycle.
 const MAX_PROMOTIONS = 3;
 
 // Known provider ids, longest first so longest-prefix matching is deterministic

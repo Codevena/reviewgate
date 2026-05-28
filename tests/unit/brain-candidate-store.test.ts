@@ -56,3 +56,48 @@ describe("CandidateStore — basics", () => {
     expect(back[0]?.id).toBe("C-001");
   });
 });
+
+describe("CandidateStore — addOrMerge dedup-by-(embedding, provider)", () => {
+  it("same provider + same embedding → no-op (one entry)", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(mkCandidate({ id: "C-001", provider: "codex", embedding: [1, 0, 0] }));
+    await s.addOrMerge(mkCandidate({ id: "C-002", provider: "codex", embedding: [1, 0, 0] }));
+    expect(await s.listAll()).toHaveLength(1);
+  });
+  it("DIFFERENT provider + same embedding → two entries (quorum-relevant)", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(mkCandidate({ id: "C-001", provider: "codex", embedding: [1, 0, 0] }));
+    await s.addOrMerge(mkCandidate({ id: "C-002", provider: "gemini", embedding: [1, 0, 0] }));
+    expect(await s.listAll()).toHaveLength(2);
+  });
+  it("same provider + orthogonal embedding → two entries (different topics)", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(mkCandidate({ id: "C-001", provider: "codex", embedding: [1, 0, 0] }));
+    await s.addOrMerge(mkCandidate({ id: "C-002", provider: "codex", embedding: [0, 1, 0] }));
+    expect(await s.listAll()).toHaveLength(2);
+  });
+  it("same provider + same embedding but DIFFERENT embedding_model → two entries", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(
+      mkCandidate({
+        id: "C-001",
+        provider: "codex",
+        embedding: [1, 0, 0],
+        embedding_model: "model-A",
+      }),
+    );
+    await s.addOrMerge(
+      mkCandidate({
+        id: "C-002",
+        provider: "codex",
+        embedding: [1, 0, 0],
+        embedding_model: "model-B",
+      }),
+    );
+    expect(await s.listAll()).toHaveLength(2);
+  });
+});

@@ -10,6 +10,19 @@ import {
 import { type BrainCandidate, BrainCandidateSchema } from "../../schemas/brain.ts";
 import { flock } from "../../utils/flock.ts";
 import { brainCandidatesLockPath, brainCandidatesPath, brainDir } from "../../utils/paths.ts";
+import { GROUP_THRESHOLD } from "./constants.ts";
+import { cosineSimilarity } from "./embeddings.ts";
+
+/** Cosine-similarity gate that never throws — wraps `cosineSimilarity` so a
+ *  malformed embedding (zero-magnitude, length mismatch) can't crash an insert.
+ *  Returns false on any cosine error: "we couldn't compare → treat as not-a-dup". */
+function safeCosineAtLeast(a: number[], b: number[], threshold: number): boolean {
+  try {
+    return cosineSimilarity(a, b) >= threshold;
+  } catch {
+    return false;
+  }
+}
 
 export class CandidateStore {
   constructor(private readonly repoRoot: string) {}
@@ -59,8 +72,26 @@ export class CandidateStore {
     }
   }
 
-  /** Add a new candidate (no dedup yet — Task 3 adds dedup-by-(embedding, provider)). */
+  /** Add a new candidate, deduplicating by (same provider + cosine ≥ GROUP_THRESHOLD).
+   *  A same-provider candidate with a sufficiently similar embedding means "this provider
+   *  already said this" — no-op. A different-provider candidate is always added (quorum-relevant). */
   async addOrMerge(c: BrainCandidate): Promise<void> {
-    await this.mutate((entries) => ({ next: [...entries, c], result: undefined }));
+    await this.mutate((entries) => {
+      // Dedup: a SAME-provider candidate with an embedding cosine ≥ GROUP_THRESHOLD
+      // means "this provider already said this" — no-op (don't inflate the pool
+      // with one provider's repeated observations).
+      // (Schema enforces embedding.length ≥ 1 at parse time in listAll; the catch
+      //  inside safeCosineAtLeast is defense-in-depth for any other cosine error —
+      //  never crash an insert.)
+      const dup = entries.find(
+        (e) =>
+          e.provider === c.provider &&
+          e.embedding_model === c.embedding_model &&
+          safeCosineAtLeast(e.embedding, c.embedding, GROUP_THRESHOLD),
+      );
+      return dup
+        ? { next: entries, result: undefined }
+        : { next: [...entries, c], result: undefined };
+    });
   }
 }
