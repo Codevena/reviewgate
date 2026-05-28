@@ -24,8 +24,8 @@ describe("isProviderAvailable", () => {
     );
   });
 
-  it("CLI providers probe their binary (codex/gemini/claude-code/opencode)", () => {
-    const present = (bin: string) => ["codex", "gemini", "claude", "opencode"].includes(bin);
+  it("CLI providers probe their binary (codex/agy/claude-code/opencode)", () => {
+    const present = (bin: string) => ["codex", "agy", "claude", "opencode"].includes(bin);
     for (const id of ["codex", "gemini", "claude-code", "opencode"] as const) {
       expect(isProviderAvailable(id, undefined, { env: {}, probeBin: present })).toBe(true);
     }

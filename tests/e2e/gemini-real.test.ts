@@ -10,7 +10,7 @@ import { runInit } from "../../src/cli/commands/init.ts";
 const E2E = process.env.REVIEWGATE_E2E === "1";
 const E2E_TIMEOUT_MS = 300_000;
 
-(E2E ? describe : describe.skip)("e2e with real gemini", () => {
+(E2E ? describe : describe.skip)("e2e with real agy (gemini provider)", () => {
   it(
     "gemini reviewer flags the timing-unsafe compare",
     async () => {
@@ -34,7 +34,7 @@ const E2E_TIMEOUT_MS = 300_000;
       );
       writeFileSync(
         join(repo, "reviewgate.config.ts"),
-        `import { defineConfig } from "${process.cwd()}/src/config/define-config.ts";\nexport default defineConfig({ providers: { gemini: { enabled: true, auth: "oauth", model: "gemini-2.5-flash", timeoutMs: 300000 } }, phases: { review: { reviewers: [{ provider: "gemini", persona: "security" }] } } });\n`,
+        `import { defineConfig } from "${process.cwd()}/src/config/define-config.ts";\nexport default defineConfig({ providers: { gemini: { enabled: true, auth: "oauth", model: "agy-default", timeoutMs: 300000 } }, phases: { review: { reviewers: [{ provider: "gemini", persona: "security" }] } } });\n`,
       );
       await runInit({ repoRoot: repo, mode: "agent-loop" });
       await runGate({

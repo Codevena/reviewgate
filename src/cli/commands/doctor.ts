@@ -337,6 +337,15 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
       home: homedir(),
     });
     checks.push(reviewersEnabledCheck(cfg));
+    // gemini → agy is OAuth-only; an apikey auth on the gemini provider is inert.
+    const gem = cfg.providers.gemini;
+    if (gem?.enabled && gem.auth === "apikey") {
+      checks.push({
+        name: "gemini auth",
+        status: "warn",
+        detail: 'gemini runs the agy CLI (OAuth only); auth:"apikey" has no effect — remove it.',
+      });
+    }
     // Provider availability: CLI providers need their CLI reachable; openrouter
     // needs its CONFIGURED key env var set (defaults to OPENROUTER_API_KEY, but a
     // provider/embeddings config may name a different one). ("claude-code" runs the
@@ -387,7 +396,7 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   // Optional reviewer CLIs (M2). These are only needed if enabled in config;
   // report as warn (not fail) when absent so codex-only setups stay green.
   for (const [bin, name] of [
-    ["gemini", "gemini CLI (optional)"],
+    ["agy", "Antigravity CLI agy (gemini reviewer; gemini CLI sunsets 2026-06-18)"],
     ["claude", "claude CLI (optional)"],
   ] as const) {
     const c = checkBinary(bin, name);

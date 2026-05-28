@@ -11,11 +11,10 @@ export const defaultConfig = {
     gemini: {
       enabled: false,
       auth: "oauth" as const,
-      // A FAST flash model by default: pro/reasoning tiers (e.g.
-      // gemini-3-pro-preview) can take minutes per review. Set to any model your
-      // `gemini` CLI account can access; an unknown id yields a ModelNotFoundError
-      // and the reviewer errors out (reduced coverage). Verified working on
-      // gemini CLI 0.40.1 — note `gemini-flash-latest` is NOT a valid id there.
+      // Driven by the Antigravity CLI (`agy`); the provider id stays "gemini".
+      // agy has no model-selection flag, so `model` is INFORMATIONAL ONLY
+      // (recorded in audit/research, never passed to the CLI). Kept in the
+      // schema to avoid a breaking config change.
       model: "gemini-3-flash-preview",
       timeoutMs: 300_000,
     },

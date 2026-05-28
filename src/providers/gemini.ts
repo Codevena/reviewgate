@@ -1,4 +1,9 @@
 // src/providers/gemini.ts
+// Drives the Antigravity CLI (`agy`), the successor to the discontinued Gemini
+// CLI (gemini CLI sunsets 2026-06-18 for OAuth/Pro/Ultra/free tiers). The
+// provider id stays "gemini" for config compatibility. agy `-p` prints the model
+// response verbatim on stdout — there is no -m, no -o json envelope, and no
+// API-key auth (OAuth via the Antigravity session only).
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,22 +28,15 @@ export interface GeminiAdapterOptions {
   binPath?: string;
 }
 
-interface GeminiEnvelope {
-  response?: string;
-  stats?: {
-    models?: Record<string, { tokens?: { prompt?: number; candidates?: number; cached?: number } }>;
-  };
-}
-
 export class GeminiAdapter implements ProviderAdapter {
   readonly id = "gemini" as const;
   private readonly binPath: string;
   constructor(opts: GeminiAdapterOptions = {}) {
-    this.binPath = opts.binPath ?? "gemini";
+    this.binPath = opts.binPath ?? "agy";
   }
 
   async preflight(cfg: ProviderConfig): Promise<Preflight> {
-    const tmp = mkdtempSync(join(tmpdir(), "rg-gem-pf-"));
+    const tmp = mkdtempSync(join(tmpdir(), "rg-agy-pf-"));
     try {
       const res = await spawnSafely({
         command: this.binPath,
@@ -52,11 +50,11 @@ export class GeminiAdapter implements ProviderAdapter {
           available: false,
           version: null,
           authMode: cfg.auth,
-          error: `gemini --version exit=${res.exitCode}`,
+          error: `agy --version exit=${res.exitCode}`,
         };
       return {
         available: true,
-        version: readFileSync(join(tmp, "o"), "utf8").trim(),
+        version: readFileSafe(join(tmp, "o")).trim(),
         authMode: cfg.auth,
         error: null,
       };
@@ -70,121 +68,119 @@ export class GeminiAdapter implements ProviderAdapter {
   async review(
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
-    const run = mkdtempSync(join(tmpdir(), "rg-gem-run-"));
-    const outFile = join(run, "out.json");
-    const errFile = join(run, "err.log");
-    // No --include-directories: the diff is supplied in the prompt, so the
-    // reviewer needs no repo tree. Including the workspace makes Gemini enter a
-    // file-scanning/agentic loop that can run for minutes.
-    const args = [
-      "-p",
-      readFileSync(input.promptFile, "utf8"),
-      "-m",
-      input.cfg.model,
-      "-o",
-      "json",
-      "--approval-mode",
-      "plan",
-    ];
-    const env = { ...process.env, GEMINI_CLI_TRUST_WORKSPACE: "true" } as Record<string, string>;
-    if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
-      const key = process.env[input.cfg.apiKeyEnv];
-      if (key) env.GEMINI_API_KEY = key;
-    }
-    const res = await spawnSafely({
-      command: this.binPath,
-      args,
-      env,
-      cwd: input.workingDir,
-      stdoutFile: outFile,
-      stderrFile: errFile,
-      timeoutMs: input.cfg.timeoutMs,
-      // `gemini -o json` buffers the whole response (no streamed stdout), so the
-      // default 60s zero-byte idle watchdog would SIGKILL any review that thinks
-      // longer than a minute — fatal for the slower gemini-3-pro-preview tier.
-      // Tie the idle watchdog to the wall-clock timeout. (See claude.ts/codex.ts.)
-      zeroByteWatchdogMs: input.cfg.timeoutMs,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-    const errText = readFileSafe(errFile);
-    const baseStatus: ReviewStatus =
-      res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
-    const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(outFile))
-        ? "quota-exhausted"
-        : baseStatus;
-    if (status !== "ok") {
-      return {
-        reviewerId: input.reviewerId,
-        verdict: "ERROR",
-        findings: [],
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-        durationMs: res.durationMs,
-        exitCode: res.exitCode,
-        rawEventsPath: outFile,
-        status,
-        statusDetail: errText.slice(0, 1000),
-      };
-    }
-    const { findings, usage, rawText } = this.parse(
-      outFile,
-      input.cfg.model,
-      input.persona,
-      input.workingDir,
-    );
-    return {
-      reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-        ? "FAIL"
-        : "PASS",
-      findings,
-      usage,
-      durationMs: res.durationMs,
-      exitCode: 0,
-      rawEventsPath: outFile,
-      rawText,
-      status: "ok",
-    };
-  }
-
-  async complete(prompt: string, opts: CompleteOptions): Promise<string> {
-    const run = mkdtempSync(join(tmpdir(), "rg-gem-cmpl-"));
+    const run = mkdtempSync(join(tmpdir(), "rg-agy-run-"));
     try {
-      const outFile = join(run, "out.json");
+      const outFile = join(run, "out.txt");
       const errFile = join(run, "err.log");
-      const args = ["-p", prompt, "-m", opts.model, "-o", "json", "--approval-mode", "plan"];
-      const env = { ...process.env, GEMINI_CLI_TRUST_WORKSPACE: "true" } as Record<string, string>;
-      if (opts.auth === "apikey" && opts.apiKeyEnv) {
-        const key = process.env[opts.apiKeyEnv];
-        if (key) env.GEMINI_API_KEY = key;
-      }
+      // No --add-dir: the diff is supplied inline in the prompt, so the reviewer
+      // needs no workspace access (no agentic file exploration, no edit risk).
+      // --dangerously-skip-permissions prevents a hang on the permission prompt.
+      const args = [
+        "-p",
+        readFileSync(input.promptFile, "utf8"),
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${input.cfg.timeoutMs}ms`,
+      ];
       const res = await spawnSafely({
         command: this.binPath,
         args,
-        env,
+        env: { ...process.env } as Record<string, string>,
+        cwd: input.workingDir,
+        stdoutFile: outFile,
+        stderrFile: errFile,
+        timeoutMs: input.cfg.timeoutMs,
+        // agy print mode buffers (no streamed stdout), so the default 60s zero-byte
+        // idle watchdog would SIGKILL a longer review. Tie it to the wall timeout.
+        zeroByteWatchdogMs: input.cfg.timeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      const errText = readFileSafe(errFile);
+      const outText = readFileSafe(outFile);
+      const baseStatus: ReviewStatus =
+        res.killedByTimeout || res.killedByWatchdog
+          ? "timeout"
+          : res.exitCode === 0
+            ? "ok"
+            : "error";
+      const status: ReviewStatus =
+        baseStatus === "error" && isQuotaExhausted(errText + outText)
+          ? "quota-exhausted"
+          : baseStatus;
+      if (status !== "ok") {
+        return {
+          reviewerId: input.reviewerId,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: res.durationMs,
+          exitCode: res.exitCode,
+          // run is cleaned up in finally; the orchestrator stores this path as a
+          // string and never reads the file back (it uses the in-memory rawText).
+          rawEventsPath: outFile,
+          status,
+          statusDetail: errText.slice(0, 1000),
+        };
+      }
+      const { findings, rawText } = this.parse(
+        outText,
+        input.cfg.model,
+        input.persona,
+        input.workingDir,
+      );
+      return {
+        reviewerId: input.reviewerId,
+        verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+          ? "FAIL"
+          : "PASS",
+        findings,
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+        durationMs: res.durationMs,
+        exitCode: 0,
+        rawEventsPath: outFile,
+        rawText,
+        status: "ok",
+      };
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
+    }
+  }
+
+  async complete(prompt: string, opts: CompleteOptions): Promise<string> {
+    const run = mkdtempSync(join(tmpdir(), "rg-agy-cmpl-"));
+    try {
+      const outFile = join(run, "out.txt");
+      const errFile = join(run, "err.log");
+      const timeoutMs = opts.timeoutMs ?? COMPLETE_TIMEOUT_MS;
+      const args = [
+        "-p",
+        prompt,
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${timeoutMs}ms`,
+      ];
+      const res = await spawnSafely({
+        command: this.binPath,
+        args,
+        env: { ...process.env } as Record<string, string>,
         cwd: run,
         stdoutFile: outFile,
         stderrFile: errFile,
-        timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
-        // Buffered like review() — neutralise the idle watchdog (see review()).
-        zeroByteWatchdogMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
+        timeoutMs,
+        zeroByteWatchdogMs: timeoutMs,
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
       if (res.killedByTimeout || res.killedByWatchdog || res.exitCode !== 0) {
-        let detail = "";
-        try {
-          detail = readFileSync(errFile, "utf8").slice(0, 500);
-        } catch {
-          detail = "";
-        }
-        throw new Error(`gemini complete ${failureReason(res)}: ${detail}`);
+        throw new Error(
+          `agy complete ${failureReason(res)}: ${readFileSafe(errFile).slice(0, 500)}`,
+        );
       }
-      try {
-        const envelope = JSON.parse(readFileSync(outFile, "utf8")) as GeminiEnvelope;
-        return envelope.response ?? "";
-      } catch {
-        return "";
-      }
+      // agy `-p` prints the response verbatim — stdout IS the completion.
+      return readFileSafe(outFile);
     } finally {
       try {
         rmSync(run, { recursive: true, force: true });
@@ -195,36 +191,15 @@ export class GeminiAdapter implements ProviderAdapter {
   }
 
   private parse(
-    outFile: string,
+    rawText: string,
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; usage: ReviewResult["usage"]; rawText: string } {
-    let env: GeminiEnvelope = {};
-    try {
-      env = JSON.parse(readFileSync(outFile, "utf8")) as GeminiEnvelope;
-    } catch {
-      return {
-        findings: [],
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-        rawText: "",
-      };
-    }
-    const rawText = env.response ?? "";
+  ): { findings: Finding[]; rawText: string } {
     const out = rawText ? parseReviewOutput(rawText) : null;
     const findings = out
       ? mapReviewOutputToFindings(out, { provider: "gemini", model, persona, workingDir })
       : [];
-    let inputTokens = 0;
-    let outputTokens = 0;
-    for (const m of Object.values(env.stats?.models ?? {})) {
-      inputTokens += m.tokens?.prompt ?? 0;
-      outputTokens += m.tokens?.candidates ?? 0;
-    }
-    return {
-      findings,
-      usage: { inputTokens, outputTokens, costUsd: 0, quotaUsedPct: null },
-      rawText,
-    };
+    return { findings, rawText };
   }
 }
