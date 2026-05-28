@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -287,7 +288,8 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
   // --- Cross-run quorum pool snapshot. Hoisted OUT of the per-group loop:
   // the candidate pool doesn't change between groups in a single run, so paying
   // one full-file JSONL read + parse here (vs once per group) is the only sane
-  // shape. Task 6 will reuse this same pool view for delete-on-promote. ---
+  // shape. Pool view is read once per run; both the cross-run quorum match below
+  // and the delete-on-promote step reuse it. ---
   const pool =
     input.candidateStore && input.crossRunCfg?.enabled
       ? await input.candidateStore.listAll()
@@ -339,7 +341,7 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     // that quorumOk counts. Inert when the hoisted `pool` is null (candidateStore
     // absent or crossRunCfg.enabled=false).
     let crossRunEvidence: EvidenceItem[] = mergedEvidence;
-    let matchedCandidateIds: string[] = []; // will be consumed in Task 6 — delete-on-promote
+    let matchedCandidateIds: string[] = []; // captured here for the delete-on-promote step below
     if (pool) {
       const matched = pool.filter((c) => {
         if (c.embedding_model !== cfg.model) return false;
@@ -371,6 +373,38 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     if (!quorumOk(crossRunEvidence, doubled)) {
       res.rejected++;
       log("rejected", title, { rule_failed: doubled ? "diff-quorum" : "quorum" });
+      // Cross-run: persist this rep so a future run from a DIFFERENT provider can
+      // complete the quorum. Single-provider reps from THIS run only — never
+      // store a rep whose merged in-run evidence already spans ≥2 providers but
+      // failed on the (stricter) diff-quorum path.
+      if (input.candidateStore && input.crossRunCfg?.enabled) {
+        const providersThisRun = new Set(
+          mergedEvidence
+            .filter(
+              (e) =>
+                (e.kind === "reviewer-observation" || e.kind === "reviewer-finding") &&
+                e.reviewer_id,
+            )
+            .map((e) => e.reviewer_id as string),
+        );
+        if (providersThisRun.size === 1) {
+          const provider = [...providersThisRun][0] as string;
+          await input.candidateStore.addOrMerge({
+            id: `BC-${randomUUID()}`,
+            title: rep.title,
+            body: rep.body,
+            scope: rep.scope,
+            type: rep.type,
+            embedding: repEmbed,
+            embedding_model: cfg.model,
+            provider,
+            source_run_id: input.runId,
+            created_at: input.nowIso,
+            evidence_kinds: [...new Set(mergedEvidence.map((e) => e.kind))],
+            confidence: rep.confidence,
+          });
+        }
+      }
       continue;
     }
 
@@ -455,6 +489,9 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       } satisfies BrainEntry),
     );
     res.promoted++;
+    if (input.candidateStore && matchedCandidateIds.length > 0) {
+      await input.candidateStore.deleteByIds(matchedCandidateIds);
+    }
     log("promoted", title, { entry_id: id });
   }
   return res;

@@ -591,6 +591,87 @@ describe("runCurator", () => {
     const snap = await store.snapshot();
     expect(snap.entries.length).toBe(0);
   });
+
+  it("on promote success: matched candidates are deleted from the pool", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-promo-delete-"));
+    const store = new BrainStore(repo);
+    const candStore = new CandidateStore(repo);
+    await candStore.addOrMerge({
+      id: "C-old",
+      title: "use prepared queries",
+      body: "always parameterize SQL",
+      scope: "language-ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "bge",
+      provider: "codex",
+      source_run_id: "R-old",
+      created_at: new Date().toISOString(),
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.85,
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-new",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "use prepared queries",
+          body: "always parameterize SQL",
+          evidence: [
+            {
+              kind: "reviewer-observation",
+              snippet: "from gemini",
+              reviewer_id: "gemini",
+              run_id: "R-new",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(1);
+    // The matched cross-run candidate is gone after the promote — it's now a brain entry.
+    expect(await candStore.listAll()).toHaveLength(0);
+  });
+
+  it("on quorum-still-fail: single-provider rep is stored in the candidate pool", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-storefail-"));
+    const candStore = new CandidateStore(repo);
+    const store = new BrainStore(repo);
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "lone observation",
+          evidence: [
+            { kind: "reviewer-observation", snippet: "x", reviewer_id: "codex", run_id: "R-1" },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(0);
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.provider).toBe("codex");
+    expect(pool[0]?.embedding_model).toBe("bge");
+    expect(pool[0]?.title).toBe("lone observation");
+    expect(pool[0]?.source_run_id).toBe("R-1");
+    expect(pool[0]?.confidence).toBeGreaterThan(0); // rep.confidence carried through (whatever p() sets it to)
+  });
 });
 
 describe("normalizeProposal", () => {
