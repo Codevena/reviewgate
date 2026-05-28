@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CandidateStore } from "../../src/core/brain/candidate-store.ts";
 import {
   normalizeProposal,
   normalizeProposalResult,
@@ -490,6 +491,282 @@ describe("runCurator", () => {
       nowIso: "t",
     });
     expect(res.promoted).toBe(1);
+  });
+
+  it("cross-run quorum: 1 stored candidate + 1 new from DIFFERENT provider → promote", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-xrun-"));
+    const store = new BrainStore(repo);
+    const candStore = new CandidateStore(repo);
+    // Pre-seed: codex proposed P some days ago; stored in the candidate pool.
+    await candStore.addOrMerge({
+      id: "C-001",
+      title: "use prepared queries",
+      body: "always parameterize SQL",
+      scope: "language-ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "bge",
+      provider: "codex",
+      source_run_id: "R-old",
+      created_at: new Date().toISOString(),
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.85,
+    });
+    // Today: gemini proposes a semantically identical P (same embedding).
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-new",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "use prepared queries",
+          body: "always parameterize SQL",
+          evidence: [
+            {
+              kind: "reviewer-observation",
+              snippet: "from gemini",
+              run_id: "R-new",
+              reviewer_id: "gemini",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X", timeoutMs: 8000 },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(1); // cross-run quorum kicked in → judge accepted → promoted
+    const snap = await store.snapshot();
+    expect(snap.entries.length).toBe(1);
+  });
+
+  it("cross-run quorum: embedding_model mismatch → candidate NOT matched (no spurious quorum from incompatible models)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-xrun-mm-"));
+    const store = new BrainStore(repo);
+    const candStore = new CandidateStore(repo);
+    // Stored candidate was embedded with an OLDER model; same vector by coincidence.
+    await candStore.addOrMerge({
+      id: "C-old",
+      title: "use prepared queries",
+      body: "always parameterize SQL",
+      scope: "language-ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "ada-002",
+      provider: "codex",
+      source_run_id: "R-old",
+      created_at: new Date().toISOString(),
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.85,
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-new",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "use prepared queries",
+          body: "always parameterize SQL",
+          evidence: [
+            {
+              kind: "reviewer-observation",
+              snippet: "from gemini",
+              run_id: "R-new",
+              reviewer_id: "gemini",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X", timeoutMs: 8000 }, // ← NEW model, mismatches "ada-002"
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(0); // model mismatch → no cross-run match → only 1 provider → quorum fails
+    const snap = await store.snapshot();
+    expect(snap.entries.length).toBe(0);
+    // Spec test plan #12: the OLD-MODEL candidate must be preserved (it'll TTL
+    // out, not be deleted) — a regression that accidentally pruned mismatched
+    // candidates would silently shrink the pool and would not be caught
+    // without this assertion. Plus the new lone-gemini single-provider rep
+    // gets added → pool ends with both entries.
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(2);
+    expect(pool.some((c) => c.id === "C-old" && c.embedding_model === "ada-002")).toBe(true);
+  });
+
+  it("on promote success: matched candidates are deleted from the pool", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-promo-delete-"));
+    const store = new BrainStore(repo);
+    const candStore = new CandidateStore(repo);
+    await candStore.addOrMerge({
+      id: "C-old",
+      title: "use prepared queries",
+      body: "always parameterize SQL",
+      scope: "language-ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "bge",
+      provider: "codex",
+      source_run_id: "R-old",
+      created_at: new Date().toISOString(),
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.85,
+    });
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-new",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "use prepared queries",
+          body: "always parameterize SQL",
+          evidence: [
+            {
+              kind: "reviewer-observation",
+              snippet: "from gemini",
+              reviewer_id: "gemini",
+              run_id: "R-new",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(1);
+    // The matched cross-run candidate is gone after the promote — it's now a brain entry.
+    expect(await candStore.listAll()).toHaveLength(0);
+  });
+
+  it("prunes the candidate pool at start of run (expired entries dropped before quorum work)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-prune-"));
+    const candStore = new CandidateStore(repo);
+    await candStore.addOrMerge({
+      id: "old",
+      title: "x",
+      body: "x",
+      scope: "ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "bge",
+      provider: "codex",
+      source_run_id: "R-old",
+      // ~148 days before nowIso below → past 60-day TTL
+      created_at: "2026-01-01T00:00:00Z",
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.8,
+    });
+    const store = new BrainStore(repo);
+    await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: "2026-05-28T00:00:00Z",
+      proposals: [],
+      embedder: { embed: async () => [] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(await candStore.listAll()).toHaveLength(0); // expired (148d > 60d TTL)
+  });
+
+  it("on quorum-still-fail: single-provider rep is stored in the candidate pool", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-storefail-"));
+    const candStore = new CandidateStore(repo);
+    const store = new BrainStore(repo);
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "lone observation",
+          evidence: [
+            { kind: "reviewer-observation", snippet: "x", reviewer_id: "codex", run_id: "R-1" },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(0);
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.provider).toBe("codex");
+    expect(pool[0]?.embedding_model).toBe("bge");
+    expect(pool[0]?.title).toBe("lone observation");
+    expect(pool[0]?.source_run_id).toBe("R-1");
+    expect(pool[0]?.confidence).toBeGreaterThan(0); // rep.confidence carried through (whatever p() sets it to)
+  });
+
+  it("stores rep on quorum-fail when a SINGLE provider speaks through MULTIPLE personas (collapses reviewer_id via providerOf)", async () => {
+    // This is the exact shape the existing anti-collusion test at the top of
+    // this file uses to prove `quorumOk` correctly REJECTS it. If we counted
+    // distinct providers from the raw reviewer_id (codex-security ≠
+    // codex-architecture ≠ codex-adversarial), `providersThisRun.size` would
+    // be 3 and the store gate (`size === 1`) would silently SKIP persisting
+    // it — defeating cross-run quorum exactly where it should help most. We
+    // must collapse through providerOf, same way `quorumOk` does.
+    const repo = mkdtempSync(join(tmpdir(), "rg-xrun-personas-"));
+    const candStore = new CandidateStore(repo);
+    const store = new BrainStore(repo);
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "lone observation via multiple personas",
+          evidence: [
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-security",
+            },
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-architecture",
+            },
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-adversarial",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(0); // single provider in disguise → quorum still fails
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(1);
+    // The stored provider field is the COLLAPSED provider id, NOT a reviewer
+    // id — otherwise next-run match wires the wrong string into synthetic
+    // evidence and `providerOf` only happens to recover it via the prefix
+    // table for these known names.
+    expect(pool[0]?.provider).toBe("codex");
   });
 });
 

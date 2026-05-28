@@ -2,6 +2,11 @@ import { z } from "zod";
 import { FindingCategory } from "../schemas/finding.ts";
 import { defaultConfig } from "./defaults.ts";
 
+// Single source of truth for brain.crossRunCandidates defaults — reused by
+// both the inner sub-field `.default(...)` calls AND the outer wrapper so the
+// numbers can't drift between the two.
+const BRAIN_CROSS_RUN_DEFAULTS = { enabled: true, ttlDays: 60, maxEntries: 5000 } as const;
+
 export const ProviderConfigSchema = z.object({
   enabled: z.boolean(),
   auth: z.enum(["oauth", "apikey", "openrouter"]),
@@ -85,6 +90,14 @@ export const ConfigSchema = z.object({
         }),
         egressAllowlist: z.array(z.string()).default([]),
         curatorTimeoutMs: z.number().int().positive().default(20_000),
+        crossRunCandidates: z
+          .object({
+            enabled: z.boolean().default(BRAIN_CROSS_RUN_DEFAULTS.enabled),
+            ttlDays: z.number().int().positive().default(BRAIN_CROSS_RUN_DEFAULTS.ttlDays),
+            maxEntries: z.number().int().positive().default(BRAIN_CROSS_RUN_DEFAULTS.maxEntries),
+          })
+          .optional()
+          .default(BRAIN_CROSS_RUN_DEFAULTS),
       })
       .nullable()
       .default(null)

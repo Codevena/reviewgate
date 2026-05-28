@@ -103,6 +103,7 @@ function brainConfig() {
         },
         egressAllowlist: [],
         curatorTimeoutMs: 10_000,
+        crossRunCandidates: { enabled: true, ttlDays: 60, maxEntries: 5000 },
       },
     },
   };

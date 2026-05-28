@@ -94,6 +94,11 @@ export const defaultConfig = {
       };
       egressAllowlist: string[];
       curatorTimeoutMs: number;
+      crossRunCandidates: {
+        enabled: boolean;
+        ttlDays: number;
+        maxEntries: number;
+      };
     },
     reputation: {
       enabled: true,

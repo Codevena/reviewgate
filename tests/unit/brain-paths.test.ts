@@ -2,6 +2,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   brainArchivePath,
+  brainCandidatesLockPath,
+  brainCandidatesPath,
   brainDir,
   brainJsonPath,
   brainLockPath,
@@ -41,5 +43,14 @@ describe("brain paths", () => {
     // a runId that sanitizes to empty is rejected outright.
     expect(() => curatorDecisionsPath(r, "../../")).toThrow();
     expect(() => curatorDecisionsPath(r, "/")).toThrow();
+  });
+});
+
+describe("brain candidates paths", () => {
+  it("brainCandidatesPath = .reviewgate/brain/candidates.jsonl", () => {
+    expect(brainCandidatesPath("/repo")).toBe("/repo/.reviewgate/brain/candidates.jsonl");
+  });
+  it("brainCandidatesLockPath = .reviewgate/brain/candidates.lock", () => {
+    expect(brainCandidatesLockPath("/repo")).toBe("/repo/.reviewgate/brain/candidates.lock");
   });
 });

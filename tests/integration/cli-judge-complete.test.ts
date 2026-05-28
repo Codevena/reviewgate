@@ -169,6 +169,7 @@ describe("CLI provider (codex) as brain curator judge via complete()", () => {
           egressAllowlist: [],
           curatorTimeoutMs: 10_000,
           curator: { provider: "codex" as const, model: "x", persona: "fp-filter" },
+          crossRunCandidates: { enabled: true, ttlDays: 60, maxEntries: 5000 },
         },
       },
     };

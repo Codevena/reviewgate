@@ -40,6 +40,7 @@ import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
 import { aggregate } from "./aggregator.ts";
+import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
 import type { Embedder } from "./brain/embeddings.ts";
 import { BrainEngine } from "./brain/engine.ts";
@@ -1280,6 +1281,10 @@ export class Orchestrator {
         }
       : undefined;
 
+    const candidateStore = brainCfg?.crossRunCandidates?.enabled
+      ? new CandidateStore(repo)
+      : undefined;
+
     await withTimeout(
       runCurator({
         repoRoot: repo,
@@ -1293,6 +1298,8 @@ export class Orchestrator {
           timeoutMs: brainCfg.curatorTimeoutMs,
         },
         nowIso: new Date().toISOString(),
+        ...(candidateStore ? { candidateStore } : {}),
+        ...(brainCfg?.crossRunCandidates ? { crossRunCfg: brainCfg.crossRunCandidates } : {}),
         ...(judge ? { judge } : {}),
       }),
       brainCfg.curatorTimeoutMs,

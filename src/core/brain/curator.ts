@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
@@ -10,6 +11,8 @@ import {
   VALID_EVIDENCE_KINDS,
 } from "../../schemas/brain.ts";
 import { curatorDecisionsPath } from "../../utils/paths.ts";
+import type { CandidateStore } from "./candidate-store.ts";
+import { GROUP_THRESHOLD } from "./constants.ts";
 import { type Embedder, cosineSimilarity } from "./embeddings.ts";
 import type { BrainStore } from "./store.ts";
 
@@ -93,13 +96,13 @@ export function normalizeProposal(p: unknown): MemoryProposal | null {
 }
 
 const DEDUP_THRESHOLD = 0.85;
-// Looser than DEDUP: paraphrases of the SAME convention from different reviewers
-// embed to similar-but-not-identical vectors. At 0.85 they stayed separate
-// single-provider singletons and never reached cross-provider quorum; 0.78 lets
-// genuine paraphrases cluster while still separating distinct concepts. (Dedup
-// vs EXISTING brain entries stays strict at 0.85 to avoid collapsing distinct
-// memories.)
-const GROUP_THRESHOLD = 0.78;
+// GROUP_THRESHOLD (0.78) is looser than DEDUP_THRESHOLD: paraphrases of the SAME
+// convention from different reviewers embed to similar-but-not-identical vectors.
+// At 0.85 they stayed separate single-provider singletons and never reached
+// cross-provider quorum; 0.78 lets genuine paraphrases cluster while still
+// separating distinct concepts. (Dedup vs EXISTING brain entries stays strict at
+// 0.85 to avoid collapsing distinct memories.) The constant lives in
+// `./constants.ts` so candidate-store.ts can reuse it without an import cycle.
 const MAX_PROMOTIONS = 3;
 
 // Known provider ids, longest first so longest-prefix matching is deterministic
@@ -112,8 +115,11 @@ export interface CuratorInput {
   proposals: MemoryProposal[];
   store: BrainStore;
   embedder: Embedder;
-  embedCfg?: { model: string; apiKeyEnv?: string; timeoutMs: number };
+  embedCfg?: { model: string; apiKeyEnv?: string; timeoutMs?: number };
   nowIso: string;
+  // Cross-run quorum: pool of candidates from prior runs (Task 5).
+  candidateStore?: CandidateStore;
+  crossRunCfg?: { enabled: boolean; ttlDays: number; maxEntries: number };
   // Hybrid: optional LLM judgment (only when phases.brain.curator is configured).
   // Runs AFTER the deterministic gates pass, on rules 3 (consistency) + 5 (scope/
   // quality). Rejecting drops the proposal; a judge error fails closed (queue).
@@ -188,6 +194,17 @@ interface ProposalGroup {
 
 export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
   const res: CuratorResult = { promoted: 0, rejected: 0, queued: 0, merged: 0 };
+
+  // Bound the candidate pool's growth: drop entries older than ttlDays, then cap
+  // to maxEntries (oldest dropped first). Runs once per curator invocation so
+  // the pool can't accumulate forever even if no new run reads-then-deletes.
+  if (input.candidateStore && input.crossRunCfg?.enabled) {
+    await input.candidateStore.prune(new Date(input.nowIso), {
+      ttlDays: input.crossRunCfg.ttlDays,
+      maxEntries: input.crossRunCfg.maxEntries,
+    });
+  }
+
   const cfg = input.embedCfg ?? { model: "embed", timeoutMs: 8000 };
   const log = (decision: string, title: string, extra: Record<string, unknown> = {}) =>
     logDecision(input.repoRoot, {
@@ -279,6 +296,16 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     }
   }
 
+  // --- Cross-run quorum pool snapshot. Hoisted OUT of the per-group loop:
+  // the candidate pool doesn't change between groups in a single run, so paying
+  // one full-file JSONL read + parse here (vs once per group) is the only sane
+  // shape. Pool view is read once per run; both the cross-run quorum match below
+  // and the delete-on-promote step reuse it. ---
+  const pool =
+    input.candidateStore && input.crossRunCfg?.enabled
+      ? await input.candidateStore.listAll()
+      : null;
+
   // --- Per-group gating + promotion. ---
   for (const group of groups) {
     // Representative = highest-confidence member, carrying the MERGED evidence.
@@ -312,17 +339,93 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       continue;
     }
 
+    // Representative embedding — computed once per group; reused by both the
+    // cross-run match below AND the dedup-vs-existing-brain step further down.
+    const repIdx = normalizedProposals.indexOf(rep);
+    const repEmbed = (repIdx >= 0 ? normalizedVecs[repIdx] : group.vecs[0]) as number[];
+
     // Rule 6 + 2: (doubled) cross-provider quorum over the merged evidence.
     const doubled = isDiffDerived(mergedEvidence);
-    if (!quorumOk(mergedEvidence, doubled)) {
+
+    // --- Cross-run quorum: candidates from prior runs whose embedding matches
+    // this group's representative contribute their provider to the distinct-set
+    // that quorumOk counts. Inert when the hoisted `pool` is null (candidateStore
+    // absent or crossRunCfg.enabled=false).
+    let crossRunEvidence: EvidenceItem[] = mergedEvidence;
+    let matchedCandidateIds: string[] = []; // captured here for the delete-on-promote step below
+    if (pool) {
+      const matched = pool.filter((c) => {
+        if (c.embedding_model !== cfg.model) return false;
+        try {
+          return cosineSimilarity(c.embedding, repEmbed) >= GROUP_THRESHOLD;
+        } catch {
+          return false;
+        }
+      });
+      matchedCandidateIds = matched.map((m) => m.id);
+      // Synthesize one reviewer-observation evidence item per matched candidate-
+      // provider so the unchanged quorumOk function sees them as distinct
+      // providers. These synthetic items are NOT persisted into the BrainEntry's
+      // evidence (they exist solely so the unchanged quorumOk function can count
+      // provider distinctness across runs).
+      crossRunEvidence = [
+        ...mergedEvidence,
+        ...matched.map(
+          (m): EvidenceItem => ({
+            kind: "reviewer-observation",
+            snippet: `(cross-run from ${m.source_run_id})`,
+            reviewer_id: m.provider,
+            run_id: m.source_run_id,
+          }),
+        ),
+      ];
+    }
+
+    if (!quorumOk(crossRunEvidence, doubled)) {
       res.rejected++;
       log("rejected", title, { rule_failed: doubled ? "diff-quorum" : "quorum" });
+      // Cross-run: persist this rep so a future run from a DIFFERENT provider can
+      // complete the quorum. Single-provider reps from THIS run only — never
+      // store a rep whose merged in-run evidence already spans ≥2 providers but
+      // failed on the (stricter) diff-quorum path. We collapse reviewer_id
+      // ("codex-security", "codex-architecture", …) through providerOf to the
+      // bare provider ("codex") — same way quorumOk counts distinct providers —
+      // so a single-provider/multi-persona rep is correctly recognised as
+      // single-provider (the common shape; without this we'd refuse to store
+      // exactly the proposals the cross-run path is meant to rescue).
+      if (input.candidateStore && input.crossRunCfg?.enabled) {
+        const providersThisRun = new Set(
+          mergedEvidence
+            .filter(
+              (e) =>
+                (e.kind === "reviewer-observation" || e.kind === "reviewer-finding") &&
+                e.reviewer_id,
+            )
+            .map((e) => providerOf(e.reviewer_id as string)),
+        );
+        if (providersThisRun.size === 1) {
+          const provider = [...providersThisRun][0] as string;
+          await input.candidateStore.addOrMerge({
+            id: `BC-${randomUUID()}`,
+            title: rep.title,
+            body: rep.body,
+            scope: rep.scope,
+            type: rep.type,
+            embedding: repEmbed,
+            embedding_model: cfg.model,
+            provider,
+            source_run_id: input.runId,
+            created_at: input.nowIso,
+            evidence_kinds: [...new Set(mergedEvidence.map((e) => e.kind))],
+            confidence: rep.confidence,
+          });
+        }
+      }
       continue;
     }
 
-    // The representative embedding (already computed above) drives dedup.
-    const repIdx = normalizedProposals.indexOf(rep);
-    const vec = (repIdx >= 0 ? normalizedVecs[repIdx] : group.vecs[0]) as number[];
+    // Dedup vs EXISTING brain entries uses the same representative embedding.
+    const vec = repEmbed;
 
     const snap = await input.store.snapshot();
     // Rule 3: consistency (same title already active).
@@ -402,6 +505,9 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       } satisfies BrainEntry),
     );
     res.promoted++;
+    if (input.candidateStore && matchedCandidateIds.length > 0) {
+      await input.candidateStore.deleteByIds(matchedCandidateIds);
+    }
     log("promoted", title, { entry_id: id });
   }
   return res;
