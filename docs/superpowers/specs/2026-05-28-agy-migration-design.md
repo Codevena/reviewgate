@@ -69,9 +69,11 @@ discontinued Gemini CLI. Provider id stays `gemini` for config compatibility."*
 | token usage | summed from `stats.models` | `{inputTokens:0, outputTokens:0, costUsd:0, quotaUsedPct:null}` |
 | auth | OAuth **or** `GEMINI_API_KEY` (apikey branch) | OAuth only — apikey branch + `GEMINI_API_KEY` env removed |
 
-- `--print-timeout` is rendered from `cfg.timeoutMs` as a Go duration (e.g.
-  `300000` → `"300s"`). `spawnSafely({ timeoutMs })` stays the hard kill, set at or
-  just above the print-timeout. `zeroByteWatchdogMs = cfg.timeoutMs` (buffered,
+- `--print-timeout` is rendered from `cfg.timeoutMs` as a Go duration using the
+  `ms` suffix directly: `` `${cfg.timeoutMs}ms` `` (Go's `time.ParseDuration`
+  accepts `"300000ms"`) — avoids a manual seconds division. `spawnSafely({ timeoutMs })`
+  stays the hard kill, set at or just above the print-timeout. `zeroByteWatchdogMs
+  = cfg.timeoutMs` (buffered,
   non-streaming — same reasoning as today: `agy` does not stream stdout in print
   mode, so the 60s idle watchdog must be neutralised).
 - `GeminiEnvelope` interface and `parse()`'s envelope logic are removed. The new
@@ -96,12 +98,29 @@ review schema.)
 - `src/cli/commands/setup.ts`, `src/cli/setup/prefill.ts`,
   `src/cli/setup/build-config.ts`, `src/cli/commands/init.ts`: replace `gemini`
   binary references / prefill hints with `agy`.
-- `src/sandbox/profile-builder.ts`: allowed binary `gemini` → `agy`.
+- **OAuth-only auth (apikey degradation guard).** The `gemini` provider is now
+  OAuth-only. `ProviderConfigSchema` still *permits* `auth:"apikey"` (kept for the
+  other providers), but the gemini/agy adapter no longer honors it. To avoid a
+  legacy `auth:"apikey"` gemini config failing opaquely, `doctor` warns when the
+  gemini provider is configured with `auth:"apikey"` (it has no effect; agy uses
+  the Antigravity OAuth session). No silent OAuth fallthrough without a surfaced
+  message.
+- `src/sandbox/profile-builder.ts`: this is more than a binary rename. The
+  `gemini` entry must update **both** maps: `CREDENTIAL_PATHS.gemini` to include the
+  Antigravity session dirs (`~/.antigravity`, `~/.gemini/antigravity-cli`), and
+  `NETWORK_ALLOW.gemini` to include the agy endpoints
+  (`oauth2.googleapis.com`, `accounts.google.com`, `cloudcode-pa.googleapis.com`,
+  `www.googleapis.com`, and the Antigravity codeassist host). **Non-blocking for
+  the migration** — sandbox is `mode:"off"` by default and `"strict"`/`"permissive"`
+  fail closed, so no reviewer runs under this profile today — but the profile must
+  be correct for when isolation ships.
 
 ### 4. Config defaults & dogfood config
 
 - `src/config/defaults.ts`: `providers.gemini.bin = "agy"`, `auth = "oauth"`,
-  `model` neutralised (informational default, never passed).
+  `model` neutralised (informational default, never passed). Also scrub the stale
+  legacy comments (gemini CLI `v0.40.1`, model-selection errors, `gemini-3-pro-preview`
+  tier limits) — they no longer describe agy.
 - `reviewgate.config.ts` (this repo's dogfood config): the gemini failover entry
   stays valid; the `model` field is harmless (unused).
 - `src/config/define-config.ts`: `ProviderConfig`/`ConfigSchema` keep the `model`
@@ -112,10 +131,15 @@ review schema.)
 - **Rewrite `tests/unit/gemini-adapter.test.ts`:** assert the new argv (contains
   `-p` and `--dangerously-skip-permissions`; does NOT contain `-m`, `-o`/`json`,
   `--add-dir`, `--approval-mode`), and stdout-text parsing instead of envelope
-  parsing.
+  parsing. Explicitly **remove** the obsolete
+  `"remaps apiKeyEnv -> GEMINI_API_KEY only under auth=apikey"` case (the apikey
+  branch is gone).
+- **Update `tests/unit/availability.test.ts`:** the CLI-providers probe test
+  asserts the gemini binary name — update its expectation to `agy`.
 - **Rewrite fakes** `tests/fixtures/fake-gemini.sh` and
   `tests/fixtures/fake-gemini-complete.sh`: emit review JSON / completion text
-  directly on stdout (no `{response,...}` envelope).
+  directly on stdout (no `{response,...}` envelope). `tests/unit/temp-cleanup.test.ts`
+  consumes `fake-gemini.sh` — confirm it still passes after the fake changes.
 - **`tests/e2e/gemini-real.test.ts`:** issue a real `agy -p` review call on a tiny
   diff; assert the result parses into findings. Skipped when `agy` is unavailable
   or unauthenticated (CI-safe), but part of the local DoD verification.
@@ -138,6 +162,22 @@ review schema.)
   + no `--add-dir` (no tools to approve); buffered-watchdog tied to timeout.
 - **agy not authenticated in an environment.** Mitigation: preflight/doctor surface
   it; reviewer fails closed via existing failover, not silently.
+- **Concurrent agy invocations (reviewer + curator) contend on an internal lock.**
+  Raised by the agy spec-review (the "knowledge.lock" claim) — **investigated and
+  rejected.** Two independent `agy -p` processes launched concurrently both
+  completed in ~4s with correct output and no error (a serializing lock would have
+  forced the second to ~8s). The hang observed during the review was a *nested*
+  `agy`-inside-`agy` subtask; the orchestrator spawns `agy` as an independent
+  subprocess (never nested), so this does not apply. No mitigation needed.
+
+## Review feedback incorporated (agy spec-review, 2026-05-28)
+
+The spec was reviewed by `agy` against the live code + its own `--help`. Verdict
+FAIL with 7 findings. After verification: 1 CRITICAL rejected as a false positive
+(concurrency lock, see Risks), the rest folded in as refinements — OAuth-only
+apikey-degradation doctor warning, the fuller `profile-builder.ts` credential/network
+update, the `${cfg.timeoutMs}ms` Go-duration form, the `availability.test.ts` and
+`temp-cleanup.test.ts` test updates, and the `defaults.ts` stale-comment scrub.
 
 ## Acceptance criteria
 
