@@ -1402,4 +1402,96 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
     expect(ran).toBe(true); // grace applied → another iteration ran
     expect(decision.reason).not.toContain("ESCALATED");
   });
+
+  // --- PASS/SOFT-PASS clarity in the Stop-hook reason ---
+  describe("Stop-hook reason: coverage + SOFT-PASS clarity", () => {
+    const makeSummary = (
+      verdict: "PASS" | "SOFT-PASS",
+      providers: { provider: string; runs: number; errors: number; findings: number }[],
+      warn = verdict === "SOFT-PASS" ? 1 : 0,
+    ): RunSummary => ({
+      verdict,
+      source: "panel",
+      counts: { critical: 0, warn, info: 0 },
+      cost_usd: 0,
+      duration_ms: 1,
+      demoted: 0,
+      signatures: warn > 0 ? ["sig-w1"] : [],
+      providers: providers.map((p) => ({
+        ...p,
+        personas: ["security"],
+        demoted: 0,
+        cost_usd: 0,
+        duration_ms: 1,
+      })) as RunSummary["providers"],
+    });
+
+    const stubOrch = (summary: RunSummary, verdict: "PASS" | "SOFT-PASS") => ({
+      runIteration: async () => ({
+        verdict: verdict as "PASS" | "SOFT-PASS",
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: summary.signatures,
+        summary,
+      }),
+    });
+
+    async function decide(summary: RunSummary, verdict: "PASS" | "SOFT-PASS") {
+      const repo = fakeRepo();
+      const state = new StateStore(repo);
+      await state.initialise("01HXQCOV");
+      writeDirty(repo);
+      return new LoopDriver({
+        repoRoot: repo,
+        config: defaultConfig,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: stubOrch(summary, verdict),
+        stopHookActive: false,
+      }).run();
+    }
+
+    it("PASS with full coverage stays terse with 🟢", async () => {
+      const s = makeSummary("PASS", [
+        { provider: "codex", runs: 1, errors: 0, findings: 0 },
+        { provider: "claude-code", runs: 1, errors: 0, findings: 0 },
+      ]);
+      const d = await decide(s, "PASS");
+      expect(d.kind).toBe("allow_stop");
+      expect(d.reason).toContain("🟢");
+      expect(d.reason).toContain("PASS");
+      expect(d.reason).not.toContain("reduced coverage");
+    });
+
+    it("PASS with reduced coverage surfaces the gap (degraded reviewer note)", async () => {
+      const s = makeSummary("PASS", [
+        { provider: "codex", runs: 1, errors: 0, findings: 0 },
+        { provider: "claude-code", runs: 1, errors: 1, findings: 0 }, // timed out / errored
+      ]);
+      const d = await decide(s, "PASS");
+      expect(d.kind).toBe("allow_stop");
+      expect(d.reason).toContain("reduced coverage");
+      expect(d.reason).toContain("1 of 2"); // "1 of 2 reviewer did not complete"
+    });
+
+    it("SOFT-PASS uses 🟡 (visual distinction from PASS) in the lean path", async () => {
+      const s = makeSummary("SOFT-PASS", [{ provider: "codex", runs: 1, errors: 0, findings: 1 }]);
+      const d = await decide(s, "SOFT-PASS");
+      expect(d.kind).toBe("allow_stop");
+      expect(d.reason).toContain("🟡");
+      expect(d.reason).toContain("SOFT-PASS");
+      expect(d.reason).toContain("WARN"); // surfaces the warn count, the SOFT-PASS reason
+    });
+
+    it("SOFT-PASS with reduced coverage surfaces BOTH the warns and the coverage note", async () => {
+      const s = makeSummary("SOFT-PASS", [
+        { provider: "codex", runs: 1, errors: 0, findings: 1 },
+        { provider: "gemini", runs: 1, errors: 1, findings: 0 },
+      ]);
+      const d = await decide(s, "SOFT-PASS");
+      expect(d.reason).toContain("SOFT-PASS");
+      expect(d.reason).toContain("WARN");
+      expect(d.reason).toContain("reduced coverage");
+    });
+  });
 });

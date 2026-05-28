@@ -194,6 +194,19 @@ function formatPanelSummary(summary: RunSummary): string {
   return perReviewer ? `${sev}  ·  reviewers: ${perReviewer}` : sev;
 }
 
+// Surface degraded reviewer coverage in the Stop-hook reason so an agent doesn't
+// take a PASS at face value when some reviewers didn't actually complete (e.g.
+// a single claude-code reviewer timed out and the verdict comes from 0 ok runs
+// rendered as PASS via softer paths). Returns null when coverage is full.
+function formatCoverageNote(summary: RunSummary): string | null {
+  const total = summary.providers.length;
+  if (total === 0) return null;
+  const degraded = summary.providers.filter((p) => p.runs === 0 || p.errors > 0).length;
+  if (degraded === 0) return null;
+  const word = degraded === 1 ? "reviewer" : "reviewers";
+  return `reduced coverage: ${degraded} of ${total} ${word} did not complete`;
+}
+
 export class LoopDriver {
   constructor(private readonly i: LoopInput) {}
 
@@ -585,17 +598,25 @@ export class LoopDriver {
       // SOFT-PASS, so the WARNs are surfaced before the gate opens; the re-stop is
       // clean (dirty flag deleted above) and allows. Reuses the acknowledge path.
       const forceSoftAck = result.verdict === "SOFT-PASS" && softPolicy === "ask-once";
+      const coverage = formatCoverageNote(result.summary);
+      const coverageSuffix = coverage ? ` · ⚠ ${coverage}` : "";
+      const isSoft = result.verdict === "SOFT-PASS";
+      const warnCount = result.summary.counts.warn;
       decision =
         this.i.config.loop.acknowledgePass || forceSoftAck
           ? {
               kind: "block",
               reason: forceSoftAck
-                ? `🟡 Reviewgate · GATE OPEN — ⚠️ SOFT-PASS (iteration ${nextIter}): ${formatPanelSummary(result.summary)}. These are non-blocking warnings — review them in .reviewgate/pending.md, then end your turn again to accept and pass through.`
-                : `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
+                ? `🟡 Reviewgate · GATE OPEN — ⚠️ SOFT-PASS (iteration ${nextIter}): ${formatPanelSummary(result.summary)}${coverageSuffix}. These are non-blocking warnings — review them in .reviewgate/pending.md, then end your turn again to accept and pass through.`
+                : coverage
+                  ? `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}) · ⚠ ${coverage}. Verdict is based on the reviewer(s) that did complete; treat as advisory if full coverage matters for this slice. End your turn again to pass through.`
+                  : `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
             }
           : {
               kind: "allow_stop",
-              reason: `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter}). Clear to finish.`,
+              reason: isSoft
+                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${warnCount} WARN${coverageSuffix}. Non-blocking — see .reviewgate/pending.md.`
+                : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}. Clear to finish.`,
             };
     } else if (result.verdict === "ERROR") {
       // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
