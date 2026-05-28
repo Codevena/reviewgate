@@ -3,14 +3,20 @@ export type ProviderId = "codex" | "claude-code" | "gemini" | "opencode";
 const CREDENTIAL_PATHS: Record<ProviderId, string[]> = {
   codex: ["~/.codex", "~/.config/codex", "~/.openai"],
   "claude-code": ["~/.claude", "~/.config/claude"],
-  gemini: ["~/.config/gemini", "~/.gemini"],
+  gemini: ["~/.antigravity", "~/.gemini/antigravity-cli", "~/.config/gemini", "~/.gemini"],
   opencode: ["~/.config/opencode"],
 };
 
 const NETWORK_ALLOW: Record<ProviderId, string[]> = {
   codex: ["api.openai.com", "chatgpt.com"],
   "claude-code": ["api.anthropic.com", "claude.ai"],
-  gemini: ["generativelanguage.googleapis.com", "aiplatform.googleapis.com"],
+  gemini: [
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+    "cloudcode-pa.googleapis.com",
+    "www.googleapis.com",
+    "generativelanguage.googleapis.com",
+  ],
   opencode: ["openrouter.ai"],
 };
 
