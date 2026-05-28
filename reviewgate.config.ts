@@ -12,11 +12,11 @@
 // import — so the loader's deep-merge over defaults works.
 export default {
   providers: {
-    codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
+    codex: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 300_000 },
     gemini: {
       enabled: true,
       auth: "oauth",
-      model: "gemini-3-flash-preview",
+      model: "gemini-3.5-flash",
       timeoutMs: 300_000,
     },
     "claude-code": {

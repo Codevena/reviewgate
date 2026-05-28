@@ -14,7 +14,7 @@ function makeReviewInput(dir: string, persona = "plan") {
   writeFileSync(promptFile, "REVIEW_PROMPT_BODY");
   writeFileSync(join(dir, "diff.patch"), "diff");
   return {
-    cfg: { enabled: true, auth: "oauth" as const, model: "gpt-5.4", timeoutMs: 60_000 },
+    cfg: { enabled: true, auth: "oauth" as const, model: "gpt-5.5", timeoutMs: 60_000 },
     reviewerId: "codex-plan",
     promptFile,
     workingDir: dir,
@@ -51,7 +51,7 @@ describe("CodexAdapter (mocked binary)", () => {
 
     const adapter = new CodexAdapter({ binPath: PRETEND_CODEX_BIN });
     const result = await adapter.review({
-      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 60_000 },
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 60_000 },
       reviewerId: "codex-security",
       promptFile,
       workingDir: dir,
@@ -76,7 +76,7 @@ describe("CodexAdapter (mocked binary)", () => {
 
     const adapter = new CodexAdapter({ binPath });
     const result = await adapter.review({
-      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 60_000 },
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 60_000 },
       reviewerId: "codex-security",
       promptFile,
       workingDir: dir,
@@ -119,7 +119,7 @@ exit 0
 
     const adapter = new CodexAdapter({ binPath: bin });
     const result = await adapter.review({
-      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 60_000 },
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 60_000 },
       reviewerId: "codex-plan",
       promptFile,
       workingDir: dir,

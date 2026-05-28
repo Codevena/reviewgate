@@ -15,7 +15,7 @@ describe("AuditEventSchema", () => {
       reviewer: { id: "codex", role: "review", iter_attempt: 1 },
       gen_ai: {
         "provider.name": "openai",
-        "request.model": "gpt-5.4",
+        "request.model": "gpt-5.5",
         "response.model": "gpt-5.4-2026-04",
         "operation.name": "review",
         "usage.input_tokens": 1000,

@@ -30,7 +30,7 @@ describe("PendingReportSchema", () => {
         {
           id: "codex",
           provider: "codex",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
           persona: "security",
           status: "ok",
           cost_usd: 0,
@@ -77,7 +77,7 @@ describe("PendingReportSchema", () => {
         {
           id: "codex",
           provider: "codex",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
           persona: "security",
           status: "ok" as const,
           cost_usd: 0,

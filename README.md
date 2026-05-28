@@ -153,7 +153,7 @@ Minimal single-reviewer setup (Codex only, OAuth, $0):
 ```ts
 export default {
   providers: {
-    codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
+    codex: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 300_000 },
   },
   loop: {
     maxIterations: 3,        // escalate to the human after N failed review rounds
@@ -171,8 +171,8 @@ Multi-reviewer panel with an OpenRouter critic:
 ```ts
 export default {
   providers: {
-    codex: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
-    gemini: { enabled: true, auth: "oauth", model: "gemini-2.5-flash", timeoutMs: 300_000 },
+    codex: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 300_000 },
+    gemini: { enabled: true, auth: "oauth", model: "gemini-3.5-flash", timeoutMs: 300_000 },
     "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300_000 },
     openrouter: {
       enabled: true,

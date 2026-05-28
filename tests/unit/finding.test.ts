@@ -14,7 +14,7 @@ describe("FindingSchema", () => {
       line_end: 42,
       message: "unsanitized SQL",
       details: "building SQL from string concat",
-      reviewer: { provider: "codex", model: "gpt-5.4", persona: "security" },
+      reviewer: { provider: "codex", model: "gpt-5.5", persona: "security" },
       confidence: 0.9,
       consensus: "singleton",
     };

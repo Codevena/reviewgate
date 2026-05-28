@@ -48,7 +48,7 @@ function makeConfig(fallback?: ("gemini" | "claude-code")[]) {
       gemini: {
         enabled: false,
         auth: "oauth" as const,
-        model: "gemini-3-flash-preview",
+        model: "gemini-3.5-flash",
         timeoutMs: 1000,
       },
     },

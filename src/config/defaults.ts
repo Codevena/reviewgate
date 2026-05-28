@@ -7,15 +7,16 @@ import type { ReviewgateConfig } from "./define-config.ts";
 export const defaultConfig = {
   version: 1 as const,
   providers: {
-    codex: { enabled: true, auth: "oauth" as const, model: "gpt-5.4", timeoutMs: 300_000 },
+    codex: { enabled: true, auth: "oauth" as const, model: "gpt-5.5", timeoutMs: 300_000 },
     gemini: {
       enabled: false,
       auth: "oauth" as const,
       // Driven by the Antigravity CLI (`agy`); the provider id stays "gemini".
       // agy has no model-selection flag, so `model` is INFORMATIONAL ONLY
       // (recorded in audit/research, never passed to the CLI). Kept in the
-      // schema to avoid a breaking config change.
-      model: "gemini-3-flash-preview",
+      // schema to avoid a breaking config change. Update the string when a
+      // newer Gemini tier becomes the de-facto default in agy.
+      model: "gemini-3.5-flash",
       timeoutMs: 300_000,
     },
     "claude-code": {

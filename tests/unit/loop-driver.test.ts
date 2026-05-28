@@ -372,7 +372,7 @@ describe("LoopDriver", () => {
             line_end: 248,
             message: "Hardcoded magic number 7200000",
             details: "use a named constant",
-            reviewer: { provider: "codex", model: "gpt-5.4", persona: "security" },
+            reviewer: { provider: "codex", model: "gpt-5.5", persona: "security" },
             confidence: 0.97,
             consensus: "unanimous",
             confirmed_by: ["codex", "gemini"],

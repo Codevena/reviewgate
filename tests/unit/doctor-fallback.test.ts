@@ -25,7 +25,7 @@ describe("fallbackChainCheck", () => {
   it("ok when a declared fallback provider is configured + available", () => {
     const cfg = defineConfig({
       providers: {
-        gemini: { enabled: false, auth: "oauth", model: "gemini-3-flash-preview", timeoutMs: 1000 },
+        gemini: { enabled: false, auth: "oauth", model: "gemini-3.5-flash", timeoutMs: 1000 },
       },
       phases: {
         review: {
@@ -40,7 +40,7 @@ describe("fallbackChainCheck", () => {
   it("warns when every fallback candidate is unavailable", () => {
     const cfg = defineConfig({
       providers: {
-        gemini: { enabled: false, auth: "oauth", model: "gemini-3-flash-preview", timeoutMs: 1000 },
+        gemini: { enabled: false, auth: "oauth", model: "gemini-3.5-flash", timeoutMs: 1000 },
       },
       phases: {
         review: {

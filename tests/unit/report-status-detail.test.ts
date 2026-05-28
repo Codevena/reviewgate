@@ -18,7 +18,7 @@ const baseReportWithError: PendingReport = {
     {
       id: "codex",
       provider: "codex",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       persona: "security",
       status: "error",
       cost_usd: 0,
@@ -45,7 +45,7 @@ describe("status_detail in PendingReport", () => {
         {
           id: "codex",
           provider: "codex",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
           persona: "security",
           status: "ok" as const,
           cost_usd: 0,
@@ -84,7 +84,7 @@ describe("status_detail in PendingReport", () => {
         {
           id: "codex",
           provider: "codex",
-          model: "gpt-5.4",
+          model: "gpt-5.5",
           persona: "security",
           status: "ok",
           cost_usd: 0,

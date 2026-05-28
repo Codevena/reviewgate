@@ -24,7 +24,7 @@ d("CodexAdapter against real codex CLI", () => {
 
     const adapter = new CodexAdapter();
     const result = await adapter.review({
-      cfg: { enabled: true, auth: "oauth", model: "gpt-5.4", timeoutMs: 300_000 },
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 300_000 },
       reviewerId: "codex-plan",
       promptFile,
       workingDir: process.cwd(),

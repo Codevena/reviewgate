@@ -15,7 +15,7 @@ function fin(over: Partial<Finding>): Finding {
     line_end: 1,
     message: "m",
     details: "d",
-    reviewer: { provider: "codex", model: "gpt-5.4", persona: "security" },
+    reviewer: { provider: "codex", model: "gpt-5.5", persona: "security" },
     confidence: 0.5,
     consensus: "singleton",
     ...over,

@@ -55,8 +55,8 @@ describe("buildCustomConfig", () => {
   it("maps reviewers + critic (with model) + fpLedger toggles", () => {
     const partial = buildCustomConfig({
       reviewers: [
-        { provider: "codex", persona: "security", model: "gpt-5.4" },
-        { provider: "gemini", persona: "architecture", model: "gemini-3-flash-preview" },
+        { provider: "codex", persona: "security", model: "gpt-5.5" },
+        { provider: "gemini", persona: "architecture", model: "gemini-3.5-flash" },
       ],
       critic: { provider: "opencode", persona: "fp-filter", model: "default" },
       brain: null,
@@ -79,7 +79,7 @@ describe("buildCustomConfig", () => {
 
   it("emits the curator model in phases.brain.curator.model", () => {
     const partial = buildCustomConfig({
-      reviewers: [{ provider: "codex", persona: "security", model: "gpt-5.4" }],
+      reviewers: [{ provider: "codex", persona: "security", model: "gpt-5.5" }],
       critic: null,
       brain: { curator: { provider: "codex", persona: "fp-filter", model: "gpt-5.4-codex" } },
       fpLedger: false,

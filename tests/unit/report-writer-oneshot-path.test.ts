@@ -19,7 +19,7 @@ function report(): PendingReport {
       {
         id: "codex-plan",
         provider: "codex",
-        model: "gpt-5.4",
+        model: "gpt-5.5",
         persona: "plan",
         status: "ok",
         cost_usd: 0,

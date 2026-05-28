@@ -15,7 +15,7 @@ function fakeAdapter(impl?: ProviderAdapter["complete"]): ProviderAdapter {
 
 const base = {
   provider: "codex" as const,
-  model: "gpt-5.4",
+  model: "gpt-5.5",
   auth: "oauth" as const,
   timeoutMs: 1000,
 };
