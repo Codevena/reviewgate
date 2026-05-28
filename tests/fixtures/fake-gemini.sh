@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Fake gemini: emits the real outer JSON envelope with a `response` string
-# containing the review-shape JSON, and a stats.models.tokens block.
+# Fake `agy -p` for the gemini-id reviewer adapter. agy prints the model
+# response verbatim on stdout (no {response,stats} envelope, no token stats).
+# When RG_ARGS_OUT is set, dump the received argv (one per line) for assertions.
 set -u
+[ -n "${RG_ARGS_OUT:-}" ] && printf '%s\n' "$@" > "$RG_ARGS_OUT"
 cat <<'JSON'
-{
-  "session_id": "fake",
-  "response": "{\"verdict\":\"FAIL\",\"findings\":[{\"severity\":\"WARN\",\"category\":\"security\",\"rule_id\":\"gem-rule\",\"file\":\"x.ts\",\"line\":1,\"message\":\"gemini finding\",\"details\":\"d\",\"confidence\":0.8}]}",
-  "stats": { "models": { "gemini-3-pro": { "tokens": { "prompt": 200, "candidates": 30, "total": 230, "cached": 0 } } } }
-}
+{"verdict":"FAIL","findings":[{"severity":"WARN","category":"security","rule_id":"gem-rule","file":"x.ts","line":1,"message":"gemini finding","details":"d","confidence":0.8}]}
 JSON
 exit 0
