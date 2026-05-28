@@ -137,7 +137,10 @@ export function brainEmbeddingsCheck(
 // What the brain has actually LEARNED in this repo (reads .reviewgate/brain/brain.json).
 // Distinct from brainEmbeddingsCheck (which only reports whether the embedder COULD run):
 // this answers "is the gate accumulating memory?". Informational (always ok) — an empty
-// brain is normal early on (promotion needs ≥2 reviewers to converge on a convention).
+// brain is normal early on. Quorum needs ≥2 DISTINCT providers proposing the same
+// convention; with cross-run candidates (default on) this can span runs, so a
+// single-reviewer panel with provider variation across runs (via failover) can still
+// promote over time.
 export async function brainMemoryCheck(
   repoRoot: string,
   cfg: ReviewgateConfig,
@@ -150,7 +153,7 @@ export async function brainMemoryCheck(
       name,
       status: "ok",
       detail:
-        "enabled — no memories learned yet (promotion needs ≥2 reviewers to converge on a convention)",
+        "enabled — no memories learned yet (promotion needs ≥2 distinct providers; with cross-run candidates this can span across runs)",
     };
   }
   const by = (s: string) => entries.filter((e) => e.status === s).length;
