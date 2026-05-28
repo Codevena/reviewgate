@@ -40,6 +40,33 @@ describe("FpLedgerStore lifecycle", () => {
     expect((await s.snapshot()).entries[0]?.stage).toBe("candidate");
   });
 
+  it("recordReject is idempotent on (run_id, provider) (no double-count on absorbPriorDecisions re-fire)", async () => {
+    const s = new FpLedgerStore(repo());
+    const t = "2026-05-21T00:00:00Z";
+    // Simulate the shoal escalation re-fire: gate runs once, escalates, then a
+    // re-stop processes the same iter's decisions again before any state reset.
+    // The same (run_id, provider) reject must NOT be double-counted — that
+    // would inflate counts and falsely promote a candidate to active on a
+    // single rejection seen twice.
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    const e = (await s.snapshot()).entries[0];
+    expect(e?.rejects).toHaveLength(1);
+    expect(e?.stage).toBe("candidate");
+  });
+
+  it("recordReject still records when run_id matches but provider differs", async () => {
+    const s = new FpLedgerStore(repo());
+    const t = "2026-05-21T00:00:00Z";
+    // Different providers on the same finding-id are independent signals.
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "gemini", reason: "x" }, t);
+    const e = (await s.snapshot()).entries[0];
+    expect(e?.rejects).toHaveLength(2);
+    expect(e?.distinct_providers.sort()).toEqual(["codex", "gemini"]);
+  });
+
   it("pin makes an entry sticky; unpin reverts toward its earned stage", async () => {
     const s = new FpLedgerStore(repo());
     await s.recordReject(

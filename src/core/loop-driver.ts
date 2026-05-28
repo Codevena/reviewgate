@@ -19,7 +19,9 @@ import {
   pendingMdPath,
 } from "../utils/paths.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
+import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
+import { FpLedgerStore } from "./fp-ledger/store.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { learnReputationFromDecisions } from "./reputation/learn.ts";
@@ -411,6 +413,13 @@ export class LoopDriver {
         };
       }
 
+      // Fold decisions INTO the learn loops BEFORE any escalation check below
+      // can early-return. See `absorbPriorDecisions` for the why; in short, the
+      // reviewer-fp-streak escalation (which fires a few lines below) is
+      // *driven by* exactly the rejection signal we want to feed into the FP
+      // ledger + reputation, so we must consume it first.
+      await this.absorbPriorDecisions(state);
+
       // Confirmed-FP signal for the PRIOR iteration. computeRejectRate dedups by
       // finding_id + restricts to the real `requiredIds`, so the agent (which authors
       // the decisions files) cannot pad duplicate/fabricated lines to manufacture an
@@ -460,20 +469,10 @@ export class LoopDriver {
         }
       }
 
-      // Side-effect: fold this iteration's decisions into the reputation store so
-      // the gate can learn which providers produce FPs and which are correct over
-      // time. Best-effort (.catch) — learning never affects the verdict.
-      if (this.i.config.phases.reputation?.enabled) {
-        await learnReputationFromDecisions({
-          repoRoot: this.i.repoRoot,
-          iter: state.iteration,
-          sessionId: state.session_id,
-          cycleSeq: state.reputation_cycle_seq,
-          store: new ReputationStore(this.i.repoRoot),
-          nowIso: new Date().toISOString(),
-          halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
-        }).catch(() => undefined);
-      }
+      // (Reputation + FP-ledger learning was hoisted UP to absorbPriorDecisions
+      // above, so it fires even when the reject-rate / fp-streak escalation
+      // checks early-return. Don't add a learn call back here — it'd
+      // double-process the same iter's decisions.)
     }
 
     // Run a new iteration — but bounded by a self-imposed deadline strictly
@@ -679,6 +678,52 @@ export class LoopDriver {
   }
 
   // A gate run hit loop.runTimeoutMs and was aborted before producing a verdict.
+  // Fold the PRIOR iteration's decisions into the learn loops (FP-ledger +
+  // reputation) so the signal survives even when this gate run escalates
+  // before reaching a new iteration. Pre-this-fix, `learnFromDecisions` lived
+  // inside `orchestrator.runIteration` and `learnReputationFromDecisions` ran
+  // mid-LoopDriver AFTER the reject-rate / fp-streak escalation checks — so
+  // a `reviewer-fp-streak` escalation (shoal 2026-05-29: opencode-security
+  // produced 3 FPs in iter 1, agent rejected all 3 with reviewer_was_wrong,
+  // gate escalated) left the decisions on disk but never consumed them.
+  // The reviewer-fp-streak escalation is *driven by* exactly the signal we
+  // want to learn from; losing it is the worst-case miss.
+  //
+  // Idempotent on re-stop: both learn calls are no-ops when `state.iteration`
+  // is 0 (no prior decisions) or the decisions file is missing. Calling
+  // twice on the same iter would double-count rejects in the FP-ledger — but
+  // this is the only call site (the orchestrator's prior call was removed in
+  // the same commit), so no duplication is possible across one cycle.
+  private async absorbPriorDecisions(state: ReviewgateState): Promise<void> {
+    if (state.iteration < 1) return;
+    const nowIso = new Date().toISOString();
+    const fpCfg = this.i.config.phases.fpLedger;
+    if (fpCfg?.enabled) {
+      const fpStore = new FpLedgerStore(this.i.repoRoot);
+      await learnFromDecisions({
+        repoRoot: this.i.repoRoot,
+        prevIter: state.iteration,
+        store: fpStore,
+        nowIso,
+      })
+        // Decay AFTER learning so freshly-touched entries (last_seen = now) are
+        // never reaped; mirrors the brain curator's per-run decayPass.
+        .then(() => fpStore.decayPass(nowIso))
+        .catch(() => undefined);
+    }
+    if (this.i.config.phases.reputation?.enabled) {
+      await learnReputationFromDecisions({
+        repoRoot: this.i.repoRoot,
+        iter: state.iteration,
+        sessionId: state.session_id,
+        cycleSeq: state.reputation_cycle_seq,
+        store: new ReputationStore(this.i.repoRoot),
+        nowIso,
+        halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
+      }).catch(() => undefined);
+    }
+  }
+
   // Fail CLOSED: count the consecutive incomplete, keep the dirty.flag (so the
   // re-run re-reviews the SAME diff), and block so the turn cannot end
   // un-reviewed. After MAX_CONSECUTIVE_INCOMPLETE_RUNS in a row, escalate to the

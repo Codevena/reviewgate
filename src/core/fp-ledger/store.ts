@@ -113,6 +113,19 @@ export class FpLedgerStore {
         };
         idx.entries.push(e);
       }
+      // Idempotent on (run_id, provider): a re-invocation of absorbPriorDecisions
+      // (e.g. an escalated gate re-fires its stop-hook on the same iter's
+      // decisions before commit-recovery resets state.iteration) MUST NOT
+      // double-count the same rejection. Reputation already has this
+      // guarantee via its `eid` field; this mirrors it for the FP ledger.
+      const dup = e.rejects.some(
+        (r) => r.run_id === reject.run_id && r.provider === reject.provider,
+      );
+      if (dup) {
+        // Still bump last_seen_at so decay doesn't reap a re-confirmed entry.
+        e.last_seen_at = nowIso;
+        return { next: idx, result: undefined };
+      }
       e.rejects.push({ ...reject, ts: nowIso });
       e.last_seen_at = nowIso;
       const updated = recompute(e, nowMs);

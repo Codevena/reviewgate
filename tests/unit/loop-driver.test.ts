@@ -923,6 +923,122 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("learn loops absorb the prior iteration's decisions BEFORE escalation early-returns (shoal 2026-05-29 regression)", async () => {
+    // Reproduces the shoal incident: opencode-security produced 3 hallucinated
+    // CRITICAL/WARN findings, agent rejected all 3 with reviewer_was_wrong:true,
+    // gate escalated on reviewer-fp-streak — but the FP-ledger and reputation
+    // store were unchanged because both learn calls ran AFTER the escalation
+    // check returned. Post-fix, both fire via `absorbPriorDecisions` before
+    // any escalation check has a chance to early-return.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXSHOALFPREGRESSION");
+    writeDirty(repo);
+    const config = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 5, fpStreakThreshold: 3 },
+      phases: {
+        ...defaultConfig.phases,
+        fpLedger: { enabled: true },
+        // reputation is default-enabled in defaultConfig
+      },
+    };
+    // Seed a pending.json AND a Finding that learnFromDecisions can map to a
+    // signature → provider so the ledger actually writes an entry.
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "shoal-sig-1",
+            severity: "CRITICAL",
+            category: "correctness",
+            rule_id: "phantom-race",
+            file: "lib/foo.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "phantom",
+            details: "details",
+            reviewer: { provider: "opencode", model: "default", persona: "security" },
+            confidence: 0.9,
+            consensus: "singleton",
+          },
+        ],
+      }),
+    );
+    const stub = {
+      runIteration: async (opts: { runId: string; iter: number; signal?: AbortSignal }) => {
+        const summary: RunSummary = {
+          verdict: "FAIL",
+          source: "panel",
+          counts: { critical: 1, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [`sig-${opts.iter}`],
+          providers: [],
+        };
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [`sig-${opts.iter}`],
+          summary,
+        };
+      },
+    };
+    const mkDriver = () =>
+      new LoopDriver({
+        repoRoot: repo,
+        config,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: stub,
+        stopHookActive: false,
+      });
+    // Drive the loop: write decisions, run, write decisions, run, ... until escalation.
+    let decision = await mkDriver().run();
+    for (let i = 1; i <= 6 && !decision.reason.includes("ESCALATED"); i++) {
+      const dp = decisionsPath(repo, i);
+      mkdirSync(dirname(dp), { recursive: true });
+      writeFileSync(
+        dp,
+        `${JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "rejected",
+          reason: "confirmed false positive, opencode hallucinated this race condition",
+          reviewer_was_wrong: true,
+        })}\n`,
+      );
+      decision = await mkDriver().run();
+    }
+    expect(decision.reason).toContain("ESCALATED");
+    expect(decision.reason).toContain("reviewer-fp-streak");
+
+    // THE REGRESSION ASSERTIONS — pre-fix these failed because the learn calls
+    // never fired on the escalation path:
+    // 1. FP-ledger has the hallucinated finding's signature recorded.
+    const fpPath = join(repo, ".reviewgate", "learnings", "known_fp.jsonl");
+    expect(existsSync(fpPath)).toBe(true);
+    const fp = JSON.parse(readFileSync(fpPath, "utf8")) as {
+      entries: Array<{ signature: string; rejects: Array<{ provider: string }> }>;
+    };
+    expect(fp.entries.length).toBeGreaterThan(0);
+    expect(fp.entries[0]?.signature).toBe("shoal-sig-1");
+    expect(fp.entries[0]?.rejects[0]?.provider).toBe("opencode");
+    // 2. Reputation has opencode-security recorded as wrong at least once.
+    const repPath = join(repo, ".reviewgate", "reputation.json");
+    expect(existsSync(repPath)).toBe(true);
+    const rep = JSON.parse(readFileSync(repPath, "utf8")) as {
+      reviewers: Record<string, { correct: unknown[]; wrong: unknown[] }>;
+    };
+    const opencode = rep.reviewers["opencode:security"];
+    expect(opencode).toBeDefined();
+    expect(opencode?.wrong.length).toBeGreaterThan(0);
+  });
+
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);
