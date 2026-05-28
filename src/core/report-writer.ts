@@ -138,6 +138,19 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
       "## Advisory (out of scope / known FP — no decision needed) ·\n",
       ...advisory.map(fmtFinding),
     );
+    // Optional learn-loop hint — only emitted in the agent-loop mode (NOT in
+    // one-shot review-plan reports). Advisory findings carry no gating
+    // semantics, but if the agent notices a reviewer hallucinated one, a
+    // single optional decision line teaches the FP-ledger + reputation. The
+    // signal would otherwise be lost: pre-this-hint a "F-XYZ halluziniert"
+    // observation in chat just dies because INFO requires no decision.
+    if (mode !== "one-shot") {
+      sections.push(
+        "### Optional: train Reviewgate on advisory hallucinations\n",
+        "If you identify any advisory finding above as a reviewer hallucination, you may optionally write a decision line — it feeds the FP-ledger and reviewer reputation. No gating effect either way. `reason` must be ≥20 characters explaining why the reviewer was wrong:\n",
+        '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`\n',
+      );
+    }
   }
 
   return head + sections.join("\n");
