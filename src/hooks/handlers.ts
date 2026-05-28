@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import { gitHeadSha } from "../utils/git.ts";
 import { dirtyFlagPath, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
 
@@ -65,6 +66,9 @@ export async function handleReset(input: ResetInput): Promise<void> {
       // noop
     }
   }
+  // F2: drop all per-run proposal pools so a new session can't see a prior
+  // session's accumulated proposals (which would skew quorum on the next run).
+  clearAllProposalPools(input.repoRoot);
 }
 
 export interface GateOutput {

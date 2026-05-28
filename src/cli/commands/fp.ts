@@ -1,4 +1,5 @@
 // src/cli/commands/fp.ts
+import { computeFpClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
 
 export interface FpListInput {
@@ -110,6 +111,46 @@ export async function runFpUnpin(input: FpUnpinInput): Promise<number> {
     return 1;
   }
   out(`Unpinned ${input.id}.\n`);
+  return 0;
+}
+
+export interface FpClustersInput {
+  repoRoot: string;
+  file?: string;
+  write?: (s: string) => void;
+  /** Override "now" for deterministic tests. */
+  nowIso?: string;
+}
+
+export async function runFpClusters(input: FpClustersInput): Promise<number> {
+  const out = input.write ?? ((s: string) => process.stdout.write(s));
+  const snap = await new FpLedgerStore(input.repoRoot).snapshot();
+  const clusters = computeFpClusters(snap.entries, input.nowIso ?? new Date().toISOString());
+  const fileNeedle = input.file?.toLowerCase();
+  const filtered = fileNeedle
+    ? clusters.filter((c) => c.file.toLowerCase().includes(fileNeedle))
+    : clusters;
+  if (filtered.length === 0) {
+    out(
+      "No multi-entry FP clusters found (a cluster requires ≥2 entries sharing rule_id_token0 + file).\n",
+    );
+    return 0;
+  }
+  out(
+    `FP clusters — derived view, no schema change (key = <rule_id_token0>@<file>; ${filtered.length} of ${clusters.length} shown):\n\n`,
+  );
+  for (const c of filtered) {
+    const near = isNearActive(c) ? "  ⚡ near-active" : "";
+    out(`[${c.stage}] ${c.key}${near}\n`);
+    out(
+      `  rejects: ${c.reject_count_total} total, ${c.reject_count_active_window} in active-window (60d), ${c.reject_count_sticky_window} in sticky-window (90d)\n`,
+    );
+    out(`  providers: ${c.distinct_providers.join(", ") || "(none)"}\n`);
+    out(`  members: ${c.member_ids.join(", ")}\n`);
+    out(`  signatures: ${c.member_signatures.length} distinct\n`);
+    out(`  first seen: ${c.first_seen_at}\n`);
+    out(`  last seen:  ${c.last_seen_at}\n\n`);
+  }
   return 0;
 }
 

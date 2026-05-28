@@ -18,6 +18,7 @@ import {
   pendingJsonPath,
   pendingMdPath,
 } from "../utils/paths.ts";
+import { ProposalStore } from "./brain/proposal-store.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { ReportWriter } from "./report-writer.ts";
@@ -294,7 +295,12 @@ export class LoopDriver {
       );
       // The commit closed the escalated cycle → wipe its decisions too, so a
       // stale finding_id can't satisfy the next cycle's gate (see clearDecisions).
-      if (headMovedWhileEscalated) clearDecisions(this.i.repoRoot);
+      // Also drop the F2 per-run proposal pool: a recovered cycle's accumulated
+      // proposals belong to that cycle and must not bleed into the next one.
+      if (headMovedWhileEscalated) {
+        clearDecisions(this.i.repoRoot);
+        new ProposalStore(this.i.repoRoot, state.session_id).clear();
+      }
       state = await this.i.state.load();
     }
 
@@ -602,8 +608,11 @@ export class LoopDriver {
         /* noop */
       }
       // Cycle closed → wipe this cycle's decisions so stale finding_ids cannot
-      // satisfy the next cycle's gate (see clearDecisions).
+      // satisfy the next cycle's gate (see clearDecisions). Also drop the F2
+      // per-run proposal pool — the curator already saw the final state of it
+      // by the time this iteration produced a PASS, so it's done.
       clearDecisions(this.i.repoRoot);
+      new ProposalStore(this.i.repoRoot, state.session_id).clear();
       await this.i.audit.append({
         event: "gate.decision",
         run_id: state.session_id,

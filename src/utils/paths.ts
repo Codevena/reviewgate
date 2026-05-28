@@ -128,3 +128,24 @@ export function curatorDecisionsPath(repoRoot: string, runId: string): string {
   }
   return join(brainDir(repoRoot), "proposals", "curator-decisions", `${safe}.jsonl`);
 }
+
+// F2 per-run proposal pool — accumulates memory_proposals across all iterations
+// of a single review cycle so the curator sees cross-iteration provider
+// diversity (e.g. claude-code on iter 1 + opencode fallback on iter 2 → 2
+// distinct providers → quorum reachable in a single-reviewer-with-failover
+// config). One file per run_id; cleared on PASS / commit-recovery / reset.
+export function proposalsPoolDir(repoRoot: string): string {
+  return join(brainDir(repoRoot), "proposals", "pool");
+}
+
+export function proposalsPoolPath(repoRoot: string, runId: string): string {
+  const safe = runId.replace(/[^A-Za-z0-9_-]/g, "");
+  if (safe.length === 0) {
+    throw new Error(`proposalsPoolPath: runId sanitizes to empty: ${JSON.stringify(runId)}`);
+  }
+  return join(proposalsPoolDir(repoRoot), `${safe}.jsonl`);
+}
+
+export function proposalsPoolErrorLog(repoRoot: string): string {
+  return join(proposalsPoolDir(repoRoot), "errors.jsonl");
+}

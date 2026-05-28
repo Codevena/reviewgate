@@ -4,7 +4,14 @@ import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
-import { runFpAudit, runFpList, runFpPin, runFpShow, runFpUnpin } from "./commands/fp.ts";
+import {
+  runFpAudit,
+  runFpClusters,
+  runFpList,
+  runFpPin,
+  runFpShow,
+  runFpUnpin,
+} from "./commands/fp.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runReport } from "./commands/report.ts";
@@ -176,6 +183,23 @@ const fp = defineCommand({
       meta: { name: "audit" },
       async run() {
         process.exit(await runFpAudit({ repoRoot: process.cwd() }));
+      },
+    }),
+    clusters: defineCommand({
+      meta: {
+        name: "clusters",
+        description:
+          "F3 Phase 1 — derived (rule_id_token0 × file) view over the FP ledger; read-only, no schema change. --file <substr> filters by path.",
+      },
+      args: { file: { type: "string" } },
+      async run({ args }) {
+        const file = typeof args.file === "string" ? args.file : undefined;
+        process.exit(
+          await runFpClusters({
+            repoRoot: process.cwd(),
+            ...(file !== undefined ? { file } : {}),
+          }),
+        );
       },
     }),
   },

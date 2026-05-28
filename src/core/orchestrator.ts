@@ -47,6 +47,7 @@ import { BrainEngine } from "./brain/engine.ts";
 import { enrichProposal } from "./brain/enrich.ts";
 import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-coupling.ts";
 import { decayPass } from "./brain/lifecycle.ts";
+import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
@@ -1016,9 +1017,28 @@ export class Orchestrator {
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
     // Runs AFTER the verdict + report are committed and NEVER throws into / changes
     // the already-computed verdict. Validates collected proposals against the
-    // deterministic 7 rules (+ an optional LLM judge), then writes promotions. ---
-    if (brainCfg?.enabled && proposals.length > 0) {
-      await this.runCuratorPhase(repo, opts.runId, brainCfg, proposals).catch(() => undefined);
+    // deterministic 7 rules (+ an optional LLM judge), then writes promotions.
+    //
+    // F2: persist this iteration's proposals to a run-scoped pool and invoke the
+    // curator with the CUMULATIVE pool (all iterations of this run so far) rather
+    // than just this iteration's batch. Lets a single-reviewer-with-failover
+    // panel reach ≥2-distinct-providers quorum when iter 1 (primary) and iter 2
+    // (fallback after a primary failure) contribute different providers'
+    // proposals. The pool file is cleared on PASS / commit-recovery / reset
+    // (LoopDriver + handleReset). Best-effort: any I/O failure in the store is
+    // logged to .reviewgate/brain/proposals/pool/errors.jsonl and the in-RAM
+    // iter batch is used as a fallback so a corrupt pool can never block. ---
+    if (brainCfg?.enabled) {
+      const pool = new ProposalStore(repo, opts.runId);
+      if (proposals.length > 0) pool.appendIter(opts.iter, proposals, new Date().toISOString());
+      const cumulative = pool.proposals();
+      // If the file is unreadable (logged + returns []) and this iter had
+      // proposals, run the curator on this iter's batch alone — degraded
+      // behavior, but better than zero curation for the round.
+      const curatorInput = cumulative.length > 0 ? cumulative : proposals;
+      if (curatorInput.length > 0) {
+        await this.runCuratorPhase(repo, opts.runId, brainCfg, curatorInput).catch(() => undefined);
+      }
     }
 
     // M5 Phase B3 — FP↔Brain coupling: pair active FP-ledger entries to brain
