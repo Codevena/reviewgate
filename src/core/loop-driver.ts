@@ -207,6 +207,28 @@ function formatCoverageNote(summary: RunSummary): string | null {
   return `reduced coverage: ${degraded} of ${total} ${word} did not complete`;
 }
 
+// On a verdict===ERROR result, surface WHICH reviewer(s) didn't complete and
+// how long they ran, so an agent doesn't misdiagnose (real shoal case: a 300s
+// claude-code timeout was read as "subprocess failing to start" because the
+// message said only "reviewer error"). RunSummary stores counts not per-run
+// statuses, so we use provider name + accumulated duration_ms — together a
+// strong signal (≈timeoutMs → timeout; ≈0s → instant error; see pending.md
+// for the exact status_detail).
+function formatErrorBreakdown(summary: RunSummary): string {
+  if (summary.providers.length === 0) {
+    return "no reviewer ran (check provider availability/config)";
+  }
+  const errored = summary.providers.filter((p) => p.errors > 0);
+  if (errored.length === 0) {
+    return `0 of ${summary.providers.length} reviewer(s) completed`;
+  }
+  const each = errored
+    .map((p) => `${p.provider} errored after ${(p.duration_ms / 1000).toFixed(1)}s`)
+    .join(" · ");
+  const word = summary.providers.length === 1 ? "reviewer" : "reviewers";
+  return `${each} · 0 of ${summary.providers.length} ${word} ok`;
+}
+
 export class LoopDriver {
   constructor(private readonly i: LoopInput) {}
 
@@ -626,7 +648,7 @@ export class LoopDriver {
       // escalation, so this cannot loop forever.
       decision = {
         kind: "block",
-        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}). The review could not complete. Run \`reviewgate doctor\` to diagnose, fix the reviewer, then continue. Reviewgate will not open the gate on a turn it could not review.`,
+        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail. Run \`reviewgate doctor\` if this persists.`,
       };
     } else {
       decision = {

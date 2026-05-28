@@ -1494,4 +1494,87 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
       expect(d.reason).toContain("reduced coverage");
     });
   });
+
+  // --- ERROR-path Stop-hook clarity (which reviewer errored, how long) ---
+  describe("Stop-hook reason: ERROR breakdown", () => {
+    const errSummary = (
+      providers: { provider: string; errors: number; duration_ms: number }[],
+    ): RunSummary => ({
+      verdict: "ERROR",
+      source: "panel",
+      counts: { critical: 0, warn: 0, info: 0 },
+      cost_usd: 0,
+      duration_ms: providers.reduce((a, p) => a + p.duration_ms, 0),
+      demoted: 0,
+      signatures: [],
+      providers: providers.map((p) => ({
+        provider: p.provider,
+        personas: ["security"],
+        runs: 1,
+        errors: p.errors,
+        findings: 0,
+        demoted: 0,
+        cost_usd: 0,
+        duration_ms: p.duration_ms,
+      })) as RunSummary["providers"],
+    });
+
+    const errOrch = (summary: RunSummary) => ({
+      runIteration: async () => ({
+        verdict: "ERROR" as const,
+        costUsd: 0,
+        durationMs: summary.duration_ms,
+        signaturesThisIter: [] as string[],
+        summary,
+      }),
+    });
+
+    async function errDecide(summary: RunSummary) {
+      const repo = fakeRepo();
+      const state = new StateStore(repo);
+      await state.initialise("01HXQERR");
+      writeDirty(repo);
+      return new LoopDriver({
+        repoRoot: repo,
+        config: defaultConfig,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: errOrch(summary),
+        stopHookActive: false,
+      }).run();
+    }
+
+    it("single errored reviewer: surfaces provider name + duration so agent can diagnose", async () => {
+      // Real shoal case: claude-code-security timed out at 300s. The old message
+      // said only "reviewer error" → agent misdiagnosed as "failing to start".
+      const s = errSummary([{ provider: "claude-code", errors: 1, duration_ms: 300_019 }]);
+      const d = await errDecide(s);
+      expect(d.kind).toBe("block");
+      expect(d.reason).toContain("🔴");
+      expect(d.reason).toContain("claude-code");
+      expect(d.reason).toContain("300.0s"); // duration tells timeout-vs-instant-error
+      expect(d.reason).toContain("0 of 1");
+      expect(d.reason).toContain("pending.md"); // points at the status_detail
+    });
+
+    it("multiple errored reviewers: lists each with its own duration", async () => {
+      const s = errSummary([
+        { provider: "claude-code", errors: 1, duration_ms: 300_000 },
+        { provider: "gemini", errors: 1, duration_ms: 5_200 },
+      ]);
+      const d = await errDecide(s);
+      expect(d.reason).toContain("claude-code");
+      expect(d.reason).toContain("300.0s");
+      expect(d.reason).toContain("gemini");
+      expect(d.reason).toContain("5.2s");
+      expect(d.reason).toContain("0 of 2");
+    });
+
+    it("no providers ran at all: honest 'no reviewer ran' message", async () => {
+      const s = errSummary([]);
+      const d = await errDecide(s);
+      expect(d.kind).toBe("block");
+      expect(d.reason).toContain("no reviewer ran");
+    });
+  });
 });
