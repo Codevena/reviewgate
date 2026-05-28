@@ -60,6 +60,32 @@ describe("GeminiAdapter (agy, mocked)", () => {
       Reflect.deleteProperty(process.env, "RG_ARGS_OUT");
     }
   });
+
+  it("returns verdict ERROR + quota-exhausted status with no findings on a non-zero exit", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-err-"));
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    process.env.RG_FAKE_EXIT_FAIL = "1";
+    try {
+      const adapter = new GeminiAdapter({ binPath: FAKE });
+      const res = await adapter.review({
+        cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+        reviewerId: "gemini-security",
+        promptFile,
+        workingDir: dir,
+        findingsPath: join(dir, "f.md"),
+        persona: "security",
+        diffPath: join(dir, "d.patch"),
+      });
+      expect(res.verdict).toBe("ERROR");
+      expect(res.status).toBe("quota-exhausted");
+      expect(res.findings).toEqual([]);
+      expect(res.usage.inputTokens).toBe(0);
+      expect(res.usage.outputTokens).toBe(0);
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_EXIT_FAIL");
+    }
+  });
 });
 
 describe("GeminiAdapter.complete (judge completion)", () => {
@@ -71,16 +97,22 @@ describe("GeminiAdapter.complete (judge completion)", () => {
 
   it("throws on non-zero exit", async () => {
     process.env.RG_FAKE_FAIL = "1";
-    const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
-    await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
-    Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
+    try {
+      const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
+      await expect(adapter.complete("p", { model: "m", auth: "oauth" })).rejects.toThrow();
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_FAIL");
+    }
   });
 
   it("returns '' on empty stdout (no throw)", async () => {
     process.env.RG_FAKE_EMPTY = "1";
-    const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
-    const text = await adapter.complete("p", { model: "m", auth: "oauth" });
-    expect(text).toBe("");
-    Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
+    try {
+      const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });
+      const text = await adapter.complete("p", { model: "m", auth: "oauth" });
+      expect(text).toBe("");
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_EMPTY");
+    }
   });
 });

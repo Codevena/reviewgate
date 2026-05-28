@@ -69,71 +69,85 @@ export class GeminiAdapter implements ProviderAdapter {
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
     const run = mkdtempSync(join(tmpdir(), "rg-agy-run-"));
-    const outFile = join(run, "out.txt");
-    const errFile = join(run, "err.log");
-    // No --add-dir: the diff is supplied inline in the prompt, so the reviewer
-    // needs no workspace access (no agentic file exploration, no edit risk).
-    // --dangerously-skip-permissions prevents a hang on the permission prompt.
-    const args = [
-      "-p",
-      readFileSync(input.promptFile, "utf8"),
-      "--dangerously-skip-permissions",
-      "--print-timeout",
-      `${input.cfg.timeoutMs}ms`,
-    ];
-    const res = await spawnSafely({
-      command: this.binPath,
-      args,
-      env: { ...process.env } as Record<string, string>,
-      cwd: input.workingDir,
-      stdoutFile: outFile,
-      stderrFile: errFile,
-      timeoutMs: input.cfg.timeoutMs,
-      // agy print mode buffers (no streamed stdout), so the default 60s zero-byte
-      // idle watchdog would SIGKILL a longer review. Tie it to the wall timeout.
-      zeroByteWatchdogMs: input.cfg.timeoutMs,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-    const errText = readFileSafe(errFile);
-    const outText = readFileSafe(outFile);
-    const baseStatus: ReviewStatus =
-      res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
-    const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(errText + outText)
-        ? "quota-exhausted"
-        : baseStatus;
-    if (status !== "ok") {
+    try {
+      const outFile = join(run, "out.txt");
+      const errFile = join(run, "err.log");
+      // No --add-dir: the diff is supplied inline in the prompt, so the reviewer
+      // needs no workspace access (no agentic file exploration, no edit risk).
+      // --dangerously-skip-permissions prevents a hang on the permission prompt.
+      const args = [
+        "-p",
+        readFileSync(input.promptFile, "utf8"),
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        `${input.cfg.timeoutMs}ms`,
+      ];
+      const res = await spawnSafely({
+        command: this.binPath,
+        args,
+        env: { ...process.env } as Record<string, string>,
+        cwd: input.workingDir,
+        stdoutFile: outFile,
+        stderrFile: errFile,
+        timeoutMs: input.cfg.timeoutMs,
+        // agy print mode buffers (no streamed stdout), so the default 60s zero-byte
+        // idle watchdog would SIGKILL a longer review. Tie it to the wall timeout.
+        zeroByteWatchdogMs: input.cfg.timeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      const errText = readFileSafe(errFile);
+      const outText = readFileSafe(outFile);
+      const baseStatus: ReviewStatus =
+        res.killedByTimeout || res.killedByWatchdog
+          ? "timeout"
+          : res.exitCode === 0
+            ? "ok"
+            : "error";
+      const status: ReviewStatus =
+        baseStatus === "error" && isQuotaExhausted(errText + outText)
+          ? "quota-exhausted"
+          : baseStatus;
+      if (status !== "ok") {
+        return {
+          reviewerId: input.reviewerId,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: res.durationMs,
+          exitCode: res.exitCode,
+          // run is cleaned up in finally; the orchestrator stores this path as a
+          // string and never reads the file back (it uses the in-memory rawText).
+          rawEventsPath: outFile,
+          status,
+          statusDetail: errText.slice(0, 1000),
+        };
+      }
+      const { findings, rawText } = this.parse(
+        outText,
+        input.cfg.model,
+        input.persona,
+        input.workingDir,
+      );
       return {
         reviewerId: input.reviewerId,
-        verdict: "ERROR",
-        findings: [],
+        verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+          ? "FAIL"
+          : "PASS",
+        findings,
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
         durationMs: res.durationMs,
-        exitCode: res.exitCode,
+        exitCode: 0,
         rawEventsPath: outFile,
-        status,
-        statusDetail: errText.slice(0, 1000),
+        rawText,
+        status: "ok",
       };
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
     }
-    const { findings, rawText } = this.parse(
-      outText,
-      input.cfg.model,
-      input.persona,
-      input.workingDir,
-    );
-    return {
-      reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-        ? "FAIL"
-        : "PASS",
-      findings,
-      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-      durationMs: res.durationMs,
-      exitCode: 0,
-      rawEventsPath: outFile,
-      rawText,
-      status: "ok",
-    };
   }
 
   async complete(prompt: string, opts: CompleteOptions): Promise<string> {
