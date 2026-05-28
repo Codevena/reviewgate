@@ -5,7 +5,7 @@ import type { ProviderId } from "./registry.ts";
 // (it is an API-key check). claude-code runs the `claude` CLI.
 export const PROVIDER_BIN: Record<ProviderId, string | null> = {
   codex: "codex",
-  gemini: "gemini",
+  gemini: "agy",
   "claude-code": "claude",
   opencode: "opencode",
   openrouter: null,
