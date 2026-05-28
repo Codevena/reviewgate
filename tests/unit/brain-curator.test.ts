@@ -640,6 +640,40 @@ describe("runCurator", () => {
     expect(await candStore.listAll()).toHaveLength(0);
   });
 
+  it("prunes the candidate pool at start of run (expired entries dropped before quorum work)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-prune-"));
+    const candStore = new CandidateStore(repo);
+    await candStore.addOrMerge({
+      id: "old",
+      title: "x",
+      body: "x",
+      scope: "ts",
+      type: "convention",
+      embedding: [1, 0, 0],
+      embedding_model: "bge",
+      provider: "codex",
+      source_run_id: "R-old",
+      // ~148 days before nowIso below → past 60-day TTL
+      created_at: "2026-01-01T00:00:00Z",
+      evidence_kinds: ["reviewer-observation"],
+      confidence: 0.8,
+    });
+    const store = new BrainStore(repo);
+    await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: "2026-05-28T00:00:00Z",
+      proposals: [],
+      embedder: { embed: async () => [] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(await candStore.listAll()).toHaveLength(0); // expired (148d > 60d TTL)
+  });
+
   it("on quorum-still-fail: single-provider rep is stored in the candidate pool", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-storefail-"));
     const candStore = new CandidateStore(repo);

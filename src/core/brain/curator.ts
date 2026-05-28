@@ -194,6 +194,17 @@ interface ProposalGroup {
 
 export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
   const res: CuratorResult = { promoted: 0, rejected: 0, queued: 0, merged: 0 };
+
+  // Bound the candidate pool's growth: drop entries older than ttlDays, then cap
+  // to maxEntries (oldest dropped first). Runs once per curator invocation so
+  // the pool can't accumulate forever even if no new run reads-then-deletes.
+  if (input.candidateStore && input.crossRunCfg?.enabled) {
+    await input.candidateStore.prune(new Date(input.nowIso), {
+      ttlDays: input.crossRunCfg.ttlDays,
+      maxEntries: input.crossRunCfg.maxEntries,
+    });
+  }
+
   const cfg = input.embedCfg ?? { model: "embed", timeoutMs: 8000 };
   const log = (decision: string, title: string, extra: Record<string, unknown> = {}) =>
     logDecision(input.repoRoot, {
