@@ -387,7 +387,12 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       // Cross-run: persist this rep so a future run from a DIFFERENT provider can
       // complete the quorum. Single-provider reps from THIS run only — never
       // store a rep whose merged in-run evidence already spans ≥2 providers but
-      // failed on the (stricter) diff-quorum path.
+      // failed on the (stricter) diff-quorum path. We collapse reviewer_id
+      // ("codex-security", "codex-architecture", …) through providerOf to the
+      // bare provider ("codex") — same way quorumOk counts distinct providers —
+      // so a single-provider/multi-persona rep is correctly recognised as
+      // single-provider (the common shape; without this we'd refuse to store
+      // exactly the proposals the cross-run path is meant to rescue).
       if (input.candidateStore && input.crossRunCfg?.enabled) {
         const providersThisRun = new Set(
           mergedEvidence
@@ -396,7 +401,7 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
                 (e.kind === "reviewer-observation" || e.kind === "reviewer-finding") &&
                 e.reviewer_id,
             )
-            .map((e) => e.reviewer_id as string),
+            .map((e) => providerOf(e.reviewer_id as string)),
         );
         if (providersThisRun.size === 1) {
           const provider = [...providersThisRun][0] as string;

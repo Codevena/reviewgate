@@ -1282,7 +1282,7 @@ export class Orchestrator {
       : undefined;
 
     const candidateStore = brainCfg?.crossRunCandidates?.enabled
-      ? new CandidateStore(this.input.repoRoot)
+      ? new CandidateStore(repo)
       : undefined;
 
     await withTimeout(

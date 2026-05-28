@@ -590,6 +590,14 @@ describe("runCurator", () => {
     expect(res.promoted).toBe(0); // model mismatch → no cross-run match → only 1 provider → quorum fails
     const snap = await store.snapshot();
     expect(snap.entries.length).toBe(0);
+    // Spec test plan #12: the OLD-MODEL candidate must be preserved (it'll TTL
+    // out, not be deleted) — a regression that accidentally pruned mismatched
+    // candidates would silently shrink the pool and would not be caught
+    // without this assertion. Plus the new lone-gemini single-provider rep
+    // gets added → pool ends with both entries.
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(2);
+    expect(pool.some((c) => c.id === "C-old" && c.embedding_model === "ada-002")).toBe(true);
   });
 
   it("on promote success: matched candidates are deleted from the pool", async () => {
@@ -705,6 +713,60 @@ describe("runCurator", () => {
     expect(pool[0]?.title).toBe("lone observation");
     expect(pool[0]?.source_run_id).toBe("R-1");
     expect(pool[0]?.confidence).toBeGreaterThan(0); // rep.confidence carried through (whatever p() sets it to)
+  });
+
+  it("stores rep on quorum-fail when a SINGLE provider speaks through MULTIPLE personas (collapses reviewer_id via providerOf)", async () => {
+    // This is the exact shape the existing anti-collusion test at the top of
+    // this file uses to prove `quorumOk` correctly REJECTS it. If we counted
+    // distinct providers from the raw reviewer_id (codex-security ≠
+    // codex-architecture ≠ codex-adversarial), `providersThisRun.size` would
+    // be 3 and the store gate (`size === 1`) would silently SKIP persisting
+    // it — defeating cross-run quorum exactly where it should help most. We
+    // must collapse through providerOf, same way `quorumOk` does.
+    const repo = mkdtempSync(join(tmpdir(), "rg-xrun-personas-"));
+    const candStore = new CandidateStore(repo);
+    const store = new BrainStore(repo);
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        p({
+          title: "lone observation via multiple personas",
+          evidence: [
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-security",
+            },
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-architecture",
+            },
+            {
+              kind: "reviewer-finding",
+              run_id: "R-1",
+              reviewer_id: "codex-adversarial",
+            },
+          ],
+        }),
+      ],
+      embedder: { embed: async () => [[1, 0, 0]] },
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+    expect(res.promoted).toBe(0); // single provider in disguise → quorum still fails
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(1);
+    // The stored provider field is the COLLAPSED provider id, NOT a reviewer
+    // id — otherwise next-run match wires the wrong string into synthetic
+    // evidence and `providerOf` only happens to recover it via the prefix
+    // table for these known names.
+    expect(pool[0]?.provider).toBe("codex");
   });
 });
 
