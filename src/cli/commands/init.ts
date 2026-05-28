@@ -154,7 +154,7 @@ export async function runInit(input: InitInput): Promise<void> {
       "    // openrouter powers the brain's embeddings below (and can also be a",
       "    // reviewer). Needs OPENROUTER_API_KEY in your environment.",
       '    openrouter: { enabled: true, auth: "openrouter", model: "deepseek/deepseek-v4-pro", apiKeyEnv: "OPENROUTER_API_KEY", timeoutMs: 300_000 },',
-      '    // gemini: { enabled: true, auth: "oauth", model: "gemini-3-flash-preview", timeoutMs: 300_000 },',
+      '    // gemini: { enabled: true, auth: "oauth", timeoutMs: 300_000 }, // runs the agy CLI (model ignored)',
       '    // "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300_000 },',
       "  },",
       "  phases: {",
