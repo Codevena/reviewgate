@@ -13,6 +13,8 @@ import { brainCandidatesLockPath, brainCandidatesPath, brainDir } from "../../ut
 import { GROUP_THRESHOLD } from "./constants.ts";
 import { cosineSimilarity } from "./embeddings.ts";
 
+const DAY_MS = 86_400_000;
+
 /** Cosine-similarity gate that never throws — wraps `cosineSimilarity` so a
  *  malformed embedding (zero-magnitude, length mismatch) can't crash an insert.
  *  Returns false on any cosine error: "we couldn't compare → treat as not-a-dup". */
@@ -92,6 +94,31 @@ export class CandidateStore {
       return dup
         ? { next: entries, result: undefined }
         : { next: [...entries, c], result: undefined };
+    });
+  }
+
+  async deleteByIds(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const drop = new Set(ids);
+    await this.mutate((entries) => ({
+      next: entries.filter((e) => !drop.has(e.id)),
+      result: undefined,
+    }));
+  }
+
+  /** Drop expired entries first, then cap to maxEntries by dropping oldest. */
+  async prune(
+    now: Date,
+    cfg: { ttlDays: number; maxEntries: number },
+  ): Promise<{ expired: number; capped: number }> {
+    return await this.mutate((entries) => {
+      const nowMs = now.getTime();
+      const kept = entries.filter((e) => nowMs - Date.parse(e.created_at) <= cfg.ttlDays * DAY_MS);
+      const expired = entries.length - kept.length;
+      kept.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at)); // oldest first
+      const capped = Math.max(0, kept.length - cfg.maxEntries);
+      const next = capped > 0 ? kept.slice(capped) : kept;
+      return { next, result: { expired, capped } };
     });
   }
 }

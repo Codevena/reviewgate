@@ -99,7 +99,7 @@ export const BrainCandidateSchema = z.object({
   provider: z.string().min(1),
   confidence: z.number().min(0).max(1),
   source_run_id: z.string(),
-  created_at: z.string(),
+  created_at: z.string().datetime(),
   evidence_kinds: z.array(EvidenceKind).default([]),
 });
 export type BrainCandidate = z.infer<typeof BrainCandidateSchema>;

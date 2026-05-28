@@ -101,3 +101,70 @@ describe("CandidateStore — addOrMerge dedup-by-(embedding, provider)", () => {
     expect(await s.listAll()).toHaveLength(2);
   });
 });
+
+describe("CandidateStore — deleteByIds", () => {
+  it("removes only the listed ids", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(mkCandidate({ id: "C-001", embedding: [1, 0, 0] }));
+    await s.addOrMerge(mkCandidate({ id: "C-002", embedding: [0, 1, 0] }));
+    await s.deleteByIds(["C-001"]);
+    const back = await s.listAll();
+    expect(back).toHaveLength(1);
+    expect(back[0]?.id).toBe("C-002");
+  });
+});
+
+describe("CandidateStore — prune (TTL + cap)", () => {
+  const NOW = new Date("2026-05-28T00:00:00Z");
+  it("expires entries older than ttlDays (created_at + ttl < now)", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    await s.addOrMerge(mkCandidate({ id: "old", created_at: "2026-01-01T00:00:00Z" }));
+    await s.addOrMerge(
+      mkCandidate({ id: "new", embedding: [0, 1, 0], created_at: NOW.toISOString() }),
+    );
+    const res = await s.prune(NOW, { ttlDays: 60, maxEntries: 5000 });
+    expect(res.expired).toBe(1);
+    expect(res.capped).toBe(0);
+    const back = await s.listAll();
+    expect(back.map((e) => e.id)).toEqual(["new"]);
+  });
+
+  it("caps at maxEntries, dropping the oldest first", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    for (let i = 0; i < 3; i++) {
+      const day = new Date(NOW.getTime() - (3 - i) * 86_400_000);
+      const emb = [0, 0, 0];
+      emb[i] = 1;
+      await s.addOrMerge(
+        mkCandidate({ id: `E${i}`, embedding: emb, created_at: day.toISOString() }),
+      );
+    }
+    const res = await s.prune(NOW, { ttlDays: 60, maxEntries: 2 });
+    expect(res.capped).toBe(1);
+    const back = await s.listAll();
+    expect(back.map((e) => e.id)).toEqual(["E1", "E2"]); // E0 dropped (oldest); E1+E2 in oldest→newest order
+  });
+
+  it("TTL boundary: an entry exactly at ttlDays is KEPT; 1ms older is expired", async () => {
+    const r = repo();
+    const s = new CandidateStore(r);
+    const ttlMs = 60 * 86_400_000;
+    await s.addOrMerge(
+      mkCandidate({ id: "edge", created_at: new Date(NOW.getTime() - ttlMs).toISOString() }),
+    );
+    await s.addOrMerge(
+      mkCandidate({
+        id: "older",
+        embedding: [0, 1, 0],
+        created_at: new Date(NOW.getTime() - ttlMs - 1).toISOString(),
+      }),
+    );
+    const res = await s.prune(NOW, { ttlDays: 60, maxEntries: 5000 });
+    expect(res.expired).toBe(1);
+    const back = await s.listAll();
+    expect(back.map((e) => e.id)).toEqual(["edge"]);
+  });
+});
