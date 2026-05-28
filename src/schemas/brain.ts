@@ -88,6 +88,22 @@ export const BrainEntrySchema = z.object({
 });
 export type BrainEntry = z.infer<typeof BrainEntrySchema>;
 
+export const BrainCandidateSchema = z.object({
+  id: z.string(),
+  title: z.string().max(80),
+  body: z.string().max(500),
+  scope: z.string(),
+  type: BrainEntryType,
+  embedding: z.array(z.number()).min(1),
+  embedding_model: z.string().min(1),
+  provider: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  source_run_id: z.string(),
+  created_at: z.string(),
+  evidence_kinds: z.array(EvidenceKind).default([]),
+});
+export type BrainCandidate = z.infer<typeof BrainCandidateSchema>;
+
 export const CuratorDecisionSchema = z
   .object({
     schema: z.literal("reviewgate.curator.v1"),
