@@ -17,17 +17,44 @@ function ensureDir(p: string): void {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
+// Visual cue for cross-reviewer consensus, next to the severity marker, so an
+// agent skims "is this lone or corroborated?" without reading the metadata line:
+// ⚪ singleton/minority (weak signal — scrutinize), 🟡 majority (solid),
+// 🟢 unanimous (all reviewers agree — highest confidence).
+function consensusEmoji(c: Finding["consensus"]): string {
+  if (c === "unanimous") return "🟢";
+  if (c === "majority") return "🟡";
+  return "⚪"; // singleton or minority
+}
+
+// System-side demote/suppression badges. Builds a blockquote line ONLY when at
+// least one flag applies — so clean findings render no extra noise. Lets the
+// agent see at a glance "the system already flagged this as lower-confidence"
+// rather than having to read the JSON to discover it.
+function demoteBadges(f: Finding): string | null {
+  const badges: string[] = [];
+  if (f.scope_demoted) badges.push("📍 outside changed lines");
+  if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
+  if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
+  if (f.low_confidence) badges.push("🎯 below confidence floor");
+  if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
+  return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
+}
+
 function fmtFinding(f: Finding): string {
   const sym = f.severity === "CRITICAL" ? "●" : f.severity === "WARN" ? "▲" : "·";
+  const consEmoji = consensusEmoji(f.consensus);
   const confirmed =
     f.confirmed_by && f.confirmed_by.length > 1
       ? ` (confirmed by ${f.confirmed_by.join(", ")})`
       : "";
   // Show a range (line_start-line_end) for multi-line findings, plain line otherwise.
   const loc = f.line_end > f.line_start ? `${f.line_start}-${f.line_end}` : `${f.line_start}`;
+  const badges = demoteBadges(f);
   return [
-    `### ${f.id}  ${sym} ${f.severity}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
+    `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${confirmed}`,
+    ...(badges ? [badges] : []),
     "",
     f.message,
     "",

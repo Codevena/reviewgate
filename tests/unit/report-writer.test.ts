@@ -93,4 +93,90 @@ describe("ReportWriter", () => {
     expect(md).toContain("r1");
     expect(md).toContain("F-001");
   });
+
+  // --- Visual cues: consensus emoji + demote badges ---
+  describe("finding visual cues", () => {
+    const f0 = baseReport.findings[0];
+    if (!f0) throw new Error("fixture missing finding");
+    const renderFinding = async (overrides: Partial<typeof f0>) => {
+      const dir = mkdtempSync(join(tmpdir(), "rg-rep-cue-"));
+      await new ReportWriter(dir).write({ ...baseReport, findings: [{ ...f0, ...overrides }] });
+      return readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    };
+
+    it("singleton consensus → ⚪ in the header", async () => {
+      const md = await renderFinding({ consensus: "singleton" });
+      expect(md).toContain("⚪");
+      expect(md).not.toContain("🟡");
+      expect(md).not.toContain("🟢");
+    });
+
+    it("minority consensus → ⚪ (same weak-signal bucket as singleton)", async () => {
+      const md = await renderFinding({ consensus: "minority" });
+      expect(md).toContain("⚪");
+    });
+
+    it("majority consensus → 🟡 (solid)", async () => {
+      const md = await renderFinding({ consensus: "majority" });
+      expect(md).toContain("🟡");
+      expect(md).not.toContain("⚪");
+    });
+
+    it("unanimous consensus → 🟢 (highest confidence)", async () => {
+      const md = await renderFinding({ consensus: "unanimous" });
+      expect(md).toContain("🟢");
+    });
+
+    it("clean finding (no demote flags) renders NO badge line", async () => {
+      const md = await renderFinding({});
+      expect(md).not.toContain("📍");
+      expect(md).not.toContain("🧠");
+      expect(md).not.toContain("📒");
+      expect(md).not.toContain("🎯");
+      expect(md).not.toContain("📉");
+    });
+
+    it("scope_demoted → 📍 badge", async () => {
+      const md = await renderFinding({ scope_demoted: true });
+      expect(md).toContain("📍 outside changed lines");
+    });
+
+    it("critic_verdict=likely_fp → 🧠 badge", async () => {
+      const md = await renderFinding({ critic_verdict: "likely_fp" });
+      expect(md).toContain("🧠 critic flagged as likely FP");
+    });
+
+    it("fp_ledger_match.suppressed → 📒 badge", async () => {
+      const md = await renderFinding({
+        fp_ledger_match: { pattern_id: "FP-001", matched_count: 1, suppressed: true },
+      });
+      expect(md).toContain("📒 matches known-FP pattern");
+    });
+
+    it("low_confidence → 🎯 badge", async () => {
+      const md = await renderFinding({ low_confidence: true });
+      expect(md).toContain("🎯 below confidence floor");
+    });
+
+    it("reputation_demoted → 📉 badge", async () => {
+      const md = await renderFinding({ reputation_demoted: true });
+      expect(md).toContain("📉 reviewer reputation low");
+    });
+
+    it("multiple flags render multiple badges on one blockquote line", async () => {
+      const md = await renderFinding({
+        scope_demoted: true,
+        critic_verdict: "likely_fp",
+        low_confidence: true,
+      });
+      expect(md).toContain("📍");
+      expect(md).toContain("🧠");
+      expect(md).toContain("🎯");
+      // All three on one line joined by " · "
+      const badgeLine = md.split("\n").find((l) => l.startsWith("> 📍"));
+      expect(badgeLine).toBeDefined();
+      expect(badgeLine).toContain("🧠");
+      expect(badgeLine).toContain("🎯");
+    });
+  });
 });
