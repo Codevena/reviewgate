@@ -50,6 +50,7 @@ import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
+import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -340,6 +341,12 @@ export class Orchestrator {
     // under a block/ask-once policy). Read post-learn/decay so a freshly promoted
     // entry forces a re-review. Reused below for few-shot + the aggregate stage so
     // the ledger is read exactly once.
+    //
+    // F3 Phase 2: we ALSO need the FULL ledger (including candidate-stage
+    // entries) to compute clusters. Read it here in the same place as
+    // activeSnapshot so both views see the same on-disk state — one read,
+    // two derived projections.
+    const fpFullSnapshot = fpStore ? await fpStore.snapshot() : undefined;
     const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot() : undefined;
 
     // M6: Context7 library docs. Fetched PRE-CACHE — before the behavior-hash —
@@ -974,6 +981,30 @@ export class Orchestrator {
       ? new Map([...fpActiveSnapshot].map(([sig, e]) => [sig, { id: e.id }]))
       : undefined;
 
+    // F3 Phase 2 — derived FP-cluster demote map. Compute (rule_id_token0 ×
+    // file) clusters from the full ledger snapshot (read once above), keep
+    // only those at active/sticky stage, and key by the cluster's `key` for
+    // the aggregator to match against incoming findings. The cluster path
+    // complements the per-signature `fpActive` path: it catches multi-rule_id
+    // hallucination bursts (e.g. prisma-{attribute-corruption, corrupted-
+    // attribute, invalid-attribute}) that per-signature granularity misses.
+    // Best-effort: a failure must NOT block the verdict — fall back to undefined.
+    let fpActiveClusters: Map<string, { key: string; member_ids: string[] }> | undefined;
+    if (fpFullSnapshot) {
+      try {
+        const clusters = computeFpClusters(fpFullSnapshot.entries, new Date().toISOString());
+        const map = new Map<string, { key: string; member_ids: string[] }>();
+        for (const c of clusters) {
+          if (c.stage === "active" || c.stage === "sticky") {
+            map.set(c.key, { key: c.key, member_ids: c.member_ids });
+          }
+        }
+        if (map.size > 0) fpActiveClusters = map;
+      } catch {
+        /* best-effort */
+      }
+    }
+
     // Reviewer reputation: read the per-repo store and pass the set of currently-unreliable
     // `provider:persona` reviewer keys so the aggregator can demote their lone, non-security
     // findings. Best-effort: never let a reputation read break a review.
@@ -999,6 +1030,7 @@ export class Orchestrator {
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
+      ...(fpActiveClusters ? { fpActiveClusters } : {}),
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
     });
 

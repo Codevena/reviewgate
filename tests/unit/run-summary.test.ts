@@ -93,22 +93,32 @@ describe("buildRunSummary", () => {
     expect(codex?.personas.sort()).toEqual(["architecture", "security"]);
   });
 
-  it("counts demoted from scope_demoted OR fp_ledger_match OR critic likely_fp; caps signatures at 20", () => {
+  it("counts demoted from scope_demoted OR fp_ledger_match OR fp_cluster_match OR critic likely_fp; caps signatures at 20", () => {
     const findings = [
       finding({ signature: "a", fp_ledger_match: { suppressed: true } as never }),
       finding({ signature: "b", critic_verdict: "likely_fp", severity: "INFO" }),
+      // F3 Phase 2: cluster-matched findings must also count toward `demoted`
+      // so the audit summary correctly reflects suppression activity.
+      finding({
+        signature: "c",
+        fp_cluster_match: {
+          cluster_key: "prisma@prisma/schema.prisma",
+          member_ids: ["FP-001", "FP-002"],
+          suppressed: true,
+        } as never,
+      }),
       ...Array.from({ length: 25 }, (_, i) => finding({ signature: `w${i}`, severity: "WARN" })),
     ];
     const s = buildRunSummary({
       verdict: "FAIL",
       source: "panel",
-      counts: { critical: 0, warn: 25, info: 2 },
+      counts: { critical: 0, warn: 25, info: 3 },
       durationMs: 1,
       criticCostUsd: 0,
       findings,
       runs: [run("codex", "security", "ok", 0, 1)],
     });
-    expect(s.demoted).toBe(2);
+    expect(s.demoted).toBe(3);
     expect(s.signatures.length).toBe(20);
   });
 

@@ -87,4 +87,36 @@ describe("renderMd advisory section", () => {
     expect(md).toContain("## Advisory"); // section header still rendered
     expect(md).not.toContain("train Reviewgate on advisory hallucinations");
   });
+
+  it("F3 Phase 2: a fp_cluster_match-tagged WARN routes into Advisory and shows the cluster badge", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-rwadv-"));
+    const r = report();
+    const [crit, adv] = r.findings;
+    if (!crit || !adv) throw new Error("fixture changed");
+    // Replace F-002 advisory with a WARN that carries fp_cluster_match.suppressed
+    // → must route to Advisory and render the new 📚 badge with the cluster key.
+    r.findings = [
+      crit,
+      {
+        ...adv,
+        id: "F-002",
+        severity: "WARN" as const,
+        scope_demoted: undefined,
+        fp_cluster_match: {
+          cluster_key: "prisma@prisma/schema.prisma",
+          member_ids: ["FP-001", "FP-002", "FP-004"],
+          suppressed: true,
+        },
+      },
+    ];
+    r.counts = { critical: 1, warn: 0, info: 1 };
+    await new ReportWriter(dir).write(r);
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    // F-002 is in Advisory, not WARN.
+    expect(md).toContain("F-002");
+    expect(md).toContain("Advisory");
+    expect(md).toContain("📚 active FP cluster prisma@prisma/schema.prisma");
+    // CRITICAL section still holds F-001 — cluster routing doesn't affect blockers.
+    expect(md).toContain("F-001");
+  });
 });

@@ -26,6 +26,7 @@ function isDemoted(f: Finding): boolean {
   return (
     f.scope_demoted === true ||
     f.fp_ledger_match?.suppressed === true ||
+    f.fp_cluster_match?.suppressed === true ||
     f.critic_verdict === "likely_fp"
   );
 }

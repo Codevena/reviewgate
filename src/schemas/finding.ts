@@ -77,6 +77,20 @@ export const FindingSchema = z.object({
       suppressed: z.boolean(),
     })
     .optional(),
+  // F3 Phase 2 — match against a DERIVED FP cluster (computeFpClusters) that
+  // reached active/sticky stage. Different from fp_ledger_match: that tag fires
+  // when a finding's exact signature matches a single ledger entry; this fires
+  // when the finding's (rule_id_token0 × file) groups it with ≥3 rejects from
+  // ≥2 distinct providers across MULTIPLE ledger entries — catching multi-
+  // rule_id hallucination bursts (e.g. prisma-{attribute-corruption, corrupted-
+  // attribute, invalid-attribute}) that per-signature granularity misses.
+  fp_cluster_match: z
+    .object({
+      cluster_key: z.string(), // "<rule_id_token0>@<file>"
+      member_ids: z.array(z.string()), // FP-ledger entry ids in the cluster
+      suppressed: z.boolean(),
+    })
+    .optional(),
   contradicts_memory: z
     .object({
       brain_entry_id: z.string(),

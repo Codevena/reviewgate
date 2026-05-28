@@ -5,6 +5,7 @@ import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts"
 import type { Verdict } from "../schemas/pending-report.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
 import type { CriticVerdict } from "./critic.ts";
+import { ruleIdToken0 } from "./fp-ledger/clusters.ts";
 
 export interface AggregateInput {
   findings: Finding[];
@@ -22,6 +23,13 @@ export interface AggregateInput {
   // M5 Part B1: active/sticky FP-ledger entries keyed by signature. A finding
   // whose representative or any member signature matches is demoted to INFO.
   fpActive?: Map<string, { id: string }>;
+  // F3 Phase 2: active/sticky FP CLUSTERS keyed by `<rule_id_token0>@<file>`. A
+  // finding whose (rule_id_token0, file) matches an active cluster is demoted
+  // to INFO and tagged with `fp_cluster_match`. Catches multi-rule_id
+  // hallucination bursts that per-signature granularity misses. Demote-only
+  // (like fpActive) — never dropped, so a real cluster-domain bug stays
+  // visible in the advisory section.
+  fpActiveClusters?: Map<string, { key: string; member_ids: string[] }>;
   // Phase 4 #7: reviewer-confidence floor (0..1). When > 0, an UNCORROBORATED
   // finding whose confidence is below the floor is demoted to INFO (advisory) —
   // so a reviewer's own low-confidence call no longer blocks as hard as a
@@ -297,6 +305,30 @@ export function aggregate(input: AggregateInput): AggregateResult {
       })
     : scoped;
 
+  // F3 Phase 2 — DERIVED FP-cluster demote. Applies AFTER the signature-keyed
+  // pass so a finding already tagged via fp_ledger_match keeps both tags
+  // (signature match + cluster match are both true). Same demote-not-drop
+  // semantic as fp_ledger_match. Idempotent because the same cluster map
+  // produces the same output: re-running on already-cluster-tagged input
+  // re-applies the identical tag + INFO severity. No explicit short-circuit.
+  const fpClusters = input.fpActiveClusters;
+  const fpClusterScoped: Finding[] = fpClusters
+    ? fpScoped.map((f) => {
+        const key = `${ruleIdToken0(f.rule_id)}@${f.file}`;
+        const hit = fpClusters.get(key);
+        if (!hit) return f;
+        const base = f.severity === "INFO" ? f : { ...f, severity: "INFO" as const };
+        return {
+          ...base,
+          fp_cluster_match: {
+            cluster_key: hit.key,
+            member_ids: hit.member_ids,
+            suppressed: true,
+          },
+        };
+      })
+    : fpScoped;
+
   // Phase 4 #7 — confidence demote: an uncorroborated finding below the floor is
   // advisory only. Exempt: corroborated findings (majority/unanimous — multiple
   // reviewers agreeing outweighs one's low self-rating) and CRITICAL clusters that
@@ -307,7 +339,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const floor = input.confidenceFloor ?? 0;
   const confScoped: Finding[] =
     floor > 0
-      ? fpScoped.map((f) => {
+      ? fpClusterScoped.map((f) => {
           // Cluster confidence = MAX over the representative and all merged members,
           // so a co-located high-confidence member is never masked by a
           // low-confidence representative. (memberOf records each member's
@@ -330,7 +362,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
             details: `${f.details.slice(0, 2000 - note.length)}${note}`,
           };
         })
-      : fpScoped;
+      : fpClusterScoped;
 
   // Reviewer-reputation demote (Slice B: provider:persona keys): an un-corroborated finding whose every
   // contributing reviewer key is currently unreliable is demoted one step. Mirrors the

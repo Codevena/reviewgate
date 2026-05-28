@@ -36,6 +36,8 @@ function demoteBadges(f: Finding): string | null {
   if (f.scope_demoted) badges.push("📍 outside changed lines");
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
+  if (f.fp_cluster_match?.suppressed)
+    badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
@@ -124,7 +126,10 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
   // FP-ledger suppressed. These need no decision (the decisions-gate ignores
   // them); render them in a separate section so the agent doesn't re-reject them.
   const isAdvisory = (f: Finding) =>
-    f.severity === "INFO" || f.scope_demoted === true || f.fp_ledger_match?.suppressed === true;
+    f.severity === "INFO" ||
+    f.scope_demoted === true ||
+    f.fp_ledger_match?.suppressed === true ||
+    f.fp_cluster_match?.suppressed === true;
   const blocking = r.findings.filter((f) => !isAdvisory(f));
   const advisory = r.findings.filter(isAdvisory);
 
