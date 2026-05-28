@@ -338,7 +338,7 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     });
     checks.push(reviewersEnabledCheck(cfg));
     // gemini → agy is OAuth-only; an apikey auth on the gemini provider is inert.
-    const gem = cfg.providers?.gemini;
+    const gem = cfg.providers.gemini;
     if (gem?.enabled && gem.auth === "apikey") {
       checks.push({
         name: "gemini auth",
