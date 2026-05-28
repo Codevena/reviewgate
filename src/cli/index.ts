@@ -14,6 +14,7 @@ import {
 } from "./commands/fp.ts";
 import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
+import { runLearnStatus } from "./commands/learn-status.ts";
 import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runSetup, setupTip } from "./commands/setup.ts";
@@ -255,6 +256,33 @@ const setup = defineCommand({
   },
 });
 
+const learn = defineCommand({
+  meta: {
+    name: "learn",
+    description: "Self-learning subsystem status (brain, FP-ledger, reputation, proposal pools)",
+  },
+  subCommands: {
+    status: defineCommand({
+      meta: {
+        name: "status",
+        description:
+          "Snapshot every self-learning subsystem: brain entries, cross-run candidates, F2 proposal pools, curator decisions, FP ledger + clusters, reviewer reputation. --since <ISO> defaults to 30d. --json for machine output.",
+      },
+      args: { since: { type: "string" }, json: { type: "boolean" } },
+      async run({ args }) {
+        const since = typeof args.since === "string" ? args.since : undefined;
+        process.exit(
+          await runLearnStatus({
+            repoRoot: process.cwd(),
+            ...(since !== undefined ? { since } : {}),
+            json: args.json === true,
+          }),
+        );
+      },
+    }),
+  },
+});
+
 const main = defineCommand({
   meta: { name: "reviewgate", version: RG_VERSION },
   subCommands: {
@@ -268,6 +296,7 @@ const main = defineCommand({
     stats,
     report,
     setup,
+    learn,
   },
 });
 
