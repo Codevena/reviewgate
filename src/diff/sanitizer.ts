@@ -104,6 +104,13 @@ export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
 
   // Layer 3 (M1 lite): we don't parse comments per-language. Future M3 work.
 
+  // Neutralise the fence delimiters if they appear in the untrusted body, so a
+  // diff cannot spoof the boundary and have following text read as trusted.
+  for (const fence of ["<<UNTRUSTED_DIFF>>", "<<END_UNTRUSTED>>"]) {
+    body = body.split(fence).join(escapeAngles(fence));
+    // count is best-effort; fold into flagged for parity with other layers
+  }
+
   // Layer 5: entropy redaction (numbered as in spec; layers 4 and 6 follow).
   const { out: redacted, count: entropyCount } = redactHighEntropy(body);
   flagged += entropyCount;
