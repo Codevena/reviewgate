@@ -160,8 +160,11 @@ export async function fetchLibraryDocs(
         continue;
       }
 
-      // 2) cache check — keyed by libraryId + the REQUESTED version (stable across runs).
-      const key = docsCacheKey(libraryId, lib.version);
+      // 2) cache check — keyed by libraryId + the REQUESTED version (stable across
+      //    runs) AND the byte budget. The stored docs are truncated to perLibBytes,
+      //    so a budget change must invalidate this artifact (raising perLibBytes
+      //    otherwise serves the old, shorter docs verbatim on a cache-hit until TTL).
+      const key = docsCacheKey(`${libraryId}#b${opts.perLibBytes}`, lib.version);
       const cached = await getCachedDocs(opts.repoRoot, key, opts.ttlDays);
       if (cached) {
         outcomes.push({ name: lib.name, outcome: "cache-hit", text: cached.docs });
@@ -208,7 +211,9 @@ export async function fetchLibraryDocs(
       const rendered = renderContext(ctx);
       const truncated = Buffer.byteLength(rendered, "utf8") > opts.perLibBytes;
       const text = truncated ? truncateToBytes(rendered, opts.perLibBytes) : rendered;
-      const responseHash = sha256(JSON.stringify(ctx));
+      // Hash the FULL ctx together with the byte budget so the review
+      // behavior-hash busts when perLibBytes changes the truncated body.
+      const responseHash = sha256(`b${opts.perLibBytes}:${JSON.stringify(ctx)}`);
 
       const entry: CachedDocs = {
         name: lib.name,

@@ -768,6 +768,87 @@ describe("runCurator", () => {
     // table for these known names.
     expect(pool[0]?.provider).toBe("codex");
   });
+
+  it("rate-limited single-provider group is STILL persisted as a cross-run candidate (F-030)", async () => {
+    // F-030: the MAX_PROMOTIONS rate-limit check used to `continue` BEFORE the
+    // cross-run candidate-persist block, so a single-provider group arriving as
+    // the 4th+ group in a run was dropped from the cross-run mechanism entirely
+    // — neither promoted nor stored for a future distinct-provider match. That
+    // made cross-run convergence order-dependent: lose the in-run promotion
+    // lottery and your single-provider observation vanishes forever.
+    //
+    // Setup: 4 DISTINCT (orthogonal-embedding) groups. The first 3 each carry a
+    // ≥2-provider quorum → they promote, exhausting MAX_PROMOTIONS=3. The 4th is
+    // a lone single-provider observation that hits the rate limit. It must land
+    // in the candidate pool so a later run from a different provider can rescue
+    // it.
+    const repo = mkdtempSync(join(tmpdir(), "rg-ratelimit-cand-"));
+    const candStore = new CandidateStore(repo);
+    const store = new BrainStore(repo);
+
+    // Orthogonal vectors keep each proposal in its own group (cosine 0 < 0.78).
+    const vecs: Record<string, number[]> = {
+      g1: [1, 0, 0, 0, 0],
+      g2: [0, 1, 0, 0, 0],
+      g3: [0, 0, 1, 0, 0],
+      g4: [0, 0, 0, 1, 0],
+    };
+    const embedder: Embedder = {
+      // title prefix selects the vector; body shares the prefix via p() defaults.
+      embed: async (texts) =>
+        texts.map((t) => {
+          for (const key of Object.keys(vecs)) if (t.startsWith(key)) return vecs[key] as number[];
+          return [0, 0, 0, 0, 1];
+        }),
+    };
+
+    const multiProvider = (g: string): MemoryProposal =>
+      p({
+        title: g,
+        body: g,
+        evidence: [
+          { kind: "reviewer-finding", run_id: "R-1", reviewer_id: "codex-security" },
+          { kind: "reviewer-finding", run_id: "R-1", reviewer_id: "gemini-architecture" },
+        ],
+      });
+
+    const res = await runCurator({
+      repoRoot: repo,
+      runId: "R-1",
+      nowIso: new Date().toISOString(),
+      proposals: [
+        multiProvider("g1"),
+        multiProvider("g2"),
+        multiProvider("g3"),
+        // g4: lone single-provider observation, arrives after the cap is hit.
+        p({
+          title: "g4",
+          body: "g4",
+          evidence: [
+            { kind: "reviewer-observation", snippet: "x", reviewer_id: "codex", run_id: "R-1" },
+          ],
+        }),
+      ],
+      embedder,
+      embedCfg: { model: "bge", apiKeyEnv: "X" },
+      store,
+      candidateStore: candStore,
+      crossRunCfg: { enabled: true, ttlDays: 60, maxEntries: 5000 },
+      judge: async () => ({ accept: true }),
+    });
+
+    expect(res.promoted).toBe(3); // first 3 groups promoted
+    expect(res.queued).toBe(1); // g4 hit the rate limit
+
+    // The headline assertion: the rate-limited single-provider group was NOT
+    // silently dropped from the cross-run mechanism — it's in the pool.
+    const pool = await candStore.listAll();
+    expect(pool).toHaveLength(1);
+    expect(pool[0]?.title).toBe("g4");
+    expect(pool[0]?.provider).toBe("codex");
+    expect(pool[0]?.embedding_model).toBe("bge");
+    expect(pool[0]?.source_run_id).toBe("R-1");
+  });
 });
 
 describe("normalizeProposal", () => {

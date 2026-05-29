@@ -74,7 +74,9 @@ export interface InitInput {
 }
 
 export async function runInit(input: InitInput): Promise<void> {
-  if (input.mode !== "agent-loop") throw new Error("M1 only supports --mode=agent-loop");
+  if (input.mode !== "agent-loop") {
+    throw new Error(`invalid --mode "${input.mode}": the only supported value is "agent-loop"`);
+  }
 
   // 1. Create .reviewgate/bin/ and copy templates
   const binDir = join(input.repoRoot, ".reviewgate", "bin");

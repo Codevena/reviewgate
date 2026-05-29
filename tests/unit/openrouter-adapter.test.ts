@@ -103,6 +103,35 @@ describe("OpenRouterAdapter (mocked fetch)", () => {
     expect(res.usage.outputTokens).toBe(25);
   });
 
+  it("computes usage.costUsd from cfg.costPerMTokensUsd via the typed ProviderConfig field (F-070)", async () => {
+    // Guards against the dead inline-cast on input.cfg.costPerMTokensUsd: the
+    // field is read directly off the typed ProviderConfig, so a rename in the
+    // schema breaks compilation rather than silently zeroing cost (cost-cap
+    // escalation would never fire). 150 + 25 = 175 tokens @ 2 USD/Mtok.
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-cost-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const adapter = new OpenRouterAdapter({ fetchImpl: fakeFetch() });
+    const res = await adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "x/y",
+        timeoutMs: 60_000,
+        costPerMTokensUsd: 2,
+      },
+      reviewerId: "openrouter-security",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("ok");
+    expect(res.usage.costUsd).toBeCloseTo((175 / 1_000_000) * 2, 9);
+  });
+
   it("returns ERROR when the API key env is missing", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-or2-"));
     writeFileSync(join(dir, "prompt.txt"), "x");

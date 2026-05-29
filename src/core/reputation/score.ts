@@ -10,11 +10,15 @@ export function decayedCount(events: RepEvent[], now: Date, halfLifeDays: number
   let sum = 0;
   for (const e of events) {
     const ageMs = now.getTime() - Date.parse(e.ts);
-    if (!Number.isFinite(ageMs) || ageMs < 0) {
-      sum += 1; // future/unparseable ts → treat as fresh (no negative decay)
+    if (!Number.isFinite(ageMs)) {
+      // Unparseable/corrupt ts is no evidence — contribute zero so a bad
+      // entry can never pin a reviewer below the trust floor forever.
       continue;
     }
-    sum += 0.5 ** (ageMs / halfLifeMs);
+    // Decay by the MAGNITUDE of the age. A future (clock-skewed) ts gets a
+    // negative ageMs; using |ageMs| makes it decay by how far off it is and
+    // fade as real time advances, instead of being held at weight 1 forever.
+    sum += 0.5 ** (Math.abs(ageMs) / halfLifeMs);
   }
   return sum;
 }

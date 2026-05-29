@@ -116,4 +116,45 @@ describe("computeSignature", () => {
     expect(sig("command-injection")).not.toBe(sig("path-traversal"));
     expect(sig("sql-injection")).not.toBe(sig("xss"));
   });
+
+  // F-034: lineEnd is NOT a signature ingredient — only the bucketed lineStart is.
+  // The required-yet-ignored field misled readers into assuming the multi-line
+  // range END disambiguates findings; it does not. These tests pin that contract.
+  it("ignores lineEnd: same lineStart bucket + different range END collapse", () => {
+    // The exact scenario from the finding: F1=[10,12] vs F2=[10,40] in the same
+    // 10-line bucket with identical rule/category MUST yield identical signatures.
+    const narrow = computeSignature({
+      file: "a.ts",
+      ruleId: "r",
+      category: "security",
+      lineStart: 10,
+      lineEnd: 12,
+    });
+    const wide = computeSignature({
+      file: "a.ts",
+      ruleId: "r",
+      category: "security",
+      lineStart: 10,
+      lineEnd: 40,
+    });
+    expect(narrow).toBe(wide);
+  });
+
+  it("treats lineEnd as optional and produces the same signature as when supplied", () => {
+    const withEnd = computeSignature({
+      file: "a.ts",
+      ruleId: "r",
+      category: "security",
+      lineStart: 10,
+      lineEnd: 12,
+    });
+    const withoutEnd = computeSignature({
+      file: "a.ts",
+      ruleId: "r",
+      category: "security",
+      lineStart: 10,
+    });
+    expect(withoutEnd).toMatch(/^[0-9a-f]{64}$/);
+    expect(withoutEnd).toBe(withEnd);
+  });
 });

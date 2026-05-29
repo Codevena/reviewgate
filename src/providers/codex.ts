@@ -14,15 +14,13 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
-import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
 import { extractQuotaMessage, isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
   parseReviewOutput,
 } from "./review-output.ts";
-
-const COMPLETE_TIMEOUT_MS = 20_000;
 
 const RETRY_DIRECTIVE =
   "\n\nIMPORTANT: Output ONLY the single JSON object of the required schema now. Do not call any tools or explain.";
@@ -141,10 +139,17 @@ export class CodexAdapter implements ProviderAdapter {
         baseStatus === "error" && isQuotaExhausted(quotaText) ? "quota-exhausted" : baseStatus;
 
       if (status !== "ok") {
+        // A deadline-abort (spawnSafely SIGKILL via opts.signal) surfaces as a
+        // bare exit!=0 "error" with usually-empty stderr — indistinguishable from
+        // a real crash. Tag it explicitly so the deliberate cut is legible in
+        // logs and in the orchestrator's "[fallback from <p>: <status>]" prefix
+        // rather than reading as a muddy generic failure (F-045).
         const detail =
           status === "quota-exhausted"
             ? (extractQuotaMessage(quotaText) ?? stderrText)
-            : stderrText;
+            : res.killedByAbort
+              ? `deadline-aborted${stderrText ? `: ${stderrText}` : ""}`
+              : stderrText;
         return {
           result: {
             reviewerId: input.reviewerId,

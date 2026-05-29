@@ -14,12 +14,11 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
-import { failureReason, readFileSafe } from "./complete-helpers.ts";
+import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
-const COMPLETE_TIMEOUT_MS = 20_000;
 
 export interface ClaudeAdapterOptions {
   binPath?: string;

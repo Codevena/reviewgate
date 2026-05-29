@@ -9,7 +9,10 @@
  * the item to a schema-valid `kind:'web-fetch'` record (adds `body_sha256` +
  * `fetched_at`), persists the body as a content-addressed snapshot under
  * `brainSnapshotsDir`, and appends an egress log entry. On failure the citation
- * is DROPPED (fail-closed).
+ * is KEPT unchanged as plain reviewer evidence (the egress attempt is still
+ * logged) — it is deliberately NOT dropped, so a proposal whose only evidence
+ * was a citation does not get emptied and rejected at the curator's
+ * evidence.min(1) gate before reaching the reviewer-quorum rule.
  *
  * The fetcher opts (allow, fetchImpl, resolve, …) are injected and passed
  * straight through to `safeFetch`, so unit tests can drive both the happy path
@@ -35,8 +38,10 @@ export type { EgressLog, SafeFetchOpts } from "./fetcher.ts";
  * `fetched_at`, and the body is persisted as a content-addressed snapshot at
  * `brainSnapshotsDir(repoRoot)/<sha256>`.
  *
- * On failure the citation is dropped. The egress log (one entry per citation
- * attempt) is returned for the curator to append to the audit trail.
+ * On failure the citation is kept unchanged (not dropped) so it still counts as
+ * plain reviewer evidence rather than emptying the proposal. The egress log (one
+ * entry per citation attempt) is returned for the curator to append to the audit
+ * trail.
  */
 export async function enrichProposal(
   repoRoot: string,

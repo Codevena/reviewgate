@@ -52,6 +52,24 @@ describe("runInit", () => {
     expect(s.hooks.PostToolUse.length).toBe(1);
   });
 
+  it("rejects an invalid --mode with a clean, user-facing message (no internal 'M1' jargon)", async () => {
+    const repo = tmp();
+    let err: Error | undefined;
+    try {
+      // Cast: simulating a bad value that the CLI flag could pass through.
+      await runInit({ repoRoot: repo, mode: "foo" as "agent-loop" });
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).toBeInstanceOf(Error);
+    const msg = err?.message ?? "";
+    // Must not leak the internal milestone codename.
+    expect(msg).not.toContain("M1");
+    // Must name the offending value and the only valid one.
+    expect(msg).toContain("foo");
+    expect(msg).toContain("agent-loop");
+  });
+
   it("scaffolds a reviewgate.config.ts that validates with fpLedger + brain + codex curator on", async () => {
     const repo = tmp();
     await runInit({ repoRoot: repo, mode: "agent-loop" });

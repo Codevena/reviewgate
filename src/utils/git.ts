@@ -47,6 +47,23 @@ export const DIFF_INCOMPLETE_MARKER =
 // `sub/.antigravitycli`. Reviewing these (a) loops the gate on its own scaffold
 // and (b) emits false "committed credential" positives on the artifact dir.
 const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/i;
+
+// The git-pathspec form of the same exclusion set isExcludedFromReview() applies
+// to path strings. Defined ONCE here so collectDiff and collectChangedFileContents
+// can't drift apart: adding a new reviewgate-managed / agy-artifact dir means
+// editing this list AND isExcludedFromReview, not three hand-written copies. A miss
+// would leak reviewgate-managed files into the reviewed diff (see the loop/FP
+// warning above). Exported so tests can pin the shared-source invariant.
+export const EXCLUDE_PATHSPEC = [
+  ":(exclude)reviewgate.config.ts",
+  ":(exclude).reviewgate",
+  ":(exclude).reviewgate/**",
+  ":(exclude).antigravitycli",
+  ":(exclude).antigravitycli/**",
+  ":(exclude)**/.antigravitycli",
+  ":(exclude)**/.antigravitycli/**",
+] as const;
+
 function isExcludedFromReview(path: string): boolean {
   return (
     path === "reviewgate.config.ts" ||
@@ -82,20 +99,7 @@ export async function collectDiff(
   untrackedBudgetMs: number = COLLECT_DIFF_UNTRACKED_BUDGET_MS,
 ): Promise<string> {
   const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
-  const diffArgs = (ref: string) => [
-    "diff",
-    "--no-color",
-    ref,
-    "--",
-    ".",
-    ":(exclude)reviewgate.config.ts",
-    ":(exclude).reviewgate",
-    ":(exclude).reviewgate/**",
-    ":(exclude).antigravitycli",
-    ":(exclude).antigravitycli/**",
-    ":(exclude)**/.antigravitycli",
-    ":(exclude)**/.antigravitycli/**",
-  ];
+  const diffArgs = (ref: string) => ["diff", "--no-color", ref, "--", ".", ...EXCLUDE_PATHSPEC];
   let tracked = await git(repoRoot, diffArgs(base));
   // Track partial output: a timed-out OR truncated (>maxBytes) diff must not be
   // fed to reviewers as if it were the WHOLE change — a clean verdict on a
@@ -168,20 +172,7 @@ export async function collectChangedFileContents(
   // Match collectDiff's base so committed-mid-batch files also get full-file
   // context (for undefined-symbol FP suppression), not just working-tree changes.
   const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
-  const nameArgs = (ref: string) => [
-    "diff",
-    "--name-only",
-    ref,
-    "--",
-    ".",
-    ":(exclude)reviewgate.config.ts",
-    ":(exclude).reviewgate",
-    ":(exclude).reviewgate/**",
-    ":(exclude).antigravitycli",
-    ":(exclude).antigravitycli/**",
-    ":(exclude)**/.antigravitycli",
-    ":(exclude)**/.antigravitycli/**",
-  ];
+  const nameArgs = (ref: string) => ["diff", "--name-only", ref, "--", ".", ...EXCLUDE_PATHSPEC];
   const names = new Set<string>();
   let tracked = await git(repoRoot, nameArgs(base), GIT_TIMEOUT_MS, signal);
   if (tracked.status !== 0 && base !== "HEAD")

@@ -47,6 +47,19 @@ function stopHookActiveFlag(parsed: unknown): boolean {
   return Boolean(obj?.stop_hook_active);
 }
 
+// True only when collectDiff actually APPENDED its incompleteness trailer —
+// not when the literal marker string merely appears somewhere in the diff body.
+// collectDiff (git.ts) only ever emits the marker as the final trailing line
+// (`${out}\n\n${DIFF_INCOMPLETE_MARKER}\n`), so a genuine "diff incomplete"
+// signal is the marker at the END of the diff. A `diff.includes(...)` check
+// would mis-fire whenever an edited file's content carries the literal text —
+// most acutely when src/utils/git.ts (which DEFINES the constant) is itself in
+// the reviewed diff, which this repo's own dogfooding hits routinely. The
+// signal must be out-of-band-ish: positional, not substring-anywhere.
+export function diffMarkedIncomplete(diff: string): boolean {
+  return diff.trimEnd().endsWith(DIFF_INCOMPLETE_MARKER);
+}
+
 export async function runGate(input: GateInput): Promise<GateOutput> {
   const cfg = await loadEffectiveConfig({
     cwd: input.repoRoot,
@@ -162,7 +175,7 @@ async function runStopGate(
     reviewBaseSha: reviewBase,
     // Partial-diff guard: surfaced to reviewers as trusted context (not buried in
     // the untrusted fence) so a truncated/timed-out diff isn't trusted as complete.
-    diffIncomplete: diff.includes(DIFF_INCOMPLETE_MARKER),
+    diffIncomplete: diffMarkedIncomplete(diff),
   });
 
   const driver = new LoopDriver({

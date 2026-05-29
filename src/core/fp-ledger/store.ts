@@ -37,6 +37,12 @@ function maxEntryId(entries: FpLedgerEntry[]): number {
   return max;
 }
 
+const STAGE_RANK: Record<FpLedgerEntry["stage"], number> = {
+  candidate: 0,
+  active: 1,
+  sticky: 2,
+};
+
 function recompute(e: FpLedgerEntry, nowMs: number): FpLedgerEntry {
   if (e.pinned_by) return { ...e, stage: "sticky" };
   const within = (days: number) =>
@@ -131,8 +137,23 @@ export class FpLedgerStore {
       }
       e.rejects.push({ ...reject, ts: nowIso });
       e.last_seen_at = nowIso;
+      const prevStage = e.stage;
       const updated = recompute(e, nowMs);
+      // recompute() is PROMOTE-ONLY here: a fresh reject may only raise the
+      // stage, never lower it. recompute recalculates from the in-window
+      // rejects alone, so once the original qualifying rejects age out of the
+      // 60d/90d windows it would otherwise reset an earned `active`/`sticky`
+      // back to `candidate` the instant a new lone reject arrives (F-020) —
+      // a second, much faster demotion path that contradicts the documented
+      // lifecycle. Demotion is owned SOLELY by decayPass's 180d-since-last_seen
+      // rule (and the read-time re-eval in activeSnapshot/decayPass), so an
+      // operator inspecting between events never sees a stage flip as a side
+      // effect of an incoming reject. pinned_by is honoured by recompute, so
+      // a pinned entry still resolves to sticky.
       Object.assign(e, updated);
+      if (!e.pinned_by && STAGE_RANK[updated.stage] < STAGE_RANK[prevStage]) {
+        e.stage = prevStage;
+      }
       return { next: idx, result: undefined };
     });
   }

@@ -64,4 +64,23 @@ describe("enrichProposal", () => {
     expect(enriched.evidence).toHaveLength(1); // kept, not dropped to empty
     expect(enriched.evidence[0]?.kind).toBe("reviewer-observation");
   });
+
+  it("logs the failed egress attempt yet preserves the citation unchanged (NOT fail-closed/dropped)", async () => {
+    // Guards the module/function docstring contract: a failed fetch must NOT drop
+    // the citation. The egress attempt is still logged for the audit trail, and the
+    // original evidence item is returned byte-for-byte (same kind, same source_url).
+    const repo = mkdtempSync(join(tmpdir(), "rg-enr3-"));
+    const p = proposal();
+    const original = p.evidence[0];
+    if (original) original.source_url = "https://evil.com/x";
+    const { enriched, egress } = await enrichProposal(repo, p, {
+      allow: ["docs.example.com"],
+      fetchImpl: okFetch,
+      resolve: async () => ["1.2.3.4"],
+    });
+    expect(egress).toHaveLength(1); // attempt logged
+    expect(egress[0]?.decision).toBe("deny"); // and it was a denial
+    expect(enriched.evidence).toHaveLength(1); // citation survived (not dropped)
+    expect(enriched.evidence[0]).toEqual(original); // returned unchanged
+  });
 });

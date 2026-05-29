@@ -76,7 +76,11 @@ const audit = defineCommand({
         description: "Verify the audit log's hash chain is intact (tamper check)",
       },
       args: {
-        file: { type: "string", description: "Audit .jsonl file to verify (default: latest)" },
+        file: {
+          type: "string",
+          required: true,
+          description: "Audit .jsonl file to verify",
+        },
       },
       async run({ args }) {
         const exitCode = await runAuditVerify({ file: args.file as string });
@@ -123,12 +127,10 @@ const brain = defineCommand({
     }),
     show: defineCommand({
       meta: { name: "show", description: "Show a single brain entry by id" },
-      args: { id: { type: "string", description: "Brain entry id (from `brain list`)" } },
+      args: {
+        id: { type: "string", required: true, description: "Brain entry id (from `brain list`)" },
+      },
       async run({ args }) {
-        if (!args.id) {
-          process.stderr.write("brain show: --id <entry-id> is required\n");
-          process.exit(2);
-        }
         const exitCode = await runBrainShow({ repoRoot: process.cwd(), id: args.id as string });
         process.exit(exitCode);
       },
@@ -138,12 +140,10 @@ const brain = defineCommand({
         name: "revoke",
         description: "Revoke (archive) a brain entry so it stops being recalled",
       },
-      args: { id: { type: "string", description: "Brain entry id (from `brain list`)" } },
+      args: {
+        id: { type: "string", required: true, description: "Brain entry id (from `brain list`)" },
+      },
       async run({ args }) {
-        if (!args.id) {
-          process.stderr.write("brain revoke: --id <entry-id> is required\n");
-          process.exit(2);
-        }
         const exitCode = await runBrainRevoke({ repoRoot: process.cwd(), id: args.id as string });
         process.exit(exitCode);
       },
@@ -171,12 +171,10 @@ const fp = defineCommand({
     }),
     show: defineCommand({
       meta: { name: "show", description: "Show a single FP-ledger entry by id" },
-      args: { id: { type: "string", description: "FP id, e.g. FP-001 (from `fp list`)" } },
+      args: {
+        id: { type: "string", required: true, description: "FP id, e.g. FP-001 (from `fp list`)" },
+      },
       async run({ args }) {
-        if (!args.id) {
-          process.stderr.write("fp show: --id <id> is required\n");
-          process.exit(2);
-        }
         process.exit(await runFpShow({ repoRoot: process.cwd(), id: args.id as string }));
       },
     }),
@@ -203,12 +201,10 @@ const fp = defineCommand({
     }),
     unpin: defineCommand({
       meta: { name: "unpin", description: "Remove a pin so the entry reverts to its earned stage" },
-      args: { id: { type: "string", description: "FP id to unpin, e.g. FP-001" } },
+      args: {
+        id: { type: "string", required: true, description: "FP id to unpin, e.g. FP-001" },
+      },
       async run({ args }) {
-        if (!args.id) {
-          process.stderr.write("fp unpin: --id <id> is required\n");
-          process.exit(2);
-        }
         process.exit(await runFpUnpin({ repoRoot: process.cwd(), id: args.id as string }));
       },
     }),
