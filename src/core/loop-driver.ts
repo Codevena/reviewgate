@@ -321,25 +321,38 @@ export class LoopDriver {
     }
 
     // Escalation precondition: iteration cap reached. But a CONVERGING loop —
-    // where each round's finding count is strictly DECREASING (healthy spec/code
-    // refinement, e.g. 5 → 3 → 1 → 0) — is genuinely making progress, not stuck, so
-    // it is allowed to continue past maxIterations up to a hard backstop (2× the
-    // cap). Only a NON-progressing loop (findings flat or rising) escalates at the
-    // cap — which is what "without convergence" actually means. The hard backstop +
-    // cost-cap + stuck-signature detection remain as upper bounds so this can never
-    // run away. (Finding counts come from signature_history, one entry per iteration.)
+    // where each round's REAL finding count (total − confirmed reviewer FPs) is
+    // strictly DECREASING (healthy spec/code refinement, e.g. 5 → 3 → 1 → 0) — is
+    // genuinely making progress, not stuck, so it is allowed to continue past
+    // maxIterations up to a hard backstop (2× the cap). Only a NON-progressing loop
+    // (real findings flat or rising) escalates at the cap. Total finding count is NOT
+    // used: the panel can add fresh FPs faster than real findings are fixed, masking
+    // real progress. The hard backstop + cost-cap + stuck-signature detection remain
+    // as upper bounds so this can never run away.
     const maxIter = this.i.config.loop.maxIterations;
     if (state.iteration >= maxIter) {
       const hist = state.signature_history;
-      const lastN = hist.at(-1)?.length ?? 0;
-      const prevN = hist.at(-2)?.length ?? Number.POSITIVE_INFINITY;
-      // Genuine convergence = the finding count is dropping AND no confirmed reviewer
-      // false positives have accumulated this cycle. A single down-tick can otherwise
-      // be noise: a reviewer re-adding a (differently-phrased) FP each round makes the
-      // count fluctuate (e.g. 4→4→3→4), and the lone `lastN < prevN` tick would read
-      // as "progress" and extend the loop to the hard cap. If FPs are accumulating the
-      // loop is FP-driven, not converging — deny the grace and escalate at the cap.
-      const progressing = hist.length >= 2 && lastN < prevN && state.cumulative_fp_rejects === 0;
+      const fpHist = state.fp_rejects_history;
+      const n = hist.length;
+      // The latest iteration's FP-rejects are not folded into fpHist yet (the fold
+      // runs after this check), so compute them fresh from the current pending +
+      // decisions. Absolute indices (n-1, n-2) — never relative .at() across two
+      // arrays of possibly different length.
+      const latestWrong =
+        n > 0
+          ? computeRejectRate(this.i.repoRoot, state.iteration, previousFindingIds(this.i.repoRoot))
+              .wrongRejects
+          : 0;
+      const realAt = (k: number, wrongOverride?: number) =>
+        Math.max(0, (hist[k]?.length ?? 0) - (wrongOverride ?? fpHist[k] ?? 0));
+      const lastReal = n > 0 ? realAt(n - 1, latestWrong) : Number.POSITIVE_INFINITY;
+      const prevReal = n >= 2 ? realAt(n - 2) : Number.POSITIVE_INFINITY;
+      const fpStreakOn = this.i.config.loop.fpStreakThreshold > 0;
+      // Converging = REAL (non-FP) findings strictly fewer than the prior round, OR
+      // no real findings remain (only reviewer FPs left — the fp-streak breaker's
+      // job, IF enabled). Total count is NOT used: the panel can add fresh FPs faster
+      // than real findings are fixed, masking real progress.
+      const progressing = n >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(
@@ -352,11 +365,11 @@ export class LoopDriver {
         return this.escalateAndDecide(
           state,
           "max-iterations",
-          `Reached ${state.iteration} iterations without convergence (findings not decreasing).`,
+          `Reached ${state.iteration} iterations without convergence (real findings not decreasing).`,
         );
       }
-      // Converging (findings strictly fewer than the previous round) and below the
-      // hard cap → fall through and review another round toward a clean pass.
+      // Converging (real findings strictly fewer than the previous round) and below
+      // the hard cap → fall through and review another round toward a clean pass.
     }
 
     // Stuck-loop: the SAME non-empty signature set repeated for `stuckThreshold`
