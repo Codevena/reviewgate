@@ -38,8 +38,9 @@ export interface AggregateInput {
   // overrides one reviewer's low self-rating). 0/absent → confidence unused.
   confidenceFloor?: number;
   // Reviewer keys (`provider:persona`) currently below the reputation trust floor. A lone
-  // (un-corroborated), NON-security/correctness finding whose every contributing reviewer key
-  // is in this set is demoted ONE step (CRITICAL→WARN, WARN→INFO; never below INFO). Empty/absent → off.
+  // (un-corroborated) finding whose every contributing reviewer key is in this set is demoted:
+  // security is never softened; correctness goes to INFO (advisory) when demoteCorrectness is on;
+  // pure quality/style is demoted one step (CRITICAL→WARN, WARN→INFO). Empty/absent → off.
   repUnreliable?: Set<string>;
   // When true, a lone unreliable reviewer's uncorroborated CORRECTNESS finding is
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off

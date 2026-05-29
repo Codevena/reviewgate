@@ -34,7 +34,7 @@ describe("aggregator reputation demote", () => {
     expect(agg.verdict).toBe("SOFT-PASS");
   });
 
-  it("NEVER demotes a security/correctness CRITICAL even from an unreliable provider", () => {
+  it("NEVER demotes a security CRITICAL even from an unreliable provider", () => {
     const agg = aggregate({
       findings: [finding({ category: "security" })],
       reviewersTotal: 2,
@@ -205,5 +205,15 @@ describe("aggregator reputation demote", () => {
       demoteCorrectness: true,
     });
     expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+  });
+
+  it("quality CRITICAL still one-steps to WARN when demoteCorrectness is on", () => {
+    const agg = aggregate({
+      findings: [finding({})], // category: "quality"
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("WARN");
   });
 });
