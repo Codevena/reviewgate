@@ -57,6 +57,12 @@ export const ReviewgateStateSchema = z.object({
   // reset to 0 on re-arm (clean PASS / commit-recovery). `.default(0)` for back-compat.
   cumulative_fp_rejects: z.number().int().nonnegative().default(0),
   fp_counted_through_iter: z.number().int().nonnegative().default(0),
+  // Per-iteration count of reviewer_was_wrong rejections, indexed by ABSOLUTE
+  // iteration: fp_rejects_history[k] is the FP-reject count of the iteration whose
+  // findings are signature_history[k]. Used for the FP-discounted convergence grace
+  // (real findings = signatures − FP). Reset to [] on re-arm. `.default([])` for
+  // back-compat with state.json written before this field existed.
+  fp_rejects_history: z.array(z.number().int().nonnegative()).default([]),
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
@@ -93,6 +99,7 @@ export function initialState(sessionId: string): ReviewgateState {
     tokens_so_far: { input: 0, output: 0 },
     signature_history: [],
     iteration_stats: [],
+    fp_rejects_history: [],
     decision_history: [],
     cumulative_fp_rejects: 0,
     fp_counted_through_iter: 0,

@@ -1073,6 +1073,57 @@ describe("LoopDriver", () => {
     expect((await state.load()).reputation_cycle_seq).toBe(1);
   });
 
+  it("folds fp_rejects_history even when the streak breaker is disabled (fpStreakThreshold=0)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQFOLD");
+    // one completed iteration (index 0) with one blocking finding F-001
+    await state.update((cur) => ({ ...cur, iteration: 1, signature_history: [["sig-a"]] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    mkdirSync(dirname(decisionsPath(repo, 1)), { recursive: true });
+    writeFileSync(
+      decisionsPath(repo, 1),
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "verified false positive by runtime trace",
+        reviewer_was_wrong: true,
+      })}\n`,
+    );
+    writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, fpStreakThreshold: 0, maxIterations: 99 },
+    };
+    // Use a code diff so fake-codex runs (FAIL verdict) — an empty diff triages to
+    // PASS (panel skipped) which resets fp_rejects_history before the assertion.
+    const CODE_DIFF =
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-x\n+y\n";
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: CODE_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    // iteration 1's decisions folded into fp_rejects_history[0] (decoupled from threshold)
+    expect((await state.load()).fp_rejects_history[0]).toBe(1);
+  });
+
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
     // The decisions-gate must take precedence: an agent cannot append unrelated
     // reviewer_was_wrong lines to force a reject-rate escape while leaving the
@@ -1207,24 +1258,80 @@ describe("LoopDriver stuck-signature threshold (configurable)", () => {
 });
 
 describe("LoopDriver convergence-aware max-iterations", () => {
-  const cfgWith = (maxIterations: number) => ({
-    ...defaultConfig,
-    loop: { ...defaultConfig.loop, maxIterations, stuckThreshold: 99 },
-  });
-  async function drive(history: string[][], iteration: number, maxIterations = 3) {
+  async function drive(
+    history: string[][],
+    iteration: number,
+    opts: {
+      maxIterations?: number;
+      fpHistory?: number[];
+      fpStreakThreshold?: number;
+      latestFindingIds?: string[];
+      latestWrongIds?: string[];
+      latestAcceptedIds?: string[];
+    } = {},
+  ) {
+    const {
+      maxIterations = 3,
+      fpHistory = [],
+      fpStreakThreshold = 3,
+      latestFindingIds,
+      latestWrongIds = [],
+      latestAcceptedIds = [],
+    } = opts;
     const repo = fakeRepo();
     const state = new StateStore(repo);
     await state.initialise("01HXQCONV");
-    await state.update((cur) => ({ ...cur, iteration, signature_history: history }));
+    await state.update((cur) => ({
+      ...cur,
+      iteration,
+      signature_history: history,
+      fp_rejects_history: fpHistory,
+    }));
+    // Latest-iteration FP-rejects are computed fresh from pending + decisions:
+    if (latestFindingIds) {
+      writeFileSync(
+        pendingJsonPath(repo),
+        JSON.stringify({ findings: latestFindingIds.map((id) => ({ id, severity: "CRITICAL" })) }),
+      );
+      mkdirSync(dirname(decisionsPath(repo, iteration)), { recursive: true });
+      const lines = [
+        ...latestWrongIds.map((id) =>
+          JSON.stringify({
+            schema: "reviewgate.decision.v1",
+            finding_id: id,
+            verdict: "rejected",
+            reason: "verified false positive by runtime trace",
+            reviewer_was_wrong: true,
+          }),
+        ),
+        ...latestAcceptedIds.map((id) =>
+          JSON.stringify({
+            schema: "reviewgate.decision.v1",
+            finding_id: id,
+            verdict: "accepted",
+            action: "fixed",
+            files_touched: ["x"],
+          }),
+        ),
+      ];
+      writeFileSync(
+        decisionsPath(repo, iteration),
+        `${lines.join("\n")}${lines.length ? "\n" : ""}`,
+      );
+    }
     writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations, stuckThreshold: 99, fpStreakThreshold },
+    };
     const driver = new LoopDriver({
       repoRoot: repo,
-      config: cfgWith(maxIterations),
+      config: cfg,
       state,
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new Orchestrator({
         repoRoot: repo,
-        config: cfgWith(maxIterations),
+        config: cfg,
         adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
         sandboxMode: "off",
         hostTier: "opus",
@@ -1264,12 +1371,94 @@ describe("LoopDriver convergence-aware max-iterations", () => {
         ["a", "b", "c", "d", "e"],
       ],
       6,
-      3,
+      { maxIterations: 3 },
     );
     expect(decision.kind).toBe("block");
     expect(decision.reason).toMatch(/ESCALATED/);
     expect((await state.load()).escalation_reason).toBe("max-iterations");
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("REAL progress despite rising total count (FP churn) does NOT escalate", async () => {
+    // total 4 → 5; but iter-1 had 1 FP and the latest (iter 2, 5 findings) has 3 FPs
+    // → real 4 → 2 (decreasing). fp_rejects_history[0]=1 (prev); latest computed fresh=3.
+    // ALL 5 latest findings are decided (F1–F3 reviewer_was_wrong, F4/F5 accepted+fixed)
+    // so the decisions-gate is satisfied — the convergence-grace path is the PROVEN
+    // reason the gate doesn't escalate, not an unaddressed-findings block.
+    const { state } = await drive(
+      [
+        ["a", "b", "c", "d"],
+        ["a", "b", "c", "d", "e"],
+      ],
+      3,
+      {
+        // fpStreakThreshold high so the cross-iteration FP-streak breaker (which 3
+        // confirmed FPs in one iter would otherwise trip) does NOT fire — this
+        // isolates the convergence-grace predicate as the reason the gate proceeds.
+        fpStreakThreshold: 10,
+        fpHistory: [1],
+        latestFindingIds: ["F1", "F2", "F3", "F4", "F5"],
+        latestWrongIds: ["F1", "F2", "F3"],
+        latestAcceptedIds: ["F4", "F5"],
+      },
+    );
+    // escalation_reason null ⇒ neither max-iterations nor any other escalation fired:
+    // the grace let the loop proceed past the cap (real 3 → 2 is decreasing).
+    const s = await state.load();
+    expect(s.escalated).toBe(false);
+    expect(s.escalation_reason).toBeNull();
+  });
+
+  it("all-FP latest with streak breaker ENABLED → grace (no 'not converging')", async () => {
+    // BOTH iterations all-FP → prevReal=0 (2−2) and lastReal=0, so the first clause
+    // (lastReal<prevReal = 0<0) is FALSE — grace can only come from (lastReal===0 &&
+    // streakOn). This isolates the streak-gate, not the count-drop clause.
+    const { state } = await drive(
+      [
+        ["a", "b"],
+        ["a", "b"],
+      ],
+      3,
+      {
+        fpStreakThreshold: 3,
+        fpHistory: [2],
+        latestFindingIds: ["F1", "F2"],
+        latestWrongIds: ["F1", "F2"],
+      },
+    );
+    expect((await state.load()).escalated).toBe(false); // lastReal===0, streak on
+  });
+
+  it("all-FP latest with streak breaker DISABLED → escalates max-iterations", async () => {
+    // Same shape (prevReal=0, lastReal=0) but streak OFF → (0===0 && false) → escalate.
+    const { decision, state } = await drive(
+      [
+        ["a", "b"],
+        ["a", "b"],
+      ],
+      3,
+      {
+        fpStreakThreshold: 0,
+        fpHistory: [2],
+        latestFindingIds: ["F1", "F2"],
+        latestWrongIds: ["F1", "F2"],
+      },
+    );
+    expect(decision.kind).toBe("block");
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
+  });
+
+  it("genuine non-convergence (real findings flat/rising) escalates", async () => {
+    // real 2 → 3 (no FPs) → escalate "real findings not decreasing"
+    const { state } = await drive(
+      [
+        ["a", "b"],
+        ["a", "b", "c"],
+      ],
+      3,
+      { fpHistory: [0], latestFindingIds: ["F1", "F2", "F3"], latestWrongIds: [] },
+    );
+    expect((await state.load()).escalation_reason).toBe("max-iterations");
   });
 });
 
@@ -1410,9 +1599,11 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
     await state.initialise("01HXQCONVFP");
     writeDirty(repo);
     // At the cap (iteration=3=maxIter) with a finding-count down-tick (3→2) that
-    // WOULD normally grant the convergence grace (continue past the cap). But
-    // confirmed FPs have accumulated this cycle → the loop is FP-driven, not
-    // genuinely converging, so the grace must be denied → escalate at the cap.
+    // WOULD normally grant the convergence grace (continue past the cap). But the
+    // FPs are in the EARLIER iteration (fp_rejects_history[0]=2), so real counts
+    // are: prev=(3−2)=1, latest=(2−0)=2 → real count is RISING → not converging →
+    // escalate. This tests the FP-discounted predicate: total goes down but the
+    // discount reveals the real count is FP-driven and not actually improving.
     await state.update((cur) => ({
       ...cur,
       iteration: 3,
@@ -1420,6 +1611,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
         ["a", "b", "c"],
         ["a", "b"],
       ],
+      fp_rejects_history: [2, 0], // 2 FPs in iter-1, none in iter-2
       cumulative_fp_rejects: 2,
       fp_counted_through_iter: 2,
     }));
