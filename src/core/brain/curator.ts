@@ -432,7 +432,17 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
 
     if (!quorumOk(crossRunEvidence, doubled)) {
       res.rejected++;
-      log("rejected", title, { rule_failed: doubled ? "diff-quorum" : "quorum" });
+      // Instrumentation: record the achieved DISTINCT-provider count (including any
+      // cross-run candidate matches), how many were needed, and how many cross-run
+      // candidates matched — so `learn status` can show whether the brain is stuck
+      // at single-provider observations (the dominant reason it never promoted)
+      // rather than failing for some other reason.
+      log("rejected", title, {
+        rule_failed: doubled ? "diff-quorum" : "quorum",
+        providers: providersIn(crossRunEvidence).size,
+        provider_need: doubled ? 3 : 2,
+        cross_run_matches: matchedCandidateIds.length,
+      });
       // Cross-run: persist this rep so a future run from a DIFFERENT provider can
       // complete the quorum (single-provider reps from THIS run only — see helper).
       await persistSingleProviderCandidate(rep, mergedEvidence, repEmbed);

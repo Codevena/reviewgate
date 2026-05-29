@@ -235,6 +235,45 @@ describe("learn status — curator decisions windowing", () => {
     expect(rep.curator_decisions.decisions["rejected:diff-quorum"]).toBe(1);
     expect(rep.curator_decisions.decisions["promoted:-"]).toBe(1);
   });
+
+  it("aggregates the quorum-fail provider distribution (why-no-promote instrumentation)", async () => {
+    const r = repo();
+    const dir = join(brainDir(r), "proposals", "curator-decisions");
+    mkdirSync(dir, { recursive: true });
+    const recent = "2026-05-28T10:00:00.000Z";
+    writeFileSync(
+      join(dir, "RUN.jsonl"),
+      [
+        // two stuck at 1/2 (one provider short), one reached 2/3 (diff, one short)
+        JSON.stringify({
+          decision: "rejected",
+          rule_failed: "quorum",
+          providers: 1,
+          provider_need: 2,
+          ts: recent,
+        }),
+        JSON.stringify({
+          decision: "rejected",
+          rule_failed: "quorum",
+          providers: 1,
+          provider_need: 2,
+          ts: recent,
+        }),
+        JSON.stringify({
+          decision: "rejected",
+          rule_failed: "diff-quorum",
+          providers: 2,
+          provider_need: 3,
+          ts: recent,
+        }),
+      ].join("\n"),
+    );
+    const qs = (await __test.buildReport({ repoRoot: r, now: NOW })).curator_decisions.quorum_stuck;
+    expect(qs.total_quorum_fails).toBe(3);
+    expect(qs.by_providers["1/2"]).toBe(2);
+    expect(qs.by_providers["2/3"]).toBe(1);
+    expect(qs.one_short).toBe(3); // all three were exactly one provider short
+  });
 });
 
 describe("learn status — FP ledger + cluster view", () => {
