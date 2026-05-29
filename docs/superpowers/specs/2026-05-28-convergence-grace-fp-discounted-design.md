@@ -1,8 +1,15 @@
 # Spec — FP-discounted convergence grace (Bug 3a)
 
 **Date:** 2026-05-28
-**Status:** Approved (design v2), pending implementation plan
+**Status:** Approved (design v3), pending implementation plan
 **Author:** brainstormed with Markus
+
+> **v3 (2nd agy spec-review):** the v2 "fold at the existing site" had two more real
+> CRITICALs: the fold is gated on `fpThreshold > 0`, so a disabled streak breaker
+> left `fp_rejects_history` empty; and a bare `push` misaligns indices on a
+> back-compat upgrade (old state loads `[]` while `signature_history` is populated).
+> v3 decouples the fold from the streak threshold and writes `fp_rejects_history` by
+> ABSOLUTE index with zero-padding (see §2).
 
 > **v2 (after agy spec-review):** agy found two real CRITICALs + a WARN in v1.
 > (1) `signature_history` and `fp_rejects_history` are appended at DIFFERENT
@@ -99,18 +106,37 @@ fp_rejects_history: z.array(z.number().int().nonnegative()).default([]),
 Wherever `signature_history`/`iteration_stats` are reset to `[]` on re-arm (clean
 PASS / commit recovery), reset `fp_rejects_history` to `[]` too.
 
-### 2. Append FP-rejects at the existing fold — NO control-flow hoist (`src/core/loop-driver.ts`)
+### 2. Fold FP-rejects per iteration — decoupled from the streak threshold, absolute-index-aligned (`src/core/loop-driver.ts` ~452-470)
 
-Keep the per-iteration FP fold where it is (~454, guarded by
-`fp_counted_through_iter`). At that fold, in addition to updating
-`cumulative_fp_rejects`, **push the same `rr.wrongRejects` onto
-`fp_rejects_history`**. Because the fold runs once per iteration in order,
-`fp_rejects_history[k]` is exactly iteration k's FP-reject count (dense,
-absolute-indexed, aligned with `signature_history[k]`). It lags by one: the latest
-iteration's fold happens after that stop's convergence check — handled in §3 by
-computing the latest iteration's FP-rejects FRESH. **No reorder of
-`absorbPriorDecisions` or the decisions-gate** (avoids the control-flow risk agy
-flagged).
+Today the whole fold block is gated `if (fpThreshold > 0 && state.iteration >
+state.fp_counted_through_iter)` — so when the streak breaker is disabled
+(`fpStreakThreshold === 0`) nothing folds and `fp_rejects_history` would stay empty
+(agy CRITICAL #1). **Split the block:**
+
+- **Fold (always, when there is a new iteration to count):** guard ONLY on
+  `state.iteration > state.fp_counted_through_iter` (drop the `fpThreshold > 0`
+  condition). Update `cumulative_fp_rejects += rr.wrongRejects`, advance
+  `fp_counted_through_iter`, AND write `fp_rejects_history`.
+- **Escalation check (unchanged gate):** keep `if (fpThreshold > 0 && cumulativeFp
+  >= fpThreshold) escalate("reviewer-fp-streak")`.
+
+**Write `fp_rejects_history` by ABSOLUTE index with zero-padding** (agy CRITICAL #2 —
+a mid-cycle upgrade loads `fp_rejects_history: []` while `signature_history` already
+has entries; a bare `push` would land iteration N's value at index 0). Target the
+index of the latest completed iteration = `signature_history.length - 1`:
+
+```ts
+        const idx = cur.signature_history.length - 1; // latest completed iteration
+        const fph = cur.fp_rejects_history.slice();
+        while (fph.length < idx) fph.push(0);          // pad historical gaps (upgrade/self-heal)
+        fph[idx] = rr.wrongRejects;                    // dense, absolute-aligned
+        // ...fp_rejects_history: fph in the state update
+```
+
+Invariant after the fold: `fp_rejects_history.length === signature_history.length`
+and `fp_rejects_history[k]` is iteration k's FP-reject count. No reorder of
+`absorbPriorDecisions` or the decisions-gate (the latest iteration's FP-rejects are
+computed fresh in §3, so the check never depends on the fold having run first).
 
 ### 3. FP-discounted convergence predicate, absolute-indexed + fresh latest (`src/core/loop-driver.ts` ~331-356)
 
@@ -184,8 +210,15 @@ Drive `LoopDriver` with crafted state (existing tests already construct
    `signature_history`; both reset to `[]` on re-arm (clean PASS / commit).
 6. **Back-compat:** state persisted without `fp_rejects_history` loads (`.default([])`)
    and behaves as all-zero FP history (real == total).
-7. **Idempotent fold:** a re-stop of the same iteration does not double-append to
+7. **Idempotent fold:** a re-stop of the same iteration does not double-write
    `fp_rejects_history` (guarded by `fp_counted_through_iter`).
+8. **Fold runs with streak breaker disabled:** `fpStreakThreshold === 0` still folds
+   `fp_rejects_history` (decoupled), so the convergence check stays FP-discounted
+   (agy CRITICAL #1).
+9. **Back-compat upgrade alignment:** state loaded with `fp_rejects_history: []` but
+   a populated `signature_history` → the next fold zero-pads to the latest index, so
+   `fp_rejects_history[k]` still pairs with `signature_history[k]` (agy CRITICAL #2);
+   the convergence check degrades gracefully (missing → 0) for the straddling cycle.
 
 ## Non-goals / YAGNI
 
