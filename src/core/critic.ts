@@ -80,22 +80,32 @@ export async function runCritic(
 
 export function parseCriticOutput(text: string): Map<string, CriticVerdict> {
   const map = new Map<string, CriticVerdict>();
-  let parsed: { verdicts?: Array<{ signature?: string; verdict?: string; reason?: string }> };
+  let parsed: unknown;
   try {
     const first = text.indexOf("{");
     const last = text.lastIndexOf("}");
-    parsed = JSON.parse(
-      first >= 0 && last > first ? text.slice(first, last + 1) : text,
-    ) as typeof parsed;
+    parsed = JSON.parse(first >= 0 && last > first ? text.slice(first, last + 1) : text);
   } catch {
     return map;
   }
-  // `?? []` does NOT guard a truthy non-array (e.g. {"verdicts":{}} or 42): a
-  // for-of on it throws an uncaught TypeError that would crash the gate process
-  // (fail-OPEN). The critic is demote-only/fail-open, so a malformed `verdicts`
-  // must yield zero demotions, never an exception. Input is untrusted reviewer-LLM
-  // output — exactly the threat model the gate exists to contain.
-  for (const v of Array.isArray(parsed.verdicts) ? parsed.verdicts : []) {
+  // Guard the whole payload AND `.verdicts`: JSON.parse("null") / "42" / "[..]"
+  // succeed (valid JSON, no throw) but `parsed.verdicts` on a null/primitive/array
+  // throws an uncaught TypeError that would crash the gate process (fail-OPEN).
+  // The critic is demote-only/fail-open, so any malformed payload must yield zero
+  // demotions, never an exception. Input is untrusted reviewer-LLM output —
+  // exactly the threat model the gate exists to contain.
+  const verdicts =
+    parsed &&
+    typeof parsed === "object" &&
+    Array.isArray((parsed as { verdicts?: unknown }).verdicts)
+      ? (parsed as { verdicts: Array<{ signature?: string; verdict?: string; reason?: string }> })
+          .verdicts
+      : [];
+  for (const v of verdicts) {
+    // Guard each element: a null/primitive element (e.g. [null, 42]) would throw
+    // on `.signature` access — same uncaught-TypeError fail-OPEN crash as a
+    // non-array `verdicts`. Skip anything that isn't an object.
+    if (!v || typeof v !== "object") continue;
     if (typeof v.signature === "string" && (v.verdict === "keep" || v.verdict === "likely_fp")) {
       map.set(v.signature, { verdict: v.verdict, ...(v.reason ? { reason: v.reason } : {}) });
     }

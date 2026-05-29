@@ -28,7 +28,8 @@
 
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { Agent, fetch as undiciFetch } from "undici";
+import http from "node:http";
+import https from "node:https";
 
 // ---------------------------------------------------------------------------
 // Egress log + result union
@@ -264,12 +265,17 @@ function validateUrl(
 // DNS-rebinding / TOCTOU pin (Gate 5)
 // ---------------------------------------------------------------------------
 
-// A custom DNS lookup that ALWAYS resolves to the already-checked IP, ignoring
-// the hostname. Wired into the connection's dispatcher so the IP the gate
-// validated is the IP the socket actually connects to — closing the window
-// where an attacker-controlled host re-resolves to 127.0.0.1/169.254.169.254
-// between our check and the HTTP client's own resolution (F-026). TLS still
-// validates against the hostname (SNI is unchanged — we pin the IP, not the URL).
+// A custom DNS lookup (node's `lookup` option shape) that ALWAYS resolves to the
+// already-checked IP, ignoring the hostname. Wired into node:https/http's request
+// `lookup` option — which Bun honors (verified) — so the IP the gate validated is
+// the IP the socket actually connects to, closing the window where an
+// attacker-controlled host re-resolves to 127.0.0.1/169.254.169.254 between our
+// check and the client's own resolution (F-026). The request URL/Host stays the
+// hostname, so TLS validates against it (we pin the IP, not the URL/SNI).
+//
+// NOTE: this MUST go through node:https — Bun 1.3.14's bundled undici Agent
+// silently ignores `connect.lookup` and its fetch ignores the `dispatcher`
+// option, so a fetch()/undici-based pin is a no-op on this runtime.
 export function pinnedLookup(
   ip: string,
 ): (
@@ -283,11 +289,86 @@ export function pinnedLookup(
   };
 }
 
-// A throwaway undici dispatcher whose connect step is pinned to `ip`. Caller MUST
-// close it (we destroy each per-hop dispatcher in safeFetch's finally) to avoid
-// leaking sockets. Created per hop so each redirect re-pins to its own checked IP.
-function pinnedDispatcher(ip: string): Agent {
-  return new Agent({ connect: { lookup: pinnedLookup(ip) } });
+// Perform a GET via node:https (or node:http) with the connection pinned to
+// `pinnedIp` through the honored `lookup` option, returning a standard Response.
+// Redirects are NOT auto-followed (node http(s) doesn't) so safeFetch re-validates
+// each hop. The body is capped at `maxBytes` mid-stream to avoid buffering an
+// oversized response (downstream still denies "body too large").
+export function pinnedFetch(
+  url: URL,
+  pinnedIp: string,
+  init: { headers: Record<string, string>; signal: AbortSignal; maxBytes: number },
+): Promise<Response> {
+  const lib = url.protocol === "http:" ? http : https;
+  return new Promise<Response>((resolve, reject) => {
+    // Single settle latch for the WHOLE request: the Promise must always settle
+    // exactly once. In particular Bun 1.3.14 does NOT emit 'error' on a request
+    // whose connection is established but has no response yet when req.destroy()
+    // is called (e.g. on abort/timeout) — only 'close' fires. So we reject on
+    // 'close'-without-settle too, or safeFetch's await would hang forever
+    // (violating its "NEVER throws / always returns" contract).
+    let settled = false;
+    let responded = false; // true once the response callback fired
+    const ok = (r: Response) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    const fail = (e: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(e);
+    };
+    const closedErr = () => new Error(init.signal.aborted ? "aborted" : "connection closed");
+    const req = lib.request(
+      url,
+      { method: "GET", headers: init.headers, lookup: pinnedLookup(pinnedIp) },
+      (res) => {
+        responded = true;
+        const chunks: Buffer[] = [];
+        let total = 0;
+        const finish = () => {
+          const headers = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (typeof v === "string") headers.set(k, v);
+            else if (Array.isArray(v)) headers.set(k, v.join(", "));
+          }
+          ok(new Response(Buffer.concat(chunks), { status: res.statusCode ?? 0, headers }));
+        };
+        res.on("data", (c: Buffer) => {
+          if (settled) return;
+          total += c.length;
+          chunks.push(c);
+          if (total > init.maxBytes) {
+            // Past the cap: stop buffering and resolve now with a body just over
+            // the limit (destroy() won't emit 'end', so resolve here). Downstream's
+            // byte-length check then denies "body too large".
+            res.destroy();
+            finish();
+          }
+        });
+        res.on("end", finish);
+        res.on("error", fail);
+        // Connection torn down mid-body (e.g. abort/timeout after headers but
+        // before 'end') — 'end' won't fire, so settle here so we never hang. On a
+        // clean response 'end' already ok()'d, so this is a guarded no-op.
+        res.on("close", () => fail(closedErr()));
+      },
+    );
+    req.on("error", fail);
+    // Backstop for a connection that is established but NEVER produces a response
+    // (Bun 1.3.14 emits only 'close', not 'error', when req.destroy() runs on such
+    // a socket). Only reject here if no response ever started — otherwise the
+    // response-level handlers above own the outcome (req 'close' also fires after a
+    // normal response, where it must be a no-op).
+    req.on("close", () => {
+      if (!responded) fail(closedErr());
+    });
+    const onAbort = () => req.destroy(new Error("aborted"));
+    if (init.signal.aborted) onAbort();
+    else init.signal.addEventListener("abort", onAbort, { once: true });
+    req.end();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -295,10 +376,6 @@ function pinnedDispatcher(ip: string): Agent {
 // ---------------------------------------------------------------------------
 
 export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<SafeFetchResult> {
-  // Default to undici's fetch (NOT global fetch): it honors the per-request
-  // `dispatcher` that pins the connection to the checked IP. Tests inject their
-  // own fetchImpl and ignore the dispatcher.
-  const fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as typeof fetch);
   const resolve =
     opts.resolve ?? (async (h: string) => (await lookup(h, { all: true })).map((r) => r.address));
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -335,8 +412,6 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  // Per-hop pinning dispatchers we must destroy to avoid leaking sockets.
-  const dispatchers: Agent[] = [];
 
   try {
     // Re-validate URL + DNS for each hop (the initial hop and any redirect).
@@ -351,25 +426,27 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
       if (ips.length === 0 || ips.some(isBlockedIp)) return deny("resolves to blocked ip");
       pinnedIp = ips[0] as string;
 
-      // Pin the connection to the checked IP so the HTTP client cannot
-      // independently re-resolve the hostname to a blocked IP (DNS-rebinding /
-      // TOCTOU). The dispatcher's lookup forces this socket to `pinnedIp`; the
-      // URL/Host stays the hostname so TLS validates correctly (F-026).
-      const dispatcher = pinnedDispatcher(pinnedIp);
-      dispatchers.push(dispatcher);
-
       // Gate 8 — minimal request: no credentials, auth headers, or cookies.
+      // The connection is pinned to the checked IP (`pinnedIp`) so the client
+      // cannot independently re-resolve the hostname to a blocked IP between the
+      // check above and the socket connect (DNS-rebinding / TOCTOU, F-026). The
+      // default path goes through node:https/http whose `lookup` option IS honored
+      // on Bun; an injected fetchImpl (tests) controls resolution itself.
+      const headers = { Accept: ALLOWED_CONTENT_TYPES.join(",") };
       let resp: Response;
       try {
-        resp = await fetchImpl(currentUrl.toString(), {
-          method: "GET",
-          redirect: "manual", // we re-validate each hop ourselves
-          headers: { Accept: ALLOWED_CONTENT_TYPES.join(",") },
-          signal: controller.signal,
-          // `dispatcher` is honored by undici fetch; cast through unknown since our
-          // minimal Agent shim isn't the full Dispatcher type bun-types expects.
-          dispatcher,
-        } as unknown as RequestInit);
+        resp = opts.fetchImpl
+          ? await opts.fetchImpl(currentUrl.toString(), {
+              method: "GET",
+              redirect: "manual", // we re-validate each hop ourselves
+              headers,
+              signal: controller.signal,
+            })
+          : await pinnedFetch(currentUrl, pinnedIp, {
+              headers,
+              signal: controller.signal,
+              maxBytes,
+            });
       } catch (err) {
         if (controller.signal.aborted) return deny("timeout");
         return deny(`fetch failed: ${(err as Error).message}`);
@@ -440,13 +517,5 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
     }
   } finally {
     clearTimeout(timer);
-    // Tear down per-hop pinning dispatchers (best-effort; never throws).
-    for (const d of dispatchers) {
-      try {
-        void d.destroy();
-      } catch {
-        // best-effort socket cleanup
-      }
-    }
   }
 }

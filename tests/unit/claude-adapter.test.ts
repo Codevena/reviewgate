@@ -38,6 +38,31 @@ describe("ClaudeAdapter (mocked)", () => {
     expect(res.usage.outputTokens).toBe(40);
   });
 
+  it("exit 0 with literal 'null' output → ERROR, no uncaught throw", async () => {
+    // `JSON.parse("null")` returns null (valid JSON), so `env.result` would throw
+    // an uncaught TypeError and crash the adapter instead of failing closed.
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-null-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-claude-null.sh",
+      "#!/usr/bin/env bash\nprintf '%s' 'null'\nexit 0\n",
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new ClaudeAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 60_000 },
+      reviewerId: "claude-adversarial",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "adversarial",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.verdict).toBe("ERROR");
+    expect(res.status).toBe("error");
+  });
+
   it("exit 0 with unparseable output → verdict ERROR (not empty PASS)", async () => {
     // `claude -p --output-format json` buffers and can truncate before emitting
     // a valid result envelope. An exit-0 run with no parseable review must fail

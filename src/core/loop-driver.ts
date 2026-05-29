@@ -169,6 +169,10 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
   const p = decisionsPath(repoRoot, iter);
   const seen = new Set<string>();
   const invalid: string[] = [];
+  // Finding ids that appeared on a present-but-invalid line. Tracked explicitly
+  // (NOT parsed back out of the human-readable `invalid` strings) so a future
+  // wording change to a reason can never silently mis-attribute an id.
+  const invalidIds = new Set<string>();
   if (existsSync(p)) {
     const lines = readFileSync(p, "utf8")
       .split("\n")
@@ -189,20 +193,22 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
         seen.add(res.data.finding_id);
         continue;
       }
-      const fid =
+      const rawId =
         parsed &&
         typeof parsed === "object" &&
         typeof (parsed as { finding_id?: unknown }).finding_id === "string"
           ? (parsed as { finding_id: string }).finding_id
-          : "(missing finding_id)";
+          : null;
+      if (rawId) invalidIds.add(rawId);
       const issue = res.error.issues[0];
       const where = issue?.path.length ? issue.path.join(".") : "entry";
-      invalid.push(`${fid}: ${where} — ${issue?.message ?? "invalid decision"}`);
+      invalid.push(
+        `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
+      );
     }
   }
   // Only report a required id as missing when no VALID line addressed it, and it
   // wasn't already flagged as invalid above (so the agent sees one reason per id).
-  const invalidIds = new Set(invalid.map((m) => m.split(":")[0]));
   const missing = requiredIds.filter((id) => !seen.has(id) && !invalidIds.has(id));
   return { addressed: requiredIds.every((id) => seen.has(id)), missing, invalid };
 }

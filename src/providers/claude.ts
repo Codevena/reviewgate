@@ -250,7 +250,11 @@ export class ClaudeAdapter implements ProviderAdapter {
     let fileText = "";
     try {
       fileText = readFileSync(outFile, "utf8");
-      env = JSON.parse(fileText) as ClaudeEnvelope;
+      const parsed = JSON.parse(fileText);
+      // JSON.parse("null")/"42"/"[..]" succeed but aren't an envelope object;
+      // `env.result` on a null/primitive would throw an uncaught TypeError and
+      // crash the adapter instead of failing closed. Keep env={} unless it's an object.
+      if (parsed && typeof parsed === "object") env = parsed as ClaudeEnvelope;
     } catch {
       env = {};
     }
