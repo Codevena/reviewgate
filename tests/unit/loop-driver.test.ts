@@ -1073,6 +1073,57 @@ describe("LoopDriver", () => {
     expect((await state.load()).reputation_cycle_seq).toBe(1);
   });
 
+  it("folds fp_rejects_history even when the streak breaker is disabled (fpStreakThreshold=0)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQFOLD");
+    // one completed iteration (index 0) with one blocking finding F-001
+    await state.update((cur) => ({ ...cur, iteration: 1, signature_history: [["sig-a"]] }));
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    mkdirSync(dirname(decisionsPath(repo, 1)), { recursive: true });
+    writeFileSync(
+      decisionsPath(repo, 1),
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "verified false positive by runtime trace",
+        reviewer_was_wrong: true,
+      })}\n`,
+    );
+    writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, fpStreakThreshold: 0, maxIterations: 99 },
+    };
+    // Use a code diff so fake-codex runs (FAIL verdict) — an empty diff triages to
+    // PASS (panel skipped) which resets fp_rejects_history before the assertion.
+    const CODE_DIFF =
+      "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-x\n+y\n";
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: CODE_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    // iteration 1's decisions folded into fp_rejects_history[0] (decoupled from threshold)
+    expect((await state.load()).fp_rejects_history[0]).toBe(1);
+  });
+
   it("a padded reject rate does NOT mask the unaddressed-findings block", async () => {
     // The decisions-gate must take precedence: an agent cannot append unrelated
     // reviewer_was_wrong lines to force a reject-rate escape while leaving the

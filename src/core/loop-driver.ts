@@ -276,6 +276,7 @@ export class LoopDriver {
                 cost_usd_so_far: 0,
                 signature_history: [],
                 iteration_stats: [],
+                fp_rejects_history: [],
                 escalated: false,
                 escalation_reason: null,
                 escalation_announced: false,
@@ -450,17 +451,25 @@ export class LoopDriver {
       // the human instead of nagging to the hard cap. Same fabrication-proofing as (a)
       // (each increment is the real-id-anchored computeRejectRate of one iteration).
       const fpThreshold = this.i.config.loop.fpStreakThreshold;
-      if (fpThreshold > 0 && state.iteration > state.fp_counted_through_iter) {
+      if (state.iteration > state.fp_counted_through_iter) {
         const cumulativeFp = state.cumulative_fp_rejects + rr.wrongRejects;
-        await this.i.state.update((cur) =>
-          ReviewgateStateSchema.parse({
+        await this.i.state.update((cur) => {
+          // Absolute-index write: fp_rejects_history[k] ↔ signature_history[k].
+          // Pad historical gaps with 0 (self-heals a back-compat upgrade where
+          // signature_history is populated but fp_rejects_history loaded as []).
+          const idx = cur.signature_history.length - 1; // latest completed iteration
+          const fph = cur.fp_rejects_history.slice();
+          while (fph.length < idx) fph.push(0);
+          if (idx >= 0) fph[idx] = rr.wrongRejects;
+          return ReviewgateStateSchema.parse({
             ...cur,
             cumulative_fp_rejects: cur.cumulative_fp_rejects + rr.wrongRejects,
             fp_counted_through_iter: Math.max(cur.fp_counted_through_iter, state.iteration),
-          }),
-        );
+            fp_rejects_history: fph,
+          });
+        });
         state = await this.i.state.load();
-        if (cumulativeFp >= fpThreshold) {
+        if (fpThreshold > 0 && cumulativeFp >= fpThreshold) {
           return this.escalateAndDecide(
             state,
             "reviewer-fp-streak",
@@ -587,6 +596,7 @@ export class LoopDriver {
         // (the streak builds across the cycle's iterations).
         cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
         fp_counted_through_iter: passed ? 0 : cur.fp_counted_through_iter,
+        fp_rejects_history: passed ? [] : cur.fp_rejects_history,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,
