@@ -1949,4 +1949,45 @@ describe("LoopDriver quota-degraded escalation note", () => {
     expect(decision.reason).not.toContain("degraded panel");
     expect(escMd).not.toContain("Quota-degraded panel");
   });
+
+  it("no note when a configured reviewer's cooldown has expired", async () => {
+    // codex IS a configured reviewer, but its cooldown reset_at is in the PAST →
+    // activeUntil() returns null → the panel was not actually degraded → no note.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDEGR");
+    await state.update((cur) => ({ ...cur, iteration: 3, signature_history: [["a"], ["a", "b"]] }));
+    new QuotaCooldownStore(repo).record(
+      "codex",
+      new Date(Date.now() - 3_600_000).toISOString(),
+      new Date(),
+    );
+    writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 3, stuckThreshold: 99 },
+    };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    const escMd = existsSync(join(repo, ".reviewgate", "ESCALATION.md"))
+      ? readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8")
+      : "";
+    expect(decision.reason).not.toContain("degraded panel");
+    expect(escMd).not.toContain("Quota-degraded panel");
+  });
 });

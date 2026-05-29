@@ -799,8 +799,8 @@ export class LoopDriver {
     const providers = [...new Set(reviewers.map((r) => r.provider))];
     const store = new QuotaCooldownStore(this.i.repoRoot);
     const capped = providers
-      .map((p) => ({ p, until: store.activeUntil(p, now) }))
-      .filter((x) => x.until !== null) as Array<{ p: string; until: string }>;
+      .map((p) => ({ p: p as string, until: store.activeUntil(p, now) }))
+      .filter((x): x is { p: string; until: string } => x.until !== null);
     if (capped.length === 0) return null;
     const list = capped.map((x) => `${x.p} (capped until ${x.until})`).join(", ");
     return `\n\n⚠ Quota-degraded panel: ${list} could not review this cycle. A capped reviewer cannot corroborate or refute the others' findings — if its failover did not cover the slot, this escalation rests on a degraded panel. Consider waiting for the quota reset, then re-run \`reviewgate gate --hook reset\` before treating these findings as final.`;
