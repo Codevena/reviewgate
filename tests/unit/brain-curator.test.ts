@@ -70,6 +70,38 @@ describe("runCurator", () => {
     expect(res.promoted).toBe(0);
   });
 
+  it("logs the achieved provider count + need on a quorum-fail (instrumentation: WHY no promote)", async () => {
+    // Diagnostic: a quorum-fail must record how many DISTINCT providers it reached
+    // and how many it needed, so `learn status` can show whether the brain is stuck
+    // at single-provider observations (the dominant historical reason it never
+    // promoted) vs failing for some other reason.
+    const repo = mkdtempSync(join(tmpdir(), "rg-cur-quorumlog-"));
+    const store = new BrainStore(repo);
+    const single = p({
+      evidence: [
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-security" },
+        { kind: "reviewer-finding", run_id: "r", reviewer_id: "codex-architecture" },
+      ],
+    });
+    await runCurator({
+      repoRoot: repo,
+      runId: "run-q",
+      proposals: [single],
+      store,
+      embedder: fakeEmbedder([1, 0]),
+      nowIso: "2026-05-21T00:00:00Z",
+    });
+    const logPath = join(repo, ".reviewgate/brain/proposals/curator-decisions/run-q.jsonl");
+    const lines = (await import("node:fs")).readFileSync(logPath, "utf8").trim().split("\n");
+    const quorumLine = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((d) => d.rule_failed === "quorum");
+    expect(quorumLine).toBeDefined();
+    expect(quorumLine?.providers).toBe(1); // collapsed to one provider (codex)
+    expect(quorumLine?.provider_need).toBe(2);
+    expect(quorumLine?.cross_run_matches).toBe(0);
+  });
+
   it("END-TO-END: a convention re-proposed across 3 runs by ≥2 providers reaches active", async () => {
     // The headline fix: candidate → active was previously unreachable. Re-proposing
     // the same convention (dup-merge) across runs accrues references; once

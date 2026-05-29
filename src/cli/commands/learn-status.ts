@@ -72,6 +72,15 @@ export interface LearnStatusReport {
   curator_decisions: {
     in_window_count: number;
     decisions: Record<string, number>; // verdict:rule_failed → count
+    // Why nothing promotes: distribution of quorum-fails by achieved distinct-
+    // provider count, and how many were exactly ONE provider short of the bar.
+    // A high `one_short` (esp. concentrated at 1 provider) means the brain is
+    // starved of cross-provider corroboration, not blocked by some other gate.
+    quorum_stuck: {
+      total_quorum_fails: number;
+      by_providers: Record<string, number>; // "<providers>/<need>" → count
+      one_short: number;
+    };
   };
   fp_ledger: {
     candidate: number;
@@ -167,13 +176,22 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
   const curatorDir = join(brainDir(input.repoRoot), "proposals", "curator-decisions");
   const decisionCounts: Record<string, number> = {};
   let inWindowCount = 0;
+  let quorumFails = 0;
+  let quorumOneShort = 0;
+  const quorumByProviders: Record<string, number> = {};
   for (const f of listJsonlFiles(curatorDir)) {
     const entries = readJsonlEntries(join(curatorDir, f));
     for (const raw of entries) {
       // A JSONL line that parses to a non-object (`null`, a bare number, a
       // string, a top-level array) would crash on field access — skip them.
       if (raw === null || typeof raw !== "object") continue;
-      const e = raw as { decision?: unknown; rule_failed?: unknown; ts?: unknown };
+      const e = raw as {
+        decision?: unknown;
+        rule_failed?: unknown;
+        ts?: unknown;
+        providers?: unknown;
+        provider_need?: unknown;
+      };
       if (typeof e.ts !== "string") continue;
       const ms = Date.parse(e.ts);
       // A malformed ts yields NaN; `NaN < sinceMs` is false, which would
@@ -184,6 +202,17 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
       const ruleFailed = typeof e.rule_failed === "string" ? e.rule_failed : "-";
       const key = `${verdict}:${ruleFailed}`;
       decisionCounts[key] = (decisionCounts[key] ?? 0) + 1;
+      // Quorum-fail provider distribution (instrumentation for "why no promote").
+      if (
+        (ruleFailed === "quorum" || ruleFailed === "diff-quorum") &&
+        typeof e.providers === "number" &&
+        typeof e.provider_need === "number"
+      ) {
+        quorumFails += 1;
+        quorumByProviders[`${e.providers}/${e.provider_need}`] =
+          (quorumByProviders[`${e.providers}/${e.provider_need}`] ?? 0) + 1;
+        if (e.providers === e.provider_need - 1) quorumOneShort += 1;
+      }
     }
   }
 
@@ -256,6 +285,11 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
     curator_decisions: {
       in_window_count: inWindowCount,
       decisions: decisionCounts,
+      quorum_stuck: {
+        total_quorum_fails: quorumFails,
+        by_providers: quorumByProviders,
+        one_short: quorumOneShort,
+      },
     },
     fp_ledger: {
       candidate: fpBy("candidate"),
@@ -335,6 +369,18 @@ function renderText(r: LearnStatusReport): string {
     lines.push("  by rule_failed:");
     for (const [key, n] of ranked.slice(0, 6)) {
       lines.push(`    ${n.toString().padStart(3)}  ${key}`);
+    }
+  }
+  // Why nothing promotes: quorum-fail provider distribution.
+  const qs = r.curator_decisions.quorum_stuck;
+  if (qs.total_quorum_fails > 0) {
+    lines.push(`  quorum-fails: ${qs.total_quorum_fails}  (${qs.one_short} were 1 provider short)`);
+    const dist = Object.entries(qs.by_providers).sort((a, b) => b[1] - a[1]);
+    for (const [bucket, n] of dist.slice(0, 4)) {
+      lines.push(`    ${n.toString().padStart(3)}  reached ${bucket} distinct providers`);
+    }
+    if (qs.one_short > 0 && qs.one_short === qs.total_quorum_fails) {
+      lines.push("    → brain is starved of cross-provider corroboration (not blocked elsewhere)");
     }
   }
   lines.push("");
