@@ -159,11 +159,12 @@ export async function runSetup(input: SetupInput): Promise<number> {
   outro(
     code === 0
       ? "setup complete — doctor: all green"
-      : code === 1
-        ? "setup complete — doctor reported warnings (see above)"
-        : "setup complete — doctor reported failures (see above)",
+      : "setup complete — doctor reported failures (see above)",
   );
-  return 0;
+  // Propagate doctor's exit code so a scripted/non-interactive caller (or CI)
+  // checking $? after `reviewgate setup` sees the real pass/fail, instead of a
+  // misleading 0 when the gate cannot actually run (F-077).
+  return code;
 }
 
 // The Custom walk. Returns null on cancel.

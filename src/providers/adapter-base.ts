@@ -1,6 +1,14 @@
 // src/providers/adapter-base.ts
 import type { Finding } from "../schemas/finding.ts";
 
+// The single source of truth for "does this set of findings block?" — a finding
+// is blocking iff its severity is CRITICAL or WARN (INFO is advisory). Shared by
+// every adapter's review() so the blocking-severity rule lives in ONE place
+// instead of five identical copies (F-067).
+export function verdictFromFindings(findings: Finding[]): "PASS" | "FAIL" {
+  return findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN") ? "FAIL" : "PASS";
+}
+
 export interface ProviderConfig {
   enabled: boolean;
   auth: "oauth" | "apikey" | "openrouter";

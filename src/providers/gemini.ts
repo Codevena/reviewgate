@@ -18,6 +18,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
@@ -153,9 +154,7 @@ export class GeminiAdapter implements ProviderAdapter {
       }
       return {
         reviewerId: input.reviewerId,
-        verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-          ? "FAIL"
-          : "PASS",
+        verdict: verdictFromFindings(findings),
         findings,
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
         durationMs: res.durationMs,

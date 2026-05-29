@@ -13,6 +13,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
 import { extractQuotaMessage, isQuotaExhausted } from "./quota-signals.ts";
 import {
@@ -217,9 +218,7 @@ export class CodexAdapter implements ProviderAdapter {
       return {
         result: {
           reviewerId: input.reviewerId,
-          verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-            ? "FAIL"
-            : "PASS",
+          verdict: verdictFromFindings(findings),
           findings,
           usage,
           durationMs: res.durationMs,

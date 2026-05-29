@@ -71,8 +71,13 @@ const audit = defineCommand({
   meta: { name: "audit", description: "Audit utilities" },
   subCommands: {
     verify: defineCommand({
-      meta: { name: "verify" },
-      args: { file: { type: "string" } },
+      meta: {
+        name: "verify",
+        description: "Verify the audit log's hash chain is intact (tamper check)",
+      },
+      args: {
+        file: { type: "string", description: "Audit .jsonl file to verify (default: latest)" },
+      },
       async run({ args }) {
         const exitCode = await runAuditVerify({ file: args.file as string });
         process.exit(exitCode);
@@ -100,8 +105,13 @@ const brain = defineCommand({
   meta: { name: "brain", description: "Brain entry management" },
   subCommands: {
     list: defineCommand({
-      meta: { name: "list" },
-      args: { filter: { type: "string" } },
+      meta: { name: "list", description: "List brain (repo-memory) entries by stage" },
+      args: {
+        filter: {
+          type: "string",
+          description: "Filter by stage (active|candidate|stale|archived)",
+        },
+      },
       async run({ args }) {
         const filter = typeof args.filter === "string" ? args.filter : undefined;
         const exitCode = await runBrainList({
@@ -112,8 +122,8 @@ const brain = defineCommand({
       },
     }),
     show: defineCommand({
-      meta: { name: "show" },
-      args: { id: { type: "string" } },
+      meta: { name: "show", description: "Show a single brain entry by id" },
+      args: { id: { type: "string", description: "Brain entry id (from `brain list`)" } },
       async run({ args }) {
         if (!args.id) {
           process.stderr.write("brain show: --id <entry-id> is required\n");
@@ -124,8 +134,11 @@ const brain = defineCommand({
       },
     }),
     revoke: defineCommand({
-      meta: { name: "revoke" },
-      args: { id: { type: "string" } },
+      meta: {
+        name: "revoke",
+        description: "Revoke (archive) a brain entry so it stops being recalled",
+      },
+      args: { id: { type: "string", description: "Brain entry id (from `brain list`)" } },
       async run({ args }) {
         if (!args.id) {
           process.stderr.write("brain revoke: --id <entry-id> is required\n");
@@ -142,8 +155,13 @@ const fp = defineCommand({
   meta: { name: "fp", description: "FP-ledger (known false positives) management" },
   subCommands: {
     list: defineCommand({
-      meta: { name: "list" },
-      args: { filter: { type: "string" } },
+      meta: {
+        name: "list",
+        description: "List FP-ledger entries (known false positives) by stage",
+      },
+      args: {
+        filter: { type: "string", description: "Filter by stage (candidate|active|sticky)" },
+      },
       async run({ args }) {
         const filter = typeof args.filter === "string" ? args.filter : undefined;
         process.exit(
@@ -152,8 +170,8 @@ const fp = defineCommand({
       },
     }),
     show: defineCommand({
-      meta: { name: "show" },
-      args: { id: { type: "string" } },
+      meta: { name: "show", description: "Show a single FP-ledger entry by id" },
+      args: { id: { type: "string", description: "FP id, e.g. FP-001 (from `fp list`)" } },
       async run({ args }) {
         if (!args.id) {
           process.stderr.write("fp show: --id <id> is required\n");
@@ -163,8 +181,15 @@ const fp = defineCommand({
       },
     }),
     pin: defineCommand({
-      meta: { name: "pin" },
-      args: { id: { type: "string" }, signature: { type: "string" }, by: { type: "string" } },
+      meta: {
+        name: "pin",
+        description: "Pin an entry as a sticky known-FP so matching findings are always suppressed",
+      },
+      args: {
+        id: { type: "string", description: "FP id to pin, e.g. FP-001 (from `fp list`)" },
+        signature: { type: "string", description: "Pin by signature instead of id" },
+        by: { type: "string", description: "Who pinned it (recorded for audit)" },
+      },
       async run({ args }) {
         process.exit(
           await runFpPin({
@@ -177,8 +202,8 @@ const fp = defineCommand({
       },
     }),
     unpin: defineCommand({
-      meta: { name: "unpin" },
-      args: { id: { type: "string" } },
+      meta: { name: "unpin", description: "Remove a pin so the entry reverts to its earned stage" },
+      args: { id: { type: "string", description: "FP id to unpin, e.g. FP-001" } },
       async run({ args }) {
         if (!args.id) {
           process.stderr.write("fp unpin: --id <id> is required\n");
@@ -188,7 +213,10 @@ const fp = defineCommand({
       },
     }),
     audit: defineCommand({
-      meta: { name: "audit" },
+      meta: {
+        name: "audit",
+        description: "Print FP-ledger health/stats (entries per stage, pins)",
+      },
       async run() {
         process.exit(await runFpAudit({ repoRoot: process.cwd() }));
       },
@@ -303,7 +331,11 @@ const learn = defineCommand({
 });
 
 const main = defineCommand({
-  meta: { name: "reviewgate", version: RG_VERSION },
+  meta: {
+    name: "reviewgate",
+    version: RG_VERSION,
+    description: "Heterogeneous LLM code-review gate that runs inside Claude Code's agent loop",
+  },
   subCommands: {
     init,
     gate,

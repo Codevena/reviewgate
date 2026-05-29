@@ -224,8 +224,8 @@ export class ReportWriter {
       "",
       "## Suggested human actions",
       "- Review the listed findings yourself before committing.",
-      "- If a finding is genuinely a false positive, run `reviewgate fp pin <signature>`.",
-      "- If the panel diverges from your intent systematically, run `reviewgate config edit`.",
+      "- To make a finding a sticky known-false-positive: find its id with `reviewgate fp list`, then `reviewgate fp pin --id <FP-id>`.",
+      "- If the panel diverges from your intent systematically, edit `reviewgate.config.ts` (e.g. adjust reviewers/personas) and run `reviewgate doctor` to validate.",
     ].join("\n");
     writeFileSync(p, out, { mode: 0o600 });
   }

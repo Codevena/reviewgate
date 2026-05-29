@@ -10,6 +10,7 @@ import type {
   ReviewInput,
   ReviewResult,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
@@ -138,9 +139,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     const outputTokens = json.usage?.completion_tokens ?? 0;
     return {
       reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-        ? "FAIL"
-        : "PASS",
+      verdict: verdictFromFindings(findings),
       findings,
       usage: {
         inputTokens,
