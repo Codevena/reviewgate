@@ -41,14 +41,18 @@ const COLLECT_DIFF_UNTRACKED_BUDGET_MS = 60_000;
 export const DIFF_INCOMPLETE_MARKER =
   "[reviewgate] WARNING: this diff was TRUNCATED or TIMED OUT during collection and may be INCOMPLETE — do not treat a clean result as conclusive.";
 
-// Reviewgate's OWN managed files must never be reviewed: they sit permanently in
-// the working tree (until the user commits them), which would (a) make the gate
-// review itself forever — an escalation loop — and (b) emit false positives on
-// the tool's own config/scaffolding (e.g. flagging `apiKeyEnv: "X"` as a leaked
-// secret). Excluded: reviewgate.config.ts and everything under .reviewgate/.
-function isReviewgateManaged(path: string): boolean {
+// Paths excluded from review entirely: Reviewgate's own managed files AND the
+// Antigravity CLI's (`agy`, the gemini reviewer) `.antigravitycli` working-tree
+// artifact — matched at ANY depth, since agy run in a subdir yields
+// `sub/.antigravitycli`. Reviewing these (a) loops the gate on its own scaffold
+// and (b) emits false "committed credential" positives on the artifact dir.
+const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/;
+function isExcludedFromReview(path: string): boolean {
   return (
-    path === "reviewgate.config.ts" || path === ".reviewgate" || path.startsWith(".reviewgate/")
+    path === "reviewgate.config.ts" ||
+    path === ".reviewgate" ||
+    path.startsWith(".reviewgate/") ||
+    ANTIGRAVITY_ARTIFACT.test(path)
   );
 }
 
@@ -87,6 +91,10 @@ export async function collectDiff(
     ":(exclude)reviewgate.config.ts",
     ":(exclude).reviewgate",
     ":(exclude).reviewgate/**",
+    ":(exclude).antigravitycli",
+    ":(exclude).antigravitycli/**",
+    ":(exclude)**/.antigravitycli",
+    ":(exclude)**/.antigravitycli/**",
   ];
   let tracked = await git(repoRoot, diffArgs(base));
   // Track partial output: a timed-out OR truncated (>maxBytes) diff must not be
@@ -120,7 +128,7 @@ export async function collectDiff(
     for (const file of untracked.stdout
       .split("\n")
       .map((s) => s.trim())
-      .filter((s) => s.length > 0 && !isReviewgateManaged(s))) {
+      .filter((s) => s.length > 0 && !isExcludedFromReview(s))) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         // Budget spent with untracked files still unprocessed → the diff omits
@@ -169,6 +177,10 @@ export async function collectChangedFileContents(
     ":(exclude)reviewgate.config.ts",
     ":(exclude).reviewgate",
     ":(exclude).reviewgate/**",
+    ":(exclude).antigravitycli",
+    ":(exclude).antigravitycli/**",
+    ":(exclude)**/.antigravitycli",
+    ":(exclude)**/.antigravitycli/**",
   ];
   const names = new Set<string>();
   let tracked = await git(repoRoot, nameArgs(base), GIT_TIMEOUT_MS, signal);
@@ -205,7 +217,7 @@ export async function collectChangedFileContents(
   };
   for (const f of [...names].sort()) {
     if (used >= maxBytes) break;
-    if (isReviewgateManaged(f)) continue;
+    if (isExcludedFromReview(f)) continue;
     const abs = join(repoRoot, f);
     let content: string;
     try {
