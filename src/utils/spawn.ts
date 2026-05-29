@@ -1,7 +1,13 @@
 // src/utils/spawn.ts
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
+import { sandboxExecAvailable } from "../sandbox/availability.ts";
+import { SandboxUnavailableError } from "../sandbox/errors.ts";
+import type { SandboxProfile } from "../sandbox/profile-builder.ts";
+import { buildMacosSbpl, resolveForSandbox } from "../sandbox/sbpl.ts";
 
 export interface SpawnInput {
   command: string;
@@ -17,6 +23,7 @@ export interface SpawnInput {
   // by the gate's self-deadline to abort in-flight reviewers when a run exceeds
   // loop.runTimeoutMs (so they can't keep running orphaned or write late).
   signal?: AbortSignal;
+  sandbox?: { profile: SandboxProfile; mode: "strict" | "permissive" };
 }
 
 export interface SpawnResult {
@@ -26,9 +33,44 @@ export interface SpawnResult {
   killedByWatchdog: boolean;
   killedByTimeout: boolean;
   killedByAbort: boolean;
+  sandboxApplied: boolean;
+  sandboxFellBack: boolean;
 }
 
 export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
+  let command = input.command;
+  let args = input.args;
+  let sandboxApplied = false;
+  let sandboxFellBack = false;
+  let sbplFile: string | null = null;
+  if (input.sandbox) {
+    const available = await sandboxExecAvailable();
+    if (available) {
+      const home = homedir();
+      const prof = input.sandbox.profile;
+      const resolved: SandboxProfile = {
+        ...prof,
+        fs: {
+          readAllow: prof.fs.readAllow.map((p) => resolveForSandbox(p, home)),
+          readDeny: prof.fs.readDeny.map((p) => resolveForSandbox(p, home)),
+          writeAllow: prof.fs.writeAllow.map((p) => resolveForSandbox(p, home)),
+        },
+      };
+      const sbpl = buildMacosSbpl(resolved);
+      const sbDir = mkdtempSync(join(tmpdir(), "rg-sbpl-"));
+      sbplFile = join(sbDir, "profile.sb");
+      writeFileSync(sbplFile, sbpl, { mode: 0o600 });
+      args = ["-f", sbplFile, command, ...args];
+      command = "sandbox-exec";
+      sandboxApplied = true;
+    } else if (input.sandbox.mode === "strict") {
+      throw new SandboxUnavailableError(
+        "sandbox.mode='strict' requested but sandbox-exec is unavailable on this host (macOS only). Set mode='permissive' to run unisolated, or 'off' for trusted local dev.",
+      );
+    } else {
+      sandboxFellBack = true;
+    }
+  }
   const start = Date.now();
   let killedByWatchdog = false;
   let killedByTimeout = false;
@@ -42,7 +84,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
     // it spawned). Killing only the direct child leaves grandchildren that inherited
     // the stdout pipe alive — they hold the pipe open, so neither "close" fires nor
     // the host process can exit (the gate would hang past its own timeout).
-    const child = nodeSpawn(input.command, input.args, {
+    const child = nodeSpawn(command, args, {
       env: input.env,
       cwd: input.cwd,
       stdio: ["pipe", "pipe", "pipe"],
@@ -145,6 +187,13 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       child.stderr.destroy();
       stdinStream?.destroy();
       child.unref();
+      if (sbplFile) {
+        try {
+          rmSync(sbplFile, { force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
       let pending = 2;
       const finishOne = () => {
         pending -= 1;
@@ -156,6 +205,8 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
             killedByWatchdog,
             killedByTimeout,
             killedByAbort,
+            sandboxApplied,
+            sandboxFellBack,
           });
         }
       };
