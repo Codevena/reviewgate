@@ -1,9 +1,19 @@
 // tests/unit/openrouter-adapter.test.ts
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OpenRouterAdapter } from "../../src/providers/openrouter.ts";
+
+// These tests mutate the GLOBAL process.env.OPENROUTER_API_KEY. Restore it after
+// the file so the leak can't flip an OPENROUTER_API_KEY-dependent assertion in a
+// later test file (bun runs all test files in one process) — an order-dependent flake.
+const ORIG_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+afterAll(() => {
+  if (ORIG_OPENROUTER_API_KEY === undefined)
+    Reflect.deleteProperty(process.env, "OPENROUTER_API_KEY");
+  else process.env.OPENROUTER_API_KEY = ORIG_OPENROUTER_API_KEY;
+});
 
 function fakeFetch(): typeof fetch {
   return (async () =>

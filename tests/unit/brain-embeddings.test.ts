@@ -1,7 +1,17 @@
 // tests/unit/brain-embeddings.test.ts
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { cosineSimilarity } from "../../src/core/brain/embeddings.ts";
 import { OpenRouterAdapter } from "../../src/providers/openrouter.ts";
+
+// These tests mutate the GLOBAL process.env.OPENROUTER_API_KEY. Restore it after
+// the file so the leak can't flip an OPENROUTER_API_KEY-dependent assertion in a
+// later test file (bun runs all test files in one process) — an order-dependent flake.
+const ORIG_OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+afterAll(() => {
+  if (ORIG_OPENROUTER_API_KEY === undefined)
+    Reflect.deleteProperty(process.env, "OPENROUTER_API_KEY");
+  else process.env.OPENROUTER_API_KEY = ORIG_OPENROUTER_API_KEY;
+});
 
 describe("cosineSimilarity", () => {
   it("returns 1.0 for identical vectors", () => {
