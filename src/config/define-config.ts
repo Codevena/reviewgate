@@ -111,6 +111,9 @@ export const ConfigSchema = z.object({
         minSamples: z.number().int().nonnegative().default(8),
         trustFloor: z.number().min(0).max(1).default(0.35),
         halfLifeDays: z.number().positive().default(45),
+        // Demote a lone unreliable reviewer's uncorroborated CORRECTNESS finding to
+        // INFO (advisory). security is never softened. Default ON.
+        demoteCorrectness: z.boolean().default(true),
         // Slice C: opt-in quarantine — below `floor` (hard, < trustFloor) skip the
         // reviewer entirely for the cycle. Default OFF (can suppress findings; see spec §4).
         quarantine: z
@@ -125,6 +128,7 @@ export const ConfigSchema = z.object({
         minSamples: 8,
         trustFloor: 0.35,
         halfLifeDays: 45,
+        demoteCorrectness: true,
         quarantine: { enabled: false, floor: 0.15 },
       }),
     // M6: Context7 library-docs injection into the research phase. Opt-in.

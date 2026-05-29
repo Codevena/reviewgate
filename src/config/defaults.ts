@@ -105,6 +105,7 @@ export const defaultConfig = {
       minSamples: 8,
       trustFloor: 0.35,
       halfLifeDays: 45,
+      demoteCorrectness: true,
       quarantine: { enabled: false, floor: 0.15 },
     },
   },

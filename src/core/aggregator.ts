@@ -41,6 +41,10 @@ export interface AggregateInput {
   // (un-corroborated), NON-security/correctness finding whose every contributing reviewer key
   // is in this set is demoted ONE step (CRITICAL→WARN, WARN→INFO; never below INFO). Empty/absent → off.
   repUnreliable?: Set<string>;
+  // When true, a lone unreliable reviewer's uncorroborated CORRECTNESS finding is
+  // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
+  // (preserves the pre-feature behavior; production passes true from config).
+  demoteCorrectness?: boolean;
 }
 
 export interface AggregateResult {
