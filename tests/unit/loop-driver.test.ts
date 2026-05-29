@@ -207,6 +207,56 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("not yet addressed");
   });
 
+  it("names the invalid line and WHY in the block message (too-short reason)", async () => {
+    // F-088: a rejection whose reason is < 20 chars fails DecisionEntrySchema and
+    // is silently dropped → the agent re-reads the SAME generic block, sees its
+    // line IS in the file, and can loop without knowing the validation failed.
+    // The block message must say which finding's decision was invalid and why.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQMALG");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    const dpath = decisionsPath(repo, 1);
+    mkdirSync(dirname(dpath), { recursive: true });
+    writeFileSync(
+      dpath,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "nope", // 4 chars < 20 → schema fails
+      })}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    if (decision.kind !== "block") throw new Error("expected block");
+    // Must name the offending finding id and signal it was a validation problem.
+    expect(decision.reason).toContain("F-001");
+    expect(decision.reason).toMatch(/reason|20|invalid|rejected/i);
+  });
+
   it("still blocks (not escalate) for unaddressed findings on a user-initiated stop", async () => {
     // stop_hook_active=false means a fresh user turn: ask the agent to address
     // findings (block), don't escalate yet.
@@ -343,6 +393,47 @@ describe("LoopDriver", () => {
     // It is bounded: the dirty flag was consumed, so the re-stop allows.
     const second = await driver.run();
     expect(second.kind).toBe("allow_stop");
+  });
+
+  it("does NOT escalate a converging cycle just because a transient ERROR left an empty signature row (F-001)", async () => {
+    // maxIterations=3. Real reviewed rows strictly decrease (3 → 2); the middle
+    // round was a reviewer ERROR which appends a 0-length signature row. The
+    // convergence-grace check must SKIP that empty row, not read it as "0 real
+    // findings" and abort a genuinely-progressing cycle.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQERR01");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      // idx0: 3 real findings · idx1: ERROR (empty) · idx2: 2 real findings
+      signature_history: [["s1", "s2", "s3"], [], ["s1", "s2"]],
+    }));
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF, // doc-only → triage skips the panel → PASS → re-arm
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    // The converging cycle must NOT have given up.
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+    if (decision.kind === "block") expect(decision.reason).not.toMatch(/ESCALATED/);
   });
 
   it("the escalation report includes the last iteration's findings + severity counts from pending.json", async () => {
@@ -491,6 +582,49 @@ describe("LoopDriver", () => {
     });
     const decision = await driver.run();
     // F-001 (WARN) addressed; F-002 (INFO) not required → gate proceeds → PASS on DOC_DIFF.
+    expect(decision.kind).toBe("allow_stop");
+  });
+
+  it("re-arms and reviews NEW edits made after an escalation (does not silently allow un-reviewed code, F-002)", async () => {
+    // Once escalated+announced, the dirty.flag is unlinked. Its reappearance means
+    // the agent edited MORE code after the gate gave up — that new diff must be
+    // reviewed, not waved through. State is escalated/announced at the iter-cap;
+    // a fresh dirty.flag stands in for the post-escalation edits.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQRESC2");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      escalated: true,
+      escalation_reason: "max-iterations",
+      escalation_announced: true,
+      signature_history: [["s1"], ["s1"], ["s1"]],
+    }));
+    writeDirty(repo); // new edits after the escalation
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF, // doc-only → triage skips panel → PASS on the re-armed cycle
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    const after = await state.load();
+    // The new edits were reviewed in a fresh cycle (re-armed), NOT allowed via the
+    // sticky-escalation short-circuit which would leave escalated=true untouched.
+    expect(after.escalated).toBe(false);
+    expect(after.iteration).toBe(0); // PASS on DOC_DIFF re-armed the budget
     expect(decision.kind).toBe("allow_stop");
   });
 

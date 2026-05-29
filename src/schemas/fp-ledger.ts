@@ -37,5 +37,10 @@ export type FpLedgerEntry = z.infer<typeof FpLedgerEntrySchema>;
 export const FpLedgerIndexSchema = z.object({
   schema: z.literal("reviewgate.fpledger.v1"),
   entries: z.array(FpLedgerEntrySchema),
+  // Monotonic high-water mark for id allocation. Persisted so a decayed entry's
+  // id is NEVER reused even when the highest-numbered entry is the one removed
+  // (a lingering pending.json pattern_id / brain linked_fp_id could still
+  // reference it). Optional for backward compat with pre-existing ledgers.
+  seq: z.number().int().nonnegative().optional(),
 });
 export type FpLedgerIndex = z.infer<typeof FpLedgerIndexSchema>;

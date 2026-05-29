@@ -1,6 +1,14 @@
 // tests/unit/brain-fetcher.test.ts
 import { describe, expect, it } from "bun:test";
-import { type SafeFetchOpts, isBlockedIp, safeFetch } from "../../src/core/brain/fetcher.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import {
+  type SafeFetchOpts,
+  isBlockedIp,
+  pinnedFetch,
+  pinnedLookup,
+  safeFetch,
+} from "../../src/core/brain/fetcher.ts";
 
 const allow = ["docs.example.com"];
 
@@ -32,6 +40,111 @@ describe("safeFetch — Gate 1: HTTPS only", () => {
   it("rejects ftp:// URLs", async () => {
     const r = await safeFetch("ftp://docs.example.com/x", opts());
     expect(r.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 5: DNS rebinding / TOCTOU pin (F-026)
+// ---------------------------------------------------------------------------
+describe("safeFetch — Gate 5: connection is pinned to the checked IP (F-026)", () => {
+  it("pinnedLookup returns the checked IP regardless of the hostname the client resolves", () => {
+    // The whole TOCTOU/DNS-rebinding defense: the IP the gate checked MUST be the
+    // IP the connection uses. pinnedLookup forces every connect-time resolution to
+    // the pinned IP, so an attacker who flips DNS to 169.254.169.254 between the
+    // check and the connect cannot rebind the connection.
+    const lookup = pinnedLookup("93.184.216.34");
+    let captured: { err: unknown; addrs: unknown } | undefined;
+    lookup("evil-rebind.example.com", {}, (err: unknown, addrs: unknown) => {
+      captured = { err, addrs };
+    });
+    expect(captured?.err).toBeNull();
+    expect(captured?.addrs).toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("pins IPv6 addresses with family 6", () => {
+    const lookup = pinnedLookup("2606:2800:220:1:248:1893:25c8:1946");
+    let addrs: unknown;
+    lookup("h", {}, (_e: unknown, a: unknown) => {
+      addrs = a;
+    });
+    expect(addrs).toEqual([{ address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }]);
+  });
+
+  it("pinnedFetch REALLY connects to the pinned IP, ignoring the URL hostname (live local server)", async () => {
+    // The definitive test: stand up a real loopback HTTP server, then ask
+    // pinnedFetch for a URL whose hostname does NOT resolve to it, pinned to
+    // 127.0.0.1. If the pin is honored (node:http(s) `lookup` is honored on Bun),
+    // the request reaches our server. A no-op pin (the earlier undici/dispatcher
+    // approach, silently ignored on Bun) would instead try real DNS for the bogus
+    // host and fail — which is exactly the regression this guards against.
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("pinned-hit");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const ctrl = new AbortController();
+      const resp = await pinnedFetch(new URL(`http://nonexistent.invalid:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: ctrl.signal,
+        maxBytes: 1_000_000,
+      });
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toBe("pinned-hit");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("pinnedFetch always settles (rejects, never hangs) when aborted after connect, pre-response", async () => {
+    // Bun 1.3.14 does not emit 'error' on req.destroy() once the connection is
+    // established but no response has arrived — only 'close'. Without a close-guard
+    // the Promise hangs forever and safeFetch's await never returns (contract
+    // violation). The connection establishes to a real server that never responds;
+    // aborting must reject promptly. (If this regressed, the test would TIME OUT.)
+    const server = createServer(() => {
+      /* accept the request, never send a response */
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const ctrl = new AbortController();
+      const p = pinnedFetch(new URL(`http://127.0.0.1:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: ctrl.signal,
+        maxBytes: 1000,
+      });
+      setTimeout(() => ctrl.abort(), 150);
+      await expect(p).rejects.toThrow();
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("pinnedFetch stops buffering past maxBytes (does not read a huge body whole)", async () => {
+    // A multi-megabyte body arrives in many TCP chunks; the cap must stop reading
+    // early rather than buffer the whole thing (DoS guard). The returned body is
+    // just past the cap so downstream still denies "body too large".
+    const big = "x".repeat(5_000_000);
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end(big);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const resp = await pinnedFetch(new URL(`http://h.invalid:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: new AbortController().signal,
+        maxBytes: 1000,
+      });
+      const body = await resp.text();
+      expect(body.length).toBeGreaterThan(1000); // just over the cap → downstream denies
+      expect(body.length).toBeLessThan(big.length); // but NOT the whole 5 MB body
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });
 

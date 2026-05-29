@@ -87,6 +87,36 @@ describe("aggregate scopeToDiff", () => {
     expect(r.verdict).toBe("FAIL");
   });
 
+  it("keeps an in-file but OUT-OF-HUNK finding blocking when its category is in outOfDiffBlocking (F-033)", () => {
+    // File IS in the diff but the cited line is outside the changed hunk (e.g. the
+    // enclosing function signature a few lines above the changed call). This case
+    // must honor the SAME outOfDiffBlocking escape hatch as the file-absent case —
+    // otherwise a real CRITICAL security finding silently demotes to INFO with no
+    // config override.
+    const r = aggregate({
+      findings: [f({ file: "a.ts", line_start: 48, line_end: 48, category: "security" })],
+      reviewersTotal: 1,
+      changedRanges, // a.ts hunk is [10,14] → line 48 is in-file but out-of-hunk
+      scopeToDiff: true,
+      outOfDiffBlocking: ["security"],
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("still demotes an in-file out-of-hunk finding when its category is NOT in outOfDiffBlocking", () => {
+    const r = aggregate({
+      findings: [f({ file: "a.ts", line_start: 48, line_end: 48, category: "security" })],
+      reviewersTotal: 1,
+      changedRanges,
+      scopeToDiff: true,
+      // no outOfDiffBlocking → demote as before
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBe(true);
+  });
+
   it("merges findings that differ only by path shape (./a.ts vs a.ts)", () => {
     // normalizeRepoPath must apply BEFORE clustering, not only at the scope lookup.
     const r = aggregate({

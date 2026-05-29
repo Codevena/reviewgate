@@ -13,6 +13,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
 import { extractQuotaMessage, isQuotaExhausted } from "./quota-signals.ts";
 import {
@@ -217,9 +218,7 @@ export class CodexAdapter implements ProviderAdapter {
       return {
         result: {
           reviewerId: input.reviewerId,
-          verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-            ? "FAIL"
-            : "PASS",
+          verdict: verdictFromFindings(findings),
           findings,
           usage,
           durationMs: res.durationMs,
@@ -272,6 +271,12 @@ export class CodexAdapter implements ProviderAdapter {
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
+        // Same as review(): disable agentic shell_tool exploration. Without it a
+        // judge prompt can trigger exec_command, ending the turn with no final
+        // message → complete() returns "" → the judge silently no-ops to its
+        // default (no retry on this path, unlike review()). (F-044)
+        "--disable",
+        "shell_tool",
         "--json",
         "--output-last-message",
         lastMsgFile,

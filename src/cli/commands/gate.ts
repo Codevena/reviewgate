@@ -151,6 +151,9 @@ async function runStopGate(
     repoRoot: input.repoRoot,
     config: cfg,
     adapters,
+    // Same hash-chained logger the LoopDriver uses, so the curator's egress events
+    // and the gate's run events share one intact chain (F-028).
+    audit,
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
     diff,

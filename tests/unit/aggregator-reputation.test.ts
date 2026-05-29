@@ -120,7 +120,13 @@ describe("aggregator reputation demote", () => {
     expect(agg.dedupedFindings[0]?.reputation_demoted).toBeUndefined();
   });
 
-  it("demotes a lone unreliable CORRECTNESS CRITICAL → INFO (PASS) when demoteCorrectness on", () => {
+  it("NEVER demotes a lone unreliable CORRECTNESS CRITICAL (stays CRITICAL/FAIL) even with demoteCorrectness on (F-022)", () => {
+    // A CRITICAL correctness finding is otherwise an unconditional hard FAIL
+    // (touchesSecurityOrCorrectness). Demoting it to a no-decision INFO would let a
+    // real data-corruption bug ship silently from a single unreliable reviewer,
+    // subverting the singleton-CRITICAL-must-FAIL invariant — and reputation must
+    // be at least as conservative as the critic, which never demotes CRITICAL
+    // correctness at all. Only WARN correctness softens (see next test).
     const agg = aggregate({
       findings: [finding({ category: "correctness" })],
       reviewersTotal: 2,
@@ -128,9 +134,9 @@ describe("aggregator reputation demote", () => {
       demoteCorrectness: true,
     });
     const f = agg.dedupedFindings[0];
-    expect(f?.severity).toBe("INFO");
-    expect(f?.reputation_demoted).toBe(true);
-    expect(agg.verdict).toBe("PASS");
+    expect(f?.severity).toBe("CRITICAL");
+    expect(f?.reputation_demoted).toBeUndefined();
+    expect(agg.verdict).toBe("FAIL");
   });
 
   it("demotes a lone unreliable CORRECTNESS WARN → INFO too", () => {

@@ -1,12 +1,20 @@
 // tests/unit/gemini-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GeminiAdapter } from "../../src/providers/gemini.ts";
 
 const FAKE = join(process.cwd(), "tests/fixtures/fake-gemini.sh");
 const FAKE_COMPLETE = join(process.cwd(), "tests/fixtures/fake-gemini-complete.sh");
+
+/** Helper: write a temp executable bash script and return its path. */
+function makeFakeBin(dir: string, name: string, script: string): string {
+  const p = join(dir, name);
+  writeFileSync(p, script, { mode: 0o755 });
+  chmodSync(p, 0o755);
+  return p;
+}
 
 describe("GeminiAdapter (agy, mocked)", () => {
   it("parses findings from plain stdout; usage is zero (agy has no token stats)", async () => {
@@ -85,6 +93,59 @@ describe("GeminiAdapter (agy, mocked)", () => {
     } finally {
       Reflect.deleteProperty(process.env, "RG_FAKE_EXIT_FAIL");
     }
+  });
+
+  it("exit 0 with unparseable stdout → verdict ERROR (not empty PASS)", async () => {
+    // agy `-p` print mode buffers and can truncate before emitting valid JSON.
+    // An exit-0 run with no parseable review must fail CLOSED (status !== "ok" →
+    // excluded from okRuns), exactly like codex/opencode — never a silent empty PASS.
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-garbage-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-gemini-garbage.sh",
+      "#!/usr/bin/env bash\nprintf '%s\\n' 'garbage, not a review'\nexit 0\n",
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+      reviewerId: "gemini-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.verdict).toBe("ERROR");
+    expect(res.status).toBe("error");
+    expect(res.findings).toEqual([]);
+  });
+
+  it("exit 0 with a quota banner → status quota-exhausted (triggers cooldown/failover, F-043)", async () => {
+    // agy can print a usage-limit banner and still exit 0. That must classify as
+    // quota-exhausted (not a generic error or a clean PASS) so the orchestrator
+    // cools the provider down and fails over instead of treating it as reviewed.
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-quota0-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-gemini-quota.sh",
+      "#!/usr/bin/env bash\nprintf '%s\\n' 'Error: resource_exhausted — usage limit'\nexit 0\n",
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+      reviewerId: "gemini-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.verdict).toBe("ERROR");
+    expect(res.status).toBe("quota-exhausted");
   });
 });
 

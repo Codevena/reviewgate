@@ -69,10 +69,19 @@ export async function loadEffectiveConfig(input: EffectiveConfigInput): Promise<
     // A merged config that fails validation degrades to defaults (gate stays
     // functional) — but NOT silently: a quietly-ignored config is exactly the
     // failure mode this tool exists to prevent. Surface the offending field(s).
+    //
+    // Salvage a deliberately FAIL-CLOSED sandbox.mode: one unrelated typo must not
+    // silently downgrade isolation to the unisolated "off" default (a real security
+    // regression hidden behind a single warn line). "strict"/"permissive" both
+    // fail closed, so preserving them is always at least as safe as defaults (F-047).
+    const rawMode = (merged as { sandbox?: { mode?: unknown } }).sandbox?.mode;
+    const salvage = rawMode === "strict" || rawMode === "permissive";
     console.warn(
-      `[reviewgate] invalid config ignored — using defaults instead. ${describeConfigError(err)}`,
+      `[reviewgate] invalid config ignored — using defaults instead${
+        salvage ? ` (preserved fail-closed sandbox.mode="${rawMode}")` : ""
+      }. ${describeConfigError(err)}`,
     );
-    return defineConfig({});
+    return defineConfig(salvage ? { sandbox: { mode: rawMode } } : {});
   }
 }
 

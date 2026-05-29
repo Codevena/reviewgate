@@ -127,4 +127,25 @@ describe("loadEffectiveConfig", () => {
     // The zod error must point at the actual offending field, not be opaque.
     expect(joined).toContain("timeoutMs");
   });
+
+  it("preserves a deliberately fail-closed sandbox.mode when an UNRELATED field is invalid (F-047)", async () => {
+    // One unrelated typo must NOT silently revert sandbox.mode:"strict" (fail-closed)
+    // to the unisolated "off" default — that would weaken the security posture with
+    // only a warning. The bad field still degrades to defaults; the fail-closed
+    // sandbox intent is salvaged.
+    const cwd = tmp();
+    writeFileSync(
+      join(cwd, "reviewgate.config.ts"),
+      'export default { sandbox: { mode: "strict" }, loop: { maxIterations: "3" } };',
+    );
+    const orig = console.warn;
+    console.warn = () => {};
+    try {
+      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
+      expect(cfg.sandbox.mode).toBe("strict"); // NOT silently reverted to "off"
+      expect(cfg.loop.maxIterations).toBe(defineConfig({}).loop.maxIterations); // bad field → default
+    } finally {
+      console.warn = orig;
+    }
+  });
 });

@@ -18,6 +18,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
@@ -122,17 +123,38 @@ export class GeminiAdapter implements ProviderAdapter {
           statusDetail: errText.slice(0, 1000),
         };
       }
-      const { findings, rawText } = this.parse(
+      const { out, findings, rawText } = this.parse(
         outText,
         input.cfg.model,
         input.persona,
         input.workingDir,
       );
+      if (!out) {
+        // Exit 0 but stdout is not a parseable review (agy `-p` print mode can
+        // truncate before emitting valid JSON). NOT a clean review → ERROR
+        // (status !== "ok" → excluded from okRuns) rather than a silent empty PASS,
+        // matching codex/opencode's fail-closed behavior. If the unparseable output
+        // is actually a quota/usage-limit banner (agy can print one and still exit
+        // 0), classify it as quota-exhausted so the orchestrator's cooldown+failover
+        // fires instead of treating the capped provider as a generic error (F-043).
+        const quota = isQuotaExhausted(outText + errText);
+        return {
+          reviewerId: input.reviewerId,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: res.durationMs,
+          exitCode: res.exitCode,
+          rawEventsPath: outFile,
+          status: quota ? "quota-exhausted" : "error",
+          statusDetail: quota
+            ? "reviewer exited 0 but printed a quota/usage-limit banner"
+            : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+        };
+      }
       return {
         reviewerId: input.reviewerId,
-        verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-          ? "FAIL"
-          : "PASS",
+        verdict: verdictFromFindings(findings),
         findings,
         usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
         durationMs: res.durationMs,
@@ -195,11 +217,11 @@ export class GeminiAdapter implements ProviderAdapter {
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; rawText: string } {
+  ): { out: ReturnType<typeof parseReviewOutput>; findings: Finding[]; rawText: string } {
     const out = rawText ? parseReviewOutput(rawText) : null;
     const findings = out
       ? mapReviewOutputToFindings(out, { provider: "gemini", model, persona, workingDir })
       : [];
-    return { findings, rawText };
+    return { out, findings, rawText };
   }
 }

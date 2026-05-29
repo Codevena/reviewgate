@@ -24,12 +24,11 @@ export interface RejectMeta {
 
 const EMPTY: FpLedgerIndex = { schema: "reviewgate.fpledger.v1", entries: [] };
 
-// High-water mark for id allocation. Using the array LENGTH would reuse an id
-// after decayPass() removes an entry and creates a gap (e.g. drop FP-001 while
-// FP-002 survives → next would collide on FP-002), making pin/unpin and
-// fp_ledger_match.pattern_id ambiguous. Allocate strictly above the max numeric
-// id ever present; the only reuse is when the ledger is empty (no live refs).
-function nextIdNumber(entries: FpLedgerEntry[]): number {
+// Highest numeric id among the CURRENT entries. Used only as a floor when the
+// persisted `seq` high-water mark is absent (legacy ledgers) — `seq` is the real
+// monotonic source of truth, so a decayed entry's id is never reused even when the
+// highest-numbered entry is the one removed (F-019).
+function maxEntryId(entries: FpLedgerEntry[]): number {
   let max = 0;
   for (const e of entries) {
     const n = Number.parseInt(e.id.replace(/^FP-/, ""), 10);
@@ -97,8 +96,12 @@ export class FpLedgerStore {
     await this.mutate((idx) => {
       let e = idx.entries.find((x) => x.signature === signature);
       if (!e) {
+        // Allocate strictly above the persisted high-water mark (never reuse a
+        // decayed id). Fall back to the current max for legacy ledgers w/o `seq`.
+        const nextNum = Math.max(idx.seq ?? 0, maxEntryId(idx.entries)) + 1;
+        idx.seq = nextNum;
         e = {
-          id: `FP-${String(nextIdNumber(idx.entries) + 1).padStart(3, "0")}`,
+          id: `FP-${String(nextNum).padStart(3, "0")}`,
           signature,
           rule_id: meta.rule_id,
           category: meta.category,
@@ -156,11 +159,25 @@ export class FpLedgerStore {
     });
   }
 
-  // candidate removed after 90d no new match; active→candidate after 180d; sticky kept.
+  // candidate removed after 90d no new match; active→candidate after 180d.
+  // sticky is RE-EVALUATED against the current window (not blindly kept): a sticky
+  // whose qualifying rejects have all aged past STICKY_DAYS must fall back to
+  // active/candidate, else it would suppress a genuinely-real finding at the same
+  // signature forever (F-017). recompute() honours pinned_by, so a pinned sticky
+  // stays sticky regardless of age.
   async decayPass(nowIso: string): Promise<void> {
     const nowMs = Date.parse(nowIso);
     await this.mutate((idx) => {
-      const kept = idx.entries.filter((e) => {
+      // Re-evaluate sticky AND active entries against the current windows before
+      // filtering: an entry can be 'active'/'sticky' on disk while its qualifying
+      // rejects have aged out of the 60d/90d window (last_seen_at gets bumped by
+      // duplicate hits without recompute), so it would keep suppressing real
+      // findings. recompute() honors pinned_by (F-017, F-018). Candidates are left
+      // alone — a decay pass should not silently PROMOTE them.
+      const recomputed = idx.entries.map((e) =>
+        e.stage === "sticky" || e.stage === "active" ? recompute(e, nowMs) : e,
+      );
+      const kept = recomputed.filter((e) => {
         if (e.stage === "sticky") return true;
         const ageDays = (nowMs - Date.parse(e.last_seen_at)) / DAY_MS;
         if (e.stage === "candidate") return ageDays <= 90;
@@ -176,10 +193,19 @@ export class FpLedgerStore {
   }
 
   // active + sticky entries, keyed by signature, for prompt + aggregator use.
-  async activeSnapshot(): Promise<Map<string, FpLedgerEntry>> {
+  // When `now` is given, each entry's stage is re-evaluated against the current
+  // time window at read time (recompute is pure) so a stale sticky/active whose
+  // qualifying rejects have aged out is never served as suppressing — the
+  // read-time guarantee complementing decayPass's persisted self-heal (F-017).
+  // Omitting `now` preserves the legacy persisted-stage read (used by tests/CLI).
+  async activeSnapshot(now?: Date): Promise<Map<string, FpLedgerEntry>> {
     const snap = await this.snapshot();
+    const nowMs = now ? now.getTime() : null;
     const m = new Map<string, FpLedgerEntry>();
-    for (const e of snap.entries) if (e.stage !== "candidate") m.set(e.signature, e);
+    for (const e of snap.entries) {
+      const eff = nowMs !== null ? recompute(e, nowMs) : e;
+      if (eff.stage !== "candidate") m.set(eff.signature, eff);
+    }
     return m;
   }
 }

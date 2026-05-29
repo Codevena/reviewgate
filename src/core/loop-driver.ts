@@ -153,27 +153,64 @@ function clearDecisions(repoRoot: string): void {
   }
 }
 
-function allDecisionsAddressed(repoRoot: string, iter: number, requiredIds: string[]): boolean {
+interface DecisionsGate {
+  addressed: boolean;
+  missing: string[]; // required ids with no valid decision line
+  invalid: string[]; // human-readable per-line reasons a present line was rejected
+}
+
+// Evaluate the decisions file against the required finding ids. Beyond the
+// boolean gate, it captures WHY a present-but-invalid line did not count
+// (bad JSON, too-short reason, missing `action`, wrong verdict literal) so the
+// block message can tell the agent exactly what to fix — otherwise a formatting
+// mistake is dropped silently and the agent re-reads an identical generic block,
+// sees its line IS in the file, and loops without understanding the failure (F-088).
+function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]): DecisionsGate {
   const p = decisionsPath(repoRoot, iter);
-  if (!existsSync(p)) return false;
-  const lines = readFileSync(p, "utf8")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
   const seen = new Set<string>();
-  for (const l of lines) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(l);
-    } catch {
-      continue; // not JSON → treated as missing decision (fail-closed)
+  const invalid: string[] = [];
+  // Finding ids that appeared on a present-but-invalid line. Tracked explicitly
+  // (NOT parsed back out of the human-readable `invalid` strings) so a future
+  // wording change to a reason can never silently mis-attribute an id.
+  const invalidIds = new Set<string>();
+  if (existsSync(p)) {
+    const lines = readFileSync(p, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
+    for (const l of lines) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(l);
+      } catch {
+        invalid.push("a line is not valid JSON");
+        continue; // not JSON → treated as missing decision (fail-closed)
+      }
+      // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
+      // rejection with a too-short reason must NOT satisfy the gate — otherwise
+      // the gate is trivially bypassable with malformed lines.
+      const res = DecisionEntrySchema.safeParse(parsed);
+      if (res.success) {
+        seen.add(res.data.finding_id);
+        continue;
+      }
+      const rawId =
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { finding_id?: unknown }).finding_id === "string"
+          ? (parsed as { finding_id: string }).finding_id
+          : null;
+      if (rawId) invalidIds.add(rawId);
+      const issue = res.error.issues[0];
+      const where = issue?.path.length ? issue.path.join(".") : "entry";
+      invalid.push(
+        `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
+      );
     }
-    // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
-    // rejection with a too-short reason must NOT satisfy the gate — otherwise
-    // the gate is trivially bypassable with malformed lines.
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (res.success) seen.add(res.data.finding_id);
   }
-  return requiredIds.every((id) => seen.has(id));
+  // Only report a required id as missing when no VALID line addressed it, and it
+  // wasn't already flagged as invalid above (so the agent sees one reason per id).
+  const missing = requiredIds.filter((id) => !seen.has(id) && !invalidIds.has(id));
+  return { addressed: requiredIds.every((id) => seen.has(id)), missing, invalid };
 }
 
 // A compact panel breakdown for the block message — severity counts + which
@@ -308,6 +345,37 @@ export class LoopDriver {
       state = await this.i.state.load();
     }
 
+    // Post-escalation NEW edits: each escalation announce UNLINKS the dirty.flag,
+    // so a flag present here while still escalated+announced means the agent edited
+    // MORE code AFTER being told the gate gave up. That new diff was never reviewed;
+    // the escalation was about the PRIOR change-set. Re-arm into a fresh cycle and
+    // review the new work instead of waving the stop through on un-reviewed code
+    // (F-002). (A commit-while-escalated is handled above; this is the no-commit,
+    // keep-editing case.) Termination still holds — the fresh cycle is itself
+    // bounded by maxIterations/cost-cap.
+    if (state.escalated && state.escalation_announced) {
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          iteration: 0,
+          cost_usd_so_far: 0,
+          signature_history: [],
+          iteration_stats: [],
+          fp_rejects_history: [],
+          escalated: false,
+          escalation_reason: null,
+          escalation_announced: false,
+          incomplete_runs: 0,
+          cumulative_fp_rejects: 0,
+          fp_counted_through_iter: 0,
+          reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+        }),
+      );
+      clearDecisions(this.i.repoRoot);
+      new ProposalStore(this.i.repoRoot, state.session_id).clear();
+      state = await this.i.state.load();
+    }
+
     // Escalation precondition: cost cap reached (apikey/openrouter mode only;
     // OAuth mode cost is 0 so this never fires there).
     if (
@@ -346,14 +414,31 @@ export class LoopDriver {
           : 0;
       const realAt = (k: number, wrongOverride?: number) =>
         Math.max(0, (hist[k]?.length ?? 0) - (wrongOverride ?? fpHist[k] ?? 0));
-      const lastReal = n > 0 ? realAt(n - 1, latestWrong) : Number.POSITIVE_INFINITY;
-      const prevReal = n >= 2 ? realAt(n - 2) : Number.POSITIVE_INFINITY;
+      // Only iterations that actually REVIEWED contribute to convergence. An ERROR
+      // iteration (reviewer timeout/quota/error) appends a 0-length signature row;
+      // reading it as "0 real findings" would make a transient mid-cycle error look
+      // like a non-progressing round and prematurely abort a genuinely-converging
+      // cycle (F-001). Skip empty rows; compare the last two REVIEWED rounds. The
+      // latest-iteration FP-reject override only applies if the genuine last
+      // iteration (index n-1) was itself reviewed (else its fpHist is already folded).
+      const reviewedIdx = hist.reduce<number[]>((acc, h, k) => {
+        if (h.length > 0) acc.push(k);
+        return acc;
+      }, []);
+      const m = reviewedIdx.length;
+      const lastIdx = m > 0 ? (reviewedIdx[m - 1] as number) : -1;
+      const prevIdx = m >= 2 ? (reviewedIdx[m - 2] as number) : -1;
+      const lastReal =
+        lastIdx >= 0
+          ? realAt(lastIdx, lastIdx === n - 1 ? latestWrong : undefined)
+          : Number.POSITIVE_INFINITY;
+      const prevReal = prevIdx >= 0 ? realAt(prevIdx) : Number.POSITIVE_INFINITY;
       const fpStreakOn = this.i.config.loop.fpStreakThreshold > 0;
-      // Converging = REAL (non-FP) findings strictly fewer than the prior round, OR
-      // no real findings remain (only reviewer FPs left — the fp-streak breaker's
-      // job, IF enabled). Total count is NOT used: the panel can add fresh FPs faster
-      // than real findings are fixed, masking real progress.
-      const progressing = n >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
+      // Converging = REAL (non-FP) findings strictly fewer than the prior reviewed
+      // round, OR no real findings remain (only reviewer FPs left — the fp-streak
+      // breaker's job, IF enabled). Total count is NOT used: the panel can add fresh
+      // FPs faster than real findings are fixed, masking real progress.
+      const progressing = m >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(
@@ -405,10 +490,17 @@ export class LoopDriver {
       const requiredIds = previousFindingIds(this.i.repoRoot);
 
       // Decisions-gate: every required finding must have a decision.
-      if (
-        requiredIds.length > 0 &&
-        !allDecisionsAddressed(this.i.repoRoot, state.iteration, requiredIds)
-      ) {
+      const gate = evaluateDecisions(this.i.repoRoot, state.iteration, requiredIds);
+      if (requiredIds.length > 0 && !gate.addressed) {
+        // Surface WHICH lines were invalid (and why) and which ids are still
+        // missing, so a formatting mistake (too-short reason, missing action) is
+        // never silently dropped into an opaque re-block (F-088).
+        const detail = [
+          gate.missing.length > 0 ? `Missing decisions for: ${gate.missing.join(", ")}` : null,
+          gate.invalid.length > 0 ? `Rejected (fix & re-write): ${gate.invalid.join("; ")}` : null,
+        ]
+          .filter((x): x is string => x !== null)
+          .join(" · ");
         // The decisions-gate does not advance `iteration`, so re-blocking on a
         // hook-forced continuation would loop forever (the iter-cap escalation
         // can never catch it). When stop_hook_active is set, the agent has
@@ -419,12 +511,12 @@ export class LoopDriver {
           return this.escalateAndDecide(
             state,
             "decisions-unaddressed",
-            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.`,
+            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.${detail ? ` ${detail}` : ""}`,
           );
         }
         return {
           kind: "block",
-          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
+          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${detail ? ` ${detail}` : ""}`,
         };
       }
 

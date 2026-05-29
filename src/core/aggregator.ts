@@ -77,8 +77,14 @@ const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 
 // separately. The tight 5-line window keeps genuinely separate issues (>5 lines
 // apart) distinct; representative keeps the highest severity, so a co-located
 // CRITICAL is never hidden behind a lower-severity neighbour.
-function dedupKey(f: Finding): string {
-  return `${f.file}|${Math.floor((f.line_start - 1) / 5)}`;
+// True 5-line proximity window (NOT a fixed bucket): two same-file findings whose
+// line_start differs by ≤5 are in the same region. Fixed floor()-buckets broke
+// the promise at every boundary (lines 5 vs 6 sit in different buckets despite
+// being adjacent, while 1 vs 5 share one) — a sliding window honors the documented
+// guarantee at every line (F-009).
+const REGION_WINDOW = 5;
+function sameRegion(a: Finding, b: Finding): boolean {
+  return a.file === b.file && Math.abs(a.line_start - b.line_start) <= REGION_WINDOW;
 }
 
 // Significant-word set of a message (lowercased, punctuation→space, drop short
@@ -105,6 +111,15 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 // issues stay separate — over-merging would mask a real finding behind another's
 // single decision (a security risk), so we err toward keeping findings apart.
 const SIM_THRESHOLD = 0.6;
+
+// The wording-similarity merge is additionally distance-bounded: two findings
+// whose messages are similar but which sit far apart in the file are almost
+// always DIFFERENT defects that happen to be described alike (e.g. two distinct
+// null-derefs). Without this bound the file-wide jaccard merge would bury the
+// farther bug as a member disposed by a single decision — exactly the masking the
+// SIM_THRESHOLD comment says we avoid (F-010). The window is generous enough to
+// absorb reviewer line-jitter on the SAME issue, but far short of file-wide.
+const WORDING_MERGE_MAX_LINE_DISTANCE = 25;
 
 interface Cluster {
   sample: Finding;
@@ -179,6 +194,13 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
       return demote(f, "\n\n↓ not in the changed files — advisory only.");
     }
     if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
+    // In-file but outside the changed hunks. Honor the SAME blocking escape hatch
+    // as the file-absent case above: a reviewer often cites the enclosing
+    // declaration a few lines above the changed call, so a configured category
+    // (e.g. security) must be able to stay blocking instead of silently demoting a
+    // real CRITICAL to INFO (F-033).
+    const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+    if (categories.some((c) => blocking.has(c))) return f;
     return demote(f, "\n\n↓ outside the changed lines — advisory only.");
   });
 }
@@ -209,12 +231,15 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
     const fTokens = normTokens(f.message);
     // Merge into an existing cluster (same file) when EITHER the file + 5-line
-    // region matches (category-independent — see dedupKey) OR the wording is
+    // region matches (category-independent — see sameRegion) OR the wording is
     // highly similar.
     let target: Cluster | undefined;
     for (const c of clusters) {
       if (c.sample.file !== f.file) continue;
-      if (dedupKey(c.sample) === dedupKey(f) || jaccard(c.tokens, fTokens) >= SIM_THRESHOLD) {
+      const wordingMerge =
+        jaccard(c.tokens, fTokens) >= SIM_THRESHOLD &&
+        Math.abs(c.sample.line_start - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
+      if (sameRegion(c.sample, f) || wordingMerge) {
         target = c;
         break;
       }
@@ -403,9 +428,16 @@ export function aggregate(input: AggregateInput): AggregateResult {
               : [`${f.reviewer.provider}:${f.reviewer.persona}`];
           if (!keys.every((k) => repUnreliable.has(k))) return f;
           if (isCorrectness) {
-            // Advisory tier: a chronically-wrong lone reviewer's correctness
-            // finding goes straight to INFO (non-blocking, no decision required),
-            // CRITICAL or WARN alike. Mirrors the FP-ledger advisory demote.
+            // A CRITICAL correctness finding is NEVER reputation-demoted: it is an
+            // unconditional hard FAIL, and turning it into a no-decision INFO would
+            // let a real data-corruption bug ship silently from a single unreliable
+            // reviewer (subverting the singleton-CRITICAL-must-FAIL invariant).
+            // Reputation must be at least as conservative as the critic, which
+            // refuses to demote CRITICAL correctness at all (F-022). Only WARN
+            // correctness softens to advisory INFO.
+            if (f.severity === "CRITICAL") return f;
+            // Advisory tier: a chronically-wrong lone reviewer's WARN correctness
+            // finding goes to INFO (non-blocking). Mirrors the FP-ledger advisory demote.
             const note =
               "\n\n↓ low reviewer reputation — correctness finding from an unreliable lone reviewer; advisory only.";
             return {

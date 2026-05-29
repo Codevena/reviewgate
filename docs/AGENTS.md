@@ -10,10 +10,12 @@ Reviewgate is wired into two Claude Code hooks:
 
 - **`PostToolUse`** — after every `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, a
   background hook marks the repo "dirty". You do not need to do anything.
-- **`Stop`** — when you try to end your turn, Reviewgate reviews your
-  uncommitted changes (`git diff HEAD`) with an LLM reviewer. If it finds
-  blocking issues, **your turn is blocked**: you will receive a `Stop`-hook
-  message with `decision: "block"` and a `reason`, and you must keep working.
+- **`Stop`** — when you try to end your turn, Reviewgate reviews your changes
+  since the batch started — both committed (commit-per-task) and uncommitted —
+  by diffing against the pre-batch HEAD captured when the repo first went dirty
+  (NOT just `git diff HEAD`). If it finds blocking issues, **your turn is
+  blocked**: you receive a `Stop`-hook message with `decision: "block"` and a
+  `reason`, and you must keep working.
 
 You cannot finish your turn while there are unaddressed blocking findings. Do not
 try to disable the hook, delete `.reviewgate/`, or otherwise bypass the gate —
@@ -21,11 +23,11 @@ fix the underlying issues instead.
 
 ## The block message
 
-When blocked, the `reason` looks like:
+When blocked, the `reason` is a 3-line block like:
 
-> 🔴 Reviewgate · GATE CLOSED — iteration 1/3 · 3 finding(s). See
-> `.reviewgate/pending.md` · record per-finding decisions in
-> `.reviewgate/decisions/1.jsonl`.
+> 🔴 Reviewgate · GATE CLOSED — iteration 1/3
+>    2 CRITICAL · 1 WARN  ·  reviewers: codex 3 · gemini 2
+>    → record a decision per CRITICAL/WARN finding in `.reviewgate/decisions/1.jsonl`  (details: `.reviewgate/pending.md`)
 
 The number (`1`) is the **current iteration index**. Use it as the decisions
 filename: iteration 1 → `.reviewgate/decisions/1.jsonl`. The gate states you will
@@ -73,24 +75,34 @@ unchanged.
 
 ## Your response protocol
 
-1. **Read `.reviewgate/pending.md`** with your Read tool. It lists every finding,
+1. **Read `.reviewgate/pending.md`** with your Read tool. It lists findings
    grouped by severity (CRITICAL ●, WARN ▲, INFO ·), each with an `id` like
-   `F-001`, a `file:line`, a `rule_id`, a `message`, and `details`.
+   `F-001`, a `file:line`, a `rule_id`, a `message`, and `details`. A separate
+   **Advisory** section lists INFO / scope-demoted / known-FP findings.
 
-2. **For each finding**, decide one of two things:
+2. **Only CRITICAL and WARN findings block the gate and require a decision.**
+   INFO findings — and everything under the **Advisory (no decision needed)**
+   section — are advisory: you may act on them, but the gate does NOT wait for a
+   decision on them. For each blocking (CRITICAL/WARN) finding, decide one of two
+   things:
    - **Fix it** — make the code change that resolves the finding.
    - **Reject it** — only if the finding is genuinely wrong or inapplicable.
      Rejecting requires a real, specific reason (≥ 20 characters). Do not reject
      just to make the gate pass.
 
-3. **Record every decision** by appending exactly one JSON line per finding to
-   `.reviewgate/decisions/<iter>.jsonl` (one finding `id` per line). The gate
-   will not unblock until **every** finding `id` from the current iteration has a
-   decision.
+3. **Record a decision for every blocking finding** by appending exactly one JSON
+   line per finding to `.reviewgate/decisions/<iter>.jsonl` (one finding `id` per
+   line). The gate will not unblock until every **CRITICAL/WARN** finding `id`
+   from the current iteration has a decision. (You do not need decision lines for
+   INFO/advisory findings; writing them is harmless but unnecessary.)
+
+   > Optional: you may still append a `rejected` decision for an advisory finding
+   > you believe hallucinated — it feeds the false-positive learn-loop — but it is
+   > never required to pass the gate.
 
 4. **Try to stop again.** The Stop hook re-fires, Reviewgate re-reviews, and if
-   everything is addressed (and no new blocking findings appear) your turn is
-   allowed to end.
+   every blocking finding is addressed (and no new blocking findings appear) your
+   turn is allowed to end.
 
 ## Decision file format
 
@@ -121,8 +133,9 @@ One line per finding. Match `finding_id` to the `id` shown in `pending.md`.
 
 You edited `src/token.ts`. On stop you get:
 
-> 🔴 Reviewgate · GATE CLOSED — iteration 1/3 · 1 finding(s). See
-> `.reviewgate/pending.md`.
+> 🔴 Reviewgate · GATE CLOSED — iteration 1/3
+>    1 WARN  ·  reviewers: codex 1
+>    → record a decision per CRITICAL/WARN finding in `.reviewgate/decisions/1.jsonl`  (details: `.reviewgate/pending.md`)
 
 You read `pending.md` and see one finding:
 

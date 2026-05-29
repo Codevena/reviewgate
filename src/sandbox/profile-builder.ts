@@ -53,6 +53,11 @@ export interface BuildInput {
   findingsPath: string;
   tmpDir: string;
   walltimeMs?: number;
+  // From reviewgate.config.ts sandbox.{writablePaths,deniedReads}: additive to the
+  // hard-coded write-allow / read-deny lists so a user can grant a needed write or
+  // protect an extra path. Without this wiring those config keys are dead (F-058).
+  writablePaths?: string[];
+  deniedReads?: string[];
 }
 
 export function buildSandboxProfile(input: BuildInput): SandboxProfile {
@@ -70,9 +75,9 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
     .filter((p) => p !== input.providerId)
     .flatMap((p) => CREDENTIAL_PATHS[p]);
 
-  const readDeny = [...BROAD_DENY, ...SECRETS_DENY, ...others];
+  const readDeny = [...BROAD_DENY, ...SECRETS_DENY, ...others, ...(input.deniedReads ?? [])];
   const readAllow = [input.workingDir, input.tmpDir, ...own];
-  const writeAllow = [input.findingsPath, input.tmpDir];
+  const writeAllow = [input.findingsPath, input.tmpDir, ...(input.writablePaths ?? [])];
 
   return {
     sandboxRequested: true,

@@ -13,6 +13,7 @@ import type {
   ReviewResult,
   ReviewStatus,
 } from "./adapter-base.ts";
+import { verdictFromFindings } from "./adapter-base.ts";
 import { failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
@@ -132,17 +133,37 @@ export class ClaudeAdapter implements ProviderAdapter {
         statusDetail: errText.slice(0, 1000),
       };
     }
-    const { findings, usage, rawText } = this.parse(
+    const { out, findings, usage, rawText } = this.parse(
       outFile,
       input.cfg.model,
       input.persona,
       input.workingDir,
     );
+    if (!out) {
+      // Exit 0 but the result envelope is not a parseable review (`claude -p
+      // --output-format json` can truncate before emitting valid JSON). NOT a
+      // clean review → ERROR (status !== "ok" → excluded from okRuns) rather than
+      // a silent empty PASS, matching codex/opencode's fail-closed behavior. If the
+      // output is actually a quota/usage-limit banner (printed on an exit-0 run),
+      // classify it quota-exhausted so cooldown+failover fires (F-043).
+      const quota = isQuotaExhausted(errText + readFileSafe(outFile));
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+        durationMs: res.durationMs,
+        exitCode: res.exitCode,
+        rawEventsPath: outFile,
+        status: quota ? "quota-exhausted" : "error",
+        statusDetail: quota
+          ? "reviewer exited 0 but printed a quota/usage-limit banner"
+          : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+      };
+    }
     return {
       reviewerId: input.reviewerId,
-      verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
-        ? "FAIL"
-        : "PASS",
+      verdict: verdictFromFindings(findings),
       findings,
       usage,
       durationMs: res.durationMs,
@@ -223,12 +244,21 @@ export class ClaudeAdapter implements ProviderAdapter {
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; usage: ReviewResult["usage"]; rawText: string } {
+  ): {
+    out: ReturnType<typeof parseReviewOutput>;
+    findings: Finding[];
+    usage: ReviewResult["usage"];
+    rawText: string;
+  } {
     let env: ClaudeEnvelope = {};
     let fileText = "";
     try {
       fileText = readFileSync(outFile, "utf8");
-      env = JSON.parse(fileText) as ClaudeEnvelope;
+      const parsed = JSON.parse(fileText);
+      // JSON.parse("null")/"42"/"[..]" succeed but aren't an envelope object;
+      // `env.result` on a null/primitive would throw an uncaught TypeError and
+      // crash the adapter instead of failing closed. Keep env={} unless it's an object.
+      if (parsed && typeof parsed === "object") env = parsed as ClaudeEnvelope;
     } catch {
       env = {};
     }
@@ -238,6 +268,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       ? mapReviewOutputToFindings(out, { provider: "claude-code", model, persona, workingDir })
       : [];
     return {
+      out,
       findings,
       usage: {
         inputTokens: env.usage?.input_tokens ?? 0,
