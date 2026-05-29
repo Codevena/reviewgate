@@ -50,7 +50,7 @@ export interface ReferencedFilesInput {
   signal?: AbortSignal;
 }
 
-const PROTECTED_PREFIXES = [".reviewgate/", ".git/", ".hg/", ".svn/"];
+export const PROTECTED_PREFIXES = [".reviewgate/", ".git/", ".hg/", ".svn/", ".antigravitycli/"];
 const PROTECTED_FILES = ["reviewgate.config.ts"];
 
 /**
