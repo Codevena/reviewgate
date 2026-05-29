@@ -59,6 +59,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
     "@types/bun": "latest",
+    "fast-check": "^4.8.0",
     "typescript": "^5.5.0"
   }
 }
