@@ -1267,6 +1267,7 @@ describe("LoopDriver convergence-aware max-iterations", () => {
       fpStreakThreshold?: number;
       latestFindingIds?: string[];
       latestWrongIds?: string[];
+      latestAcceptedIds?: string[];
     } = {},
   ) {
     const {
@@ -1275,6 +1276,7 @@ describe("LoopDriver convergence-aware max-iterations", () => {
       fpStreakThreshold = 3,
       latestFindingIds,
       latestWrongIds = [],
+      latestAcceptedIds = [],
     } = opts;
     const repo = fakeRepo();
     const state = new StateStore(repo);
@@ -1292,19 +1294,29 @@ describe("LoopDriver convergence-aware max-iterations", () => {
         JSON.stringify({ findings: latestFindingIds.map((id) => ({ id, severity: "CRITICAL" })) }),
       );
       mkdirSync(dirname(decisionsPath(repo, iteration)), { recursive: true });
+      const lines = [
+        ...latestWrongIds.map((id) =>
+          JSON.stringify({
+            schema: "reviewgate.decision.v1",
+            finding_id: id,
+            verdict: "rejected",
+            reason: "verified false positive by runtime trace",
+            reviewer_was_wrong: true,
+          }),
+        ),
+        ...latestAcceptedIds.map((id) =>
+          JSON.stringify({
+            schema: "reviewgate.decision.v1",
+            finding_id: id,
+            verdict: "accepted",
+            action: "fixed",
+            files_touched: ["x"],
+          }),
+        ),
+      ];
       writeFileSync(
         decisionsPath(repo, iteration),
-        `${latestWrongIds
-          .map((id) =>
-            JSON.stringify({
-              schema: "reviewgate.decision.v1",
-              finding_id: id,
-              verdict: "rejected",
-              reason: "verified false positive by runtime trace",
-              reviewer_was_wrong: true,
-            }),
-          )
-          .join("\n")}${latestWrongIds.length ? "\n" : ""}`,
+        `${lines.join("\n")}${lines.length ? "\n" : ""}`,
       );
     }
     writeDirty(repo);
@@ -1370,6 +1382,9 @@ describe("LoopDriver convergence-aware max-iterations", () => {
   it("REAL progress despite rising total count (FP churn) does NOT escalate", async () => {
     // total 4 → 5; but iter-1 had 1 FP and the latest (iter 2, 5 findings) has 3 FPs
     // → real 4 → 2 (decreasing). fp_rejects_history[0]=1 (prev); latest computed fresh=3.
+    // ALL 5 latest findings are decided (F1–F3 reviewer_was_wrong, F4/F5 accepted+fixed)
+    // so the decisions-gate is satisfied — the convergence-grace path is the PROVEN
+    // reason the gate doesn't escalate, not an unaddressed-findings block.
     const { state } = await drive(
       [
         ["a", "b", "c", "d"],
@@ -1377,12 +1392,21 @@ describe("LoopDriver convergence-aware max-iterations", () => {
       ],
       3,
       {
+        // fpStreakThreshold high so the cross-iteration FP-streak breaker (which 3
+        // confirmed FPs in one iter would otherwise trip) does NOT fire — this
+        // isolates the convergence-grace predicate as the reason the gate proceeds.
+        fpStreakThreshold: 10,
         fpHistory: [1],
         latestFindingIds: ["F1", "F2", "F3", "F4", "F5"],
         latestWrongIds: ["F1", "F2", "F3"],
+        latestAcceptedIds: ["F4", "F5"],
       },
     );
-    expect((await state.load()).escalated).toBe(false); // grace: real 3 → 2
+    // escalation_reason null ⇒ neither max-iterations nor any other escalation fired:
+    // the grace let the loop proceed past the cap (real 3 → 2 is decreasing).
+    const s = await state.load();
+    expect(s.escalated).toBe(false);
+    expect(s.escalation_reason).toBeNull();
   });
 
   it("all-FP latest with streak breaker ENABLED → grace (no 'not converging')", async () => {
