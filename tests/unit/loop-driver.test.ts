@@ -8,6 +8,7 @@ import { defaultConfig } from "../../src/config/defaults.ts";
 import { LoopDriver } from "../../src/core/loop-driver.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
 import type { IterationResult } from "../../src/core/orchestrator.ts";
+import { QuotaCooldownStore } from "../../src/core/quota-cooldown.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
 import type { RunSummary } from "../../src/schemas/audit-event.ts";
@@ -1884,5 +1885,109 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
       expect(d.kind).toBe("block");
       expect(d.reason).toContain("no reviewer ran");
     });
+  });
+});
+
+describe("LoopDriver quota-degraded escalation note", () => {
+  // Forces a max-iterations escalation (rising real findings) with codex — the
+  // default configured reviewer — quota-capped, and asserts the note surfaces.
+  async function escalateWith(opts: { capProvider?: string } = {}) {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDEGR");
+    await state.update((cur) => ({ ...cur, iteration: 3, signature_history: [["a"], ["a", "b"]] })); // rising → non-progressing
+    if (opts.capProvider) {
+      // capped 1h into the future → activeUntil() returns non-null
+      const future = new Date(Date.now() + 3_600_000).toISOString();
+      new QuotaCooldownStore(repo).record(opts.capProvider, future, new Date());
+    }
+    writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 3, stuckThreshold: 99 },
+    };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    const escMd = existsSync(join(repo, ".reviewgate", "ESCALATION.md"))
+      ? readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8")
+      : "";
+    return { decision, escMd };
+  }
+
+  it("appends the quota-degraded note when a configured reviewer (codex) is capped", async () => {
+    const { decision, escMd } = await escalateWith({ capProvider: "codex" });
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("degraded panel");
+    expect(escMd).toContain("Quota-degraded panel");
+    expect(escMd).toContain("codex");
+  });
+
+  it("no note when no reviewer is capped", async () => {
+    const { decision, escMd } = await escalateWith({});
+    expect(decision.reason).not.toContain("degraded panel");
+    expect(escMd).not.toContain("Quota-degraded panel");
+  });
+
+  it("no note when a NON-reviewer provider is capped", async () => {
+    // openrouter is not in the default reviewers list (codex is) → not flagged
+    const { decision, escMd } = await escalateWith({ capProvider: "openrouter" });
+    expect(decision.reason).not.toContain("degraded panel");
+    expect(escMd).not.toContain("Quota-degraded panel");
+  });
+
+  it("no note when a configured reviewer's cooldown has expired", async () => {
+    // codex IS a configured reviewer, but its cooldown reset_at is in the PAST →
+    // activeUntil() returns null → the panel was not actually degraded → no note.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDEGR");
+    await state.update((cur) => ({ ...cur, iteration: 3, signature_history: [["a"], ["a", "b"]] }));
+    new QuotaCooldownStore(repo).record(
+      "codex",
+      new Date(Date.now() - 3_600_000).toISOString(),
+      new Date(),
+    );
+    writeDirty(repo);
+    const cfg = {
+      ...defaultConfig,
+      loop: { ...defaultConfig.loop, maxIterations: 3, stuckThreshold: 99 },
+    };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: cfg,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    const escMd = existsSync(join(repo, ".reviewgate", "ESCALATION.md"))
+      ? readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8")
+      : "";
+    expect(decision.reason).not.toContain("degraded panel");
+    expect(escMd).not.toContain("Quota-degraded panel");
   });
 });

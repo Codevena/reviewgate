@@ -23,6 +23,7 @@ import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
+import { QuotaCooldownStore } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { learnReputationFromDecisions } from "./reputation/learn.ts";
 import { ReputationStore } from "./reputation/store.ts";
@@ -789,6 +790,22 @@ export class LoopDriver {
     };
   }
 
+  // Diagnostic: if a CONFIGURED reviewer is currently quota-capped, the panel that
+  // produced this escalation was degraded. Returns a note for ESCALATION.md +
+  // the Stop reason, or null when no reviewer slot is capped. (Quota only — error/
+  // timeout degradation is surfaced on the ERROR path via formatCoverageNote.)
+  private quotaDegradationNote(now: Date): string | null {
+    const reviewers = this.i.config.phases.review.reviewers ?? [];
+    const providers = [...new Set(reviewers.map((r) => r.provider))];
+    const store = new QuotaCooldownStore(this.i.repoRoot);
+    const capped = providers
+      .map((p) => ({ p: p as string, until: store.activeUntil(p, now) }))
+      .filter((x): x is { p: string; until: string } => x.until !== null);
+    if (capped.length === 0) return null;
+    const list = capped.map((x) => `${x.p} (capped until ${x.until})`).join(", ");
+    return `\n\n⚠ Quota-degraded panel: ${list} could not review this cycle. A capped reviewer cannot corroborate or refute the others' findings — if its failover did not cover the slot, this escalation rests on a degraded panel. Consider waiting for the quota reset, then re-run \`reviewgate gate --hook reset\` before treating these findings as final.`;
+  }
+
   // Escalate, then decide whether to BLOCK (to surface it to the agent) or
   // allow the stop. The gate blocks ONCE per escalation so the agent learns it
   // has stopped gating — an allow_stop alone is silent and indistinguishable
@@ -799,6 +816,9 @@ export class LoopDriver {
     reasonCode: EscalationReason,
     summary: string,
   ): Promise<LoopDecision> {
+    const degraded = this.quotaDegradationNote(new Date());
+    const fullSummary = degraded ? summary + degraded : summary;
+    const suffix = degraded ? " · ⚠ degraded panel (quota) — see ESCALATION.md" : "";
     const firstAnnounce = !state.escalation_announced;
     // Only write ESCALATION.md + the audit entry + state on the first announce.
     // Re-stops (with a fresh dirty flag) would otherwise churn the file and spam
@@ -808,7 +828,7 @@ export class LoopDriver {
         state.session_id,
         state.iteration,
         reasonCode,
-        summary,
+        fullSummary,
         state.signature_history,
         state.iteration_stats,
       );
@@ -822,12 +842,12 @@ export class LoopDriver {
     if (firstAnnounce) {
       return {
         kind: "block",
-        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.`,
+        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
       };
     }
     return {
       kind: "allow_stop",
-      reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — not gating. See .reviewgate/ESCALATION.md.`,
+      reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — not gating. See .reviewgate/ESCALATION.md.${suffix}`,
     };
   }
 
