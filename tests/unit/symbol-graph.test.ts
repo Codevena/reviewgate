@@ -1,5 +1,7 @@
 // tests/unit/symbol-graph.test.ts
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildSymbolGraph,
@@ -42,6 +44,18 @@ describe("symbol-graph", () => {
     // 1-hop callers (was: callers silently empty → CI failure at the rg assertion).
     const refs = scanCallersFallback("alpha", DIR);
     expect(refs.some((r) => r.file.endsWith("b.ts"))).toBe(true);
+  });
+
+  it("excludes .antigravitycli/ files from the no-ripgrep caller scan", () => {
+    // The fallback scan must not leak agy's working-tree artifact into research
+    // context — a .antigravitycli/caller.ts referencing the symbol stays out.
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-agy-"));
+    writeFileSync(join(repo, "real.ts"), "gamma();\n");
+    mkdirSync(join(repo, ".antigravitycli"), { recursive: true });
+    writeFileSync(join(repo, ".antigravitycli", "caller.ts"), "gamma();\n");
+    const refs = scanCallersFallback("gamma", repo);
+    expect(refs.some((r) => r.file.endsWith("real.ts"))).toBe(true);
+    expect(refs.some((r) => r.file.includes(".antigravitycli"))).toBe(false);
   });
 
   it("degrades gracefully for unsupported/missing files (no throw, array result)", async () => {

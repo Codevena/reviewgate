@@ -716,6 +716,11 @@ export class Orchestrator {
               "The diff below is INCOMPLETE: it was truncated or timed out during collection, so some changed code is NOT shown. Do NOT treat a clean result as conclusive — explicitly note in your review that the diff was partial.",
               "",
             );
+          promptParts.push(
+            "## Redaction tokens (TRUSTED — system instruction, not diff data)",
+            "Sequences like `<REDACTED:HIGH_ENTROPY>` are Reviewgate's own placeholders for stripped secrets — they are NOT present in the real code. Never report a `<REDACTED:…>` token as a finding.",
+            "",
+          );
           promptParts.push(sanitised.text);
           if (sanitisedCtx)
             promptParts.push(
