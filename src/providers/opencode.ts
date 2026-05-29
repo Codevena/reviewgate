@@ -97,6 +97,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       // idle watchdog cut it short — bound it by the wall-clock timeout instead.
       zeroByteWatchdogMs: input.cfg.timeoutMs,
       ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
 
     const errText = readFileSafe(stderrFile);

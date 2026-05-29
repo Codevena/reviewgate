@@ -124,6 +124,7 @@ export class CodexAdapter implements ProviderAdapter {
         stderrFile,
         timeoutMs: input.cfg.timeoutMs,
         ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       });
 
       const stderrText = readFileSafe(stderrFile);
