@@ -1016,6 +1016,7 @@ export class Orchestrator {
         this.input.config.phases.review.scopeToDiff !== false,
       outOfDiffBlocking: this.input.config.phases.review.outOfDiffBlocking ?? [],
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
+      demoteCorrectness: repCfg?.demoteCorrectness ?? true,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
