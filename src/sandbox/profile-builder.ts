@@ -20,17 +20,12 @@ const NETWORK_ALLOW: Record<ProviderId, string[]> = {
   opencode: ["openrouter.ai"],
 };
 
-const SECRETS_DENY = [
+// Secret DIRECTORIES / fixed paths — denied via an SBPL (subpath …) rule after
+// realpath canonicalization. (Absolute or ~-prefixed.)
+const SECRET_DIRS = [
   "~/.ssh",
   "~/.aws",
   "~/.gnupg",
-  ".env",
-  ".env.local",
-  ".env.production",
-  "*.pem",
-  "*.key",
-  "*.p12",
-  "*.pfx",
   "~/.netrc",
   "~/.git-credentials",
   "~/.npmrc",
@@ -40,13 +35,30 @@ const SECRETS_DENY = [
   "~/.zsh_history",
 ];
 
-const BROAD_DENY = ["/Users", "/home", "/Volumes", "/tmp"];
+// Secret basename / extension GLOBS — denied via an SBPL (regex …) rule. NOT
+// realpath'd (a glob has no single location). `(subpath "*.pem")` matches a file
+// literally named "*.pem", not real .pem files — so these MUST take the regex path
+// (emitting them as subpath was a real read-secret bypass; DoD-caught).
+const SECRET_GLOBS = [".env", ".env.local", ".env.production", "*.pem", "*.key", "*.p12", "*.pfx"];
+
+// NOTE: there is deliberately NO broad "/Users","/tmp" read-deny. The macOS SBPL
+// model is (allow default) + deny-specific-secrets; a broad deny would block the
+// repo + the reviewer's own working/tmp dirs AND conflict with writeAllow (which is
+// necessarily under /private/tmp + the home dir), making the sandbox throw before
+// spawning. Reads are open by default; only specific secrets are denied.
+
+// A config deniedReads entry is a GLOB if it has no path separator (a bare
+// basename like ".env") or contains a wildcard; otherwise it's a path/dir.
+function isGlobPattern(s: string): boolean {
+  return s.includes("*") || !s.includes("/");
+}
 
 export interface SandboxProfile {
   sandboxRequested: boolean;
   fs: {
     readAllow: string[];
-    readDeny: string[];
+    readDeny: string[]; // absolute/dir paths → SBPL (subpath …)
+    readDenyGlobs: string[]; // basename/extension globs → SBPL (regex …); NOT realpath'd
     writeAllow: string[];
   };
   net: { allow: string[] };
@@ -71,7 +83,7 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
   if (input.mode === "off") {
     return {
       sandboxRequested: false,
-      fs: { readAllow: [], readDeny: [], writeAllow: [] },
+      fs: { readAllow: [], readDeny: [], readDenyGlobs: [], writeAllow: [] },
       net: { allow: [] },
       budget: { walltimeMs: input.walltimeMs ?? 300_000 },
     };
@@ -82,13 +94,21 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
     .filter((p) => p !== input.providerId)
     .flatMap((p) => CREDENTIAL_PATHS[p]);
 
-  const readDeny = [...BROAD_DENY, ...SECRETS_DENY, ...others, ...(input.deniedReads ?? [])];
+  // Split the user's deniedReads into dir/path denies (subpath) vs glob denies (regex).
+  const cfgDenies = input.deniedReads ?? [];
+  const cfgGlobs = cfgDenies.filter(isGlobPattern);
+  const cfgPaths = cfgDenies.filter((d) => !isGlobPattern(d));
+
+  // readDeny = specific secret DIRS + OTHER providers' cred dirs + user path denies.
+  // NO broad roots (would block the repo/workdir). readDenyGlobs = basename/ext globs.
+  const readDeny = [...SECRET_DIRS, ...others, ...cfgPaths];
+  const readDenyGlobs = [...SECRET_GLOBS, ...cfgGlobs];
   const readAllow = [input.workingDir, input.tmpDir, ...own];
   const writeAllow = [input.findingsPath, input.tmpDir, ...own, ...(input.writablePaths ?? [])];
 
   return {
     sandboxRequested: true,
-    fs: { readAllow, readDeny, writeAllow },
+    fs: { readAllow, readDeny, readDenyGlobs, writeAllow },
     net: { allow: NETWORK_ALLOW[input.providerId] },
     budget: { walltimeMs: input.walltimeMs ?? 300_000 },
   };

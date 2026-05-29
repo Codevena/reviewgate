@@ -13,6 +13,7 @@ const minimalProfile: SandboxProfile = {
   fs: {
     readAllow: [],
     readDeny: [],
+    readDenyGlobs: [],
     writeAllow: [],
   },
   net: { allow: [] },

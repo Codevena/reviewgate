@@ -219,7 +219,7 @@ exit 0
       sandbox: {
         profile: {
           sandboxRequested: true,
-          fs: { readAllow: [], readDeny: [], writeAllow: [] },
+          fs: { readAllow: [], readDeny: [], readDenyGlobs: [], writeAllow: [] },
           net: { allow: [] },
           budget: { walltimeMs: 30_000 },
         },

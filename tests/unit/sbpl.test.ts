@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { realpathSync } from "node:fs";
 import type { SandboxProfile } from "../../src/sandbox/profile-builder.ts";
-import { buildMacosSbpl, resolveForSandbox } from "../../src/sandbox/sbpl.ts";
+import { buildMacosSbpl, globToSbplRegex, resolveForSandbox } from "../../src/sandbox/sbpl.ts";
 
 describe("resolveForSandbox", () => {
   it("resolves /tmp to its canonical path (macOS: /private/tmp)", () => {
@@ -28,6 +28,7 @@ describe("buildMacosSbpl", () => {
     fs: {
       readAllow: ["/repo", "/private/tmp/run"],
       readDeny: ["/Users/x/.ssh"],
+      readDenyGlobs: ["*.pem", ".env"],
       writeAllow: ["/private/tmp/run", "/repo/.reviewgate/findings/codex.md"],
     },
     net: { allow: ["api.openai.com"] },
@@ -75,11 +76,35 @@ describe("buildMacosSbpl", () => {
       fs: {
         readAllow: [],
         readDeny: ["/Users/x/.ssh"],
+        readDenyGlobs: [],
         writeAllow: ["/Users/x/.ssh/leak"],
       },
       net: { allow: [] },
       budget: { walltimeMs: 300_000 },
     };
     expect(() => buildMacosSbpl(conflictProfile)).toThrow(/write-only|nested|conflict/i);
+  });
+});
+
+describe("buildMacosSbpl — glob denies become anchored regexes (F: read-secret bypass)", () => {
+  it("renders readDenyGlobs as (regex …), NOT a literal (subpath *.pem)", () => {
+    const sbpl = buildMacosSbpl({
+      sandboxRequested: true,
+      fs: { readAllow: [], readDeny: [], readDenyGlobs: ["*.pem", ".env"], writeAllow: [] },
+      net: { allow: [] },
+      budget: { walltimeMs: 300_000 },
+    });
+    expect(sbpl).toContain("(deny file-read*");
+    expect(sbpl).toContain("(regex ");
+    // *.pem → anchored to a path segment ending in .pem; NOT a literal "*.pem" subpath
+    expect(sbpl).not.toContain('(subpath "*.pem")');
+    expect(sbpl).toContain("[^/]*");
+  });
+});
+
+describe("globToSbplRegex", () => {
+  it("anchors an extension glob to the file end and a basename to a path segment", () => {
+    expect(globToSbplRegex("*.pem")).toBe('#"(^|/)[^/]*\\.pem$"');
+    expect(globToSbplRegex(".env")).toBe('#"(^|/)\\.env$"');
   });
 });

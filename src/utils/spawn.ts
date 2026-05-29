@@ -42,7 +42,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
   let args = input.args;
   let sandboxApplied = false;
   let sandboxFellBack = false;
-  let sbplFile: string | null = null;
+  let sbDir: string | null = null;
   if (input.sandbox) {
     const available = await sandboxExecAvailable();
     if (available) {
@@ -53,12 +53,14 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
         fs: {
           readAllow: prof.fs.readAllow.map((p) => resolveForSandbox(p, home)),
           readDeny: prof.fs.readDeny.map((p) => resolveForSandbox(p, home)),
+          // Globs are NOT realpath'd — they're rendered as anchored SBPL regexes.
+          readDenyGlobs: prof.fs.readDenyGlobs,
           writeAllow: prof.fs.writeAllow.map((p) => resolveForSandbox(p, home)),
         },
       };
       const sbpl = buildMacosSbpl(resolved);
-      const sbDir = mkdtempSync(join(tmpdir(), "rg-sbpl-"));
-      sbplFile = join(sbDir, "profile.sb");
+      sbDir = mkdtempSync(join(tmpdir(), "rg-sbpl-"));
+      const sbplFile = join(sbDir, "profile.sb");
       writeFileSync(sbplFile, sbpl, { mode: 0o600 });
       args = ["-f", sbplFile, command, ...args];
       command = "sandbox-exec";
@@ -187,9 +189,9 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       child.stderr.destroy();
       stdinStream?.destroy();
       child.unref();
-      if (sbplFile) {
+      if (sbDir) {
         try {
-          rmSync(sbplFile, { force: true });
+          rmSync(sbDir, { recursive: true, force: true });
         } catch {
           /* best-effort */
         }

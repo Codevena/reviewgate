@@ -53,6 +53,7 @@ import { spawnSafely } from "../../src/utils/spawn.ts";
       fs: {
         readAllow: [resolvedWorkDir],
         readDeny: [resolvedSecretDir],
+        readDenyGlobs: [],
         writeAllow: [resolvedWorkDir],
       },
       net: { allow: [] },
@@ -107,5 +108,78 @@ import { spawnSafely } from "../../src/utils/spawn.ts";
     } finally {
       rmSync(base, { recursive: true, force: true });
     }
+  });
+});
+
+import { buildSandboxProfile } from "../../src/sandbox/profile-builder.ts";
+
+// PRODUCTION-PROFILE e2e: uses the REAL buildSandboxProfile (not a bespoke one), so
+// it would catch a profile that throws before spawning (e.g. a broad readDeny of
+// /tmp or /Users conflicting with writeAllow — the original BROAD_DENY bug) AND a
+// glob deny that doesn't actually match (*.pem as literal subpath). DoD-caught.
+describe("sandbox-exec REAL isolation via the PRODUCTION profile (macOS)", () => {
+  it("repo read allowed · *.pem glob denied · findings write allowed · out-of-area write denied", async () => {
+    if (platform() !== "darwin" || !(await sandboxExecAvailable())) return;
+    const { mkdtempSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
+    const tmp = await import("node:os");
+    const work = mkdtempSync(join(tmp.tmpdir(), "rg-prodwork-"));
+    const runDir = mkdtempSync(join(tmp.tmpdir(), "rg-prodrun-"));
+    writeFileSync(join(work, "ok.txt"), "REPO_PUBLIC");
+    writeFileSync(join(work, "secret.pem"), "PRIVATE_KEY"); // *.pem glob → must be denied even in workdir
+    const findingsPath = join(runDir, "findings.md");
+
+    const profile = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: work,
+      findingsPath,
+      tmpDir: runDir,
+    });
+    const sb = { profile, mode: "strict" as const };
+    const out = (n: string) => ({
+      stdoutFile: join(runDir, `${n}.out`),
+      stderrFile: join(runDir, `${n}.err`),
+      timeoutMs: 30_000,
+    });
+
+    // read repo file → ALLOWED (no broad deny, no conflict-throw)
+    const r1 = await spawnSafely({
+      command: "/bin/cat",
+      args: [join(work, "ok.txt")],
+      ...out("ok"),
+      sandbox: sb,
+    });
+    expect(r1.exitCode).toBe(0);
+    expect(readFileSync(join(runDir, "ok.out"), "utf8")).toContain("REPO_PUBLIC");
+
+    // read *.pem (even inside the workdir) → DENIED by the glob regex
+    const r2 = await spawnSafely({
+      command: "/bin/cat",
+      args: [join(work, "secret.pem")],
+      ...out("pem"),
+      sandbox: sb,
+    });
+    expect(r2.exitCode).not.toBe(0);
+    expect(readFileSync(join(runDir, "pem.out"), "utf8")).not.toContain("PRIVATE_KEY");
+
+    // write findings → ALLOWED
+    const r3 = await spawnSafely({
+      command: "/usr/bin/touch",
+      args: [findingsPath],
+      ...out("w1"),
+      sandbox: sb,
+    });
+    expect(r3.exitCode).toBe(0);
+    expect(existsSync(findingsPath)).toBe(true);
+
+    // write OUTSIDE the writable area (the read-only workdir) → DENIED
+    const r4 = await spawnSafely({
+      command: "/usr/bin/touch",
+      args: [join(work, "evil.txt")],
+      ...out("w2"),
+      sandbox: sb,
+    });
+    expect(r4.exitCode).not.toBe(0);
+    expect(existsSync(join(work, "evil.txt"))).toBe(false);
   });
 });

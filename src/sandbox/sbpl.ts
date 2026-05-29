@@ -29,6 +29,19 @@ const sbplString = (s: string): string => s.replace(/\\/g, "\\\\").replace(/"/g,
 const isUnder = (child: string, parent: string): boolean =>
   child === parent || child.startsWith(`${parent}/`);
 
+// Translate a basename/extension glob (".env", "*.pem", ".env.local") into a
+// Seatbelt regex literal `#"…"`. Escapes regex metacharacters, turns `*` into
+// `[^/]*`, and anchors to a full path SEGMENT ending at the path end — so it
+// matches the file ANYWHERE in the tree (e.g. "*.pem" → any "…/foo.pem"; ".env" →
+// any "…/.env") without matching a literal "*"/segment substring. Used for the
+// readDenyGlobs path; a glob has no single location so it can't be a subpath.
+export function globToSbplRegex(glob: string): string {
+  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+  // (^|/) — start of string or a path separator — then the pattern, then end.
+  const body = `(^|/)${escaped}$`;
+  return `#"${body}"`;
+}
+
 export function buildMacosSbpl(profile: SandboxProfile): string {
   for (const w of profile.fs.writeAllow) {
     for (const d of profile.fs.readDeny) {
@@ -44,9 +57,12 @@ export function buildMacosSbpl(profile: SandboxProfile): string {
     const targets = profile.fs.writeAllow.map((p) => `(subpath "${sbplString(p)}")`).join(" ");
     lines.push(`(allow file-write* ${targets})`);
   }
-  if (profile.fs.readDeny.length > 0) {
-    const targets = profile.fs.readDeny.map((p) => `(subpath "${sbplString(p)}")`).join(" ");
-    lines.push(`(deny file-read* ${targets})`);
+  const readDenyTargets: string[] = [
+    ...profile.fs.readDeny.map((p) => `(subpath "${sbplString(p)}")`),
+    ...profile.fs.readDenyGlobs.map((g) => `(regex ${globToSbplRegex(g)})`),
+  ];
+  if (readDenyTargets.length > 0) {
+    lines.push(`(deny file-read* ${readDenyTargets.join(" ")})`);
   }
   return `${lines.join("\n")}\n`;
 }
