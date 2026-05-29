@@ -142,7 +142,10 @@ export class ClaudeAdapter implements ProviderAdapter {
       // Exit 0 but the result envelope is not a parseable review (`claude -p
       // --output-format json` can truncate before emitting valid JSON). NOT a
       // clean review → ERROR (status !== "ok" → excluded from okRuns) rather than
-      // a silent empty PASS, matching codex/opencode's fail-closed behavior.
+      // a silent empty PASS, matching codex/opencode's fail-closed behavior. If the
+      // output is actually a quota/usage-limit banner (printed on an exit-0 run),
+      // classify it quota-exhausted so cooldown+failover fires (F-043).
+      const quota = isQuotaExhausted(errText + readFileSafe(outFile));
       return {
         reviewerId: input.reviewerId,
         verdict: "ERROR",
@@ -151,8 +154,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         durationMs: res.durationMs,
         exitCode: res.exitCode,
         rawEventsPath: outFile,
-        status: "error",
-        statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+        status: quota ? "quota-exhausted" : "error",
+        statusDetail: quota
+          ? "reviewer exited 0 but printed a quota/usage-limit banner"
+          : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
       };
     }
     return {

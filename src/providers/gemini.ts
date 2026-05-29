@@ -132,7 +132,11 @@ export class GeminiAdapter implements ProviderAdapter {
         // Exit 0 but stdout is not a parseable review (agy `-p` print mode can
         // truncate before emitting valid JSON). NOT a clean review → ERROR
         // (status !== "ok" → excluded from okRuns) rather than a silent empty PASS,
-        // matching codex/opencode's fail-closed behavior.
+        // matching codex/opencode's fail-closed behavior. If the unparseable output
+        // is actually a quota/usage-limit banner (agy can print one and still exit
+        // 0), classify it as quota-exhausted so the orchestrator's cooldown+failover
+        // fires instead of treating the capped provider as a generic error (F-043).
+        const quota = isQuotaExhausted(outText + errText);
         return {
           reviewerId: input.reviewerId,
           verdict: "ERROR",
@@ -141,8 +145,10 @@ export class GeminiAdapter implements ProviderAdapter {
           durationMs: res.durationMs,
           exitCode: res.exitCode,
           rawEventsPath: outFile,
-          status: "error",
-          statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+          status: quota ? "quota-exhausted" : "error",
+          statusDetail: quota
+            ? "reviewer exited 0 but printed a quota/usage-limit banner"
+            : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
         };
       }
       return {

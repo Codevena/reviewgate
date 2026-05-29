@@ -134,9 +134,43 @@ exit 0
     expect(di).toBeGreaterThanOrEqual(0);
     expect(argv[di + 1]).toBe("shell_tool");
     expect(argv).toContain("--output-schema");
-    expect(argv).toContain("--output-last-message");
-    expect(argv.filter((x) => x.length > 0).pop()).toBe("REVIEW_PROMPT_BODY");
-    expect(di).toBeLessThan(argv.lastIndexOf("REVIEW_PROMPT_BODY"));
+  });
+
+  it("B2: complete() (judge path) ALSO passes --disable shell_tool (F-044)", async () => {
+    // The judge/critic path must disable shell_tool too — agentic exec_command
+    // exploration ends the turn without a final message, so complete() returns ""
+    // and the judge silently no-ops to its default (no retry, unlike review()).
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-cmpl-args-"));
+    const argvFile = join(dir, "argv.txt");
+    const bin = join(dir, "fake-cmpl-argv.sh");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && printf '%s' '{"contradicts":false}' > "$LAST_MSG"
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"cached_input_tokens":0}}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    chmodSync(bin, 0o755);
+    const adapter = new CodexAdapter({ binPath: bin });
+    const text = await adapter.complete("judge this", { model: "gpt-5.5", auth: "oauth" });
+    expect(text).toContain('"contradicts":false');
+    const argv = readFileSync(argvFile, "utf8").split("\n");
+    const di = argv.indexOf("--disable");
+    expect(di).toBeGreaterThanOrEqual(0);
+    expect(argv[di + 1]).toBe("shell_tool");
+    expect(argv.filter((x) => x.length > 0).pop()).toBe("judge this");
   });
 
   it("3f: exit-0 empty last-message with quota banner → quota-exhausted, one spawn", async () => {

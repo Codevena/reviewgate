@@ -20,6 +20,26 @@ describe("buildSandboxProfile", () => {
     expect(p.net.allow).not.toContain("api.anthropic.com");
   });
 
+  it("threads config writablePaths/deniedReads into the profile (F-058: not dead keys)", () => {
+    // The sandbox.writablePaths / sandbox.deniedReads config keys must actually
+    // influence the profile — previously they were defined in schema/defaults but
+    // never read, presenting a security knob that did nothing.
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: "/repo",
+      findingsPath: "/repo/.reviewgate/findings/codex.md",
+      tmpDir: "/tmp/rg-run-1",
+      writablePaths: ["/repo/.reviewgate/"],
+      deniedReads: ["~/.kube", "/repo/secrets"],
+    });
+    expect(p.fs.writeAllow).toContain("/repo/.reviewgate/");
+    expect(p.fs.readDeny).toContain("~/.kube");
+    expect(p.fs.readDeny).toContain("/repo/secrets");
+    // Hard-coded protections remain in place alongside the config additions.
+    expect(p.fs.readDeny).toContain("~/.ssh");
+  });
+
   it("off mode returns sandboxRequested=false", () => {
     const p = buildSandboxProfile({
       providerId: "codex",

@@ -98,6 +98,24 @@ describe("aggregate — region dedup ignores category", () => {
     expect(r.dedupedFindings.length).toBe(1);
   });
 
+  it("region-merges findings ≤5 lines apart even across a fixed-bucket boundary (F-009)", () => {
+    // Lines 5 and 6 are 1 line apart but fall in different floor((n-1)/5) buckets
+    // (0 vs 1), so the old fixed-bucket key did NOT merge them — contradicting the
+    // documented 5-line proximity window. With distinct wording (jaccard<0.6) only
+    // the region path can merge them; it must.
+    const a = fin({ file: "a.ts", line_start: 5, line_end: 5, message: "m", rule_id: "a" });
+    const b = fin({ file: "a.ts", line_start: 6, line_end: 6, message: "m", rule_id: "b" });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1);
+  });
+
+  it("does NOT region-merge findings >5 lines apart (window boundary)", () => {
+    const a = fin({ file: "a.ts", line_start: 5, line_end: 5, message: "m", rule_id: "a" });
+    const b = fin({ file: "a.ts", line_start: 11, line_end: 11, message: "m", rule_id: "b" });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(2);
+  });
+
   it("still keeps issues in DIFFERENT line regions distinct (even same category)", () => {
     const a = fin({
       file: "x.ts",

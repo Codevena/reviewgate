@@ -345,6 +345,37 @@ export class LoopDriver {
       state = await this.i.state.load();
     }
 
+    // Post-escalation NEW edits: each escalation announce UNLINKS the dirty.flag,
+    // so a flag present here while still escalated+announced means the agent edited
+    // MORE code AFTER being told the gate gave up. That new diff was never reviewed;
+    // the escalation was about the PRIOR change-set. Re-arm into a fresh cycle and
+    // review the new work instead of waving the stop through on un-reviewed code
+    // (F-002). (A commit-while-escalated is handled above; this is the no-commit,
+    // keep-editing case.) Termination still holds — the fresh cycle is itself
+    // bounded by maxIterations/cost-cap.
+    if (state.escalated && state.escalation_announced) {
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          iteration: 0,
+          cost_usd_so_far: 0,
+          signature_history: [],
+          iteration_stats: [],
+          fp_rejects_history: [],
+          escalated: false,
+          escalation_reason: null,
+          escalation_announced: false,
+          incomplete_runs: 0,
+          cumulative_fp_rejects: 0,
+          fp_counted_through_iter: 0,
+          reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+        }),
+      );
+      clearDecisions(this.i.repoRoot);
+      new ProposalStore(this.i.repoRoot, state.session_id).clear();
+      state = await this.i.state.load();
+    }
+
     // Escalation precondition: cost cap reached (apikey/openrouter mode only;
     // OAuth mode cost is 0 so this never fires there).
     if (
@@ -383,14 +414,31 @@ export class LoopDriver {
           : 0;
       const realAt = (k: number, wrongOverride?: number) =>
         Math.max(0, (hist[k]?.length ?? 0) - (wrongOverride ?? fpHist[k] ?? 0));
-      const lastReal = n > 0 ? realAt(n - 1, latestWrong) : Number.POSITIVE_INFINITY;
-      const prevReal = n >= 2 ? realAt(n - 2) : Number.POSITIVE_INFINITY;
+      // Only iterations that actually REVIEWED contribute to convergence. An ERROR
+      // iteration (reviewer timeout/quota/error) appends a 0-length signature row;
+      // reading it as "0 real findings" would make a transient mid-cycle error look
+      // like a non-progressing round and prematurely abort a genuinely-converging
+      // cycle (F-001). Skip empty rows; compare the last two REVIEWED rounds. The
+      // latest-iteration FP-reject override only applies if the genuine last
+      // iteration (index n-1) was itself reviewed (else its fpHist is already folded).
+      const reviewedIdx = hist.reduce<number[]>((acc, h, k) => {
+        if (h.length > 0) acc.push(k);
+        return acc;
+      }, []);
+      const m = reviewedIdx.length;
+      const lastIdx = m > 0 ? (reviewedIdx[m - 1] as number) : -1;
+      const prevIdx = m >= 2 ? (reviewedIdx[m - 2] as number) : -1;
+      const lastReal =
+        lastIdx >= 0
+          ? realAt(lastIdx, lastIdx === n - 1 ? latestWrong : undefined)
+          : Number.POSITIVE_INFINITY;
+      const prevReal = prevIdx >= 0 ? realAt(prevIdx) : Number.POSITIVE_INFINITY;
       const fpStreakOn = this.i.config.loop.fpStreakThreshold > 0;
-      // Converging = REAL (non-FP) findings strictly fewer than the prior round, OR
-      // no real findings remain (only reviewer FPs left — the fp-streak breaker's
-      // job, IF enabled). Total count is NOT used: the panel can add fresh FPs faster
-      // than real findings are fixed, masking real progress.
-      const progressing = n >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
+      // Converging = REAL (non-FP) findings strictly fewer than the prior reviewed
+      // round, OR no real findings remain (only reviewer FPs left — the fp-streak
+      // breaker's job, IF enabled). Total count is NOT used: the panel can add fresh
+      // FPs faster than real findings are fixed, masking real progress.
+      const progressing = m >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(

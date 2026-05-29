@@ -166,4 +166,72 @@ describe("FpLedgerStore lifecycle", () => {
     expect(new Set(ids).size).toBe(ids.length); // no collision
     expect(ids).toContain("FP-003"); // new id is past the high-water mark, not reused
   });
+
+  it("does NOT reuse a HIGHER id when it is decayed while a lower id survives (F-019)", () => {
+    return (async () => {
+      const s = new FpLedgerStore(repo());
+      // FP-001 pinned → sticky, kept forever. FP-002 candidate, will decay.
+      await s.recordReject(
+        "sigKeep",
+        meta,
+        { run_id: "r1", provider: "codex", reason: "x" },
+        "2026-01-01T00:00:00Z",
+      );
+      await s.pin("FP-001", "human");
+      await s.recordReject(
+        "sigOld",
+        meta,
+        { run_id: "r2", provider: "codex", reason: "x" },
+        "2026-01-01T00:00:00Z",
+      );
+      await s.decayPass("2026-06-01T00:00:00Z"); // drops FP-002 (candidate, >90d), keeps FP-001
+      await s.recordReject(
+        "sigNew",
+        meta,
+        { run_id: "r3", provider: "codex", reason: "x" },
+        "2026-06-01T00:00:00Z",
+      );
+      const ids = (await s.snapshot()).entries.map((e) => e.id).sort();
+      // The new entry must NOT reuse the decayed FP-002 id (a stale pending.json
+      // pattern_id / brain linked_fp_id could still reference it).
+      expect(ids).toEqual(["FP-001", "FP-003"]);
+    })();
+  });
+
+  it("decayPass recomputes a stale 'active' entry whose rejects aged past the 60d window (F-018)", async () => {
+    const s = new FpLedgerStore(repo());
+    // active = 3 rejects, 2 providers, within 60d.
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r2", provider: "gemini", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r3", provider: "codex", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    expect((await s.snapshot()).entries[0]?.stage).toBe("active");
+    // 70d later a DUPLICATE (run_id,provider) bumps last_seen_at without adding a
+    // reject or recomputing — the entry stays 'active' on disk though its rejects
+    // are now all >60d old.
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2026-03-12T00:00:00Z",
+    );
+    expect((await s.snapshot()).entries[0]?.stage).toBe("active"); // stale active
+    // decayPass must recompute it back to candidate (no longer meets the 60d floor).
+    await s.decayPass("2026-03-12T00:00:00Z");
+    expect((await s.snapshot()).entries[0]?.stage).toBe("candidate");
+  });
 });

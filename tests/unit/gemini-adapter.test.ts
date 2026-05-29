@@ -121,6 +121,32 @@ describe("GeminiAdapter (agy, mocked)", () => {
     expect(res.status).toBe("error");
     expect(res.findings).toEqual([]);
   });
+
+  it("exit 0 with a quota banner → status quota-exhausted (triggers cooldown/failover, F-043)", async () => {
+    // agy can print a usage-limit banner and still exit 0. That must classify as
+    // quota-exhausted (not a generic error or a clean PASS) so the orchestrator
+    // cools the provider down and fails over instead of treating it as reviewed.
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-quota0-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-gemini-quota.sh",
+      "#!/usr/bin/env bash\nprintf '%s\\n' 'Error: resource_exhausted — usage limit'\nexit 0\n",
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+      reviewerId: "gemini-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.verdict).toBe("ERROR");
+    expect(res.status).toBe("quota-exhausted");
+  });
 });
 
 describe("GeminiAdapter.complete (judge completion)", () => {

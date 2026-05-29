@@ -24,12 +24,11 @@ export interface RejectMeta {
 
 const EMPTY: FpLedgerIndex = { schema: "reviewgate.fpledger.v1", entries: [] };
 
-// High-water mark for id allocation. Using the array LENGTH would reuse an id
-// after decayPass() removes an entry and creates a gap (e.g. drop FP-001 while
-// FP-002 survives → next would collide on FP-002), making pin/unpin and
-// fp_ledger_match.pattern_id ambiguous. Allocate strictly above the max numeric
-// id ever present; the only reuse is when the ledger is empty (no live refs).
-function nextIdNumber(entries: FpLedgerEntry[]): number {
+// Highest numeric id among the CURRENT entries. Used only as a floor when the
+// persisted `seq` high-water mark is absent (legacy ledgers) — `seq` is the real
+// monotonic source of truth, so a decayed entry's id is never reused even when the
+// highest-numbered entry is the one removed (F-019).
+function maxEntryId(entries: FpLedgerEntry[]): number {
   let max = 0;
   for (const e of entries) {
     const n = Number.parseInt(e.id.replace(/^FP-/, ""), 10);
@@ -97,8 +96,12 @@ export class FpLedgerStore {
     await this.mutate((idx) => {
       let e = idx.entries.find((x) => x.signature === signature);
       if (!e) {
+        // Allocate strictly above the persisted high-water mark (never reuse a
+        // decayed id). Fall back to the current max for legacy ledgers w/o `seq`.
+        const nextNum = Math.max(idx.seq ?? 0, maxEntryId(idx.entries)) + 1;
+        idx.seq = nextNum;
         e = {
-          id: `FP-${String(nextIdNumber(idx.entries) + 1).padStart(3, "0")}`,
+          id: `FP-${String(nextNum).padStart(3, "0")}`,
           signature,
           rule_id: meta.rule_id,
           category: meta.category,
@@ -165,7 +168,15 @@ export class FpLedgerStore {
   async decayPass(nowIso: string): Promise<void> {
     const nowMs = Date.parse(nowIso);
     await this.mutate((idx) => {
-      const recomputed = idx.entries.map((e) => (e.stage === "sticky" ? recompute(e, nowMs) : e));
+      // Re-evaluate sticky AND active entries against the current windows before
+      // filtering: an entry can be 'active'/'sticky' on disk while its qualifying
+      // rejects have aged out of the 60d/90d window (last_seen_at gets bumped by
+      // duplicate hits without recompute), so it would keep suppressing real
+      // findings. recompute() honors pinned_by (F-017, F-018). Candidates are left
+      // alone — a decay pass should not silently PROMOTE them.
+      const recomputed = idx.entries.map((e) =>
+        e.stage === "sticky" || e.stage === "active" ? recompute(e, nowMs) : e,
+      );
       const kept = recomputed.filter((e) => {
         if (e.stage === "sticky") return true;
         const ageDays = (nowMs - Date.parse(e.last_seen_at)) / DAY_MS;

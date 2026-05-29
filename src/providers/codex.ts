@@ -272,6 +272,12 @@ export class CodexAdapter implements ProviderAdapter {
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
+        // Same as review(): disable agentic shell_tool exploration. Without it a
+        // judge prompt can trigger exec_command, ending the turn with no final
+        // message → complete() returns "" → the judge silently no-ops to its
+        // default (no retry on this path, unlike review()). (F-044)
+        "--disable",
+        "shell_tool",
         "--json",
         "--output-last-message",
         lastMsgFile,

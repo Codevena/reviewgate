@@ -77,8 +77,14 @@ const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 
 // separately. The tight 5-line window keeps genuinely separate issues (>5 lines
 // apart) distinct; representative keeps the highest severity, so a co-located
 // CRITICAL is never hidden behind a lower-severity neighbour.
-function dedupKey(f: Finding): string {
-  return `${f.file}|${Math.floor((f.line_start - 1) / 5)}`;
+// True 5-line proximity window (NOT a fixed bucket): two same-file findings whose
+// line_start differs by ≤5 are in the same region. Fixed floor()-buckets broke
+// the promise at every boundary (lines 5 vs 6 sit in different buckets despite
+// being adjacent, while 1 vs 5 share one) — a sliding window honors the documented
+// guarantee at every line (F-009).
+const REGION_WINDOW = 5;
+function sameRegion(a: Finding, b: Finding): boolean {
+  return a.file === b.file && Math.abs(a.line_start - b.line_start) <= REGION_WINDOW;
 }
 
 // Significant-word set of a message (lowercased, punctuation→space, drop short
@@ -218,7 +224,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const reviewerKey = `${f.reviewer.provider}:${f.reviewer.persona}`;
     const fTokens = normTokens(f.message);
     // Merge into an existing cluster (same file) when EITHER the file + 5-line
-    // region matches (category-independent — see dedupKey) OR the wording is
+    // region matches (category-independent — see sameRegion) OR the wording is
     // highly similar.
     let target: Cluster | undefined;
     for (const c of clusters) {
@@ -226,7 +232,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       const wordingMerge =
         jaccard(c.tokens, fTokens) >= SIM_THRESHOLD &&
         Math.abs(c.sample.line_start - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
-      if (dedupKey(c.sample) === dedupKey(f) || wordingMerge) {
+      if (sameRegion(c.sample, f) || wordingMerge) {
         target = c;
         break;
       }
