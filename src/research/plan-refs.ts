@@ -50,8 +50,14 @@ export interface ReferencedFilesInput {
   signal?: AbortSignal;
 }
 
-export const PROTECTED_PREFIXES = [".reviewgate/", ".git/", ".hg/", ".svn/", ".antigravitycli/"];
+const PROTECTED_PREFIXES = [".reviewgate/", ".git/", ".hg/", ".svn/"];
 const PROTECTED_FILES = ["reviewgate.config.ts"];
+
+// agy's .antigravitycli artifact can appear at any depth (agy run in a subdir),
+// so match it as a path component anywhere — not just a root prefix.
+export function isAgyArtifactPath(path: string): boolean {
+  return /(^|\/)\.antigravitycli(\/|$)/.test(path);
+}
 
 /**
  * Returns the subset of `paths` that git does NOT ignore, or `null` on a real
@@ -123,6 +129,7 @@ export async function collectReferencedFileContents(input: ReferencedFilesInput)
       if (exclude.has(lower)) continue;
       if (PROTECTED_FILES.includes(lower)) continue;
       if (PROTECTED_PREFIXES.some((p) => lower.startsWith(p))) continue;
+      if (isAgyArtifactPath(lower)) continue;
 
       const abs = join(repoRoot, rel);
       const relCheck = relative(repoRoot, abs);
