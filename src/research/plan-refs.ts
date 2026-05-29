@@ -56,7 +56,7 @@ const PROTECTED_FILES = ["reviewgate.config.ts"];
 // agy's .antigravitycli artifact can appear at any depth (agy run in a subdir),
 // so match it as a path component anywhere — not just a root prefix.
 export function isAgyArtifactPath(path: string): boolean {
-  return /(^|\/)\.antigravitycli(\/|$)/.test(path);
+  return /(^|\/)\.antigravitycli(\/|$)/i.test(path);
 }
 
 /**

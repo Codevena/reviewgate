@@ -165,7 +165,7 @@ export function scanCallersFallback(symbol: string, repoRoot: string): CallerRef
       cwd: repoRoot,
       absolute: true,
     })) {
-      if (/(?:^|\/)(?:node_modules|\.git|\.reviewgate|dist)\//.test(abs)) continue;
+      if (/(?:^|\/)(?:node_modules|\.git|\.reviewgate|\.antigravitycli|dist)\//.test(abs)) continue;
       if (++scanned > SCAN_FILE_CAP) break;
       let text: string;
       try {

@@ -46,7 +46,7 @@ export const DIFF_INCOMPLETE_MARKER =
 // artifact — matched at ANY depth, since agy run in a subdir yields
 // `sub/.antigravitycli`. Reviewing these (a) loops the gate on its own scaffold
 // and (b) emits false "committed credential" positives on the artifact dir.
-const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/;
+const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/i;
 function isExcludedFromReview(path: string): boolean {
   return (
     path === "reviewgate.config.ts" ||
