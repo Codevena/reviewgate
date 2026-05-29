@@ -1,6 +1,7 @@
 // src/core/critic.ts
 import type { CompleteOptions, ProviderAdapter } from "../providers/adapter-base.ts";
 import type { Finding } from "../schemas/finding.ts";
+import { safeJsonParse } from "../utils/safe-json.ts";
 
 export interface CriticVerdict {
   verdict: "keep" | "likely_fp";
@@ -67,12 +68,12 @@ export async function runCritic(
 // `verdicts` array. Returns `undefined` when nothing parseable is found (caller
 // yields zero demotions — demote-only/fail-open).
 function extractCriticPayload(text: string): unknown {
-  const direct = tryParse(text);
+  const direct = safeJsonParse(text);
   if (direct !== undefined) return direct;
   for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
     const end = matchingBrace(text, start);
     if (end < 0) continue;
-    const candidate = tryParse(text.slice(start, end + 1));
+    const candidate = safeJsonParse(text.slice(start, end + 1));
     if (
       candidate &&
       typeof candidate === "object" &&
@@ -82,14 +83,6 @@ function extractCriticPayload(text: string): unknown {
     }
   }
   return undefined;
-}
-
-function tryParse(s: string): unknown {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return undefined;
-  }
 }
 
 // Index of the `}` that closes the `{` at `open`, or -1 if unbalanced. String-aware

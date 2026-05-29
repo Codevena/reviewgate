@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
+import { safeJsonParse } from "../utils/safe-json.ts";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
   CompleteOptions,
@@ -223,12 +224,12 @@ export class ClaudeAdapter implements ProviderAdapter {
       } catch {
         return "";
       }
-      try {
-        const envelope = JSON.parse(fileText) as ClaudeEnvelope;
-        return envelope.result ?? "";
-      } catch {
-        return fileText;
+      const envelope = safeJsonParse(fileText);
+      if (envelope && typeof envelope === "object" && !Array.isArray(envelope)) {
+        return (envelope as ClaudeEnvelope).result ?? "";
       }
+      // Not a parseable JSON object → return the raw text as the completion.
+      return fileText;
     } finally {
       try {
         rmSync(run, { recursive: true, force: true });
@@ -253,11 +254,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     let fileText = "";
     try {
       fileText = readFileSync(outFile, "utf8");
-      const parsed = JSON.parse(fileText);
-      // JSON.parse("null")/"42"/"[..]" succeed but aren't an envelope object;
-      // `env.result` on a null/primitive would throw an uncaught TypeError and
-      // crash the adapter instead of failing closed. Keep env={} unless it's an object.
-      if (parsed && typeof parsed === "object") env = parsed as ClaudeEnvelope;
+      // safeJsonParse never throws; "null"/"42"/"[..]" parse to non-objects, so
+      // keep env={} unless it's a real object — `env.result` on a null/primitive
+      // would otherwise throw an uncaught TypeError (fail-OPEN) instead of failing
+      // closed to the !out ERROR path.
+      const parsed = safeJsonParse(fileText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        env = parsed as ClaudeEnvelope;
+      }
     } catch {
       env = {};
     }
