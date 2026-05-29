@@ -31,6 +31,13 @@ const SECRETS_DENY = [
   "*.key",
   "*.p12",
   "*.pfx",
+  "~/.netrc",
+  "~/.git-credentials",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.config/gh",
+  "~/.bash_history",
+  "~/.zsh_history",
 ];
 
 const BROAD_DENY = ["/Users", "/home", "/Volumes", "/tmp"];
@@ -77,7 +84,7 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
 
   const readDeny = [...BROAD_DENY, ...SECRETS_DENY, ...others, ...(input.deniedReads ?? [])];
   const readAllow = [input.workingDir, input.tmpDir, ...own];
-  const writeAllow = [input.findingsPath, input.tmpDir, ...(input.writablePaths ?? [])];
+  const writeAllow = [input.findingsPath, input.tmpDir, ...own, ...(input.writablePaths ?? [])];
 
   return {
     sandboxRequested: true,
