@@ -98,7 +98,13 @@ export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
   for (const re of INJECTION_MARKERS) {
     body = body.replace(re, (m) => {
       flagged++;
-      return escapeAngles(m);
+      // Angle-bracket control tokens are hard-escaped; purely-textual markers
+      // (`### Instruction:`, `Human:`, `Reviewgate:`, `[INST]`) — which escapeAngles
+      // cannot touch — are defanged with a zero-width space after the first char so
+      // the live token never reaches the reviewer verbatim. Mirrors
+      // neutralizeInjectionMarkers so the diff path and docs path defend identically (F-032).
+      if (m.includes("<") || m.includes(">")) return escapeAngles(m);
+      return m.length > 1 ? `${m[0]}${ZERO_WIDTH_SPACE}${m.slice(1)}` : m;
     });
   }
 

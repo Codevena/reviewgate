@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
+import type { AuditLogger } from "../audit/logger.ts";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
@@ -44,7 +45,7 @@ import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
 import type { Embedder } from "./brain/embeddings.ts";
 import { BrainEngine } from "./brain/engine.ts";
-import { enrichProposal } from "./brain/enrich.ts";
+import { type EgressLog, enrichProposal } from "./brain/enrich.ts";
 import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-coupling.ts";
 import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
@@ -59,9 +60,37 @@ import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
 import { buildRunSummary } from "./run-summary.ts";
 
+// Persist the SSRF fetcher's per-attempt egress log (Gate 9) to the hash-chained
+// audit trail — one `brain.egress` event per fetch attempt (allow or deny, with
+// the resolved IP / decision / reason). Without this the curator's web-fetch
+// activity leaves no forensic record (F-028). Best-effort: never throws.
+export async function appendEgressAudit(
+  audit: AuditLogger,
+  runId: string,
+  iter: number,
+  egress: EgressLog[],
+): Promise<void> {
+  for (const log of egress) {
+    try {
+      await audit.append({
+        event: "brain.egress",
+        run_id: runId,
+        iter,
+        trigger: "stop-hook",
+        egress: log,
+      });
+    } catch {
+      // an audit append failure must never affect curation/verdict
+    }
+  }
+}
+
 export interface OrchestratorInput {
   repoRoot: string;
   config: ReviewgateConfig;
+  // Hash-chained audit logger (same instance the gate gives the LoopDriver, so the
+  // chain stays intact). Used to persist the curator's web-fetch egress log.
+  audit?: AuditLogger;
   adapters: Partial<Record<ProviderId, ProviderAdapter>>;
   sandboxMode: "strict" | "permissive" | "off";
   hostTier: HostTier;
@@ -1067,7 +1096,9 @@ export class Orchestrator {
       // behavior, but better than zero curation for the round.
       const curatorInput = cumulative.length > 0 ? cumulative : proposals;
       if (curatorInput.length > 0) {
-        await this.runCuratorPhase(repo, opts.runId, brainCfg, curatorInput).catch(() => undefined);
+        await this.runCuratorPhase(repo, opts.runId, opts.iter, brainCfg, curatorInput).catch(
+          () => undefined,
+        );
       }
     }
 
@@ -1243,6 +1274,7 @@ export class Orchestrator {
   private async runCuratorPhase(
     repo: string,
     runId: string,
+    iter: number,
     brainCfg: NonNullable<ReviewgateConfig["phases"]["brain"]>,
     proposals: MemoryProposal[],
   ): Promise<void> {
@@ -1264,13 +1296,19 @@ export class Orchestrator {
       ...(this.input.fetchOverrides?.resolve ? { resolve: this.input.fetchOverrides.resolve } : {}),
     };
     const enriched: MemoryProposal[] = [];
+    const allEgress: EgressLog[] = [];
     for (const p of proposals) {
       try {
-        const { enriched: e } = await enrichProposal(repo, p, fetchOpts);
+        const { enriched: e, egress } = await enrichProposal(repo, p, fetchOpts);
         enriched.push(e);
+        allEgress.push(...egress);
       } catch {
         enriched.push(p);
       }
+    }
+    // Gate 9: persist every fetch attempt to the audit trail (F-028).
+    if (this.input.audit && allEgress.length > 0) {
+      await appendEgressAudit(this.input.audit, runId, iter, allEgress);
     }
 
     // Hybrid: build the optional LLM judge only when phases.brain.curator is set.

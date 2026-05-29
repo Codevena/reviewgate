@@ -194,6 +194,13 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
       return demote(f, "\n\n↓ not in the changed files — advisory only.");
     }
     if (rangeOverlapsChanged(f.line_start, f.line_end ?? f.line_start, ranges)) return f;
+    // In-file but outside the changed hunks. Honor the SAME blocking escape hatch
+    // as the file-absent case above: a reviewer often cites the enclosing
+    // declaration a few lines above the changed call, so a configured category
+    // (e.g. security) must be able to stay blocking instead of silently demoting a
+    // real CRITICAL to INFO (F-033).
+    const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+    if (categories.some((c) => blocking.has(c))) return f;
     return demote(f, "\n\n↓ outside the changed lines — advisory only.");
   });
 }
