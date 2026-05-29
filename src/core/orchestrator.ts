@@ -30,6 +30,9 @@ import { extractImportedLibs } from "../research/imports.ts";
 import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
+import { sandboxExecAvailable } from "../sandbox/availability.ts";
+import { SandboxUnavailableError } from "../sandbox/errors.ts";
+import { buildSandboxProfile } from "../sandbox/profile-builder.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
@@ -284,24 +287,10 @@ export class Orchestrator {
     const fpCfg = this.input.config.phases.fpLedger;
     const fpStore = fpCfg?.enabled ? new FpLedgerStore(repo) : null;
 
-    if (this.input.sandboxMode !== "off") {
-      await this.writeReport(opts, start, [], [], "ERROR");
-      return {
-        verdict: "ERROR",
-        costUsd: 0,
-        durationMs: Date.now() - start,
-        signaturesThisIter: [],
-        summary: buildRunSummary({
-          verdict: "ERROR",
-          source: "skipped",
-          counts: { critical: 0, warn: 0, info: 0 },
-          durationMs: Date.now() - start,
-          criticCostUsd: 0,
-          findings: [],
-          runs: [],
-        }),
-      };
-    }
+    // Sandbox isolation availability (macOS sandbox-exec). Probed once per run so
+    // the permissive-fallback WARN below reflects the same state spawnSafely sees.
+    // Only meaningful when sandboxMode !== "off".
+    const sandboxAvailable = this.input.sandboxMode === "off" ? true : await sandboxExecAvailable();
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---
     const facts = computeDiffFacts(this.input.diff);
@@ -616,6 +605,7 @@ export class Orchestrator {
       promptFile: string,
       findingsPath: string,
       diffPath: string,
+      tmpDir: string,
     ): Promise<ReviewerRun> => {
       const adapter = this.input.adapters[provider];
       const reviewStart = Date.now();
@@ -637,6 +627,31 @@ export class Orchestrator {
           model,
         };
       }
+      // Build a per-reviewer sandbox profile and forward { profile, mode } so the
+      // adapter wraps the CLI in sandbox-exec via spawnSafely. mode "off" → no
+      // sandbox key (unisolated, the trusted-local default). strict + isolation-
+      // unavailable → spawnSafely throws SandboxUnavailableError, caught below and
+      // turned into a fail-closed ERROR for THIS reviewer (never a silent PASS).
+      // openrouter is an HTTP-API adapter (no local subprocess), so sandbox-exec —
+      // which wraps a spawned CLI — does not apply; it gets no sandbox key. The
+      // four CLI providers (codex/claude-code/gemini/opencode) match the profile
+      // builder's ProviderId.
+      const sandbox =
+        this.input.sandboxMode === "off" || provider === "openrouter"
+          ? undefined
+          : {
+              profile: buildSandboxProfile({
+                providerId: provider,
+                mode: this.input.sandboxMode,
+                workingDir: repo,
+                findingsPath,
+                tmpDir,
+                walltimeMs: providerCfg.timeoutMs,
+                writablePaths: this.input.config.sandbox.writablePaths,
+                deniedReads: this.input.config.sandbox.deniedReads,
+              }),
+              mode: this.input.sandboxMode,
+            };
       try {
         const res = await adapter.review({
           cfg: { ...providerCfg, model },
@@ -647,9 +662,17 @@ export class Orchestrator {
           persona,
           diffPath,
           ...(opts.signal ? { signal: opts.signal } : {}),
+          ...(sandbox ? { sandbox } : {}),
         });
         return { res, provider, persona, model };
       } catch (err) {
+        // strict + isolation-unavailable: fail closed for this reviewer with a
+        // legible statusDetail, so the "0 ok reviewers → ERROR/block" gate handles
+        // it. The aggregator/loop never sees this as a usable (clean) result.
+        const detail =
+          err instanceof SandboxUnavailableError
+            ? `sandbox strict unavailable: ${err.message}`.slice(0, 200)
+            : `threw: ${(err as Error).message}`.slice(0, 200);
         return {
           res: {
             reviewerId: `${provider}-${persona}`,
@@ -660,7 +683,7 @@ export class Orchestrator {
             exitCode: -1,
             rawEventsPath: "",
             status: "error",
-            statusDetail: `threw: ${(err as Error).message}`.slice(0, 200),
+            statusDetail: detail,
           },
           provider,
           persona,
@@ -828,6 +851,7 @@ export class Orchestrator {
               promptFile,
               findingsPath,
               diffPath,
+              runDir,
             );
             effects.push(effectFor(r.provider, run.res));
           }
@@ -863,6 +887,7 @@ export class Orchestrator {
                 promptFile,
                 findingsPath,
                 diffPath,
+                runDir,
               );
               run.res.statusDetail =
                 `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
@@ -894,6 +919,23 @@ export class Orchestrator {
         else cooldownStore.record(e.provider, e.resetAt, now, e.source);
       }
     }
+    // Permissive fallback WARN: under mode "permissive" with sandbox-exec
+    // unavailable, spawnSafely ran the reviewer UNISOLATED (it never throws — it
+    // sets sandboxFellBack on its SpawnResult, which the adapter does not surface).
+    // The orchestrator knows the same fact (sandboxAvailable, probed once above),
+    // so annotate every run's statusDetail with a legible note. Best-effort,
+    // non-blocking: it does not change any verdict.
+    if (this.input.sandboxMode === "permissive" && !sandboxAvailable) {
+      const note = "[ran UNISOLATED — sandbox-exec unavailable]";
+      for (const s of settled) {
+        s.res.statusDetail = `${s.res.statusDetail ? `${s.res.statusDetail} ` : ""}${note}`.slice(
+          0,
+          1000,
+        );
+      }
+      console.warn(`[reviewgate] permissive sandbox: ${note}`);
+    }
+
     const okRuns = settled.filter((s) => s.res.status === "ok");
 
     // Per-reviewer outcomes for the RunSummary (includes thrown adapters, now
