@@ -32,6 +32,7 @@ import {
 } from "../setup/prefill.ts";
 import { probeModel } from "../setup/probe.ts";
 import { runDoctor } from "./doctor.ts";
+import { hooksInstalled, runInit } from "./init.ts";
 
 export function setupTip(isTty: boolean): string | null {
   return isTty
@@ -153,8 +154,31 @@ export async function runSetup(input: SetupInput): Promise<number> {
     return 0;
   }
 
-  // 4. Doctor — let it print its own lines directly; then summarize.
   note(`wrote ${result.wrotePath}`);
+
+  // 4. Arm the gate. `setup` only writes config — the Stop/PostToolUse/SessionStart
+  // hooks that actually RUN the gate are installed by `init`. Without this step a
+  // fresh user has a configured-but-inert gate (nothing fires on Stop). Offer to
+  // wire the hooks now (repo-local only — a --global config can't arm a single repo).
+  if (!input.global && targetPath !== globalPath) {
+    if (hooksInstalled(input.repoRoot)) {
+      note("gate already armed (hooks present in .claude/settings.json)");
+    } else {
+      const arm = await confirm({
+        message: "Arm the gate now? Installs the Stop/PostToolUse hooks into .claude/settings.json",
+        initialValue: true,
+      });
+      if (isCancel(arm)) return cancelOut();
+      if (arm) {
+        await runInit({ repoRoot: input.repoRoot, mode: "agent-loop" });
+        note("gate armed — hooks installed in .claude/settings.json");
+      } else {
+        note("gate NOT armed — run `reviewgate init` to install the hooks when ready");
+      }
+    }
+  }
+
+  // 5. Doctor — let it print its own lines directly; then summarize.
   const code = await runDoctor({ repoRoot: input.repoRoot });
   outro(
     code === 0

@@ -73,6 +73,30 @@ export interface InitInput {
   mode: "agent-loop";
 }
 
+// True when the Reviewgate hooks are actually wired into .claude/settings.json
+// (detected by a hook command pointing at .reviewgate/bin/). `setup` writes only
+// the config; the gate is not armed until `init` installs these hooks — so setup
+// uses this to offer arming the gate at the end.
+export function hooksInstalled(repoRoot: string): boolean {
+  const settingsPath = join(repoRoot, ".claude", "settings.json");
+  if (!existsSync(settingsPath)) return false;
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    };
+    const groups = settings.hooks ? Object.values(settings.hooks) : [];
+    return groups.some((entries) =>
+      (entries ?? []).some((e) =>
+        (e.hooks ?? []).some(
+          (c) => typeof c.command === "string" && c.command.includes(".reviewgate/bin/"),
+        ),
+      ),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function runInit(input: InitInput): Promise<void> {
   if (input.mode !== "agent-loop") {
     throw new Error(`invalid --mode "${input.mode}": the only supported value is "agent-loop"`);

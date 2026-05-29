@@ -2,12 +2,68 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runInit } from "../../src/cli/commands/init.ts";
+import { hooksInstalled, runInit } from "../../src/cli/commands/init.ts";
 import { loadConfig } from "../../src/config/loader.ts";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-init-"));
 }
+
+describe("hooksInstalled", () => {
+  it("is false on a fresh repo (no settings.json) and true after runInit", async () => {
+    const repo = tmp();
+    expect(hooksInstalled(repo)).toBe(false);
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    expect(hooksInstalled(repo)).toBe(true);
+  });
+
+  it("is false when settings.json exists but has no reviewgate hooks", async () => {
+    const repo = tmp();
+    await Bun.write(
+      join(repo, ".claude", "settings.json"),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [{ command: "echo hi" }] }] } }),
+    );
+    expect(hooksInstalled(repo)).toBe(false);
+  });
+
+  it("is false and does not throw when settings.json contains invalid/garbage JSON", async () => {
+    const repo = tmp();
+    const settingsDir = join(repo, ".claude");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(settingsDir, { recursive: true });
+    writeFileSync(join(settingsDir, "settings.json"), "garbage value { invalid json");
+    expect(hooksInstalled(repo)).toBe(false);
+  });
+
+  it("is false and does not throw when settings.json has incorrect structure", async () => {
+    const repo = tmp();
+    const settingsDir = join(repo, ".claude");
+    const { mkdirSync, writeFileSync } = await import("node:fs");
+    mkdirSync(settingsDir, { recursive: true });
+
+    // hooks is null
+    writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ hooks: null }));
+    expect(hooksInstalled(repo)).toBe(false);
+
+    // hooks is a string
+    writeFileSync(join(settingsDir, "settings.json"), JSON.stringify({ hooks: "not-an-object" }));
+    expect(hooksInstalled(repo)).toBe(false);
+
+    // hooks.Stop is not an array
+    writeFileSync(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({ hooks: { Stop: { matcher: "*", hooks: [] } } }),
+    );
+    expect(hooksInstalled(repo)).toBe(false);
+
+    // entries in hooks.Stop don't have hooks array
+    writeFileSync(
+      join(settingsDir, "settings.json"),
+      JSON.stringify({ hooks: { Stop: [{ matcher: "*" }] } }),
+    );
+    expect(hooksInstalled(repo)).toBe(false);
+  });
+});
 
 describe("runInit", () => {
   it("creates .claude/settings.json with Reviewgate hooks merged in", async () => {
