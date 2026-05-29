@@ -1,8 +1,20 @@
 # Spec — FP-discounted convergence grace (Bug 3a)
 
 **Date:** 2026-05-28
-**Status:** Approved (design), pending implementation plan
+**Status:** Approved (design v2), pending implementation plan
 **Author:** brainstormed with Markus
+
+> **v2 (after agy spec-review):** agy found two real CRITICALs + a WARN in v1.
+> (1) `signature_history` and `fp_rejects_history` are appended at DIFFERENT
+> lifecycle points (iteration-completion vs decision-fold), so at the convergence
+> check their lengths differ — relative `.at(-1)/.at(-2)` on both misaligns.
+> (2) Hoisting the fold into `absorbPriorDecisions` (called at ~421, AFTER the
+> maxIter check at ~331) would still read stale data without a risky control-flow
+> reorder. (3) If `fpStreakThreshold === 0` the runaway backstop is gone, so the
+> `lastReal === 0` grace could run a pure-FP loop to the hard cap. v2 fixes all
+> three: **absolute indexing**, **compute the latest iteration's FP-rejects fresh
+> at the check** (no fold hoist), and **gate the `lastReal===0` grace on
+> `fpStreakThreshold > 0`**.
 
 ## Problem / Motivation
 
@@ -70,58 +82,78 @@ reviewers) is a separate spec.
 
 ### 1. State: per-iteration FP-reject history (`src/schemas/state.ts`)
 
-Add a field aligned 1:1 with `signature_history`:
+There is already an `iteration_stats` array kept **length-aligned with
+`signature_history`**, appended at iteration-completion (loop-driver ~571) and
+reset to `[]` on re-arm. We add a sibling, indexed by ABSOLUTE iteration:
 
 ```ts
-// Per-iteration count of reviewer_was_wrong rejections, aligned index-for-index
-// with signature_history (fp_rejects_history[i] ↔ signature_history[i]). Used to
-// compute the REAL-finding trajectory (total − FP) for the convergence grace.
-// Reset to [] on re-arm. `.default([])` for back-compat with pre-existing state.
+// Per-iteration count of reviewer_was_wrong rejections, indexed by absolute
+// iteration: fp_rejects_history[k] is the FP-reject count of the iteration whose
+// findings are signature_history[k]. Appended once per iteration at the existing
+// FP fold (guarded by fp_counted_through_iter), so it lags signature_history by at
+// most the current (not-yet-folded) iteration. Reset to [] on re-arm.
+// `.default([])` for back-compat.
 fp_rejects_history: z.array(z.number().int().nonnegative()).default([]),
 ```
 
-Wherever `signature_history` is reset to `[]` on re-arm (clean PASS / commit
-recovery), reset `fp_rejects_history` to `[]` too.
+Wherever `signature_history`/`iteration_stats` are reset to `[]` on re-arm (clean
+PASS / commit recovery), reset `fp_rejects_history` to `[]` too.
 
-### 2. Record FP-rejects per iteration, before the convergence check (`src/core/loop-driver.ts`)
+### 2. Append FP-rejects at the existing fold — NO control-flow hoist (`src/core/loop-driver.ts`)
 
-When the latest completed iteration's decisions are absorbed (the same point that
-folds `cumulative_fp_rejects` — keep that), append that iteration's `wrongRejects`
-to `fp_rejects_history` so the array stays aligned with `signature_history`, and
-ensure this happens **before** the maxIter convergence check reads it. The
-idempotency guard (`fp_counted_through_iter`) must gate the append too, so a
-re-stop of the same iteration does not double-append.
+Keep the per-iteration FP fold where it is (~454, guarded by
+`fp_counted_through_iter`). At that fold, in addition to updating
+`cumulative_fp_rejects`, **push the same `rr.wrongRejects` onto
+`fp_rejects_history`**. Because the fold runs once per iteration in order,
+`fp_rejects_history[k]` is exactly iteration k's FP-reject count (dense,
+absolute-indexed, aligned with `signature_history[k]`). It lags by one: the latest
+iteration's fold happens after that stop's convergence check — handled in §3 by
+computing the latest iteration's FP-rejects FRESH. **No reorder of
+`absorbPriorDecisions` or the decisions-gate** (avoids the control-flow risk agy
+flagged).
 
-Concretely: hoist the per-iteration FP-reject fold (currently at ~452-461) so both
-`cumulative_fp_rejects` and the new `fp_rejects_history` append run in
-`absorbPriorDecisions` (alongside the already-hoisted reputation/FP-ledger
-learning), guarded by `fp_counted_through_iter`. The fp-streak threshold *check*
-stays where it is (after the maxIter check) and reads the now-folded
-`cumulative_fp_rejects`.
+### 3. FP-discounted convergence predicate, absolute-indexed + fresh latest (`src/core/loop-driver.ts` ~331-356)
 
-### 3. FP-discounted convergence predicate (`src/core/loop-driver.ts` ~331-356)
-
-Replace the `lastN`/`prevN`/`cumulative_fp_rejects === 0` logic:
+Compute the latest completed iteration's FP-rejects fresh (reuse
+`previousFindingIds` + `computeRejectRate`, the same call the reject-rate breaker
+makes later — compute once and thread it down to avoid a double read). Index both
+histories by ABSOLUTE position:
 
 ```ts
       const hist = state.signature_history;
       const fpHist = state.fp_rejects_history;
-      const realAt = (i: number) => Math.max(0, (hist.at(i)?.length ?? 0) - (fpHist.at(i) ?? 0));
-      const lastReal = realAt(-1);
-      const prevReal = hist.length >= 2 ? realAt(-2) : Number.POSITIVE_INFINITY;
+      const n = hist.length;
+      // Latest iteration's FP-rejects are not folded into fpHist yet (the fold runs
+      // after this check), so compute them fresh from the current pending +
+      // decisions. `latestWrong` is reused by the reject-rate breaker below.
+      const latestWrong = n > 0 ? computeRejectRate(this.i.repoRoot, state.iteration, previousFindingIds(this.i.repoRoot)).wrongRejects : 0;
+      const realAt = (k: number, wrongOverride?: number) =>
+        Math.max(0, (hist[k]?.length ?? 0) - (wrongOverride ?? fpHist[k] ?? 0));
+      const lastReal = n > 0 ? realAt(n - 1, latestWrong) : Number.POSITIVE_INFINITY;
+      const prevReal = n >= 2 ? realAt(n - 2) : Number.POSITIVE_INFINITY;
+      const fpStreakOn = this.i.config.loop.fpStreakThreshold > 0;
       // Converging = REAL (non-FP) findings strictly fewer than the previous round,
-      // OR no real findings remain (the agent resolved everything genuine; only
-      // reviewer FPs are left — those are the fp-streak breaker's job, not a
-      // "not converging" escalation). Total-count is NOT used: the panel can add
-      // fresh FPs faster than real findings are fixed, masking real progress.
-      const progressing = hist.length >= 2 && (lastReal < prevReal || lastReal === 0);
+      // OR no real findings remain (agent resolved everything genuine; only reviewer
+      // FPs left — the fp-streak breaker's job, IF it is enabled). Total-count is NOT
+      // used: the panel can add fresh FPs faster than real findings are fixed.
+      const progressing =
+        n >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
 ```
 
-The escalation reason becomes:
-`Reached ${state.iteration} iterations without convergence (real findings not decreasing).`
-
-The hard cap (`maxIter * 2`), cost-cap, and stuck-signature detection are
-unchanged upper bounds.
+Notes:
+- **Absolute indices** (`n-1`, `n-2`) — never relative `.at()` across the two
+  arrays — so the length lag between `signature_history` and `fp_rejects_history`
+  cannot misalign them (agy CRITICAL #1).
+- **`latestWrong` computed fresh** — the convergence check no longer depends on the
+  fold having run first; no `absorbPriorDecisions` reorder needed (agy CRITICAL #2).
+- **`lastReal === 0` grace gated on `fpStreakThreshold > 0`** — if the streak
+  backstop is disabled, an all-FP cycle escalates at maxIterations as before, not
+  at the hard cap (agy WARN #3).
+- Escalation reason: `Reached ${state.iteration} iterations without convergence (real findings not decreasing).`
+- Hard cap (`maxIter * 2`), cost-cap, stuck-signature detection unchanged.
+- To avoid reading `decisions/<iter>.jsonl` twice, compute `latestWrong` once and
+  pass it to the later reject-rate / fp-streak block (which already calls
+  `computeRejectRate(... state.iteration ...)`).
 
 ## Components / isolation
 
@@ -137,8 +169,12 @@ Drive `LoopDriver` with crafted state (existing tests already construct
 1. **Real progress despite FPs:** signature counts flat/rising (e.g. 4,5,6) but
    `fp_rejects_history` such that real = 4,3,2 → at maxIter, grace granted, NO
    escalation (runs another iteration). The flashbuddy shape.
-2. **All-FP endpoint:** `lastReal === 0` (every latest finding FP-rejected) → grace
-   (no "not converging" escalation).
+2. **All-FP endpoint (streak enabled):** `lastReal === 0` (every latest finding
+   FP-rejected) with `fpStreakThreshold > 0` → grace (no "not converging"
+   escalation; the streak breaker is the backstop).
+2b. **All-FP endpoint (streak DISABLED):** `lastReal === 0` with
+   `fpStreakThreshold === 0` → escalate at maxIterations (no grace), preserving the
+   pre-change bound (agy WARN #3).
 3. **Genuine non-convergence:** real findings flat/rising and >0 (e.g. real 3,3,4)
    → escalate with "real findings not decreasing".
 4. **FP-runaway still caught:** real findings falling but `cumulative_fp_rejects ≥
@@ -161,7 +197,12 @@ Drive `LoopDriver` with crafted state (existing tests already construct
 
 1. A cycle whose REAL findings decrease (even as total count rises from FP churn,
    and even with FP rejections) is NOT escalated at maxIterations.
-2. `lastReal === 0` (only FPs remain) does not trigger a "not converging" escalation.
+2. `lastReal === 0` (only FPs remain) does not trigger a "not converging" escalation
+   WHEN `fpStreakThreshold > 0`; with the streak breaker disabled (`=== 0`) it still
+   escalates at maxIterations.
+2b. The convergence check uses ABSOLUTE indices and computes the latest iteration's
+   FP-rejects fresh — it does not depend on the FP fold having run first, and the
+   `signature_history`/`fp_rejects_history` length lag never misaligns them.
 3. A cycle with non-decreasing real findings (>0) still escalates "max-iterations
    (real findings not decreasing)".
 4. Genuine FP-runaway still escalates via the reviewer-fp-streak breaker with its
