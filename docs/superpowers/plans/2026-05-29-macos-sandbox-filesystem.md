@@ -1,5 +1,17 @@
 # macOS Filesystem Sandbox Implementation Plan
 
+> **STATUS: ✅ COMPLETE & MERGED** — all 12 tasks shipped in PR #44 (master `4ff390f`, 2026-05-30).
+> 2-reviewer DoD panel (Opus + Gemini) PASS. The panel caught two real CRITICALs the unit
+> tests had masked — `BROAD_DENY` made the profile throw before every spawn (feature was
+> non-functional), and glob denies (`*.pem`) were emitted as literal `(subpath)` no-ops — both
+> fixed in commit `4954158` + guarded by a production-profile e2e (`tests/integration/sandbox-exec-real.test.ts`)
+> that runs real `sandbox-exec` on macOS and proves: repo read allowed · secret/`*.pem` read denied ·
+> findings write allowed · out-of-area write denied.
+>
+> **Residual (INFO, non-blocking):** the production-e2e's second `describe` block runs (with an
+> in-`it` early-return) rather than `describe.skip` on non-darwin; `readAllow` is metadata-only in
+> the `(allow default)` SBPL model (no effect). **Next increment: Linux `bwrap` — see the bottom of this file.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `sandbox.mode: "strict" | "permissive"` actually isolate a reviewer subprocess's filesystem on macOS via `sandbox-exec`, instead of refusing to review.
@@ -1081,3 +1093,34 @@ git commit -m "docs: document macOS sandbox enforcement + honest limitations"
 - [ ] `bun run build` — compiled binary builds
 - [ ] Manual: a repo with `sandbox.mode:"strict"` runs a real review on macOS; confirm via the e2e test that the reviewer cannot read `~/.ssh`.
 - [ ] 2-reviewer DoD panel (Opus + Gemini/agy) PASS.
+
+---
+
+## Increment 2 (NEXT): Linux `bubblewrap` (bwrap)
+
+Same goal on Linux: filesystem-isolate the reviewer subprocess. The profile + wiring are already
+platform-agnostic — only a Linux translator + spawn branch are new. Reuse everything from Increment 1.
+
+**Reuse as-is:** `SandboxProfile` (incl. `readDenyGlobs`), `buildSandboxProfile`, `resolveForSandbox`,
+the `ReviewInput.sandbox` → adapter → `spawnSafely` wiring, the orchestrator profile-build, the
+strict/permissive fallback, doctor (already probes `bwrap` via `doctor-check.ts`).
+
+**New work (mirror the macOS tasks):**
+1. `src/sandbox/bwrap.ts` (pure): `buildBwrapArgs(profile, homeDir): string[]` → the `bwrap` argv.
+   bwrap is a MOUNT-NAMESPACE model (opposite of Seatbelt's allow-default): you build the view
+   explicitly — `--ro-bind / /` (or narrower) then `--bind <writeAllow> <writeAllow>` for writable
+   paths, and crucially **`--tmpfs <secretDir>`** (or omit the bind) to make secret dirs invisible.
+   This INVERTS the deny-model: instead of "deny these reads", you "don't expose these mounts".
+   Globs (`*.pem`) can't be expressed as mounts — document as not-enforced on Linux (a real gap vs
+   macOS regex; note it honestly, or pre-scan + `--tmpfs` specific matches). Use `--die-with-parent`,
+   `--unshare-user` etc. as appropriate; KEEP network (no `--unshare-net`) — same network-open scope.
+2. `availability.ts`: add `bwrapAvailable()` (probe `bwrap --version` / a trivial `bwrap … /bin/true`),
+   memoized; on Linux `sandboxExecAvailable()`→false, `bwrapAvailable()` drives the wrapping.
+3. `spawnSafely`: branch on platform — darwin → sandbox-exec (current); linux + bwrap → `bwrap <args> -- <command> <args>`.
+4. **Real e2e** (Linux, gated on availability): same four assertions as the macOS production-profile e2e.
+5. doctor: extend the strict-fail check to Linux/bwrap.
+6. docs: update CLAUDE.md limitations (glob-deny not enforced on Linux; bwrap available).
+
+**Open design decision for Increment 2:** the glob-deny gap on Linux (no mount-level glob). Options:
+(a) document as not-enforced on Linux; (b) tmpfs-mask the specific glob matches found under the repo
+at profile-build time (TOCTOU-ish, partial). Decide in that increment's brainstorm.
