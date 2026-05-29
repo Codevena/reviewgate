@@ -107,8 +107,9 @@ export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
   // Neutralise the fence delimiters if they appear in the untrusted body, so a
   // diff cannot spoof the boundary and have following text read as trusted.
   for (const fence of ["<<UNTRUSTED_DIFF>>", "<<END_UNTRUSTED>>"]) {
-    body = body.split(fence).join(escapeAngles(fence));
-    // count is best-effort; fold into flagged for parity with other layers
+    const parts = body.split(fence);
+    flagged += parts.length - 1;
+    body = parts.join(escapeAngles(fence));
   }
 
   // Layer 5: entropy redaction (numbered as in spec; layers 4 and 6 follow).
