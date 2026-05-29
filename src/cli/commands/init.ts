@@ -64,6 +64,8 @@ const GITIGNORE_LINES = [
   ".reviewgate/cache/",
   ".reviewgate/brain/proposals/",
   ".reviewgate/brain/snapshots/",
+  "# Antigravity CLI (agy) working-tree artifact",
+  ".antigravitycli",
 ];
 
 export interface InitInput {
