@@ -1,139 +1,155 @@
-# Spec — Eliminate two Reviewgate-own false-positive sources
+# Spec — Stop Reviewgate's own artifacts/tokens from becoming false positives
 
 **Date:** 2026-05-28
-**Status:** Approved (design), pending implementation plan
+**Status:** Approved (design v2), pending implementation plan
 **Author:** brainstormed with Markus
+
+> **v2:** an agy spec-review (verified against the code) corrected v1:
+> `.antigravitycli` is a **directory** agy creates in the repo CWD (not a symlink);
+> `.gemini` is created only in `$HOME`, never in the repo, and is too generic to
+> exclude (would hide legit user code). So we exclude **`.antigravitycli` only**,
+> match it **subdir-safe** (any path depth), also close the **plan-refs** read
+> channel, place the redaction note **once in the orchestrator** (sanitizeDiff runs
+> 3×), and **fold in fence-token hardening** (a found CRITICAL: the fence
+> delimiters aren't neutralized).
 
 ## Problem / Motivation
 
-A flashbuddy agent's Reviewgate run ESCALATED at max-iterations. Root-cause
-analysis (verified against the code) found the panel was partly chasing
-**Reviewgate's own artifacts**, not real code:
+A flashbuddy agent's Reviewgate run ESCALATED at max-iterations. Root-cause: the
+panel was partly chasing **Reviewgate's own artifacts**, not real code:
 
-1. **agy artifact leak.** A reviewer flagged a `.antigravitycli` symlink (→
-   `~/.gemini/config`) as a *committed credential leak* (CRITICAL). It was an
-   **untracked working-tree artifact** left by `agy` (the Antigravity CLI). Since
-   the `gemini` reviewer is now `agy` ([[project-agy-migration]]), the gate itself
-   can create these. `collectDiff` (src/utils/git.ts) includes untracked,
-   non-gitignored files via `git diff --no-index`, and only excludes
-   `reviewgate.config.ts` + `.reviewgate/` — so agy's artifacts entered the
-   reviewed diff and became a CRITICAL false positive. This is a regression
-   introduced by the agy migration.
-2. **Redaction-token finding.** The diff sanitizer replaces 24+ char high-entropy
+1. **agy artifact leak.** A reviewer flagged a `.antigravitycli` entry (an
+   Antigravity-CLI working-tree artifact pointing at `~/.gemini/config`) as a
+   *committed credential leak* (CRITICAL). `collectDiff` includes untracked,
+   non-gitignored files and only excludes `reviewgate.config.ts` + `.reviewgate/`,
+   so agy's artifact entered the reviewed diff. Since the `gemini` reviewer is now
+   `agy` ([[project-agy-migration]]), the gate itself creates `.antigravitycli/` —
+   verified: it appears as a directory in every repo where the agy reviewer ran.
+2. **Redaction-token finding.** The sanitizer replaces 24+ char high-entropy
    strings with the literal `<REDACTED:HIGH_ENTROPY>` (src/diff/sanitizer.ts:73). A
-   reviewer flagged *that placeholder token itself* as a finding — it "doesn't
-   exist in the code." Reviewers aren't told the token is Reviewgate's own
-   redaction artifact.
+   reviewer flagged *that placeholder* as a finding — it isn't in the real code.
+3. **Fence-token gap (found during review).** The sanitizer separates untrusted
+   diff from trusted instructions with `<<UNTRUSTED_DIFF>>` / `<<END_UNTRUSTED>>`,
+   but these are NOT in `INJECTION_MARKERS` and are not neutralized — a diff
+   containing the literal `<<END_UNTRUSTED>>` can close the fence early and have
+   following text read as trusted. Same class as #2 (Reviewgate's own sanitizer
+   tokens causing harm), so folded in.
 
-Both were recurring noise across the rotating-FP iterations that drove the
-escalation. Removing them removes two of the rotating FP sources.
+**Out of scope:** Bug 3 — the deeper FP-runaway + codex quota-degradation that let
+the loop escalate. This slice only removes Reviewgate-own FP/injection sources.
 
-**Out of scope (separate work):** Bug 3 — the deeper FP-runaway + codex
-quota-degradation that let the loop escalate. This spec only removes the two
-Reviewgate-own FP sources.
+## Verified facts (empirical)
 
-## Background — verified code
-
-- `src/utils/git.ts`: `collectDiff` reviews `git diff <base> -- . :(exclude)...`
-  (tracked) PLUS untracked files (`ls-files --others --exclude-standard` →
-  `git diff --no-index`). Two exclusion mechanisms exist:
-  - **tracked**: the `:(exclude)…` pathspec list in `diffArgs` (currently
-    `reviewgate.config.ts`, `.reviewgate`, `.reviewgate/**`).
-  - **untracked**: `isReviewgateManaged(path)` (currently
-    `reviewgate.config.ts` / `.reviewgate` / `.reviewgate/**`) filters the
-    untracked loop.
-  The untracked `.antigravitycli` symlink slipped through both.
-- `src/diff/sanitizer.ts`: builds the reviewer text as `preamble` + fenced
-  `<<UNTRUSTED_DIFF>> … <<END_UNTRUSTED>>` + `input.personaReaffirm` (Layer 6,
-  outside the fence — real instructions). `redactHighEntropy` emits
-  `<REDACTED:HIGH_ENTROPY>`.
-- `src/cli/commands/init.ts`: appends `GITIGNORE_LINES` to `.gitignore`
-  idempotently (skips lines already present).
+- `.antigravitycli` is a **directory** agy creates in the repo CWD (present in both
+  reviewgate checkouts where the agy reviewer ran). `.gemini` exists only at
+  `~/.gemini` — agy does NOT create a repo-level `.gemini`.
+- `src/utils/git.ts`: `collectDiff` reviews tracked (`git diff <base> -- .
+  :(exclude)…`) PLUS untracked (`ls-files --others --exclude-standard` →
+  `git diff --no-index`). Untracked files are filtered by `isReviewgateManaged()`
+  (called at git.ts:123 and git.ts:208). `collectChangedFileContents` builds
+  `nameArgs` (git.ts:163) without the excludes but filters via the same predicate.
+- `src/diff/sanitizer.ts`: `INJECTION_MARKERS` (lines 2-15) covers `<system>`,
+  `<|im_start|>`, `[INST]`, `Human:`, etc. — NOT the `<<…>>` fence delimiters.
+  `redactHighEntropy` emits `<REDACTED:HIGH_ENTROPY>`. The reviewer text =
+  preamble + `<<UNTRUSTED_DIFF>>` body `<<END_UNTRUSTED>>` + `personaReaffirm`.
+- `src/core/orchestrator.ts`: `sanitizeDiff` is called **3×** (diff 689, fileContext
+  691, referencedRaw 727); the prompt is assembled in `promptParts` (702-735).
+- `src/research/plan-refs.ts`: `collectReferencedFileContents` reads paths a
+  reviewed plan references; gated by `PROTECTED_PREFIXES = [".reviewgate/", ".git/",
+  ".hg/", ".svn/"]` + `PROTECTED_FILES = ["reviewgate.config.ts"]` (lines 53-54).
+- `src/cli/commands/init.ts`: `GITIGNORE_LINES` (line 51) appended idempotently.
 
 ## Design
 
-### 1. Exclude agy artifacts from the reviewed diff (`src/utils/git.ts`)
+### 1. Exclude `.antigravitycli` from the reviewed diff, subdir-safe (`src/utils/git.ts`)
 
-agy artifacts must never be reviewed regardless of the repo's `.gitignore` state.
-Extend BOTH exclusion mechanisms:
-
-- **Tracked pathspec** (`diffArgs`): add
-  `:(exclude).antigravitycli`, `:(exclude).antigravitycli/**`,
-  `:(exclude).gemini`, `:(exclude).gemini/**`.
-- **Untracked filter:** rename `isReviewgateManaged` → `isExcludedFromReview`
-  (semantically honest now that it covers more than Reviewgate's own files) and
-  extend it:
+- Rename `isReviewgateManaged` → `isExcludedFromReview` (it now covers more than
+  Reviewgate's own files). Update both call sites (git.ts:123, :208). Match
+  `.antigravitycli` as a path **component at any depth** (agy may run in a subdir,
+  yielding `subproject/.antigravitycli`):
   ```ts
+  const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/;
   function isExcludedFromReview(path: string): boolean {
     return (
       path === "reviewgate.config.ts" ||
       path === ".reviewgate" || path.startsWith(".reviewgate/") ||
-      path === ".antigravitycli" || path.startsWith(".antigravitycli/") ||
-      path === ".gemini" || path.startsWith(".gemini/")
+      ANTIGRAVITY_ARTIFACT.test(path)
     );
   }
   ```
-  Update all call sites (the untracked loop) to the new name. Update the
-  explanatory comment to mention agy/Antigravity artifacts.
+- Tracked pathspec (`diffArgs`): add `:(exclude).antigravitycli`,
+  `:(exclude).antigravitycli/**`, `:(exclude)**/.antigravitycli`,
+  `:(exclude)**/.antigravitycli/**`.
+- Mirror the same four excludes into `nameArgs` (collectChangedFileContents,
+  git.ts:163) so tracked artifacts aren't even name-listed.
+- `.gemini` is intentionally NOT excluded (not an in-repo agy artifact; generic
+  name → excluding it would silently drop legit user code).
 
-### 2. Tell reviewers to ignore redaction tokens (`src/diff/sanitizer.ts`)
+### 2. Close the plan-refs read channel (`src/research/plan-refs.ts`)
 
-Append one instruction to the Layer-6 text (AFTER `<<END_UNTRUSTED>>`, alongside
-`personaReaffirm` — a real instruction, not untrusted data):
+Add `.antigravitycli/` to `PROTECTED_PREFIXES` so a reviewed plan that references
+an agy artifact path cannot read/inject its contents.
 
-> "Sequences like `<REDACTED:HIGH_ENTROPY>` are Reviewgate's own redaction
+### 3. Redaction-token reviewer instruction — once, in the orchestrator (`src/core/orchestrator.ts`)
+
+Add ONE instruction line to `promptParts` (e.g. just before the diff is pushed at
+~719), NOT inside `sanitizeDiff` (which runs 3× and would duplicate it):
+
+> "`<REDACTED:…>` tokens (e.g. `<REDACTED:HIGH_ENTROPY>`) are Reviewgate's own
 > placeholders for stripped secrets — they are NOT in the real code. Never report
 > them as findings."
 
-The `redactHighEntropy` logic itself is unchanged.
+It sits among the trusted prompt parts, outside any untrusted fence.
 
-### 3. Scaffold the artifacts into init's `.gitignore` (`src/cli/commands/init.ts`)
+### 4. Fence-token hardening (`src/diff/sanitizer.ts`)
 
-Add `.antigravitycli/` and `.gemini/` to `GITIGNORE_LINES`. Belt-and-suspenders:
-the diff exclusion (§1) is the real guard (works on existing repos with stale
-.gitignore); the gitignore keeps the working tree clean and prevents accidental
-commits going forward.
+Neutralize the fence delimiters if they appear in the untrusted body, so a diff
+cannot spoof the fence. Add a step (alongside the injection-marker pass, before the
+fenced wrap) that escapes any literal `<<UNTRUSTED_DIFF>>` / `<<END_UNTRUSTED>>` in
+`body` via the existing `escapeAngles` (→ `&lt;&lt;…&gt;&gt;`). Count them into
+`flaggedPatternCount`. Redaction logic itself unchanged.
 
-## Components / isolation
+### 5. Scaffold the artifact into init's `.gitignore` (`src/cli/commands/init.ts`)
 
-- `src/utils/git.ts` — owns diff scope; the single source of truth for "what gets
-  reviewed". The exclusion lives here, testable via `collectDiff` on a temp repo.
-- `src/diff/sanitizer.ts` — owns the reviewer-facing text; the redaction note lives
-  beside the redaction logic.
-- `src/cli/commands/init.ts` — owns scaffolding; the gitignore line lives with the
-  other scaffolded lines.
+Add `.antigravitycli` (NO trailing slash — matches both a directory and a symlink;
+a trailing-slash pattern matches directories only) to `GITIGNORE_LINES`.
+Belt-and-suspenders: §1 is the real guard (works on existing repos); the gitignore
+keeps the working tree clean going forward.
 
 ## Testing
 
-- **git.ts (`tests/unit/…`):** on a temp git repo, create an untracked normal file
-  (`foo.ts`), an untracked `.antigravitycli` symlink/file, and an untracked
-  `.gemini/creds` file; assert `collectDiff` output contains `foo.ts` but NOT
-  `.antigravitycli` or `.gemini`. (Mirror the existing collectDiff/untracked test
-  pattern.)
-- **sanitizer.ts:** assert the sanitized output contains the redaction-token
-  instruction string; assert a 24+ char high-entropy input still becomes
-  `<REDACTED:HIGH_ENTROPY>` (redaction unchanged); assert the instruction sits
-  AFTER `<<END_UNTRUSTED>>` (outside the fence).
-- **init.ts:** after `runInit` on a temp repo, `.gitignore` contains
-  `.antigravitycli/` and `.gemini/`; idempotent on re-run (no duplicates).
+- **git.ts:** on a temp repo, create untracked `foo.ts`, `.antigravitycli/x`, and
+  `sub/.antigravitycli/y`; assert `collectDiff` contains `foo.ts` but neither
+  `.antigravitycli` path. Assert a committed `.antigravitycli/z` is also excluded
+  (tracked pathspec). Assert a legit `.gemini/config.ts` IS still reviewed (not
+  over-excluded).
+- **sanitizer.ts:** a body containing `<<END_UNTRUSTED>>` comes out escaped
+  (`&lt;&lt;END_UNTRUSTED&gt;&gt;`), so the real fence is unspoofable; a 24+ char
+  high-entropy string still becomes `<REDACTED:HIGH_ENTROPY>` (redaction unchanged).
+- **orchestrator.ts:** the assembled prompt contains the `<REDACTED:…>`-ignore
+  instruction exactly once (even though `sanitizeDiff` runs 3×). (Assert via an
+  orchestrator/integration test or a focused prompt-assembly check.)
+- **plan-refs.ts:** `collectReferencedFileContents` excludes a referenced
+  `.antigravitycli/…` path.
+- **init.ts:** after `runInit`, `.gitignore` contains `.antigravitycli` (no slash);
+  idempotent on re-run.
 
 ## Non-goals / YAGNI
 
-- No generic "tool artifact" abstraction — specific paths (`.antigravitycli`,
-  `.gemini`) only.
+- No generic "tool artifact" abstraction — `.antigravitycli` only.
+- No `.gemini` exclusion (generic; not an in-repo agy artifact).
 - No change to the redaction algorithm or the FP-runaway/quota logic (Bug 3).
-- No retroactive cleanup of artifacts already in a user's repo (the agent already
-  handles that case manually; gitignore prevents recurrence).
 
 ## Acceptance criteria
 
-1. An untracked `.antigravitycli` (file or symlink) and `.gemini/*` are excluded
-   from `collectDiff` output; a normal untracked file is still included.
-2. The same exclusion applies to the tracked pathspec (committed `.antigravitycli`
-   would also be excluded).
-3. Sanitized reviewer text carries the `<REDACTED:…>`-ignore instruction outside
-   the untrusted fence; redaction behavior unchanged.
-4. `reviewgate init` adds `.antigravitycli/` + `.gemini/` to `.gitignore`,
+1. Untracked `.antigravitycli` at root AND in a subdir are excluded from
+   `collectDiff`; a normal untracked file and a legit `.gemini/` file are still
+   included.
+2. A committed `.antigravitycli/*` is excluded via the tracked pathspec + `nameArgs`.
+3. `collectReferencedFileContents` refuses an `.antigravitycli/…` reference.
+4. The sanitized/assembled prompt: a body `<<END_UNTRUSTED>>` is escaped; the
+   `<REDACTED:…>`-ignore instruction appears exactly once, outside the fence.
+5. `reviewgate init` adds `.antigravitycli` (no trailing slash) to `.gitignore`,
    idempotently.
-5. `bunx tsc --noEmit`, `bun run lint`, full `bun test` clean (all
-   `isReviewgateManaged` call sites updated to the new name).
+6. `bunx tsc --noEmit`, `bun run lint`, full `bun test` clean (all renamed call
+   sites updated).
