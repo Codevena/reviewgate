@@ -198,6 +198,47 @@ describe("FpLedgerStore lifecycle", () => {
     })();
   });
 
+  it("recordReject does NOT demote an active entry just because old rejects aged out of the window (F-020)", async () => {
+    // F-020: recompute() recalculates stage from scratch on every recordReject
+    // using only in-window rejects. That created a SECOND, much faster
+    // active->candidate demotion path that bypassed decayPass's documented
+    // 180-day rule: as soon as old rejects age out of the 60d window, a fresh
+    // lone reject would flip the entry back to candidate. recordReject must
+    // never DEMOTE an already-earned stage — demotion belongs solely to
+    // decayPass's 180d-since-last_seen rule. (Promotion is still allowed.)
+    const s = new FpLedgerStore(repo());
+    // Earn 'active': 3 rejects, 2 providers, within 60d.
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r2", provider: "gemini", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r3", provider: "codex", reason: "x" },
+      "2026-01-01T00:00:00Z",
+    );
+    expect((await s.snapshot()).entries[0]?.stage).toBe("active");
+    // 61d later only 1 of those rejects is still in the 60d window; a NEW lone
+    // reject from one provider arrives. Naive recompute would see win60.length < 3
+    // and reset to candidate — but decayPass (180d rule) has NOT run.
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r4", provider: "codex", reason: "x" },
+      "2026-03-03T00:00:00Z",
+    );
+    expect((await s.snapshot()).entries[0]?.stage).toBe("active");
+  });
+
   it("decayPass recomputes a stale 'active' entry whose rejects aged past the 60d window (F-018)", async () => {
     const s = new FpLedgerStore(repo());
     // active = 3 rejects, 2 providers, within 60d.

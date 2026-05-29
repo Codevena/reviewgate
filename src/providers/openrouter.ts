@@ -144,11 +144,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
       usage: {
         inputTokens,
         outputTokens,
-        costUsd: estimateCostUsd(
-          inputTokens,
-          outputTokens,
-          (input.cfg as { costPerMTokensUsd?: number }).costPerMTokensUsd,
-        ),
+        costUsd: estimateCostUsd(inputTokens, outputTokens, input.cfg.costPerMTokensUsd),
         quotaUsedPct: null,
       },
       durationMs: Date.now() - start,

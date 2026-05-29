@@ -130,6 +130,37 @@ describe("fetchLibraryDocs", () => {
     expect(Buffer.byteLength(res.libs[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(100);
   });
 
+  it("does NOT serve a stale truncated cache-hit when perLibBytes is raised", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-c7-budget-"));
+    const big = "x".repeat(5000);
+    let contextCalls = 0;
+    const fetchImpl = (async (url: string) => {
+      let body: unknown = {};
+      if (url.includes("/v2/libs/search")) body = { results: [{ id: "/big/lib" }] };
+      else if (url.includes("/v2/context")) {
+        contextCalls++;
+        body = { infoSnippets: [{ content: big }] };
+      }
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const libs = [{ name: "biglib", version: "1.0.0", fromFiles: ["a.ts"] }];
+
+    // First run with a small byte budget → truncated + cached.
+    const small = await fetchLibraryDocs(libs, { ...baseOpts(repo, fetchImpl), perLibBytes: 100 });
+    expect(small.libs[0]?.outcome).toBe("truncated");
+    expect(Buffer.byteLength(small.libs[0]?.text ?? "", "utf8")).toBeLessThanOrEqual(100);
+    expect(contextCalls).toBe(1);
+
+    // Operator raises perLibBytes → must NOT return the old 100-byte cache-hit.
+    const large = await fetchLibraryDocs(libs, { ...baseOpts(repo, fetchImpl), perLibBytes: 4000 });
+    expect(large.libs[0]?.outcome).not.toBe("cache-hit");
+    expect(Buffer.byteLength(large.libs[0]?.text ?? "", "utf8")).toBeGreaterThan(100);
+    expect(contextCalls).toBe(2); // re-fetched under the new budget
+  });
+
   it("respects maxLibs (caps the number of libs processed)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-c7-6-"));
     const fetchImpl = stubFetch({

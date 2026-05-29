@@ -961,14 +961,20 @@ export class LoopDriver {
       summary,
       // Per-iteration history: finding COUNT from signature_history, severity split
       // + verdict + cost from the length-aligned iteration_stats (persisted per
-      // iteration). Falls back to the last iter's pending.json counts / FAIL / 0 for
-      // any row missing stats (e.g. state.json written before iteration_stats existed).
+      // iteration). The LAST row can always be backfilled from the live pending.json.
+      // For EARLIER rows missing stats (e.g. state.json written before iteration_stats
+      // existed, so it loaded as []), we have no severity split: render the verdict as
+      // "n/a" rather than fabricating a "FAIL · 0 CRIT · 0 WARN" row — a 0/0 FAIL beside
+      // a non-zero finding count reads as "there were never any findings", contradicting
+      // the Final-findings section and eroding trust in the report. The Findings column
+      // still shows the real signature count so the row isn't silently emptied.
       perIter: history.map((sigs, i) => {
         const s = stats[i];
         const isLast = i === history.length - 1;
+        const verdict = s?.verdict ?? (isLast ? "FAIL" : "n/a");
         return {
           iter: i + 1,
-          verdict: s?.verdict ?? "FAIL",
+          verdict,
           crit: s?.critical ?? (isLast ? pending.counts.critical : 0),
           warn: s?.warn ?? (isLast ? pending.counts.warn : 0),
           costUsd: s?.cost_usd ?? 0,

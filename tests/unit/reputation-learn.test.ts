@@ -173,6 +173,114 @@ describe("learnReputationFromDecisions", () => {
     expect(wrong).toHaveLength(1); // only the freshly-learned event remains
   });
 
+  it("credits a 'correct' event for accepted-but-not-fixed actions (recovery path, F-023)", async () => {
+    // F-023: a demoted reviewer's findings are mostly demoted to advisory INFO and
+    // never get an accepted+fixed decision, so the only recovery used to be old-event
+    // time-decay. An `accepted` verdict means the reviewer was RIGHT regardless of how
+    // the agent resolved it (fixed / addressed-elsewhere / deferred-with-followup), so
+    // every accepted action must mint a `correct` event to widen the recovery path.
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-recover-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "WARN",
+            reviewer: { provider: "codex", persona: "quality" },
+            confirmed_by: ["codex:quality"],
+            members: [],
+          },
+          {
+            id: "F-002",
+            severity: "WARN",
+            reviewer: { provider: "gemini", persona: "quality" },
+            confirmed_by: ["gemini:quality"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "accepted",
+          action: "addressed-elsewhere",
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-002",
+          verdict: "accepted",
+          action: "deferred-with-followup",
+        }),
+      ].join("\n")}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const snap = await store.snapshot();
+    expect(snap.reviewers["codex:quality"]?.correct).toHaveLength(1);
+    expect(snap.reviewers["gemini:quality"]?.correct).toHaveLength(1);
+    expect(snap.reviewers["codex:quality"]?.wrong ?? []).toHaveLength(0);
+    expect(snap.reviewers["gemini:quality"]?.wrong ?? []).toHaveLength(0);
+  });
+
+  it("does NOT mint a 'wrong' event for a plain rejection (reviewer_was_wrong unset)", async () => {
+    // A rejection without reviewer_was_wrong:true is a non-signal (e.g. won't-fix /
+    // disagree-but-not-a-hallucination) and must not debit the reviewer — debiting it
+    // would deepen the recovery trap that F-023 is about.
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-plainreject-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "WARN",
+            reviewer: { provider: "codex", persona: "quality" },
+            confirmed_by: ["codex:quality"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "valid concern but out of scope for this change",
+      })}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const snap = await store.snapshot();
+    expect(snap.reviewers["codex:quality"]).toBeUndefined();
+  });
+
   it("credits each distinct provider:persona in confirmed_by separately", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-replearn4-"));
     mkdirSync(join(repo, ".reviewgate"), { recursive: true });

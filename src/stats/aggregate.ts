@@ -21,7 +21,7 @@ export interface StatsReport {
     findings: number;
     demoteRate: number; // Σdemoted/Σfindings (0 if no findings)
     errorRate: number; // Σerrors/Σruns   (0 if no runs)
-    avgDurationMs: number;
+    avgDurationMs: number; // ΣdurationMs/Σruns — per-run mean (0 if no runs)
     cost: number;
   }[]; // panel runs only, sorted by provider name
   topSignatures: { signature: string; count: number }[]; // panel runs only, desc by count, top 10
@@ -105,7 +105,6 @@ export function aggregate(
     demoted: number;
     cost: number;
     totalDurationMs: number;
-    durationSamples: number;
   }
   const providerMap = new Map<string, ProviderAcc>();
 
@@ -120,7 +119,6 @@ export function aggregate(
           demoted: 0,
           cost: 0,
           totalDurationMs: 0,
-          durationSamples: 0,
         };
         providerMap.set(ps.provider, acc);
       }
@@ -130,7 +128,6 @@ export function aggregate(
       acc.demoted += ps.demoted;
       acc.cost += ps.cost_usd;
       acc.totalDurationMs += ps.duration_ms;
-      acc.durationSamples += 1;
     }
   }
 
@@ -142,7 +139,9 @@ export function aggregate(
       findings: acc.findings,
       demoteRate: acc.findings > 0 ? acc.demoted / acc.findings : 0,
       errorRate: acc.runs > 0 ? acc.errors / acc.runs : 0,
-      avgDurationMs: acc.durationSamples > 0 ? acc.totalDurationMs / acc.durationSamples : 0,
+      // Per-run mean, on the same basis as the displayed `runs` column
+      // (Σruns, which includes failover retries) — not per panel appearance.
+      avgDurationMs: acc.runs > 0 ? acc.totalDurationMs / acc.runs : 0,
       cost: acc.cost,
     }));
 

@@ -38,6 +38,26 @@ describe("parseCriticOutput", () => {
     expect(parseCriticOutput('"a string"').size).toBe(0);
   });
 
+  it("extracts the real JSON object when the model wraps it in prose containing stray braces", () => {
+    // F-014: a naive first-`{`..last-`}` slice spans from a stray prose brace to
+    // the final `}`, producing invalid JSON → JSON.parse throws → empty map (the
+    // critic silently no-ops). The extractor must find the actual balanced JSON
+    // object instead of blindly slicing on the outermost braces.
+    const m = parseCriticOutput(
+      'Sure! {result below} {"verdicts":[{"signature":"abc","verdict":"likely_fp"}]}',
+    );
+    expect(m.size).toBe(1);
+    expect(m.get("abc")?.verdict).toBe("likely_fp");
+  });
+
+  it("extracts JSON after prose with a leading brace and a nested-object payload", () => {
+    const m = parseCriticOutput(
+      'Here is the result {note}: {"verdicts":[{"signature":"x","verdict":"keep","reason":"has {braces} inside"}]}',
+    );
+    expect(m.size).toBe(1);
+    expect(m.get("x")).toEqual({ verdict: "keep", reason: "has {braces} inside" });
+  });
+
   it("skips null/primitive array elements without throwing (still maps valid ones)", () => {
     // `verdicts` is an array but holds null/primitive elements: accessing
     // `el.signature` on null throws TypeError → uncaught gate crash (fail-OPEN).

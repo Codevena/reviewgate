@@ -92,23 +92,40 @@ async function parseFileUncached(file: string): Promise<{ symbols: SymbolInfo[] 
   const p = new Parser();
   p.setLanguage(lang);
   const tree = p.parse(code);
-  if (!tree) return null;
-  const symbols: SymbolInfo[] = [];
-  const symQ = new Query(lang, FN_QUERY);
-  const callQ = new Query(lang, CALL_QUERY);
-  for (const match of symQ.matches(tree.rootNode)) {
-    const symNode = match.captures.find((c) => c.name === "sym")?.node;
-    const nameNode = match.captures.find((c) => c.name === "n")?.node;
-    if (!symNode || !nameNode) continue;
-    const callees = [...new Set(callQ.captures(symNode).map((c) => c.node.text))];
-    symbols.push({
-      name: nameNode.text,
-      startLine: symNode.startPosition.row + 1,
-      endLine: symNode.endPosition.row + 1,
-      callees,
-    });
+  if (!tree) {
+    // Parser also owns native (Emscripten) memory — release it on the early exit.
+    p.delete();
+    return null;
   }
-  return { symbols };
+  // Tree, Query and Parser each own WASM heap memory that is NOT garbage-collected;
+  // without .delete() the Emscripten heap grows per parsed file and never shrinks.
+  // Build all extracted data first, then release every native handle in finally
+  // (deletes happen AFTER all node.text/captures are read — no use-after-free) (F-064).
+  let symQ: Query | null = null;
+  let callQ: Query | null = null;
+  try {
+    const symbols: SymbolInfo[] = [];
+    symQ = new Query(lang, FN_QUERY);
+    callQ = new Query(lang, CALL_QUERY);
+    for (const match of symQ.matches(tree.rootNode)) {
+      const symNode = match.captures.find((c) => c.name === "sym")?.node;
+      const nameNode = match.captures.find((c) => c.name === "n")?.node;
+      if (!symNode || !nameNode) continue;
+      const callees = [...new Set(callQ.captures(symNode).map((c) => c.node.text))];
+      symbols.push({
+        name: nameNode.text,
+        startLine: symNode.startPosition.row + 1,
+        endLine: symNode.endPosition.row + 1,
+        callees,
+      });
+    }
+    return { symbols };
+  } finally {
+    symQ?.delete();
+    callQ?.delete();
+    tree.delete();
+    p.delete();
+  }
 }
 
 export async function enclosingSymbol(

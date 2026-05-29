@@ -132,6 +132,7 @@ export function buildWeeklyReport(
   const newSignatures = [...args.currentSignatures.entries()]
     .filter(([sig]) => !args.previousSignatures.has(sig))
     .sort(([sigA, a], [sigB, b]) => (b !== a ? b - a : sigA < sigB ? -1 : 1))
+    .slice(0, HIGHLIGHT_CAP)
     .map(([signature, count]) => ({ signature, count }));
 
   return {

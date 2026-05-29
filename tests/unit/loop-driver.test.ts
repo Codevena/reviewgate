@@ -542,6 +542,55 @@ describe("LoopDriver", () => {
     expect(md).toContain("| 2    | FAIL    | 1    |"); // iter2 CRIT=1 (was 0)
   });
 
+  it("does NOT mislabel non-passing iterations as 'FAIL' with 0/0 when iteration_stats is unavailable (back-compat) (F-090)", async () => {
+    // Back-compat: state.json predates iteration_stats, so it loads as []. The
+    // earlier per-iter rows must NOT be silently rendered as "FAIL · 0 CRIT · 0 WARN"
+    // — a human auditing "why did this escalate" would read 0/0 FAIL as "there were
+    // never any findings", contradicting the Final-findings section. Mark the
+    // unavailable rows explicitly instead of asserting a fabricated FAIL/0/0.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQESCNOSTATS");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["s1", "s2"], ["s1"], ["s1"]],
+      iteration_stats: [], // back-compat: field absent in persisted state
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [], counts: { critical: 1, warn: 0, info: 0 } }),
+    );
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const md = readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8");
+    // The last row (iter 3) still gets its real counts from pending.json.
+    expect(md).toContain("| 3    | FAIL    | 1    |");
+    // Earlier rows (iters 1-2) had findings but no stats → must be flagged as
+    // unavailable, NOT "FAIL" with a fabricated 0/0 severity split.
+    expect(md).not.toContain("| 1    | FAIL    | 0    | 0    |");
+    expect(md).not.toContain("| 2    | FAIL    | 0    | 0    |");
+    expect(md).toMatch(/\| 1 +\| n\/a/);
+    expect(md).toMatch(/\| 2 +\| n\/a/);
+  });
+
   it("decisions-gate ignores INFO/scope_demoted findings (only CRITICAL/WARN need decisions)", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

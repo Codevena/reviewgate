@@ -285,4 +285,21 @@ describe("buildWeeklyReport", () => {
       { signature: "sig-b", count: 2 },
     ]);
   });
+
+  it("caps newSignatures at HIGHLIGHT_CAP (20) in the report object, not just the renderer", () => {
+    const current = new Map<string, number>();
+    // 50 distinct new signatures, descending counts so order is deterministic
+    for (let i = 0; i < 50; i++) {
+      current.set(`sig-${String(i).padStart(3, "0")}`, 50 - i);
+    }
+    const r = buildWeeklyReport(
+      emptyStats(),
+      emptyStats(),
+      baseArgs({ currentSignatures: current, previousSignatures: new Map() }),
+    );
+    expect(r.highlights.newSignatures).toHaveLength(20);
+    // Highest-count signatures survive the cap (sig-000=50 … sig-019=31)
+    expect(r.highlights.newSignatures[0]).toEqual({ signature: "sig-000", count: 50 });
+    expect(r.highlights.newSignatures[19]).toEqual({ signature: "sig-019", count: 31 });
+  });
 });

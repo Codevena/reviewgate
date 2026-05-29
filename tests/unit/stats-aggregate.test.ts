@@ -226,6 +226,101 @@ describe("aggregate", () => {
       expect(report.providers[0]?.cost).toBeCloseTo(0.02);
     });
 
+    it("avgDurationMs is per-run (Σduration / Σruns), consistent with the displayed runs column", () => {
+      // Failover scenario from F-054: one appearance failed over twice
+      // (runs=3, duration=90000), the other ran once (runs=1, duration=30000).
+      // Displayed runs = 4; per-run mean must be 120000/4 = 30000,
+      // NOT the per-appearance mean of (90000+30000)/2 = 60000.
+      const failoverRunA: LoadedRun = {
+        ts: "2026-03-01T10:00:00.000Z",
+        run_id: "fo-1",
+        iter: 1,
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 90000,
+          demoted: 0,
+          signatures: [],
+          providers: [
+            {
+              provider: "codex",
+              personas: [],
+              runs: 3,
+              errors: 0,
+              findings: 0,
+              demoted: 0,
+              cost_usd: 0,
+              duration_ms: 90000,
+            },
+          ],
+        },
+      };
+      const failoverRunB: LoadedRun = {
+        ts: "2026-03-01T11:00:00.000Z",
+        run_id: "fo-2",
+        iter: 2,
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 30000,
+          demoted: 0,
+          signatures: [],
+          providers: [
+            {
+              provider: "codex",
+              personas: [],
+              runs: 1,
+              errors: 0,
+              findings: 0,
+              demoted: 0,
+              cost_usd: 0,
+              duration_ms: 30000,
+            },
+          ],
+        },
+      };
+      const report = aggregate([failoverRunA, failoverRunB], 0, [], []);
+      const codex = report.providers.find((p) => p.provider === "codex");
+      expect(codex?.runs).toBe(4);
+      expect(codex?.avgDurationMs).toBeCloseTo(30000);
+    });
+
+    it("avgDurationMs is 0 when a provider has zero runs (no divide-by-zero)", () => {
+      const zeroRunsRun: LoadedRun = {
+        ts: "2026-03-02T10:00:00.000Z",
+        run_id: "zr-1",
+        iter: 1,
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 0,
+          demoted: 0,
+          signatures: [],
+          providers: [
+            {
+              provider: "codex",
+              personas: [],
+              runs: 0,
+              errors: 0,
+              findings: 0,
+              demoted: 0,
+              cost_usd: 0,
+              duration_ms: 0,
+            },
+          ],
+        },
+      };
+      const report = aggregate([zeroRunsRun], 0, [], []);
+      const codex = report.providers.find((p) => p.provider === "codex");
+      expect(codex?.avgDurationMs).toBe(0);
+    });
+
     it("providers is sorted by name", () => {
       const report = aggregate(allRuns, 1, fpEntries, brainEntries);
       const names = report.providers.map((p) => p.provider);

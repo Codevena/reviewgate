@@ -91,6 +91,47 @@ describe("review-plan CLI", () => {
     expect(res.stderr.toLowerCase()).toContain("not found");
   });
 
+  it("returns a distinct exit code (3) when all reviewers error (ERROR verdict)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rp5-"));
+    gitInit(repo);
+    writeFileSync(join(repo, "plan.md"), "# Plan\nStep 1: do the thing.\n");
+    // An adapter that always errors → no reviewer completes → orchestrator
+    // yields verdict ERROR (distinct from a substantive FAIL). Stub the whole
+    // default failover chain (codex → gemini → claude-code) so nothing spawns a
+    // real CLI; every slot errors, so the panel produces no verdict at all.
+    const erroring = (id: ProviderAdapter["id"]): ProviderAdapter => ({
+      id,
+      async preflight() {
+        return { available: true, version: "x", authMode: "oauth", error: null };
+      },
+      async review(inp): Promise<ReviewResult> {
+        return {
+          reviewerId: inp.reviewerId,
+          verdict: "PASS",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: 1,
+          exitCode: 1,
+          rawEventsPath: "",
+          status: "error",
+        };
+      },
+    });
+    const res = await runReviewPlan({
+      repoRoot: repo,
+      files: ["plan.md"],
+      providerOverrides: {
+        codex: erroring("codex"),
+        gemini: erroring("gemini"),
+        "claude-code": erroring("claude-code"),
+      },
+    });
+    expect(res.stdout).toContain("ERROR");
+    expect(res.exitCode).toBe(3);
+    // ERROR must NOT collide with a genuine FAIL (exit 1).
+    expect(res.exitCode).not.toBe(1);
+  });
+
   it("rejects a path outside the repo", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rp4-"));
     gitInit(repo);

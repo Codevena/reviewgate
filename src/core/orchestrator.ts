@@ -837,7 +837,12 @@ export class Orchestrator {
           // until one returns "ok". A candidate runs if registered + configured +
           // available + not itself cooled-down. Quota cooldown effects are still
           // recorded per-provider via effectFor.
-          if (run.res.status !== "ok" && r.fallback?.length) {
+          //
+          // EXCEPT on a self-deadline abort: if the run's signal is already aborted,
+          // the whole iteration is being torn down — every fallback spawn would be
+          // killed instantly, wasting subprocesses and muddying statusDetail with
+          // spurious "[fallback from …]" prefixes. Skip the chain entirely (F-045).
+          if (run.res.status !== "ok" && r.fallback?.length && !opts.signal?.aborted) {
             for (const fb of r.fallback) {
               const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
               if (!this.input.adapters[fb] || !fbCfg) continue;
@@ -1018,7 +1023,7 @@ export class Orchestrator {
     let fpActiveClusters: Map<string, { key: string; member_ids: string[] }> | undefined;
     if (fpFullSnapshot) {
       try {
-        const clusters = computeFpClusters(fpFullSnapshot.entries, new Date().toISOString());
+        const clusters = computeFpClusters(fpFullSnapshot.entries, now.toISOString());
         const map = new Map<string, { key: string; member_ids: string[] }>();
         for (const c of clusters) {
           if (c.stage === "active" || c.stage === "sticky") {
@@ -1089,16 +1094,21 @@ export class Orchestrator {
     // iter batch is used as a fallback so a corrupt pool can never block. ---
     if (brainCfg?.enabled) {
       const pool = new ProposalStore(repo, opts.runId);
-      if (proposals.length > 0) pool.appendIter(opts.iter, proposals, new Date().toISOString());
+      if (proposals.length > 0) pool.appendIter(opts.iter, proposals, now.toISOString());
       const cumulative = pool.proposals();
       // If the file is unreadable (logged + returns []) and this iter had
       // proposals, run the curator on this iter's batch alone — degraded
       // behavior, but better than zero curation for the round.
       const curatorInput = cumulative.length > 0 ? cumulative : proposals;
       if (curatorInput.length > 0) {
-        await this.runCuratorPhase(repo, opts.runId, opts.iter, brainCfg, curatorInput).catch(
-          () => undefined,
-        );
+        await this.runCuratorPhase(
+          repo,
+          opts.runId,
+          opts.iter,
+          brainCfg,
+          curatorInput,
+          now.toISOString(),
+        ).catch(() => undefined);
       }
     }
 
@@ -1120,7 +1130,7 @@ export class Orchestrator {
             timeoutMs: brainCfg.curatorTimeoutMs,
           },
           runId: opts.runId,
-          nowIso: new Date().toISOString(),
+          nowIso: now.toISOString(),
           ...(judge ? { judge } : {}),
         }).catch(() => undefined);
       }
@@ -1277,9 +1287,14 @@ export class Orchestrator {
     iter: number,
     brainCfg: NonNullable<ReviewgateConfig["phases"]["brain"]>,
     proposals: MemoryProposal[],
+    // Injected run clock (defaults to wall-clock for any caller that omits it),
+    // so brain decay + candidate-TTL windows are driven by the same `now` the
+    // rest of the run uses — keeps time-based brain lifecycle deterministic in
+    // tests, matching the cooldown path.
+    nowIso: string = new Date().toISOString(),
   ): Promise<void> {
     const store = new BrainStore(repo);
-    await decayPass(store, repo, new Date().toISOString());
+    await decayPass(store, repo, nowIso);
 
     // The embedder is the OpenRouter adapter the panel already built (wrapped to
     // batch). Absent adapter → skip curation entirely (dedup would be
@@ -1385,7 +1400,7 @@ export class Orchestrator {
           apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
           timeoutMs: brainCfg.curatorTimeoutMs,
         },
-        nowIso: new Date().toISOString(),
+        nowIso,
         ...(candidateStore ? { candidateStore } : {}),
         ...(brainCfg?.crossRunCandidates ? { crossRunCfg: brainCfg.crossRunCandidates } : {}),
         ...(judge ? { judge } : {}),

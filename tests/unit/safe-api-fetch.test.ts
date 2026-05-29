@@ -155,6 +155,35 @@ describe("safeApiFetch", () => {
     ).rejects.toThrow();
   });
 
+  it("pins the connection to the validated IP (no hostname re-resolution / DNS-rebinding TOCTOU)", async () => {
+    // F-063: the IP-block check and the actual connection must use the SAME
+    // resolution. The default path must connect to the IP that passed isBlockedIp,
+    // NOT re-resolve the hostname at connect time. We assert the validated IP is
+    // forwarded verbatim to the pin layer (mirroring the brain's pinnedFetch
+    // posture) — a plain hostname fetch would never receive a pinnedIp at all.
+    let pinnedSeen = "";
+    let urlSeen = "";
+    const pinnedFetchImpl = (async (u: URL, pinnedIp: string): Promise<Response> => {
+      pinnedSeen = pinnedIp;
+      urlSeen = u.toString();
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof import("../../src/core/brain/fetcher.ts").pinnedFetch;
+    const out = await safeApiFetch("https://context7.com/api/x", {
+      allowHost: "context7.com",
+      query: { q: "1" },
+      apiKey: "tok",
+      timeoutMs: 5000,
+      resolve: async () => ["93.184.216.34"], // the ONLY validated IP
+      pinnedFetchImpl,
+    });
+    expect(pinnedSeen).toBe("93.184.216.34"); // connect uses the checked IP, not a re-resolve
+    expect(urlSeen).toBe("https://context7.com/api/x?q=1"); // host preserved (Host header / SNI)
+    expect(out).toEqual({ ok: true });
+  });
+
   it("does NOT follow HTTP redirects (redirect: manual → 3xx is not ok)", async () => {
     const fetchImpl = (async () =>
       new Response(null, {

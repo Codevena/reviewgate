@@ -67,6 +67,7 @@ function makeConfig(fallback?: ("gemini" | "claude-code")[]) {
 async function runWith(
   config: ReturnType<typeof makeConfig>,
   adapters: Record<string, ProviderAdapter>,
+  signal?: AbortSignal,
 ) {
   const repo = mkdtempSync(join(tmpdir(), "rg-fb-"));
   writeFileSync(join(repo, "foo.ts"), "x");
@@ -82,7 +83,7 @@ async function runWith(
     // Hermetic: a fallback candidate is "available" iff a stub adapter was given.
     providerAvailable: (id) => Boolean(adapters[id]),
   });
-  await orch.runIteration({ runId: "RUN", iter: 1 });
+  await orch.runIteration({ runId: "RUN", iter: 1, ...(signal ? { signal } : {}) });
   return JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
 }
 
@@ -110,6 +111,65 @@ describe("Orchestrator quota failover", () => {
     expect(report.reviewers[0].provider).toBe("gemini");
     expect(report.reviewers[0].status).toBe("ok");
     expect(report.reviewers[0].status_detail).toContain("fallback from codex");
+  });
+
+  it("does NOT walk the fallback chain when the run is deadline-aborted mid-review (F-045)", async () => {
+    // A self-deadline abort tears down the whole run — every fallback would be
+    // instantly aborted too, wasting subprocess spawns and muddying statusDetail.
+    // Simulate the deadline firing DURING the primary review: the primary aborts
+    // the signal and returns non-ok; the failover loop must then NOT walk the chain.
+    const ac = new AbortController();
+    const codexAborts: ProviderAdapter = {
+      id: "codex",
+      async preflight() {
+        return { available: true, version: "x", authMode: "oauth", error: null };
+      },
+      async review(inp) {
+        ac.abort(); // the self-deadline fires mid-review
+        return {
+          reviewerId: inp.reviewerId,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: 1,
+          exitCode: 1,
+          rawEventsPath: "",
+          rawText: "",
+          status: "error",
+          statusDetail: "deadline-aborted",
+        };
+      },
+    };
+    // Spy: did the fallback's review() actually get invoked?
+    let geminiCalled = false;
+    const geminiSpy: ProviderAdapter = {
+      id: "gemini",
+      async preflight() {
+        return { available: true, version: "x", authMode: "oauth", error: null };
+      },
+      async review(inp) {
+        geminiCalled = true;
+        return { ...(await fixedStatus("gemini", "ok").review(inp)) };
+      },
+    };
+    const repo = mkdtempSync(join(tmpdir(), "rg-fb-abort-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      // biome-ignore lint/suspicious/noExplicitAny: test config shape
+      config: makeConfig(["gemini"]) as any,
+      adapters: { codex: codexAborts, gemini: geminiSpy },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+      providerAvailable: (id) => id === "codex" || id === "gemini",
+    });
+    // runIteration legitimately throws once the deadline-aborted signal trips a
+    // later throwIfAborted (the real LoopDriver catches this). The point is the
+    // fallback must NOT have been spawned during the panel's failover loop.
+    await orch.runIteration({ runId: "RUN", iter: 1, signal: ac.signal }).catch(() => undefined);
+    expect(geminiCalled).toBe(false); // fallback chain was NOT walked on abort
   });
 
   it("keeps the quota-exhausted result when no fallback chain is declared", async () => {

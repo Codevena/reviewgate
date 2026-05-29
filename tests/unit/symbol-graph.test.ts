@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Query } from "web-tree-sitter";
 import {
   buildSymbolGraph,
   enclosingSymbol,
@@ -62,5 +63,31 @@ describe("symbol-graph", () => {
     const g = await buildSymbolGraph({ files: [join(DIR, "does-not-exist.xyz")], repoRoot: DIR });
     expect(Array.isArray(g.symbols)).toBe(true);
     expect(g.symbols.length).toBe(0);
+  });
+
+  it("releases native WASM memory: every Query built is .delete()'d (F-064)", async () => {
+    // web-tree-sitter Query/Tree/Parser own Emscripten heap memory; without
+    // .delete() the WASM heap grows per parsed file and never shrinks. Spy on the
+    // Query prototype to confirm each query built during a parse is released, and
+    // that parsing still returns correct symbols (deletes happen AFTER extraction).
+    // A UNIQUE file (the per-process parseCache would otherwise skip re-parsing a
+    // file an earlier test already parsed, building no new Query).
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-leak-"));
+    writeFileSync(join(repo, "leak.ts"), "function zeta() {\n  eta();\n}\nfunction eta() {}\n");
+    const orig = Query.prototype.delete;
+    let deletes = 0;
+    Query.prototype.delete = function patched(this: Query) {
+      deletes++;
+      return orig.call(this);
+    };
+    try {
+      const g = await buildSymbolGraph({ files: [join(repo, "leak.ts")], repoRoot: repo });
+      // parsing still works (no use-after-delete)
+      expect(g.symbols.find((s) => s.name === "zeta")?.callees).toContain("eta");
+      // both queries (FN_QUERY + CALL_QUERY) for the file were released
+      expect(deletes).toBeGreaterThanOrEqual(2);
+    } finally {
+      Query.prototype.delete = orig;
+    }
   });
 });

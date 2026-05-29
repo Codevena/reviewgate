@@ -306,6 +306,47 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       ? await input.candidateStore.listAll()
       : null;
 
+  // Persist a single-provider group's representative into the cross-run candidate
+  // pool so a future run from a DIFFERENT provider can complete the quorum.
+  // Stores ONLY when the group's in-run reviewer evidence collapses (via
+  // providerOf) to exactly ONE provider — never a rep whose merged evidence
+  // already spans ≥2 providers. Inert when crossRunCfg/candidateStore is absent.
+  // Called from BOTH the rate-limit drop path AND the quorum-fail path: a
+  // single-provider observation that loses the in-run promotion lottery (4th+
+  // group) must NOT be excluded from the cross-run mechanism (F-030), otherwise
+  // cross-run convergence becomes order-dependent.
+  const persistSingleProviderCandidate = async (
+    rep: MemoryProposal,
+    mergedEvidence: EvidenceItem[],
+    repEmbed: number[],
+  ): Promise<void> => {
+    if (!(input.candidateStore && input.crossRunCfg?.enabled)) return;
+    const providersThisRun = new Set(
+      mergedEvidence
+        .filter(
+          (e) =>
+            (e.kind === "reviewer-observation" || e.kind === "reviewer-finding") && e.reviewer_id,
+        )
+        .map((e) => providerOf(e.reviewer_id as string)),
+    );
+    if (providersThisRun.size !== 1) return;
+    const provider = [...providersThisRun][0] as string;
+    await input.candidateStore.addOrMerge({
+      id: `BC-${randomUUID()}`,
+      title: rep.title,
+      body: rep.body,
+      scope: rep.scope,
+      type: rep.type,
+      embedding: repEmbed,
+      embedding_model: cfg.model,
+      provider,
+      source_run_id: input.runId,
+      created_at: input.nowIso,
+      evidence_kinds: [...new Set(mergedEvidence.map((e) => e.kind))],
+      confidence: rep.confidence,
+    });
+  };
+
   // --- Per-group gating + promotion. ---
   for (const group of groups) {
     // Representative = highest-confidence member, carrying the MERGED evidence.
@@ -317,6 +358,14 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     if (res.promoted + res.merged >= MAX_PROMOTIONS) {
       res.queued++;
       log("queued", title, { rule_failed: "rate-limit" });
+      // F-030: a single-provider group that loses the in-run promotion lottery
+      // (4th+ group, after MAX_PROMOTIONS) must STILL be stored as a cross-run
+      // candidate — otherwise cross-run convergence is order-dependent and the
+      // rescue mechanism silently excludes exactly the observations it exists to
+      // save. Compute the rep embedding the same way the promotion path does.
+      const rlIdx = normalizedProposals.indexOf(rep);
+      const rlEmbed = (rlIdx >= 0 ? normalizedVecs[rlIdx] : group.vecs[0]) as number[];
+      await persistSingleProviderCandidate(rep, mergedEvidence, rlEmbed);
       continue;
     }
 
@@ -385,42 +434,8 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
       res.rejected++;
       log("rejected", title, { rule_failed: doubled ? "diff-quorum" : "quorum" });
       // Cross-run: persist this rep so a future run from a DIFFERENT provider can
-      // complete the quorum. Single-provider reps from THIS run only — never
-      // store a rep whose merged in-run evidence already spans ≥2 providers but
-      // failed on the (stricter) diff-quorum path. We collapse reviewer_id
-      // ("codex-security", "codex-architecture", …) through providerOf to the
-      // bare provider ("codex") — same way quorumOk counts distinct providers —
-      // so a single-provider/multi-persona rep is correctly recognised as
-      // single-provider (the common shape; without this we'd refuse to store
-      // exactly the proposals the cross-run path is meant to rescue).
-      if (input.candidateStore && input.crossRunCfg?.enabled) {
-        const providersThisRun = new Set(
-          mergedEvidence
-            .filter(
-              (e) =>
-                (e.kind === "reviewer-observation" || e.kind === "reviewer-finding") &&
-                e.reviewer_id,
-            )
-            .map((e) => providerOf(e.reviewer_id as string)),
-        );
-        if (providersThisRun.size === 1) {
-          const provider = [...providersThisRun][0] as string;
-          await input.candidateStore.addOrMerge({
-            id: `BC-${randomUUID()}`,
-            title: rep.title,
-            body: rep.body,
-            scope: rep.scope,
-            type: rep.type,
-            embedding: repEmbed,
-            embedding_model: cfg.model,
-            provider,
-            source_run_id: input.runId,
-            created_at: input.nowIso,
-            evidence_kinds: [...new Set(mergedEvidence.map((e) => e.kind))],
-            confidence: rep.confidence,
-          });
-        }
-      }
+      // complete the quorum (single-provider reps from THIS run only — see helper).
+      await persistSingleProviderCandidate(rep, mergedEvidence, repEmbed);
       continue;
     }
 

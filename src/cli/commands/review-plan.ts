@@ -122,12 +122,18 @@ export async function runReviewPlan(input: ReviewPlanInput): Promise<ReviewPlanO
   } catch {
     report = "";
   }
+  // Exit-code contract (so callers/CI can act differently per outcome):
+  //   0 = PASS / SOFT-PASS    1 = FAIL (genuine review findings)
+  //   2 = usage/input error   3 = ERROR (no reviewer completed — providers
+  //                               down / quota / not installed; NOT a verdict)
+  // ERROR must NOT collapse onto FAIL: "the plan was rejected" and "we couldn't
+  // review it at all" demand different action.
   const pass = result.verdict === "PASS" || result.verdict === "SOFT-PASS";
+  const isError = result.verdict === "ERROR";
   const summary = `\nReviewgate review-plan: ${result.verdict}\n`;
   return {
-    exitCode: pass ? 0 : 1,
+    exitCode: pass ? 0 : isError ? 3 : 1,
     stdout: `${report}${summary}`,
-    stderr:
-      result.verdict === "ERROR" ? "review-plan: reviewer error (no reviewer completed)\n" : "",
+    stderr: isError ? "review-plan: reviewer error (no reviewer completed)\n" : "",
   };
 }

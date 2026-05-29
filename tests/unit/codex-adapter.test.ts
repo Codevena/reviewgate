@@ -280,6 +280,32 @@ describe("CodexAdapter retry-once", () => {
       Reflect.deleteProperty(process.env, "RG_FAKE_A2");
     }
   });
+
+  // F-045: a deadline-abort must produce a clear, distinct statusDetail (so the
+  // orchestrator's per-fallback "[fallback from <p>: <status>]" prefix and logs
+  // read as a deliberate cut, not a muddy generic crash) and must NOT carry the
+  // generic "(after retry)" suffix — abort skips the retry.
+  it("abort: pre-aborted signal → statusDetail marks deadline-aborted, no retry suffix", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-abort-detail-"));
+    const counter = join(dir, "count.txt");
+    writeFileSync(counter, "");
+    process.env.RG_FAKE_COUNTER = counter;
+    process.env.RG_FAKE_A1 = "exit7";
+    process.env.RG_FAKE_A2 = "ok";
+    try {
+      const adapter = new CodexAdapter({ binPath: ATTEMPT_BIN });
+      const ac = new AbortController();
+      ac.abort();
+      const result = await adapter.review({ ...makeReviewInput(dir), signal: ac.signal });
+      expect(result.status).toBe("error");
+      expect(result.statusDetail ?? "").toContain("deadline-aborted");
+      expect(result.statusDetail ?? "").not.toContain("(after retry)");
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_COUNTER");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A1");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A2");
+    }
+  });
 });
 
 describe("CodexAdapter.complete (judge completion)", () => {

@@ -7,7 +7,13 @@ export interface SignatureInput {
   ruleId: string;
   category: FindingCategory;
   lineStart: number;
-  lineEnd: number;
+  // The range END is intentionally NOT a signature ingredient: dedup/stuck-detection
+  // buckets a finding by its bucketed `lineStart` (or symbol offset) only, so two
+  // findings in the same bucket — e.g. [10,12] vs [10,40] — deliberately collapse to
+  // one signature regardless of how far they each extend. lineEnd is accepted (so
+  // callers can pass a Finding's full range without reshaping) but never read; keep
+  // it optional to make that "does-not-affect-identity" contract explicit.
+  lineEnd?: number;
   // Reserved for M3 when tree-sitter lands.
   symbolName?: string;
   symbolStartLine?: number;
