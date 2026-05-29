@@ -28,4 +28,11 @@ describe("doctorExitCode", () => {
   it("returns 2 when any check fails (fail dominates warn)", () => {
     expect(doctorExitCode([ok, warn, fail])).toBe(2);
   });
+
+  it("a strict sandbox check that fails makes doctor exit 2", () => {
+    const checks: Check[] = [
+      { name: "sandbox isolation", status: "fail", detail: "strict but sandbox-exec unavailable" },
+    ];
+    expect(doctorExitCode(checks)).toBe(2);
+  });
 });

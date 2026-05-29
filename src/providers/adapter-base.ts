@@ -1,4 +1,5 @@
 // src/providers/adapter-base.ts
+import type { SandboxProfile } from "../sandbox/profile-builder.ts";
 import type { Finding } from "../schemas/finding.ts";
 
 // The single source of truth for "does this set of findings block?" — a finding
@@ -38,6 +39,10 @@ export interface ReviewInput {
   // (loop.runTimeoutMs). Adapters MUST forward this to spawnSafely so in-flight
   // reviewers are killed rather than left running orphaned past the deadline.
   signal?: AbortSignal;
+  // When present, the adapter wraps the reviewer CLI in sandbox-exec (macOS) via
+  // spawnSafely's sandbox option. Mode "strict" refuses to run if sandbox-exec is
+  // unavailable; "permissive" falls back to unisolated execution.
+  sandbox?: { profile: SandboxProfile; mode: "strict" | "permissive" };
 }
 
 export type ReviewStatus = "ok" | "error" | "abstain" | "timeout" | "quota-exhausted";

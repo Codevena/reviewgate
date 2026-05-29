@@ -1,7 +1,7 @@
 // tests/unit/codex-adapter.test.ts
 import { describe, expect, it } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexAdapter } from "../../src/providers/codex.ts";
 
@@ -171,6 +171,66 @@ exit 0
     expect(di).toBeGreaterThanOrEqual(0);
     expect(argv[di + 1]).toBe("shell_tool");
     expect(argv.filter((x) => x.length > 0).pop()).toBe("judge this");
+  });
+
+  it("forwards a sandbox profile into the spawn (argv begins with sandbox-exec on macOS)", async () => {
+    if (platform() !== "darwin") return;
+    // Build a fake codex bin that records its own argv to a file and writes a
+    // valid review JSON to --output-last-message. When sandbox-exec wraps this
+    // bin, the fake IS the sandboxed command — so we can observe the argv that
+    // reached the wrapped command and confirm it includes --output-last-message
+    // (i.e. spawnSafely passed the original args through to the sandboxed bin).
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-sbx-"));
+    const argvFile = join(dir, "argv.txt");
+    const bin = join(dir, "fake-sbx.sh");
+    writeFileSync(
+      bin,
+      `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && printf '%s' '{"verdict":"PASS","findings":[]}' > "$LAST_MSG"
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"cached_input_tokens":0}}'
+exit 0
+`,
+      { mode: 0o755 },
+    );
+    chmodSync(bin, 0o755);
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "REVIEW_PROMPT_BODY");
+    writeFileSync(join(dir, "diff.patch"), "diff");
+
+    const adapter = new CodexAdapter({ binPath: bin });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth" as const, model: "gpt-5.5", timeoutMs: 60_000 },
+      reviewerId: "codex-plan",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "plan",
+      diffPath: join(dir, "diff.patch"),
+      sandbox: {
+        profile: {
+          sandboxRequested: true,
+          fs: { readAllow: [], readDeny: [], readDenyGlobs: [], writeAllow: [] },
+          net: { allow: [] },
+          budget: { walltimeMs: 30_000 },
+        },
+        mode: "strict",
+      },
+    });
+    expect(result.status).toBe("ok");
+    // The fake bin ran as the sandboxed command; its recorded argv must contain
+    // --output-last-message, proving the wrapped command executed end-to-end.
+    const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+    expect(argv).toContain("--output-last-message");
   });
 
   it("3f: exit-0 empty last-message with quota banner → quota-exhausted, one spawn", async () => {

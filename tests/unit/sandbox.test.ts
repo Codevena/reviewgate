@@ -15,7 +15,10 @@ describe("buildSandboxProfile", () => {
     expect(p.fs.readAllow).toContain("/tmp/rg-run-1");
     expect(p.fs.readAllow.some((path) => path.includes(".codex"))).toBe(true);
     expect(p.fs.readAllow.some((path) => path.includes(".claude"))).toBe(false);
-    expect(p.fs.writeAllow).toEqual(["/repo/.reviewgate/findings/codex.md", "/tmp/rg-run-1"]);
+    // own-cred dirs are also in writeAllow (OAuth token refresh); check required entries present
+    expect(p.fs.writeAllow).toEqual(
+      expect.arrayContaining(["/repo/.reviewgate/findings/codex.md", "/tmp/rg-run-1"]),
+    );
     expect(p.net.allow).toContain("api.openai.com");
     expect(p.net.allow).not.toContain("api.anthropic.com");
   });
@@ -49,5 +52,30 @@ describe("buildSandboxProfile", () => {
       tmpDir: "/tmp/x",
     });
     expect(p.sandboxRequested).toBe(false);
+  });
+
+  it("makes the OWN provider credential dir writable (OAuth token refresh)", () => {
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: "/repo",
+      findingsPath: "/repo/.reviewgate/findings/codex.md",
+      tmpDir: "/tmp/rg-run-1",
+    });
+    expect(p.fs.writeAllow.some((w) => w.includes(".codex"))).toBe(true);
+  });
+
+  it("denies reads of the expanded secret baseline", () => {
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: "/repo",
+      findingsPath: "/repo/.reviewgate/findings/codex.md",
+      tmpDir: "/tmp/rg-run-1",
+    });
+    expect(p.fs.readDeny).toContain("~/.netrc");
+    expect(p.fs.readDeny).toContain("~/.git-credentials");
+    expect(p.fs.readDeny).toContain("~/.npmrc");
+    expect(p.fs.readDeny).toContain("~/.bash_history");
   });
 });

@@ -93,6 +93,7 @@ export class GeminiAdapter implements ProviderAdapter {
         // idle watchdog would SIGKILL a longer review. Tie it to the wall timeout.
         zeroByteWatchdogMs: input.cfg.timeoutMs,
         ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.sandbox ? { sandbox: input.sandbox } : {}),
       });
       const errText = readFileSafe(errFile);
       const outText = readFileSafe(outFile);

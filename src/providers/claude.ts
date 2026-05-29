@@ -112,6 +112,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // --json events, so it keeps the shorter default watchdog.)
       zeroByteWatchdogMs: input.cfg.timeoutMs,
       ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
     const errText = readFileSafe(errFile);
     const baseStatus: ReviewStatus =

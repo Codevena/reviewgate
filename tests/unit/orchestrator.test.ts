@@ -7,6 +7,7 @@ import { defaultConfig } from "../../src/config/defaults.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
 import { ReputationStore } from "../../src/core/reputation/store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
+import { SandboxUnavailableError } from "../../src/sandbox/errors.ts";
 
 const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
 const FAKE_CODEX_ERROR = join(process.cwd(), "tests/fixtures/fake-codex-error.sh");
@@ -96,21 +97,39 @@ describe("Orchestrator", () => {
     expect(report.reviewers[0]?.status).toBe("error");
   });
 
-  it("fails CLOSED when a sandbox mode is requested but unavailable in M1", async () => {
+  it("fails CLOSED under strict when isolation is unavailable (reviewer errors, no silent PASS)", async () => {
+    // New contract (post macOS-sandbox wiring): strict mode REVIEWS with a
+    // per-reviewer profile rather than blanket-refusing. It only fails closed when
+    // isolation is genuinely unavailable — spawnSafely throws SandboxUnavailableError,
+    // which the orchestrator turns into an ERROR for that reviewer (never a silent
+    // PASS). Host-independent: the stub throws the same error spawnSafely would.
     const repo = fakeRepo();
     const orch = new Orchestrator({
       repoRoot: repo,
       config: defaultConfig,
-      adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      adapters: {
+        codex: {
+          id: "codex",
+          async preflight() {
+            return { available: true, version: "x", authMode: "oauth", error: null };
+          },
+          async review() {
+            throw new SandboxUnavailableError("sandbox-exec unavailable on this host");
+          },
+        },
+      },
       sandboxMode: "strict",
       hostTier: "opus",
       diff: "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n",
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "01HXQSB", iter: 1 });
-    // strict/permissive cannot be honored in M1, so the orchestrator must
-    // refuse to review rather than silently run the reviewer unisolated.
     expect(result.verdict).toBe("ERROR");
+    const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8")) as {
+      reviewers: Array<{ status: string; status_detail?: string }>;
+    };
+    expect(report.reviewers[0]?.status).toBe("error");
+    expect(report.reviewers[0]?.status_detail ?? "").toContain("sandbox strict unavailable");
   });
 });
 
