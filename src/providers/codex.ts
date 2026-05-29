@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
+import { safeJsonParse } from "../utils/safe-json.ts";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
   CompleteOptions,
@@ -339,20 +340,20 @@ export class CodexAdapter implements ProviderAdapter {
         if (!line.trim()) continue;
         // Real codex streams events keyed by "type" (e.g. "turn.completed").
         // The older "event" key is kept as a fallback for compatibility.
-        const ev = JSON.parse(line) as {
+        // Per-line safe parse: a single malformed line is SKIPPED, not allowed to
+        // throw out of the loop and drop the remaining (valid) usage events.
+        const ev = safeJsonParse(line);
+        if (!ev || typeof ev !== "object") continue;
+        const e = ev as {
           type?: string;
           event?: string;
-          usage?: {
-            input_tokens?: number;
-            output_tokens?: number;
-            cached_input_tokens?: number;
-          };
+          usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number };
         };
-        const kind = ev.type ?? ev.event;
-        if (kind === "turn.completed" && ev.usage) {
-          input_tokens += ev.usage.input_tokens ?? 0;
-          output_tokens += ev.usage.output_tokens ?? 0;
-          cached += ev.usage.cached_input_tokens ?? 0;
+        const kind = e.type ?? e.event;
+        if (kind === "turn.completed" && e.usage) {
+          input_tokens += e.usage.input_tokens ?? 0;
+          output_tokens += e.usage.output_tokens ?? 0;
+          cached += e.usage.cached_input_tokens ?? 0;
         }
       }
     } catch {

@@ -2,6 +2,7 @@
 import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { computeSignature } from "../diff/signature.ts";
 import { type Finding, type FindingCategory, FindingSchema } from "../schemas/finding.ts";
+import { safeJsonParse } from "../utils/safe-json.ts";
 
 export const REVIEW_OUTPUT_SCHEMA = {
   type: "object",
@@ -167,8 +168,9 @@ function normalizeProposals(proposals: RawProposal[]): RawProposal[] {
 
 export function parseReviewOutput(text: string): ReviewOutput | null {
   const tryParse = (s: string): ReviewOutput | null => {
-    try {
-      const o = JSON.parse(s) as Record<string, unknown>;
+    const parsed = safeJsonParse(s);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const o = parsed as Record<string, unknown>;
       if (Array.isArray(o.findings)) {
         // memory_proposals is nullable in the schema (strict mode), so codex may
         // emit `null` or null-valued optional evidence fields. Normalize null →
@@ -183,8 +185,6 @@ export function parseReviewOutput(text: string): ReviewOutput | null {
           ...(mp !== undefined ? { memory_proposals: mp } : {}),
         };
       }
-    } catch {
-      // fall through
     }
     return null;
   };
