@@ -119,4 +119,91 @@ describe("aggregator reputation demote", () => {
     expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
     expect(agg.dedupedFindings[0]?.reputation_demoted).toBeUndefined();
   });
+
+  it("demotes a lone unreliable CORRECTNESS CRITICAL → INFO (PASS) when demoteCorrectness on", () => {
+    const agg = aggregate({
+      findings: [finding({ category: "correctness" })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    const f = agg.dedupedFindings[0];
+    expect(f?.severity).toBe("INFO");
+    expect(f?.reputation_demoted).toBe(true);
+    expect(agg.verdict).toBe("PASS");
+  });
+
+  it("demotes a lone unreliable CORRECTNESS WARN → INFO too", () => {
+    const agg = aggregate({
+      findings: [finding({ category: "correctness", severity: "WARN" })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(agg.verdict).toBe("PASS");
+  });
+
+  it("NEVER demotes a SECURITY CRITICAL even with demoteCorrectness on", () => {
+    const agg = aggregate({
+      findings: [finding({ category: "security" })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(agg.verdict).toBe("FAIL");
+  });
+
+  it("does NOT demote a correctness finding that has a SECURITY member", () => {
+    // representative is correctness, but a merged member is security → touchesSecurity → exempt
+    const f1 = finding({
+      signature: "sig-9",
+      category: "correctness",
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const f2 = finding({
+      signature: "sig-9",
+      category: "security",
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const agg = aggregate({
+      findings: [f1, f2],
+      reviewersTotal: 1,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+  });
+
+  it("does NOT demote correctness when demoteCorrectness is off (default)", () => {
+    const agg = aggregate({
+      findings: [finding({ category: "correctness" })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      // demoteCorrectness omitted → off
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(agg.dedupedFindings[0]?.reputation_demoted).toBeUndefined();
+  });
+
+  it("does NOT demote a corroborated (majority) correctness CRITICAL", () => {
+    const f1 = finding({
+      signature: "sig-8",
+      category: "correctness",
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const f2 = finding({
+      signature: "sig-8",
+      category: "correctness",
+      reviewer: { provider: "codex", model: "y", persona: "quality" },
+    });
+    const agg = aggregate({
+      findings: [f1, f2],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security", "codex:quality"]),
+      demoteCorrectness: true,
+    });
+    expect(agg.dedupedFindings[0]?.severity).toBe("CRITICAL");
+  });
 });

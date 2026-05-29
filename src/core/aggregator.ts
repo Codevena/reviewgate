@@ -124,6 +124,18 @@ function touchesSecurityOrCorrectness(f: Finding): boolean {
   return cats.some((c) => c === "security" || c === "correctness");
 }
 
+// True if the finding's representative OR any merged member is `security`.
+// security findings are NEVER reputation-demoted (hard veto preserved).
+function touchesSecurity(f: Finding): boolean {
+  const cats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+  return cats.some((c) => c === "security");
+}
+// True if the finding's representative OR any merged member is `correctness`.
+function touchesCorrectness(f: Finding): boolean {
+  const cats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+  return cats.some((c) => c === "correctness");
+}
+
 function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
   return {
     signature: f.signature,
@@ -370,23 +382,40 @@ export function aggregate(input: AggregateInput): AggregateResult {
 
   // Reviewer-reputation demote (Slice B: provider:persona keys): an un-corroborated finding whose every
   // contributing reviewer key is currently unreliable is demoted one step. Mirrors the
-  // confidence-demote exemptions: corroborated (majority/unanimous) and any
-  // security/correctness finding are NEVER reputation-demoted; INFO is untouched.
+  // confidence-demote exemptions: corroborated (majority/unanimous) findings are exempt;
+  // security is never demoted; correctness demotes to INFO when demoteCorrectness is on;
+  // INFO is untouched.
   const repUnreliable = input.repUnreliable;
   const repScoped: Finding[] =
     repUnreliable && repUnreliable.size > 0
       ? confScoped.map((f) => {
           if (f.severity === "INFO") return f;
           if (f.consensus === "unanimous" || f.consensus === "majority") return f;
-          if (touchesSecurityOrCorrectness(f)) return f;
+          // security is NEVER softened — hard veto preserved.
+          if (touchesSecurity(f)) return f;
+          const isCorrectness = touchesCorrectness(f);
+          // correctness is exempt UNLESS the demoteCorrectness flag is on.
+          if (isCorrectness && input.demoteCorrectness !== true) return f;
           const keys =
             f.confirmed_by && f.confirmed_by.length > 0
               ? f.confirmed_by
               : [`${f.reviewer.provider}:${f.reviewer.persona}`];
           if (!keys.every((k) => repUnreliable.has(k))) return f;
+          if (isCorrectness) {
+            // Advisory tier: a chronically-wrong lone reviewer's correctness
+            // finding goes straight to INFO (non-blocking, no decision required),
+            // CRITICAL or WARN alike. Mirrors the FP-ledger advisory demote.
+            const note =
+              "\n\n↓ low reviewer reputation — correctness finding from an unreliable lone reviewer; advisory only.";
+            return {
+              ...f,
+              severity: "INFO" as const,
+              reputation_demoted: true,
+              details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+            };
+          }
+          // Pure quality/style: existing one-step demote (CRITICAL→WARN, WARN→INFO).
           const next = DEMOTE[f.severity];
-          // INFO is already returned above, so "drop" is unreachable today; this
-          // guard is purely defensive against future DEMOTE-table changes.
           if (next === "drop") return f;
           const note = "\n\n↓ low reviewer reputation — advisory only.";
           return {
