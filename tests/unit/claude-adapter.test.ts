@@ -1,12 +1,20 @@
 // tests/unit/claude-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
 
 const FAKE = join(process.cwd(), "tests/fixtures/fake-claude.sh");
 const FAKE_COMPLETE = join(process.cwd(), "tests/fixtures/fake-claude-complete.sh");
+
+/** Helper: write a temp executable bash script and return its path. */
+function makeFakeBin(dir: string, name: string, script: string): string {
+  const p = join(dir, name);
+  writeFileSync(p, script, { mode: 0o755 });
+  chmodSync(p, 0o755);
+  return p;
+}
 
 describe("ClaudeAdapter (mocked)", () => {
   it("parses findings + usage from the result envelope", async () => {
@@ -28,6 +36,33 @@ describe("ClaudeAdapter (mocked)", () => {
     expect(res.findings[0]?.reviewer.provider).toBe("claude-code");
     expect(res.usage.inputTokens).toBe(300);
     expect(res.usage.outputTokens).toBe(40);
+  });
+
+  it("exit 0 with unparseable output → verdict ERROR (not empty PASS)", async () => {
+    // `claude -p --output-format json` buffers and can truncate before emitting
+    // a valid result envelope. An exit-0 run with no parseable review must fail
+    // CLOSED (status !== "ok" → excluded from okRuns), exactly like codex/opencode.
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-garbage-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-claude-garbage.sh",
+      "#!/usr/bin/env bash\nprintf '%s\\n' 'garbage, not a review'\nexit 0\n",
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new ClaudeAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 60_000 },
+      reviewerId: "claude-adversarial",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "adversarial",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.verdict).toBe("ERROR");
+    expect(res.status).toBe("error");
+    expect(res.findings).toEqual([]);
   });
 });
 

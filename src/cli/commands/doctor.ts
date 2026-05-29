@@ -21,6 +21,16 @@ export interface Check {
   hint?: string;
 }
 
+/**
+ * Maps the doctor checks to a process exit code. Only a hard `fail` is a failure
+ * (exit 2); `warn`s are advisory (optional CLIs absent, no OpenRouter key, etc.)
+ * and a green-by-design minimal install (e.g. codex-only) must exit 0 so it does
+ * not break `reviewgate doctor && ...` chains or CI health gates.
+ */
+export function doctorExitCode(checks: Check[]): number {
+  return checks.some((c) => c.status === "fail") ? 2 : 0;
+}
+
 // Resolves whether a provider can actually run. For CLI providers this probes the
 // CLI; for openrouter it checks the CONFIGURED key env var (apiKeyEnv) — which may
 // differ from the "OPENROUTER_API_KEY" default per provider/embeddings config, so
@@ -428,9 +438,5 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     }
   }
 
-  const fails = checks.filter((c) => c.status === "fail").length;
-  const warns = checks.filter((c) => c.status === "warn").length;
-  if (fails > 0) return 2;
-  if (warns > 0) return 1;
-  return 0;
+  return doctorExitCode(checks);
 }

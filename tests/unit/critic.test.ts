@@ -14,4 +14,16 @@ describe("parseCriticOutput", () => {
   it("returns an empty map on garbage (fail-open: nothing demoted)", () => {
     expect(parseCriticOutput("not json").size).toBe(0);
   });
+
+  it("returns an empty map (no throw) when verdicts is a non-iterable value", () => {
+    // Adversarial reviewer-LLM output: valid JSON whose `verdicts` key is an
+    // object/number/string instead of an array. `verdicts ?? []` does NOT guard
+    // this (the value is truthy), so a naive for-of throws an uncaught TypeError
+    // that crashes the whole gate process → fail-OPEN. Must fail closed: no throw,
+    // zero demotions.
+    expect(() => parseCriticOutput('{"verdicts":{"sig1":"keep"}}')).not.toThrow();
+    expect(parseCriticOutput('{"verdicts":{"sig1":"keep"}}').size).toBe(0);
+    expect(parseCriticOutput('{"verdicts":42}').size).toBe(0);
+    expect(parseCriticOutput('{"verdicts":"keep"}').size).toBe(0);
+  });
 });

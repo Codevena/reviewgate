@@ -335,7 +335,11 @@ export class Orchestrator {
     // activeSnapshot so both views see the same on-disk state — one read,
     // two derived projections.
     const fpFullSnapshot = fpStore ? await fpStore.snapshot() : undefined;
-    const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot() : undefined;
+    // Pass the run timestamp so a sticky/active whose window has expired is
+    // re-evaluated at read time and never served as suppressing (F-017).
+    const fpActiveSnapshot = fpStore
+      ? await fpStore.activeSnapshot(this.input.now?.() ?? new Date())
+      : undefined;
 
     // M6: Context7 library docs. Fetched PRE-CACHE — before the behavior-hash —
     // so the docs-corpus identity feeds the cache key (a docs change must

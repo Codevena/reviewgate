@@ -106,6 +106,15 @@ function jaccard(a: Set<string>, b: Set<string>): number {
 // single decision (a security risk), so we err toward keeping findings apart.
 const SIM_THRESHOLD = 0.6;
 
+// The wording-similarity merge is additionally distance-bounded: two findings
+// whose messages are similar but which sit far apart in the file are almost
+// always DIFFERENT defects that happen to be described alike (e.g. two distinct
+// null-derefs). Without this bound the file-wide jaccard merge would bury the
+// farther bug as a member disposed by a single decision — exactly the masking the
+// SIM_THRESHOLD comment says we avoid (F-010). The window is generous enough to
+// absorb reviewer line-jitter on the SAME issue, but far short of file-wide.
+const WORDING_MERGE_MAX_LINE_DISTANCE = 25;
+
 interface Cluster {
   sample: Finding;
   reviewers: string[];
@@ -214,7 +223,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
     let target: Cluster | undefined;
     for (const c of clusters) {
       if (c.sample.file !== f.file) continue;
-      if (dedupKey(c.sample) === dedupKey(f) || jaccard(c.tokens, fTokens) >= SIM_THRESHOLD) {
+      const wordingMerge =
+        jaccard(c.tokens, fTokens) >= SIM_THRESHOLD &&
+        Math.abs(c.sample.line_start - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
+      if (dedupKey(c.sample) === dedupKey(f) || wordingMerge) {
         target = c;
         break;
       }
@@ -403,9 +415,16 @@ export function aggregate(input: AggregateInput): AggregateResult {
               : [`${f.reviewer.provider}:${f.reviewer.persona}`];
           if (!keys.every((k) => repUnreliable.has(k))) return f;
           if (isCorrectness) {
-            // Advisory tier: a chronically-wrong lone reviewer's correctness
-            // finding goes straight to INFO (non-blocking, no decision required),
-            // CRITICAL or WARN alike. Mirrors the FP-ledger advisory demote.
+            // A CRITICAL correctness finding is NEVER reputation-demoted: it is an
+            // unconditional hard FAIL, and turning it into a no-decision INFO would
+            // let a real data-corruption bug ship silently from a single unreliable
+            // reviewer (subverting the singleton-CRITICAL-must-FAIL invariant).
+            // Reputation must be at least as conservative as the critic, which
+            // refuses to demote CRITICAL correctness at all (F-022). Only WARN
+            // correctness softens to advisory INFO.
+            if (f.severity === "CRITICAL") return f;
+            // Advisory tier: a chronically-wrong lone reviewer's WARN correctness
+            // finding goes to INFO (non-blocking). Mirrors the FP-ledger advisory demote.
             const note =
               "\n\n↓ low reviewer reputation — correctness finding from an unreliable lone reviewer; advisory only.";
             return {

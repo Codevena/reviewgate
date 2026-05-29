@@ -90,7 +90,12 @@ export function parseCriticOutput(text: string): Map<string, CriticVerdict> {
   } catch {
     return map;
   }
-  for (const v of parsed.verdicts ?? []) {
+  // `?? []` does NOT guard a truthy non-array (e.g. {"verdicts":{}} or 42): a
+  // for-of on it throws an uncaught TypeError that would crash the gate process
+  // (fail-OPEN). The critic is demote-only/fail-open, so a malformed `verdicts`
+  // must yield zero demotions, never an exception. Input is untrusted reviewer-LLM
+  // output — exactly the threat model the gate exists to contain.
+  for (const v of Array.isArray(parsed.verdicts) ? parsed.verdicts : []) {
     if (typeof v.signature === "string" && (v.verdict === "keep" || v.verdict === "likely_fp")) {
       map.set(v.signature, { verdict: v.verdict, ...(v.reason ? { reason: v.reason } : {}) });
     }

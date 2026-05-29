@@ -207,6 +207,56 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("not yet addressed");
   });
 
+  it("names the invalid line and WHY in the block message (too-short reason)", async () => {
+    // F-088: a rejection whose reason is < 20 chars fails DecisionEntrySchema and
+    // is silently dropped → the agent re-reads the SAME generic block, sees its
+    // line IS in the file, and can loop without knowing the validation failed.
+    // The block message must say which finding's decision was invalid and why.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQMALG");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    const dpath = decisionsPath(repo, 1);
+    mkdirSync(dirname(dpath), { recursive: true });
+    writeFileSync(
+      dpath,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "nope", // 4 chars < 20 → schema fails
+      })}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    if (decision.kind !== "block") throw new Error("expected block");
+    // Must name the offending finding id and signal it was a validation problem.
+    expect(decision.reason).toContain("F-001");
+    expect(decision.reason).toMatch(/reason|20|invalid|rejected/i);
+  });
+
   it("still blocks (not escalate) for unaddressed findings on a user-initiated stop", async () => {
     // stop_hook_active=false means a fresh user turn: ask the agent to address
     // findings (block), don't escalate yet.

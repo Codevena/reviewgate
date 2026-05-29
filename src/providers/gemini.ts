@@ -122,12 +122,29 @@ export class GeminiAdapter implements ProviderAdapter {
           statusDetail: errText.slice(0, 1000),
         };
       }
-      const { findings, rawText } = this.parse(
+      const { out, findings, rawText } = this.parse(
         outText,
         input.cfg.model,
         input.persona,
         input.workingDir,
       );
+      if (!out) {
+        // Exit 0 but stdout is not a parseable review (agy `-p` print mode can
+        // truncate before emitting valid JSON). NOT a clean review → ERROR
+        // (status !== "ok" → excluded from okRuns) rather than a silent empty PASS,
+        // matching codex/opencode's fail-closed behavior.
+        return {
+          reviewerId: input.reviewerId,
+          verdict: "ERROR",
+          findings: [],
+          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+          durationMs: res.durationMs,
+          exitCode: res.exitCode,
+          rawEventsPath: outFile,
+          status: "error",
+          statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+        };
+      }
       return {
         reviewerId: input.reviewerId,
         verdict: findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN")
@@ -195,11 +212,11 @@ export class GeminiAdapter implements ProviderAdapter {
     model: string,
     persona: string,
     workingDir: string,
-  ): { findings: Finding[]; rawText: string } {
+  ): { out: ReturnType<typeof parseReviewOutput>; findings: Finding[]; rawText: string } {
     const out = rawText ? parseReviewOutput(rawText) : null;
     const findings = out
       ? mapReviewOutputToFindings(out, { provider: "gemini", model, persona, workingDir })
       : [];
-    return { findings, rawText };
+    return { out, findings, rawText };
   }
 }

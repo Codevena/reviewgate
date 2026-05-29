@@ -92,6 +92,41 @@ describe("FpLedgerStore lifecycle", () => {
     expect(active.has(sig)).toBe(true);
   });
 
+  // Build a sticky entry (≥5 rejects, ≥2 providers within 90d) at a fixed time.
+  async function makeSticky(s: FpLedgerStore, at: string): Promise<void> {
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, at);
+    await s.recordReject(sig, meta, { run_id: "r2", provider: "codex", reason: "x" }, at);
+    await s.recordReject(sig, meta, { run_id: "r3", provider: "codex", reason: "x" }, at);
+    await s.recordReject(sig, meta, { run_id: "r4", provider: "gemini", reason: "x" }, at);
+    await s.recordReject(sig, meta, { run_id: "r5", provider: "gemini", reason: "x" }, at);
+  }
+
+  it("decayPass recomputes a sticky whose rejects all aged past the 90d window (F-017)", async () => {
+    // A sticky that earned its stage long ago, whose qualifying rejects have ALL
+    // aged out of the 90-day window, must NOT stay sticky forever — otherwise it
+    // suppresses a genuinely-real finding at the same signature indefinitely.
+    const s = new FpLedgerStore(repo());
+    await makeSticky(s, "2026-01-01T00:00:00Z");
+    expect((await s.snapshot()).entries[0]?.stage).toBe("sticky");
+    // >365d later: every reject is far past STICKY_DAYS=90 → recompute → candidate →
+    // dropped by the stale-candidate rule.
+    await s.decayPass("2027-06-01T00:00:00Z");
+    expect((await s.snapshot()).entries).toHaveLength(0);
+  });
+
+  it("activeSnapshot(now) does not serve a sticky whose window has expired (F-017)", async () => {
+    // Read-time guarantee: even before decayPass runs, activeSnapshot must not
+    // report a stale sticky as active when given the current time.
+    const s = new FpLedgerStore(repo());
+    await makeSticky(s, "2026-01-01T00:00:00Z");
+    const expired = await s.activeSnapshot(new Date("2027-06-01T00:00:00Z"));
+    expect(expired.has(sig)).toBe(false);
+    // A pinned sticky stays sticky regardless of age (recompute honours pinned_by).
+    await s.pin("FP-001", "human");
+    const stillPinned = await s.activeSnapshot(new Date("2027-06-01T00:00:00Z"));
+    expect(stillPinned.has(sig)).toBe(true);
+  });
+
   it("decayPass removes a stale candidate (no new match for >90d)", async () => {
     const s = new FpLedgerStore(repo());
     await s.recordReject(

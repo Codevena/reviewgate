@@ -1,6 +1,11 @@
 // tests/unit/brain-fetcher.test.ts
 import { describe, expect, it } from "bun:test";
-import { type SafeFetchOpts, isBlockedIp, safeFetch } from "../../src/core/brain/fetcher.ts";
+import {
+  type SafeFetchOpts,
+  isBlockedIp,
+  pinnedLookup,
+  safeFetch,
+} from "../../src/core/brain/fetcher.ts";
 
 const allow = ["docs.example.com"];
 
@@ -32,6 +37,55 @@ describe("safeFetch — Gate 1: HTTPS only", () => {
   it("rejects ftp:// URLs", async () => {
     const r = await safeFetch("ftp://docs.example.com/x", opts());
     expect(r.ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate 5: DNS rebinding / TOCTOU pin (F-026)
+// ---------------------------------------------------------------------------
+describe("safeFetch — Gate 5: connection is pinned to the checked IP (F-026)", () => {
+  it("pinnedLookup returns the checked IP regardless of the hostname the client resolves", () => {
+    // The whole TOCTOU/DNS-rebinding defense: the IP the gate checked MUST be the
+    // IP the connection uses. pinnedLookup forces every connect-time resolution to
+    // the pinned IP, so an attacker who flips DNS to 169.254.169.254 between the
+    // check and the connect cannot rebind the connection.
+    const lookup = pinnedLookup("93.184.216.34");
+    let captured: { err: unknown; addrs: unknown } | undefined;
+    lookup("evil-rebind.example.com", {}, (err: unknown, addrs: unknown) => {
+      captured = { err, addrs };
+    });
+    expect(captured?.err).toBeNull();
+    expect(captured?.addrs).toEqual([{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  it("pins IPv6 addresses with family 6", () => {
+    const lookup = pinnedLookup("2606:2800:220:1:248:1893:25c8:1946");
+    let addrs: unknown;
+    lookup("h", {}, (_e: unknown, a: unknown) => {
+      addrs = a;
+    });
+    expect(addrs).toEqual([{ address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 }]);
+  });
+
+  it("passes a connection-pinning dispatcher to the default fetch (not a bare hostname connect)", async () => {
+    // The fetch must carry a dispatcher pinned to the resolved IP; without it the
+    // HTTP client re-resolves the hostname and the IP check is bypassed.
+    let capturedInit: { dispatcher?: unknown } | undefined;
+    let capturedUrl: string | undefined;
+    const captureFetch = (async (url: string, init: { dispatcher?: unknown }) => {
+      capturedUrl = url;
+      capturedInit = init;
+      return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } });
+    }) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", {
+      allow,
+      fetchImpl: captureFetch,
+      resolve: async () => ["93.184.216.34"],
+    });
+    expect(r.ok).toBe(true);
+    expect(capturedInit?.dispatcher).toBeDefined();
+    // URL stays the hostname (so TLS/SNI validates) — pinning is via the dispatcher.
+    expect(capturedUrl).toBe("https://docs.example.com/x");
   });
 });
 

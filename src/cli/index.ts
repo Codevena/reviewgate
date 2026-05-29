@@ -19,6 +19,13 @@ import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runSetup, setupTip } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
+import { validateSince, validateWeek } from "./validate-time-args.ts";
+
+/** Print a one-line CLI error to stderr and exit non-zero (no stack trace). */
+function failArg(message: string): never {
+  process.stderr.write(`Error: ${message}\n`);
+  process.exit(1);
+}
 
 const init = defineCommand({
   meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
@@ -214,6 +221,10 @@ const stats = defineCommand({
   args: { since: { type: "string" }, last: { type: "string" }, json: { type: "boolean" } },
   async run({ args }) {
     const since = typeof args.since === "string" ? args.since : undefined;
+    if (since !== undefined) {
+      const err = validateSince(since);
+      if (err) failArg(err);
+    }
     const last = typeof args.last === "string" ? Number(args.last) : undefined;
     const output = await runStats({
       repoRoot: process.cwd(),
@@ -233,6 +244,10 @@ const report = defineCommand({
   args: { week: { type: "string" }, json: { type: "boolean" } },
   async run({ args }) {
     const week = typeof args.week === "string" ? args.week : undefined;
+    if (week !== undefined) {
+      const err = validateWeek(week);
+      if (err) failArg(err);
+    }
     const output = await runReport({
       repoRoot: process.cwd(),
       ...(week !== undefined ? { week } : {}),
@@ -271,6 +286,10 @@ const learn = defineCommand({
       args: { since: { type: "string" }, json: { type: "boolean" } },
       async run({ args }) {
         const since = typeof args.since === "string" ? args.since : undefined;
+        if (since !== undefined) {
+          const err = validateSince(since);
+          if (err) failArg(err);
+        }
         process.exit(
           await runLearnStatus({
             repoRoot: process.cwd(),

@@ -28,6 +28,7 @@
 
 import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import { Agent, fetch as undiciFetch } from "undici";
 
 // ---------------------------------------------------------------------------
 // Egress log + result union
@@ -260,11 +261,44 @@ function validateUrl(
 }
 
 // ---------------------------------------------------------------------------
+// DNS-rebinding / TOCTOU pin (Gate 5)
+// ---------------------------------------------------------------------------
+
+// A custom DNS lookup that ALWAYS resolves to the already-checked IP, ignoring
+// the hostname. Wired into the connection's dispatcher so the IP the gate
+// validated is the IP the socket actually connects to — closing the window
+// where an attacker-controlled host re-resolves to 127.0.0.1/169.254.169.254
+// between our check and the HTTP client's own resolution (F-026). TLS still
+// validates against the hostname (SNI is unchanged — we pin the IP, not the URL).
+export function pinnedLookup(
+  ip: string,
+): (
+  hostname: string,
+  options: unknown,
+  callback: (err: Error | null, addresses: Array<{ address: string; family: number }>) => void,
+) => void {
+  const family = ip.includes(":") ? 6 : 4;
+  return (_hostname, _options, callback) => {
+    callback(null, [{ address: ip, family }]);
+  };
+}
+
+// A throwaway undici dispatcher whose connect step is pinned to `ip`. Caller MUST
+// close it (we destroy each per-hop dispatcher in safeFetch's finally) to avoid
+// leaking sockets. Created per hop so each redirect re-pins to its own checked IP.
+function pinnedDispatcher(ip: string): Agent {
+  return new Agent({ connect: { lookup: pinnedLookup(ip) } });
+}
+
+// ---------------------------------------------------------------------------
 // Public safeFetch
 // ---------------------------------------------------------------------------
 
 export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<SafeFetchResult> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  // Default to undici's fetch (NOT global fetch): it honors the per-request
+  // `dispatcher` that pins the connection to the checked IP. Tests inject their
+  // own fetchImpl and ignore the dispatcher.
+  const fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as typeof fetch);
   const resolve =
     opts.resolve ?? (async (h: string) => (await lookup(h, { all: true })).map((r) => r.address));
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -301,6 +335,8 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Per-hop pinning dispatchers we must destroy to avoid leaking sockets.
+  const dispatchers: Agent[] = [];
 
   try {
     // Re-validate URL + DNS for each hop (the initial hop and any redirect).
@@ -315,6 +351,13 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
       if (ips.length === 0 || ips.some(isBlockedIp)) return deny("resolves to blocked ip");
       pinnedIp = ips[0] as string;
 
+      // Pin the connection to the checked IP so the HTTP client cannot
+      // independently re-resolve the hostname to a blocked IP (DNS-rebinding /
+      // TOCTOU). The dispatcher's lookup forces this socket to `pinnedIp`; the
+      // URL/Host stays the hostname so TLS validates correctly (F-026).
+      const dispatcher = pinnedDispatcher(pinnedIp);
+      dispatchers.push(dispatcher);
+
       // Gate 8 — minimal request: no credentials, auth headers, or cookies.
       let resp: Response;
       try {
@@ -323,7 +366,10 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
           redirect: "manual", // we re-validate each hop ourselves
           headers: { Accept: ALLOWED_CONTENT_TYPES.join(",") },
           signal: controller.signal,
-        });
+          // `dispatcher` is honored by undici fetch; cast through unknown since our
+          // minimal Agent shim isn't the full Dispatcher type bun-types expects.
+          dispatcher,
+        } as unknown as RequestInit);
       } catch (err) {
         if (controller.signal.aborted) return deny("timeout");
         return deny(`fetch failed: ${(err as Error).message}`);
@@ -394,5 +440,13 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
     }
   } finally {
     clearTimeout(timer);
+    // Tear down per-hop pinning dispatchers (best-effort; never throws).
+    for (const d of dispatchers) {
+      try {
+        void d.destroy();
+      } catch {
+        // best-effort socket cleanup
+      }
+    }
   }
 }

@@ -73,24 +73,34 @@ unchanged.
 
 ## Your response protocol
 
-1. **Read `.reviewgate/pending.md`** with your Read tool. It lists every finding,
+1. **Read `.reviewgate/pending.md`** with your Read tool. It lists findings
    grouped by severity (CRITICAL ●, WARN ▲, INFO ·), each with an `id` like
-   `F-001`, a `file:line`, a `rule_id`, a `message`, and `details`.
+   `F-001`, a `file:line`, a `rule_id`, a `message`, and `details`. A separate
+   **Advisory** section lists INFO / scope-demoted / known-FP findings.
 
-2. **For each finding**, decide one of two things:
+2. **Only CRITICAL and WARN findings block the gate and require a decision.**
+   INFO findings — and everything under the **Advisory (no decision needed)**
+   section — are advisory: you may act on them, but the gate does NOT wait for a
+   decision on them. For each blocking (CRITICAL/WARN) finding, decide one of two
+   things:
    - **Fix it** — make the code change that resolves the finding.
    - **Reject it** — only if the finding is genuinely wrong or inapplicable.
      Rejecting requires a real, specific reason (≥ 20 characters). Do not reject
      just to make the gate pass.
 
-3. **Record every decision** by appending exactly one JSON line per finding to
-   `.reviewgate/decisions/<iter>.jsonl` (one finding `id` per line). The gate
-   will not unblock until **every** finding `id` from the current iteration has a
-   decision.
+3. **Record a decision for every blocking finding** by appending exactly one JSON
+   line per finding to `.reviewgate/decisions/<iter>.jsonl` (one finding `id` per
+   line). The gate will not unblock until every **CRITICAL/WARN** finding `id`
+   from the current iteration has a decision. (You do not need decision lines for
+   INFO/advisory findings; writing them is harmless but unnecessary.)
+
+   > Optional: you may still append a `rejected` decision for an advisory finding
+   > you believe hallucinated — it feeds the false-positive learn-loop — but it is
+   > never required to pass the gate.
 
 4. **Try to stop again.** The Stop hook re-fires, Reviewgate re-reviews, and if
-   everything is addressed (and no new blocking findings appear) your turn is
-   allowed to end.
+   every blocking finding is addressed (and no new blocking findings appear) your
+   turn is allowed to end.
 
 ## Decision file format
 

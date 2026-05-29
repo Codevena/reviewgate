@@ -153,27 +153,58 @@ function clearDecisions(repoRoot: string): void {
   }
 }
 
-function allDecisionsAddressed(repoRoot: string, iter: number, requiredIds: string[]): boolean {
+interface DecisionsGate {
+  addressed: boolean;
+  missing: string[]; // required ids with no valid decision line
+  invalid: string[]; // human-readable per-line reasons a present line was rejected
+}
+
+// Evaluate the decisions file against the required finding ids. Beyond the
+// boolean gate, it captures WHY a present-but-invalid line did not count
+// (bad JSON, too-short reason, missing `action`, wrong verdict literal) so the
+// block message can tell the agent exactly what to fix — otherwise a formatting
+// mistake is dropped silently and the agent re-reads an identical generic block,
+// sees its line IS in the file, and loops without understanding the failure (F-088).
+function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]): DecisionsGate {
   const p = decisionsPath(repoRoot, iter);
-  if (!existsSync(p)) return false;
-  const lines = readFileSync(p, "utf8")
-    .split("\n")
-    .filter((l) => l.trim().length > 0);
   const seen = new Set<string>();
-  for (const l of lines) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(l);
-    } catch {
-      continue; // not JSON → treated as missing decision (fail-closed)
+  const invalid: string[] = [];
+  if (existsSync(p)) {
+    const lines = readFileSync(p, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
+    for (const l of lines) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(l);
+      } catch {
+        invalid.push("a line is not valid JSON");
+        continue; // not JSON → treated as missing decision (fail-closed)
+      }
+      // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
+      // rejection with a too-short reason must NOT satisfy the gate — otherwise
+      // the gate is trivially bypassable with malformed lines.
+      const res = DecisionEntrySchema.safeParse(parsed);
+      if (res.success) {
+        seen.add(res.data.finding_id);
+        continue;
+      }
+      const fid =
+        parsed &&
+        typeof parsed === "object" &&
+        typeof (parsed as { finding_id?: unknown }).finding_id === "string"
+          ? (parsed as { finding_id: string }).finding_id
+          : "(missing finding_id)";
+      const issue = res.error.issues[0];
+      const where = issue?.path.length ? issue.path.join(".") : "entry";
+      invalid.push(`${fid}: ${where} — ${issue?.message ?? "invalid decision"}`);
     }
-    // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
-    // rejection with a too-short reason must NOT satisfy the gate — otherwise
-    // the gate is trivially bypassable with malformed lines.
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (res.success) seen.add(res.data.finding_id);
   }
-  return requiredIds.every((id) => seen.has(id));
+  // Only report a required id as missing when no VALID line addressed it, and it
+  // wasn't already flagged as invalid above (so the agent sees one reason per id).
+  const invalidIds = new Set(invalid.map((m) => m.split(":")[0]));
+  const missing = requiredIds.filter((id) => !seen.has(id) && !invalidIds.has(id));
+  return { addressed: requiredIds.every((id) => seen.has(id)), missing, invalid };
 }
 
 // A compact panel breakdown for the block message — severity counts + which
@@ -405,10 +436,17 @@ export class LoopDriver {
       const requiredIds = previousFindingIds(this.i.repoRoot);
 
       // Decisions-gate: every required finding must have a decision.
-      if (
-        requiredIds.length > 0 &&
-        !allDecisionsAddressed(this.i.repoRoot, state.iteration, requiredIds)
-      ) {
+      const gate = evaluateDecisions(this.i.repoRoot, state.iteration, requiredIds);
+      if (requiredIds.length > 0 && !gate.addressed) {
+        // Surface WHICH lines were invalid (and why) and which ids are still
+        // missing, so a formatting mistake (too-short reason, missing action) is
+        // never silently dropped into an opaque re-block (F-088).
+        const detail = [
+          gate.missing.length > 0 ? `Missing decisions for: ${gate.missing.join(", ")}` : null,
+          gate.invalid.length > 0 ? `Rejected (fix & re-write): ${gate.invalid.join("; ")}` : null,
+        ]
+          .filter((x): x is string => x !== null)
+          .join(" · ");
         // The decisions-gate does not advance `iteration`, so re-blocking on a
         // hook-forced continuation would loop forever (the iter-cap escalation
         // can never catch it). When stop_hook_active is set, the agent has
@@ -419,12 +457,12 @@ export class LoopDriver {
           return this.escalateAndDecide(
             state,
             "decisions-unaddressed",
-            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.`,
+            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.${detail ? ` ${detail}` : ""}`,
           );
         }
         return {
           kind: "block",
-          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"...", reviewer_was_wrong:true).`,
+          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${detail ? ` ${detail}` : ""}`,
         };
       }
 

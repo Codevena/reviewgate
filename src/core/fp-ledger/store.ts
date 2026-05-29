@@ -156,11 +156,17 @@ export class FpLedgerStore {
     });
   }
 
-  // candidate removed after 90d no new match; active→candidate after 180d; sticky kept.
+  // candidate removed after 90d no new match; active→candidate after 180d.
+  // sticky is RE-EVALUATED against the current window (not blindly kept): a sticky
+  // whose qualifying rejects have all aged past STICKY_DAYS must fall back to
+  // active/candidate, else it would suppress a genuinely-real finding at the same
+  // signature forever (F-017). recompute() honours pinned_by, so a pinned sticky
+  // stays sticky regardless of age.
   async decayPass(nowIso: string): Promise<void> {
     const nowMs = Date.parse(nowIso);
     await this.mutate((idx) => {
-      const kept = idx.entries.filter((e) => {
+      const recomputed = idx.entries.map((e) => (e.stage === "sticky" ? recompute(e, nowMs) : e));
+      const kept = recomputed.filter((e) => {
         if (e.stage === "sticky") return true;
         const ageDays = (nowMs - Date.parse(e.last_seen_at)) / DAY_MS;
         if (e.stage === "candidate") return ageDays <= 90;
@@ -176,10 +182,19 @@ export class FpLedgerStore {
   }
 
   // active + sticky entries, keyed by signature, for prompt + aggregator use.
-  async activeSnapshot(): Promise<Map<string, FpLedgerEntry>> {
+  // When `now` is given, each entry's stage is re-evaluated against the current
+  // time window at read time (recompute is pure) so a stale sticky/active whose
+  // qualifying rejects have aged out is never served as suppressing — the
+  // read-time guarantee complementing decayPass's persisted self-heal (F-017).
+  // Omitting `now` preserves the legacy persisted-stage read (used by tests/CLI).
+  async activeSnapshot(now?: Date): Promise<Map<string, FpLedgerEntry>> {
     const snap = await this.snapshot();
+    const nowMs = now ? now.getTime() : null;
     const m = new Map<string, FpLedgerEntry>();
-    for (const e of snap.entries) if (e.stage !== "candidate") m.set(e.signature, e);
+    for (const e of snap.entries) {
+      const eff = nowMs !== null ? recompute(e, nowMs) : e;
+      if (eff.stage !== "candidate") m.set(eff.signature, eff);
+    }
     return m;
   }
 }
