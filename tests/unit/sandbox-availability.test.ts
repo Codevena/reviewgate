@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { platform } from "node:os";
-import {
-  __resetSandboxExecCache,
-  sandboxExecAvailable,
-} from "../../src/sandbox/availability.ts";
+import { __resetSandboxExecCache, sandboxExecAvailable } from "../../src/sandbox/availability.ts";
 
 describe("sandboxExecAvailable", () => {
   it("returns a boolean", async () => {

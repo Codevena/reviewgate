@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { realpathSync } from "node:fs";
-import { buildMacosSbpl, resolveForSandbox } from "../../src/sandbox/sbpl.ts";
 import type { SandboxProfile } from "../../src/sandbox/profile-builder.ts";
+import { buildMacosSbpl, resolveForSandbox } from "../../src/sandbox/sbpl.ts";
 
 describe("resolveForSandbox", () => {
   it("resolves /tmp to its canonical path (macOS: /private/tmp)", () => {
@@ -66,9 +66,7 @@ describe("buildMacosSbpl", () => {
 
   it("(deny file-write*) appears before (allow file-write*)", () => {
     const sbpl = buildMacosSbpl(profile);
-    expect(sbpl.indexOf("(deny file-write*)")).toBeLessThan(
-      sbpl.indexOf("(allow file-write*"),
-    );
+    expect(sbpl.indexOf("(deny file-write*)")).toBeLessThan(sbpl.indexOf("(allow file-write*"));
   });
 
   it("throws on write-only conflict: writeAllow nested under readDeny", () => {

@@ -4,8 +4,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import type { SandboxProfile } from "./profile-builder.ts";
 
 export function resolveForSandbox(p: string, homeDir: string): string {
-  const expanded =
-    p === "~" ? homeDir : p.startsWith("~/") ? join(homeDir, p.slice(2)) : p;
+  const expanded = p === "~" ? homeDir : p.startsWith("~/") ? join(homeDir, p.slice(2)) : p;
   const abs = isAbsolute(expanded) ? expanded : join(homeDir, expanded);
   try {
     return realpathSync(abs);
