@@ -27,6 +27,35 @@ export interface GeminiAdapterOptions {
   binPath?: string;
 }
 
+// Map an agy spawn outcome to a ReviewStatus. Extracted + exported so the
+// silent-stall classification is unit-testable without spawning agy.
+//
+// agy emits its quota/usage banner ("⚠ Individual quota reached … enable overages.
+// Resets in 25m38s.") to the interactive TTY ONLY. Quota'd and run non-interactively
+// (as Reviewgate runs it, piped) agy HANGS with zero stdout/stderr until the
+// watchdog/timeout SIGKILLs it — there is no quota text to match. That silent,
+// output-less kill is agy's only observable quota signal, so classify it as
+// quota-exhausted → the orchestrator records a cooldown and skips agy instead of
+// retrying it (and blocking the full wall timeout) every iteration. A kill that DID
+// emit partial output is a genuine slow-review timeout and is left as "timeout".
+export function classifyAgyOutcome(input: {
+  killedByTimeout: boolean;
+  killedByWatchdog: boolean;
+  exitCode: number;
+  outText: string;
+  errText: string;
+}): { status: ReviewStatus; silentStall: boolean } {
+  const killed = input.killedByTimeout || input.killedByWatchdog;
+  const noOutput = input.outText.trim() === "" && input.errText.trim() === "";
+  if (killed && noOutput) return { status: "quota-exhausted", silentStall: true };
+  const baseStatus: ReviewStatus = killed ? "timeout" : input.exitCode === 0 ? "ok" : "error";
+  const status: ReviewStatus =
+    baseStatus === "error" && isQuotaExhausted(input.errText + input.outText)
+      ? "quota-exhausted"
+      : baseStatus;
+  return { status, silentStall: false };
+}
+
 export class GeminiAdapter implements ProviderAdapter {
   readonly id = "gemini" as const;
   private readonly binPath: string;
@@ -97,16 +126,14 @@ export class GeminiAdapter implements ProviderAdapter {
       });
       const errText = readFileSafe(errFile);
       const outText = readFileSafe(outFile);
-      const baseStatus: ReviewStatus =
-        res.killedByTimeout || res.killedByWatchdog
-          ? "timeout"
-          : res.exitCode === 0
-            ? "ok"
-            : "error";
-      const status: ReviewStatus =
-        baseStatus === "error" && isQuotaExhausted(errText + outText)
-          ? "quota-exhausted"
-          : baseStatus;
+      const outcome = classifyAgyOutcome({
+        killedByTimeout: res.killedByTimeout,
+        killedByWatchdog: res.killedByWatchdog,
+        exitCode: res.exitCode,
+        outText,
+        errText,
+      });
+      const status = outcome.status;
       if (status !== "ok") {
         return {
           reviewerId: input.reviewerId,
@@ -119,7 +146,9 @@ export class GeminiAdapter implements ProviderAdapter {
           // string and never reads the file back (it uses the in-memory rawText).
           rawEventsPath: outFile,
           status,
-          statusDetail: errText.slice(0, 1000),
+          statusDetail: outcome.silentStall
+            ? "agy produced no output and was killed by the watchdog/timeout — agy prints its quota/usage banner to the TTY only, so a silent stall is treated as a quota cap (cooling down)."
+            : errText.slice(0, 1000),
         };
       }
       const { out, findings, rawText } = this.parse(

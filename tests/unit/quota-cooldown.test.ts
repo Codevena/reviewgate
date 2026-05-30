@@ -32,6 +32,30 @@ describe("parseQuotaResetAt", () => {
     expect(iso).toBe(new Date(NOW.getTime() + 120_000).toISOString());
   });
 
+  test("parses agy's relative 'Resets in 25m38s' duration", () => {
+    const iso = parseQuotaResetAt(
+      "⚠ Individual quota reached. Contact your administrator to enable overages. Resets in 25m38s.",
+      NOW,
+    );
+    expect(iso).toBe(new Date(NOW.getTime() + (25 * 60 + 38) * 1000).toISOString());
+  });
+
+  test("parses relative durations with h/m/s, m-only, and s-only", () => {
+    expect(parseQuotaResetAt("Resets in 1h2m3s", NOW)).toBe(
+      new Date(NOW.getTime() + (3600 + 120 + 3) * 1000).toISOString(),
+    );
+    expect(parseQuotaResetAt("resets in 25m", NOW)).toBe(
+      new Date(NOW.getTime() + 25 * 60_000).toISOString(),
+    );
+    expect(parseQuotaResetAt("resets in 90s", NOW)).toBe(
+      new Date(NOW.getTime() + 90_000).toISOString(),
+    );
+  });
+
+  test("does not treat a bare 'resets in' with no duration as a reset", () => {
+    expect(parseQuotaResetAt("the cache resets in the background", NOW)).toBeNull();
+  });
+
   test("returns null when no reset hint is present", () => {
     expect(parseQuotaResetAt("RESOURCE_EXHAUSTED: quota exceeded", NOW)).toBeNull();
     expect(parseQuotaResetAt("", NOW)).toBeNull();

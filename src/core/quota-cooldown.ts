@@ -52,6 +52,22 @@ export function parseQuotaResetAt(text: string | undefined | null, now: Date): s
       return new Date(t).toISOString();
     }
   }
+
+  // agy's relative "Resets in 25m38s" / "resets in 1h2m3s" / "resets in 90s". The
+  // duration group is all-optional, so a bare "resets in <words>" captures empty →
+  // 0 seconds → ignored (not treated as a reset).
+  const rel = text.match(/resets? in\s+((?:\d+\s*h)?(?:\d+\s*m)?(?:\d+\s*s)?)/i);
+  if (rel?.[1]) {
+    const h = /(\d+)\s*h/i.exec(rel[1]);
+    const m = /(\d+)\s*m/i.exec(rel[1]);
+    const s = /(\d+)\s*s/i.exec(rel[1]);
+    const secs =
+      (h ? Number(h[1]) * 3600 : 0) + (m ? Number(m[1]) * 60 : 0) + (s ? Number(s[1]) : 0);
+    if (secs > 0) {
+      const t = now.getTime() + secs * 1000;
+      if (t - now.getTime() <= MAX_COOLDOWN_MS) return new Date(t).toISOString();
+    }
+  }
   return null;
 }
 

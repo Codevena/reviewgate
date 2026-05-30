@@ -149,6 +149,31 @@ describe("GeminiAdapter (agy, mocked)", () => {
   });
 });
 
+describe("GeminiAdapter.review — silent stall (agy quota hang)", () => {
+  it("classifies a no-output watchdog/timeout kill as quota-exhausted (so it gets cooled down)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-hang-"));
+    // Fake agy that hangs producing nothing — mirrors a quota'd agy run
+    // non-interactively (its banner is TTY-only). The adapter ties the zero-byte
+    // watchdog to timeoutMs, so a small timeout kills the silent hang quickly.
+    const hangBin = makeFakeBin(dir, "agy-hang.sh", "#!/usr/bin/env bash\nsleep 10\n");
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath: hangBin });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 500 },
+      reviewerId: "gemini-architecture",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "architecture",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("quota-exhausted");
+    expect(res.verdict).toBe("ERROR");
+    expect(res.statusDetail).toContain("TTY only");
+  });
+});
+
 describe("GeminiAdapter.complete (judge completion)", () => {
   it("returns the raw stdout text containing the judge JSON", async () => {
     const adapter = new GeminiAdapter({ binPath: FAKE_COMPLETE });

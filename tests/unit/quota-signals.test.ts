@@ -57,3 +57,19 @@ describe("extractQuotaMessage", () => {
     expect(extractQuotaMessage(undefined)).toBeNull();
   });
 });
+
+describe("isQuotaExhausted — agy (Antigravity) wording", () => {
+  test("detects the full agy quota banner", () => {
+    expect(
+      isQuotaExhausted(
+        "⚠ Individual quota reached. Contact your administrator to enable overages. Resets in 25m38s.",
+      ),
+    ).toBe(true);
+  });
+
+  test("detects the distinctive 'enable overages' phrase on its own", () => {
+    // agy's wording can surface without the "quota reached" clause; the overage
+    // phrase is distinctive (never appears in reviewed code) so it is safe to key on.
+    expect(isQuotaExhausted("Contact your administrator to enable overages.")).toBe(true);
+  });
+});

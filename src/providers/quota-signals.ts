@@ -20,6 +20,9 @@ const QUOTA_SIGNATURES: RegExp[] = [
   /\bquota (?:exceeded|exhausted|reached)\b/i,
   // Google Gemini
   /resource_exhausted/i,
+  // agy (Antigravity) — "⚠ Individual quota reached. Contact your administrator to
+  // enable overages." The overage phrase is distinctive enough to key on by itself.
+  /enable overages/i,
   // HTTP status used by all three when throttled
   /\b429\b/,
   /too many requests/i,
