@@ -73,6 +73,16 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
       sandboxFellBack = true;
     }
   }
+  // Backstop: a NUL byte can never appear in a real argv (the OS can't represent
+  // one) and node:child_process throws synchronously on it ("args[N] must be a
+  // string without null bytes"), which would error a reviewer at spawn time. The
+  // diff sanitizer strips these at the source; this guards EVERY other argv path
+  // (e.g. judge/curator complete() prompts) too. split/join avoids both a regex
+  // control-class and a literal NUL byte in this source.
+  const NUL = String.fromCharCode(0);
+  command = command.split(NUL).join("");
+  args = args.map((a) => a.split(NUL).join(""));
+
   const start = Date.now();
   let killedByWatchdog = false;
   let killedByTimeout = false;

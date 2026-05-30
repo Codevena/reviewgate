@@ -26,6 +26,27 @@ describe("spawnSafely", () => {
     expect(out.trim().split("\n").length).toBe(5000);
   });
 
+  it("strips NUL bytes from argv so spawn never throws 'must be a string without null bytes'", async () => {
+    // Backstop: a reviewer prompt with an embedded NUL (from a binary/UTF-16/NUL-
+    // after-8KB changed file in the diff) is passed as an argv element. node's spawn
+    // rejects any arg containing \0 synchronously, erroring the reviewer at 0.0s.
+    // spawnSafely must launder argv so no path can ever hand spawn a NUL. Build the
+    // NUL via fromCharCode to keep this source pure ASCII.
+    const NUL = String.fromCharCode(0);
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawn-nul-"));
+    const res = await spawnSafely({
+      command: "/bin/echo",
+      args: [`a${NUL}b${NUL}c`],
+      stdoutFile: join(dir, "out"),
+      stderrFile: join(dir, "err"),
+      timeoutMs: 30_000,
+    });
+    expect(res.exitCode).toBe(0);
+    const out = readFileSync(join(dir, "out"), "utf8");
+    expect(out.includes(NUL)).toBe(false);
+    expect(out.trim()).toBe("abc");
+  });
+
   it("captures stderr and reports a non-zero exit code", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-spawn-"));
     const res = await spawnSafely({

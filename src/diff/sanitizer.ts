@@ -18,6 +18,20 @@ function escapeAngles(s: string): string {
   return s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Strip C0 control bytes (and DEL) that are never meaningful in a text diff —
+// crucially NUL: the assembled prompt is passed as a reviewer CLI argv element and
+// node:child_process rejects ANY arg containing \0 ("args[N] must be a string
+// without null bytes"), which errors every reviewer synchronously at spawn time
+// (a binary / UTF-16 / NUL-after-8KB changed file lands NUL bytes in `git diff`).
+// Keep the legitimate whitespace controls TAB (0x09), LF (0x0A), CR (0x0D). The
+// class uses \x escapes only — NO literal control bytes in this source (those would
+// make git treat the file as binary). Single source of truth, applied by both the
+// diff path and the untrusted-docs path below.
+function stripControlBytes(s: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: deliberate — these are exactly what we strip
+  return s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+}
+
 /**
  * Neutralise prompt-injection markers in untrusted text. Reuses the diff
  * sanitiser's marker LIST so there is one source of truth; used by the Context7
@@ -33,7 +47,7 @@ function escapeAngles(s: string): string {
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 
 export function neutralizeInjectionMarkers(text: string): string {
-  let body = text.normalize("NFKC");
+  let body = stripControlBytes(text).normalize("NFKC");
   for (const re of INJECTION_MARKERS) {
     body = body.replace(re, (m) => {
       if (m.includes("<") || m.includes(">")) return escapeAngles(m);
@@ -88,8 +102,10 @@ export interface SanitizeResult {
 }
 
 export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
+  // Layer 0: strip control bytes (NUL et al.) — they break the reviewer argv and
+  // are never meaningful in a text diff. Must run BEFORE everything else.
   // Layer 1: Unicode NFKC normalisation.
-  let body = input.diff.normalize("NFKC");
+  let body = stripControlBytes(input.diff).normalize("NFKC");
 
   // Layer 2: marker neutralisation. We escape angle brackets in matched
   // markers AND any other angle-bracket sequences that look like control

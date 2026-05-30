@@ -79,4 +79,33 @@ describe("sanitizeDiff", () => {
     const { text } = sanitizeDiff({ diff: code, personaReaffirm: "x" });
     expect(text).toContain(code);
   });
+
+  it("strips NUL and other C0 control bytes from the diff (else they reach the reviewer argv → spawn throws)", () => {
+    // A changed file with a NUL byte (binary-ish content, UTF-16, NUL-after-8KB)
+    // lands NUL bytes in `git diff` output. They must never survive into the prompt:
+    // the adapters pass the prompt as a command-line argument and node:child_process
+    // rejects any argv string containing \0 ("args[N] must be a string without null
+    // bytes"), erroring every reviewer at spawn time. Build the control bytes via
+    // fromCharCode so this test source stays pure ASCII (no binary-looking bytes).
+    const NUL = String.fromCharCode(0);
+    const BEL = String.fromCharCode(7); // a non-whitespace C0 control
+    const { text } = sanitizeDiff({
+      diff: `before${NUL}after${BEL}mid${NUL}end`,
+      personaReaffirm: "x",
+    });
+    expect(text.includes(NUL)).toBe(false);
+    expect(text.includes(BEL)).toBe(false);
+    // The surrounding visible text is preserved (only the control bytes removed).
+    expect(text).toContain("beforeafter");
+    expect(text).toContain("midend");
+  });
+
+  it("keeps legitimate whitespace controls (tab, newline, CR) intact", () => {
+    const { text } = sanitizeDiff({
+      diff: "line1\n\tindented\r\nline2",
+      personaReaffirm: "x",
+    });
+    expect(text).toContain("\n\tindented");
+    expect(text).toContain("line2");
+  });
 });
