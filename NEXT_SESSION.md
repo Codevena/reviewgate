@@ -1,6 +1,6 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-05-30. Read this first, then delete/ignore once you're oriented._
+_Last updated: 2026-05-31. Read this first, then delete/ignore once you're oriented._
 
 ## What Reviewgate is
 A code-review gate that runs **inside Claude Code's Stop hook**: on turn-end it spawns a
@@ -10,56 +10,75 @@ fixed or rejected-with-reason. File-based (no chat parsing). Runtime is **Bun**.
 itself** — a `.reviewgate/` dir is present, so the gate runs on your own turns here.
 
 ## Current state (master is green)
-`bun test` → ~1175 pass / 0 fail · `bunx tsc --noEmit` clean · `bun run lint` clean · `bun run build` OK.
+`bun test` → ~1219 pass / 0 fail (11 skip) · `bunx tsc --noEmit` clean · `bun run lint` clean · `bun run build` OK.
+The globally-installed `reviewgate` on PATH is a **symlink into this repo's `dist/`**, so after any
+source change you must `bun run build` for the fix to go live (both this repo's gate AND external
+dogfood repos like shoal run that symlinked binary).
 
-This session landed **8 PRs (#37–#44)**, all through a 2-reviewer DoD panel:
-- **#37/#38** — the full multi-agent audit: **60 confirmed findings** fixed (12 HIGH + 20 medium + 27 low), TDD each.
-- **#39** — `reviewgate setup` now offers to arm the gate (install hooks) at the end.
-- **#40** — **fail-closed JSON boundary** (`src/utils/safe-json.ts`): all untrusted reviewer/LLM output parses through `safeJsonParse`/`parseUntrusted`; a structural guard test forbids raw `JSON.parse` in providers/critic.
-- **#41** — **brain promotion funnel instrumentation**: `reviewgate learn status` now shows quorum-fail provider distribution (why nothing promotes).
-- **#42** — **property-based tests** (fast-check) for fp-ledger + reputation invariants.
-- **#43** — flake fix (cross-file `OPENROUTER_API_KEY` env leak).
-- **#44** — **macOS filesystem sandbox** (weakness #3, increment 1): strict/permissive now REALLY isolate the reviewer's filesystem via `sandbox-exec`, proven by a real e2e.
+This session landed **5 changes (PRs #46–#47 + 3 direct fixes), all through a 2-engine DoD panel
+(Opus `code-reviewer` + codex; agy is the natural 3rd but was itself quota'd):**
 
-The four "honest weaknesses" from the architecture review are all addressed:
-1. fail-open edges → closed (#40) · 2. complexity/invariants → property tests (#42) ·
-3. isolation "off" → macOS enforcement real (#44) · 4. brain never promotes → instrumented (#41).
+**Reviewer-spawn reliability (3 fixes, master):**
+- **NUL/control-byte strip** (`0aff3d4`): a NUL in a changed file (binary/UTF-16/NUL-after-8KB) flowed
+  through `sanitizeDiff` into the prompt and was passed as a reviewer argv element → `node:child_process`
+  threw `args[N] must be a string without null bytes`, erroring every reviewer at spawn. Fix:
+  `stripControlBytes` Layer 0 in `src/diff/sanitizer.ts` + a NUL backstop in `spawnSafely`.
+- **agy silent-stall quota detection** (`364453c`): quota'd + piped, `agy` hangs with **zero bytes**
+  (its banner is TTY-only). `classifyAgyOutcome` in `src/providers/gemini.ts` now treats a zero-output
+  watchdog/timeout kill as `quota-exhausted` → 15-min cooldown + failover instead of retrying every
+  iteration. `parseQuotaResetAt` parses agy's relative `Resets in 25m38s`; `/enable overages/i` signature added.
+  See `memory/reference_agy_silent_quota_hang.md`.
+- **gate stdin-TTY hang** (`e10628f`) + **reset confirmation** (PR #47, `4863b37`): `reviewgate gate
+  --hook reset` typed in a terminal hung on `Bun.stdin.text()` (TTY never EOFs). `readHookStdin()`
+  returns "" on a TTY; `hookFeedbackMessage()` prints `✓ Reviewgate: per-session state reset.`
+  interactive-only (piped hooks stay silent).
 
-## Top candidate for next session: Sandbox Increment 2 — Linux `bwrap`
-Plan + design already written:
-- Spec: `docs/superpowers/specs/2026-05-29-macos-sandbox-filesystem-design.md`
-- Plan: `docs/superpowers/plans/2026-05-29-macos-sandbox-filesystem.md` — **see the "Increment 2 (NEXT): Linux bubblewrap" section at the bottom** for the task breakdown.
+**Sandbox Increment 2 — Linux `bwrap` (PR #46, master `f3e5ce3`) — COMPLETE:**
+- Filesystem-isolates reviewer subprocesses on **Linux** via `bubblewrap`, mirroring the macOS
+  `sandbox-exec` increment. Deny-mirror mount model: `--ro-bind / /` read-only, `--bind` the working
+  area, mask secrets LAST (`--tmpfs` dirs / `--ro-bind /dev/null` files), `--unshare-user/--unshare-pid`
+  (isolated `/proc`), `--die-with-parent`; **network NOT isolated** (documented).
+- New `src/sandbox/bwrap.ts` (`buildBwrapArgs` + `assertNoSandboxOverlap`), `bwrapAvailable()` + unified
+  `sandboxRuntimeAvailable()` probe (`src/sandbox/availability.ts`), classified `writeTargets` on
+  `SandboxProfile`, platform-aware `spawnSafely` branch + `ensureWriteTargets` (macOS path byte-for-byte
+  unchanged), doctor+orchestrator repointed to the single shared probe.
+- `strict` fails closed when bwrap is unavailable (e.g. Ubuntu 24.04 unprivileged-userns lockdown —
+  `reviewgate doctor` prints the `sysctl` remediation); `permissive` runs unisolated + WARN.
+- **Documented Linux-specific limitation:** glob-denies (`*.pem`/`.env*`) are NOT enforced on Linux
+  (mount model can't pattern-match) — honest divergence from macOS, which denies them anywhere.
+- Spec: `docs/superpowers/specs/2026-05-30-linux-bwrap-sandbox-filesystem-design.md` ·
+  Plan: `docs/superpowers/plans/2026-05-30-linux-bwrap-sandbox-filesystem.md`.
 
-Key: the profile + wiring are platform-agnostic; only a `src/sandbox/bwrap.ts` translator + a
-`spawnSafely` Linux branch + a Linux e2e are new. bwrap is a MOUNT-namespace model (inverse of
-Seatbelt's allow-default) — you build the view with `--ro-bind`/`--bind`/`--tmpfs`. **Open decision:**
-glob denies (`*.pem`) can't be mount-expressed on Linux — decide document-as-not-enforced vs
-tmpfs-mask-matches in that increment's brainstorm. **You're on macOS** — Linux work needs a Linux
-host/CI to run the real e2e; if none, do the design + pure unit tests and gate the e2e on availability.
+## The ONE open verification
+The real bwrap e2e (`tests/integration/bwrap-real.test.ts`) is `describe.skipIf`-gated and **skips on
+macOS** (the author host). It asserts `sandboxApplied` + secret-read-denied / workdir-rw / out-of-area-
+write-denied. **Run it on a Linux host/CI** (`bun test tests/integration/bwrap-real.test.ts`) to exercise
+real isolation — everything else is verified on macOS. This is the only thing the macOS dev box couldn't prove.
 
-Smaller follow-ups (INFO, optional): the #44 production-e2e's 2nd `describe` should be `describe.skip`
-on non-darwin (currently in-`it` early-return); `readAllow` is metadata-only in the SBPL model (dead — could drop).
-Deferred by design: **network isolation** (API reviewers need network; documented in CLAUDE.md).
+## Candidate next increments (pick per priority)
+- **Sandbox Increment 3 (optional hardening):** allow-list mount model (bind only what's needed) instead
+  of deny-mirror, and/or a targeted dotenv-mask to partially close the Linux glob-deny gap. Both were
+  deliberately deferred in the Increment-2 spec (see its "Out of scope" + "Recorded follow-up").
+- **Windows:** still unsupported (`mode:"off"` or WSL2). No plan.
+- The four original "honest weaknesses" remain addressed (fail-open→closed, property tests, isolation
+  now real on macOS **and Linux**, brain-promotion instrumented).
 
-## Workflow conventions (what worked this session — follow them)
-- **DoD panel before every merge:** an **Opus `code-reviewer` agent** (background) + **Gemini via `agy`**.
-  agy is flaky in **file-output mode and when backgrounded** — run it in the **FOREGROUND** and have it
-  print the review to **STDOUT** (read it from the Bash result), not write a findings file. Probe it first
-  with a trivial `agy -p "Reply OK" --dangerously-skip-permissions --add-dir .`.
-- **`rm -rf .review/` (or clear the findings file) BEFORE each new review round** — I once read a STALE
-  findings file from the prior round and mistook a PASS for a FAIL. Clear it first.
-- **The DoD panel earns its keep:** it caught real CRITICALs that unit tests with synthetic fixtures
-  masked (e.g. the sandbox `BROAD_DENY` conflict made the feature throw before every spawn). **Prefer
-  real end-to-end verification over stubs** — and when a reviewer claims a bug, *reproduce its exact
-  probe yourself* before accepting or dismissing it.
-- **codex/agy run in the FOREGROUND with stdin closed** (`</dev/null` for codex). Backgrounding → 0-byte hang.
-- **Branch per change; never push to origin without explicit user permission.** This session the user
-  approved each push/merge. Commit messages: no "Co-Authored-By"/"powered by" lines (user's CLAUDE.md).
-- **`console.warn`/`console.error`, not a custom logger** (pre-commit hook). Bun built-ins (`Bun.Glob`, `Bun.$`).
-- The repo's own gate (`.reviewgate/`) reviews YOUR turns — fix or reject-with-reason its findings.
+## Workflow conventions (what worked — follow them)
+- **DoD panel before every merge:** Opus `code-reviewer` agent + **codex** (foreground, `</dev/null`).
+  **agy via `agy`** is the 3rd engine BUT is flaky (empty output / silent hang) and was quota'd this
+  session — don't block on it. **codex runs inside its own read-only sandbox**, so it FALSELY reports the
+  macOS `sandbox-exec`-availability tests as failing — those are environment artifacts, NOT branch defects
+  (verify the real suite in a normal shell: it's 0 fail). Scope codex re-reviews to ignore that.
+- **`rm -rf .review/` before each new review round** (stale findings once masked a PASS as FAIL).
+- **Prefer real end-to-end verification over stubs** — and when a reviewer claims a bug, reproduce its
+  exact probe before accepting/dismissing (codex caught a real write-before-guard ordering bug Opus missed
+  this session; the macOS sandbox-exec test "failures" were codex-sandbox artifacts — both required reproducing).
+- **codex/agy run FOREGROUND with stdin closed** (`</dev/null`). Backgrounding → 0-byte hang.
+- **Branch per change; never push to origin without explicit user permission.** Commits: no
+  "Co-Authored-By"/"powered by" lines (user's CLAUDE.md). `console.warn`/`console.error`, not a logger.
+- After merging to master, **`bun run build`** so the symlinked `dist/reviewgate` is live.
 
 ## Suggested opening prompt for the next session
-> "Read NEXT_SESSION.md. Then let's do Sandbox Increment 2 (Linux bwrap) — brainstorm the glob-deny
-> decision first, then implement per the plan's Increment-2 section via subagent-driven TDD, with the
-> DoD panel (Opus + Gemini/agy-stdout) before merge. I'm on macOS, so gate the real bwrap e2e on
-> availability. Branch, and ask before pushing."
+> "Read NEXT_SESSION.md. Master is green and the Linux bwrap sandbox shipped. The one open item is
+> running the gated bwrap e2e on a Linux host. Either set that up, or let's scope Sandbox Increment 3
+> (allow-list mounts / dotenv-mask for the Linux glob-deny gap) — brainstorm first."
