@@ -1,13 +1,39 @@
 // src/utils/spawn.ts
 import { type ChildProcessByStdio, spawn as nodeSpawn } from "node:child_process";
-import { createReadStream, createWriteStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, platform, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
-import { sandboxExecAvailable } from "../sandbox/availability.ts";
+import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
+import { buildBwrapArgs } from "../sandbox/bwrap.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
-import type { SandboxProfile } from "../sandbox/profile-builder.ts";
+import type { SandboxProfile, WriteTarget } from "../sandbox/profile-builder.ts";
 import { buildMacosSbpl, resolveForSandbox } from "../sandbox/sbpl.ts";
+
+// Bring each write target into existence with the right kind BEFORE bwrap builds its
+// read-only-root namespace (the reviewer can't create them inside). Never touches an
+// existing path (so an existing file passed as a dir target won't crash mkdir, and
+// binds per its real kind); never fabricates a createIfMissing:false own-cred dir.
+export function ensureWriteTargets(targets: WriteTarget[]): void {
+  for (const t of targets) {
+    if (existsSync(t.path)) continue;
+    if (!t.createIfMissing) continue;
+    if (t.kind === "file") {
+      mkdirSync(dirname(t.path), { recursive: true });
+      writeFileSync(t.path, "");
+    } else {
+      mkdirSync(t.path, { recursive: true });
+    }
+  }
+}
 
 export interface SpawnInput {
   command: string;
@@ -44,7 +70,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
   let sandboxFellBack = false;
   let sbDir: string | null = null;
   if (input.sandbox) {
-    const available = await sandboxExecAvailable();
+    const available = await sandboxRuntimeAvailable();
     if (available) {
       const home = homedir();
       const prof = input.sandbox.profile;
@@ -56,18 +82,28 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
           // Globs are NOT realpath'd — they're rendered as anchored SBPL regexes.
           readDenyGlobs: prof.fs.readDenyGlobs,
           writeAllow: prof.fs.writeAllow.map((p) => resolveForSandbox(p, home)),
+          writeTargets: (prof.fs.writeTargets ?? []).map((t) => ({
+            ...t,
+            path: resolveForSandbox(t.path, home),
+          })),
         },
       };
-      const sbpl = buildMacosSbpl(resolved);
-      sbDir = mkdtempSync(join(tmpdir(), "rg-sbpl-"));
-      const sbplFile = join(sbDir, "profile.sb");
-      writeFileSync(sbplFile, sbpl, { mode: 0o600 });
-      args = ["-f", sbplFile, command, ...args];
-      command = "sandbox-exec";
+      if (platform() === "darwin") {
+        const sbpl = buildMacosSbpl(resolved);
+        sbDir = mkdtempSync(join(tmpdir(), "rg-sbpl-"));
+        const sbplFile = join(sbDir, "profile.sb");
+        writeFileSync(sbplFile, sbpl, { mode: 0o600 });
+        args = ["-f", sbplFile, command, ...args];
+        command = "sandbox-exec";
+      } else {
+        ensureWriteTargets(resolved.fs.writeTargets ?? []);
+        args = [...buildBwrapArgs(resolved), command, ...args];
+        command = "bwrap";
+      }
       sandboxApplied = true;
     } else if (input.sandbox.mode === "strict") {
       throw new SandboxUnavailableError(
-        "sandbox.mode='strict' requested but sandbox-exec is unavailable on this host (macOS only). Set mode='permissive' to run unisolated, or 'off' for trusted local dev.",
+        `sandbox.mode='strict' requested but no OS sandbox is available on this host (${platform()}). On macOS use sandbox-exec; on Linux install bubblewrap (bwrap) and enable unprivileged user namespaces. Set mode='permissive' to run unisolated, or 'off' for trusted local dev.`,
       );
     } else {
       sandboxFellBack = true;
