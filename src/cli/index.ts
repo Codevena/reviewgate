@@ -19,6 +19,7 @@ import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runSetup, setupTip } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
+import { readHookStdin } from "./hook-stdin.ts";
 import { validateSince, validateWeek } from "./validate-time-args.ts";
 
 /** Print a one-line CLI error to stderr and exit non-zero (no stack trace). */
@@ -42,12 +43,9 @@ const gate = defineCommand({
   meta: { name: "gate", description: "Run the review gate (internal hook entry point)" },
   args: { hook: { type: "string", default: "stop" } },
   async run({ args }) {
-    let raw = "";
-    try {
-      raw = await Bun.stdin.text();
-    } catch {
-      raw = "";
-    }
+    // Never block on an interactive TTY (a human running `gate --hook reset` by
+    // hand) — only the piped hook payload is read. See readHookStdin.
+    const raw = await readHookStdin();
     const res = await runGate({
       repoRoot: process.cwd(),
       hook: args.hook as "trigger" | "stop" | "reset",
