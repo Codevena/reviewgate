@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
+import { bwrapAvailable, sandboxExecAvailable } from "./availability.ts";
 
 export interface SandboxHealthReport {
   platform: NodeJS.Platform;
@@ -61,16 +62,18 @@ function sandboxExecTest(): Promise<{ ok: boolean; detail: string }> {
 export async function checkSandboxHealth(): Promise<SandboxHealthReport> {
   const plat = platform();
   if (plat === "darwin") {
-    const r = await sandboxExecTest();
-    return { platform: plat, available: r.ok, detail: r.detail };
+    const available = await sandboxExecAvailable(); // shared probe = source of truth
+    const r = await sandboxExecTest(); // detail string only
+    return { platform: plat, available, detail: r.detail };
   }
   if (plat === "linux") {
-    const r = await bwrapTest();
+    const available = await bwrapAvailable(); // shared probe = source of truth
+    const r = await bwrapTest(); // detail string only
     return {
       platform: plat,
-      available: r.ok,
+      available,
       detail: r.detail,
-      ...(r.ok
+      ...(available
         ? {}
         : {
             remediation:

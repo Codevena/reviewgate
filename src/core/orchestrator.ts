@@ -30,7 +30,7 @@ import { extractImportedLibs } from "../research/imports.ts";
 import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
-import { sandboxExecAvailable } from "../sandbox/availability.ts";
+import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import { buildSandboxProfile } from "../sandbox/profile-builder.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
@@ -287,10 +287,11 @@ export class Orchestrator {
     const fpCfg = this.input.config.phases.fpLedger;
     const fpStore = fpCfg?.enabled ? new FpLedgerStore(repo) : null;
 
-    // Sandbox isolation availability (macOS sandbox-exec). Probed once per run so
-    // the permissive-fallback WARN below reflects the same state spawnSafely sees.
+    // Sandbox isolation availability (the OS sandbox: sandbox-exec on macOS, bwrap on Linux).
+    // Probed once per run so the permissive-fallback WARN below reflects the same state spawnSafely sees.
     // Only meaningful when sandboxMode !== "off".
-    const sandboxAvailable = this.input.sandboxMode === "off" ? true : await sandboxExecAvailable();
+    const sandboxAvailable =
+      this.input.sandboxMode === "off" ? true : await sandboxRuntimeAvailable();
 
     // --- Triage (deterministic; optional LLM refinement that can only narrow) ---
     const facts = computeDiffFacts(this.input.diff);
@@ -919,14 +920,14 @@ export class Orchestrator {
         else cooldownStore.record(e.provider, e.resetAt, now, e.source);
       }
     }
-    // Permissive fallback WARN: under mode "permissive" with sandbox-exec
-    // unavailable, spawnSafely ran the reviewer UNISOLATED (it never throws — it
+    // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,
+    // spawnSafely ran the reviewer UNISOLATED (it never throws — it
     // sets sandboxFellBack on its SpawnResult, which the adapter does not surface).
     // The orchestrator knows the same fact (sandboxAvailable, probed once above),
     // so annotate every run's statusDetail with a legible note. Best-effort,
     // non-blocking: it does not change any verdict.
     if (this.input.sandboxMode === "permissive" && !sandboxAvailable) {
-      const note = "[ran UNISOLATED — sandbox-exec unavailable]";
+      const note = "[ran UNISOLATED — OS sandbox unavailable]";
       for (const s of settled) {
         s.res.statusDetail = `${s.res.statusDetail ? `${s.res.statusDetail} ` : ""}${note}`.slice(
           0,

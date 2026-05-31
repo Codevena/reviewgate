@@ -7,6 +7,7 @@ import {
   sandboxExecAvailable,
   sandboxRuntimeAvailable,
 } from "../../src/sandbox/availability.ts";
+import { checkSandboxHealth } from "../../src/sandbox/doctor-check.ts";
 
 describe("sandboxExecAvailable", () => {
   it("returns a boolean", async () => {
@@ -49,5 +50,15 @@ describe("sandboxRuntimeAvailable", () => {
     const r = await sandboxRuntimeAvailable();
     expect(typeof r).toBe("boolean");
     if (platform() !== "darwin" && platform() !== "linux") expect(r).toBe(false);
+  });
+});
+
+describe("checkSandboxHealth single-probe consistency", () => {
+  it("its available verdict equals the shared sandboxRuntimeAvailable() probe", async () => {
+    __resetBwrapCache();
+    __resetSandboxExecCache();
+    const health = await checkSandboxHealth();
+    const shared = await sandboxRuntimeAvailable();
+    expect(health.available).toBe(shared);
   });
 });
