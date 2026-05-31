@@ -78,4 +78,37 @@ describe("buildSandboxProfile", () => {
     expect(p.fs.readDeny).toContain("~/.npmrc");
     expect(p.fs.readDeny).toContain("~/.bash_history");
   });
+
+  it("emits classified writeTargets: findings=file/create, own-creds=dir/no-create, writablePaths=dir/create", () => {
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: "/repo",
+      findingsPath: "/repo/.reviewgate/findings/codex.md",
+      tmpDir: "/tmp/rg-run-1",
+      writablePaths: ["/repo/.cache"],
+    });
+    const t = p.fs.writeTargets ?? [];
+    expect(t).toContainEqual({
+      path: "/repo/.reviewgate/findings/codex.md",
+      kind: "file",
+      createIfMissing: true,
+    });
+    expect(t).toContainEqual({ path: "/tmp/rg-run-1", kind: "dir", createIfMissing: true });
+    expect(t).toContainEqual({ path: "/repo/.cache", kind: "dir", createIfMissing: true });
+    expect(
+      t.some((x) => x.path.includes(".codex") && x.kind === "dir" && x.createIfMissing === false),
+    ).toBe(true);
+  });
+
+  it("mode:off → empty writeTargets", () => {
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "off",
+      workingDir: "/repo",
+      findingsPath: "/repo/f.md",
+      tmpDir: "/tmp/x",
+    });
+    expect(p.fs.writeTargets).toEqual([]);
+  });
 });
