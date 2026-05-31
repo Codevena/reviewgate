@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
+import { bwrapAvailable, sandboxExecAvailable } from "./availability.ts";
 
 export interface SandboxHealthReport {
   platform: NodeJS.Platform;
@@ -12,7 +13,19 @@ function bwrapTest(): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       "bwrap",
-      ["--ro-bind", "/", "/", "--unshare-user", "--uid", "0", "--", "true"],
+      [
+        "--unshare-user",
+        "--unshare-pid",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--",
+        "true",
+      ],
       {
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -61,16 +74,18 @@ function sandboxExecTest(): Promise<{ ok: boolean; detail: string }> {
 export async function checkSandboxHealth(): Promise<SandboxHealthReport> {
   const plat = platform();
   if (plat === "darwin") {
-    const r = await sandboxExecTest();
-    return { platform: plat, available: r.ok, detail: r.detail };
+    const available = await sandboxExecAvailable(); // shared probe = source of truth
+    const r = await sandboxExecTest(); // detail string only
+    return { platform: plat, available, detail: r.detail };
   }
   if (plat === "linux") {
-    const r = await bwrapTest();
+    const available = await bwrapAvailable(); // shared probe = source of truth
+    const r = await bwrapTest(); // detail string only
     return {
       platform: plat,
-      available: r.ok,
+      available,
       detail: r.detail,
-      ...(r.ok
+      ...(available
         ? {}
         : {
             remediation:

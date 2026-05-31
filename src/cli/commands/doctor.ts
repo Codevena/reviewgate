@@ -11,7 +11,7 @@ import { ReputationStore } from "../../core/reputation/store.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
-import { sandboxExecAvailable } from "../../sandbox/availability.ts";
+import { sandboxRuntimeAvailable } from "../../sandbox/availability.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 
@@ -379,13 +379,13 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (fb) checks.push(fb);
     const sbMode = cfg.sandbox.mode;
     if (sbMode !== "off") {
-      const ok = await sandboxExecAvailable();
+      const ok = await sandboxRuntimeAvailable();
       checks.push({
         name: "sandbox isolation",
         status: ok ? "ok" : sbMode === "strict" ? "fail" : "warn",
         detail: ok
-          ? `sandbox-exec available (mode=${sbMode})`
-          : `sandbox-exec unavailable — mode=${sbMode} will ${sbMode === "strict" ? "REFUSE to review (fail closed)" : "run reviewers UNISOLATED"}`,
+          ? `OS sandbox available (mode=${sbMode})`
+          : `OS sandbox unavailable — mode=${sbMode} will ${sbMode === "strict" ? "REFUSE to review (fail closed)" : "run reviewers UNISOLATED"}`,
       });
     }
   } catch (e) {

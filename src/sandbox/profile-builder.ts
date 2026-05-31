@@ -53,6 +53,15 @@ function isGlobPattern(s: string): boolean {
   return s.includes("*") || !s.includes("/");
 }
 
+export interface WriteTarget {
+  path: string;
+  kind: "file" | "dir";
+  // Create the path with `kind` if missing when the sandbox is built. false = bind
+  // only if it already exists (own-cred dirs: a missing one has no token to refresh
+  // — don't fabricate an empty cred dir under the read-only home).
+  createIfMissing: boolean;
+}
+
 export interface SandboxProfile {
   sandboxRequested: boolean;
   fs: {
@@ -60,6 +69,9 @@ export interface SandboxProfile {
     readDeny: string[]; // absolute/dir paths → SBPL (subpath …)
     readDenyGlobs: string[]; // basename/extension globs → SBPL (regex …); NOT realpath'd
     writeAllow: string[];
+    // Classified companion to writeAllow — consumed by the Linux bwrap spawn path
+    // to pre-create bind-mount targets with the correct kind before bwrap launches.
+    writeTargets?: WriteTarget[];
   };
   net: { allow: string[] };
   budget: { walltimeMs: number };
@@ -83,7 +95,7 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
   if (input.mode === "off") {
     return {
       sandboxRequested: false,
-      fs: { readAllow: [], readDeny: [], readDenyGlobs: [], writeAllow: [] },
+      fs: { readAllow: [], readDeny: [], readDenyGlobs: [], writeAllow: [], writeTargets: [] },
       net: { allow: [] },
       budget: { walltimeMs: input.walltimeMs ?? 300_000 },
     };
@@ -105,10 +117,20 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
   const readDenyGlobs = [...SECRET_GLOBS, ...cfgGlobs];
   const readAllow = [input.workingDir, input.tmpDir, ...own];
   const writeAllow = [input.findingsPath, input.tmpDir, ...own, ...(input.writablePaths ?? [])];
+  const writeTargets: WriteTarget[] = [
+    { path: input.findingsPath, kind: "file", createIfMissing: true },
+    { path: input.tmpDir, kind: "dir", createIfMissing: true },
+    ...own.map((p) => ({ path: p, kind: "dir" as const, createIfMissing: false })),
+    ...(input.writablePaths ?? []).map((p) => ({
+      path: p,
+      kind: "dir" as const,
+      createIfMissing: true,
+    })),
+  ];
 
   return {
     sandboxRequested: true,
-    fs: { readAllow, readDeny, readDenyGlobs, writeAllow },
+    fs: { readAllow, readDeny, readDenyGlobs, writeAllow, writeTargets },
     net: { allow: NETWORK_ALLOW[input.providerId] },
     budget: { walltimeMs: input.walltimeMs ?? 300_000 },
   };

@@ -1,6 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { platform } from "node:os";
-import { __resetSandboxExecCache, sandboxExecAvailable } from "../../src/sandbox/availability.ts";
+import {
+  __resetBwrapCache,
+  __resetSandboxExecCache,
+  bwrapAvailable,
+  sandboxExecAvailable,
+  sandboxRuntimeAvailable,
+} from "../../src/sandbox/availability.ts";
+import { checkSandboxHealth } from "../../src/sandbox/doctor-check.ts";
 
 describe("sandboxExecAvailable", () => {
   it("returns a boolean", async () => {
@@ -24,5 +31,34 @@ describe("sandboxExecAvailable", () => {
     const first = await sandboxExecAvailable();
     const second = await sandboxExecAvailable();
     expect(first).toBe(second);
+  });
+});
+
+describe("bwrapAvailable", () => {
+  it("returns a boolean; false off-linux; memoizes", async () => {
+    __resetBwrapCache();
+    const a = await bwrapAvailable();
+    expect(typeof a).toBe("boolean");
+    if (platform() !== "linux") expect(a).toBe(false);
+    const b = await bwrapAvailable();
+    expect(a).toBe(b);
+  });
+});
+
+describe("sandboxRuntimeAvailable", () => {
+  it("delegates per platform and is false on unsupported OSes", async () => {
+    const r = await sandboxRuntimeAvailable();
+    expect(typeof r).toBe("boolean");
+    if (platform() !== "darwin" && platform() !== "linux") expect(r).toBe(false);
+  });
+});
+
+describe("checkSandboxHealth single-probe consistency", () => {
+  it("its available verdict equals the shared sandboxRuntimeAvailable() probe", async () => {
+    __resetBwrapCache();
+    __resetSandboxExecCache();
+    const health = await checkSandboxHealth();
+    const shared = await sandboxRuntimeAvailable();
+    expect(health.available).toBe(shared);
   });
 });

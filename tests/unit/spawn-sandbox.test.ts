@@ -20,6 +20,28 @@ const minimalProfile: SandboxProfile = {
   budget: { walltimeMs: 30_000 },
 };
 
+/**
+ * A minimal profile that also carries writeTargets so the linux path
+ * can pre-create bind targets. On macOS this is ignored (SBPL path).
+ */
+const okProfile: SandboxProfile = {
+  sandboxRequested: true,
+  fs: {
+    readAllow: [],
+    readDeny: [],
+    readDenyGlobs: [],
+    writeAllow: [],
+    writeTargets: [],
+  },
+  net: { allow: [] },
+  budget: { walltimeMs: 30_000 },
+};
+
+/** Returns the stdoutFile / stderrFile paths for a given temp dir. */
+function run(dir: string): { stdoutFile: string; stderrFile: string; timeoutMs: number } {
+  return { stdoutFile: join(dir, "out"), stderrFile: join(dir, "err"), timeoutMs: 30_000 };
+}
+
 describe("spawnSafely — sandbox wrapping (macOS only)", () => {
   it("runs /bin/echo under sandbox-exec on macOS and sets sandboxApplied=true", async () => {
     if (platform() !== "darwin") {
@@ -46,22 +68,33 @@ describe("spawnSafely — sandbox wrapping (macOS only)", () => {
 });
 
 describe("spawnSafely — sandbox wrapping (non-macOS only)", () => {
-  it("strict + unavailable → rejects with SandboxUnavailableError", async () => {
-    if (platform() === "darwin") {
-      // On macOS sandbox-exec is available so this path cannot be triggered naturally.
-      return;
-    }
-    const dir = mkdtempSync(join(tmpdir(), "rg-sbtest-"));
+  it("strict + sandbox unavailable → throws SandboxUnavailableError", async () => {
+    const { sandboxRuntimeAvailable } = await import("../../src/sandbox/availability.ts");
+    if (await sandboxRuntimeAvailable()) return; // only meaningful where NO runtime exists
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawnsb2-"));
     await expect(
       spawnSafely({
         command: "/bin/echo",
         args: ["hi"],
-        stdoutFile: join(dir, "out"),
-        stderrFile: join(dir, "err"),
-        timeoutMs: 30_000,
-        sandbox: { profile: minimalProfile, mode: "strict" },
+        ...run(dir),
+        sandbox: { profile: okProfile, mode: "strict" },
       }),
     ).rejects.toBeInstanceOf(SandboxUnavailableError);
+  });
+
+  it("(linux) applies bwrap and the command still runs + reports sandboxApplied", async () => {
+    const { bwrapAvailable } = await import("../../src/sandbox/availability.ts");
+    if (platform() !== "linux" || !(await bwrapAvailable())) return; // linux+bwrap only
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawnsb-lnx-"));
+    const res = await spawnSafely({
+      command: "/bin/echo",
+      args: ["hi"],
+      ...run(dir),
+      sandbox: { profile: okProfile, mode: "strict" },
+    });
+    expect(res.exitCode).toBe(0);
+    expect(res.sandboxApplied).toBe(true);
+    expect(readFileSync(join(dir, "out"), "utf8").trim()).toBe("hi");
   });
 });
 
