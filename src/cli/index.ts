@@ -19,6 +19,7 @@ import { runReport } from "./commands/report.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runSetup, setupTip } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
+import { hookFeedbackMessage } from "./hook-feedback.ts";
 import { readHookStdin } from "./hook-stdin.ts";
 import { validateSince, validateWeek } from "./validate-time-args.ts";
 
@@ -53,6 +54,10 @@ const gate = defineCommand({
     });
     if (res.stdout) process.stdout.write(res.stdout);
     if (res.stderr) process.stderr.write(res.stderr);
+    // Interactive-only confirmation (a human running the hook by hand); silent
+    // under a real piped hook so the hook protocol is never polluted.
+    const feedback = hookFeedbackMessage(args.hook as string, Boolean(process.stdout.isTTY));
+    if (feedback) process.stdout.write(`${feedback}\n`);
     process.exit(res.exitCode);
   },
 });
