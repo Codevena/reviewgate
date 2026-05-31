@@ -13,7 +13,7 @@ import { homedir, platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
-import { buildBwrapArgs } from "../sandbox/bwrap.ts";
+import { assertNoSandboxOverlap, buildBwrapArgs } from "../sandbox/bwrap.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import type { SandboxProfile, WriteTarget } from "../sandbox/profile-builder.ts";
 import { buildMacosSbpl, resolveForSandbox } from "../sandbox/sbpl.ts";
@@ -96,6 +96,10 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
         args = ["-f", sbplFile, command, ...args];
         command = "sandbox-exec";
       } else {
+        // Validate the profile BEFORE creating any write target on the host — a
+        // writeAllow nested under a readDeny secret must be rejected before we mkdir/
+        // touch it (the guard inside buildBwrapArgs runs too late, after creation).
+        assertNoSandboxOverlap(resolved.fs.writeAllow, resolved.fs.readDeny);
         ensureWriteTargets(resolved.fs.writeTargets ?? []);
         args = [...buildBwrapArgs(resolved), command, ...args];
         command = "bwrap";

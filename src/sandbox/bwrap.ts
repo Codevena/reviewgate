@@ -9,6 +9,22 @@ const isUnder = (child: string, parent: string): boolean => {
   return c === p || c.startsWith(`${p}/`);
 };
 
+// Reject a profile where a writeAllow path and a readDeny path are nested in EITHER
+// direction (write-under-deny = write-only; deny-under-write = unmasked+writable).
+// Exported so callers can validate BEFORE any host-side mutation (e.g. spawnSafely's
+// ensureWriteTargets), not only at argv-build time.
+export function assertNoSandboxOverlap(writeAllow: string[], readDeny: string[]): void {
+  for (const w of writeAllow) {
+    for (const d of readDeny) {
+      if (isUnder(w, d) || isUnder(d, w)) {
+        throw new Error(
+          `bwrap conflict: writeAllow ${w} and readDeny ${d} are nested (write-only/un-mask)`,
+        );
+      }
+    }
+  }
+}
+
 // Build the bubblewrap argv (up to and including the `--` terminator) that
 // filesystem-isolates a reviewer on Linux. Deny-mirror: expose / read-only, bind
 // the writable working area, then mask secrets LAST so no writable bind can shadow
@@ -19,15 +35,7 @@ export function buildBwrapArgs(profile: SandboxProfile): string[] {
   // Bidirectional overlap guard (parity with the macOS write-only guard): a write
   // path under a deny path is write-only; a deny path under a write path would be
   // un-masked AND writable. Either nesting -> throw.
-  for (const w of profile.fs.writeAllow) {
-    for (const d of profile.fs.readDeny) {
-      if (isUnder(w, d) || isUnder(d, w)) {
-        throw new Error(
-          `bwrap conflict: writeAllow ${w} and readDeny ${d} are nested (write-only/un-mask)`,
-        );
-      }
-    }
-  }
+  assertNoSandboxOverlap(profile.fs.writeAllow, profile.fs.readDeny);
   const args: string[] = [
     "--die-with-parent",
     "--unshare-user",

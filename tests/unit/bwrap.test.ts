@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildBwrapArgs } from "../../src/sandbox/bwrap.ts";
+import { assertNoSandboxOverlap, buildBwrapArgs } from "../../src/sandbox/bwrap.ts";
 import type { SandboxProfile } from "../../src/sandbox/profile-builder.ts";
 
 function fixture() {
@@ -30,6 +30,14 @@ function fixture() {
   };
   return { profile, workDir, findFile, secretDir, secretFile, absent };
 }
+
+describe("assertNoSandboxOverlap", () => {
+  it("throws when a writeAllow is under a readDeny (and vice versa), passes when disjoint", () => {
+    expect(() => assertNoSandboxOverlap(["/a/b"], ["/a"])).toThrow(/write-only|nested|conflict/i);
+    expect(() => assertNoSandboxOverlap(["/a"], ["/a/b"])).toThrow(/write-only|nested|conflict/i);
+    expect(() => assertNoSandboxOverlap(["/x"], ["/y"])).not.toThrow();
+  });
+});
 
 describe("buildBwrapArgs", () => {
   it("emits the namespace flags, ro-root, isolated dev/proc, and a -- terminator", () => {

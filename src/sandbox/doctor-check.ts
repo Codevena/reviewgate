@@ -13,7 +13,19 @@ function bwrapTest(): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
     const child = spawn(
       "bwrap",
-      ["--ro-bind", "/", "/", "--unshare-user", "--uid", "0", "--", "true"],
+      [
+        "--unshare-user",
+        "--unshare-pid",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--",
+        "true",
+      ],
       {
         stdio: ["ignore", "pipe", "pipe"],
       },
