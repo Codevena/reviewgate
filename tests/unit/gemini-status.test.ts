@@ -1,6 +1,6 @@
 // tests/unit/gemini-status.test.ts
 import { describe, expect, it } from "bun:test";
-import { classifyAgyOutcome } from "../../src/providers/gemini.ts";
+import { classifyAgyOutcome, isAgyPrintTimeout } from "../../src/providers/gemini.ts";
 
 describe("classifyAgyOutcome", () => {
   it("treats a watchdog/timeout kill with ZERO captured output as a quota/stall", () => {
@@ -65,5 +65,53 @@ describe("classifyAgyOutcome", () => {
     });
     expect(r.status).toBe("error");
     expect(r.silentStall).toBe(false);
+  });
+
+  it("agy's own print-timeout sentinel (exit 0, no review) is cooldown-worthy", () => {
+    // agy is a coding agent: on a large review prompt it runs an agentic tool loop
+    // and never emits a review — it self-aborts at --print-timeout with this exact
+    // stdout sentinel and STILL exits 0. Without special handling that parses as an
+    // ordinary "error" (no cooldown), so agy is re-run and burns the full timeout
+    // EVERY iteration. Classify it as quota-exhausted so the orchestrator cools it
+    // down and fails over to the next reviewer instead.
+    const r = classifyAgyOutcome({
+      killedByTimeout: false,
+      killedByWatchdog: false,
+      exitCode: 0,
+      outText: "Error: timed out waiting for response",
+      errText: "",
+    });
+    expect(r.status).toBe("quota-exhausted");
+    expect(r.silentStall).toBe(false);
+  });
+
+  it("the print-timeout sentinel is cooldown-worthy even when the process was killed", () => {
+    // --print-timeout and the spawn wall-timeout can race; either way the sentinel
+    // means agy gave up without a review and must not be retried next iteration.
+    const r = classifyAgyOutcome({
+      killedByTimeout: true,
+      killedByWatchdog: false,
+      exitCode: -1,
+      outText: "Error: timed out waiting for response",
+      errText: "",
+    });
+    expect(r.status).toBe("quota-exhausted");
+    expect(r.silentStall).toBe(false);
+  });
+
+  it("isAgyPrintTimeout matches the sentinel but not a real review mentioning timeouts", () => {
+    expect(isAgyPrintTimeout("Error: timed out waiting for response")).toBe(true);
+    expect(isAgyPrintTimeout("  Error: timed out waiting for response\n")).toBe(true);
+    // A genuine review (even one whose findings discuss timeouts) must NOT match —
+    // the sentinel only counts when it is what agy printed INSTEAD of a review.
+    expect(
+      isAgyPrintTimeout(
+        '{"verdict":"FAIL","findings":[{"message":"request can time out waiting for response"}]}',
+      ),
+    ).toBe(false);
+    // Agentic chatter prefixing a real review (agy sometimes does this) is a success.
+    expect(
+      isAgyPrintTimeout('No tool call. Waiting for ESLint task to finish. {"verdict":"PASS"}'),
+    ).toBe(false);
   });
 });
