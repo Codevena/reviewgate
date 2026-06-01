@@ -21,6 +21,27 @@ import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts
 
 const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
 
+// NOTE: a hardcoded review-budget cap (CLAUDE_REVIEW_TIMEOUT_CAP_MS=180s) was tried
+// here and REVERTED. Field data (2026-06-02 dogfood across hammihan/geometrywars) shows
+// a real claude-code-security review of a non-trivial diff legitimately takes 130–185s+
+// (a 770-line plan doc timed out at 183s; a successful review took 141s). A 180s cap
+// sat mid-distribution and CLIPPED legit slow reviews into false timeouts — worst when
+// codex is quota-locked and claude is the only working fallback. `claude -p` is buffered
+// (no progress signal), so a wall cap cannot tell "slow" from "hung"; the configured
+// cfg.timeoutMs (300s default, user-tunable) is therefore the correct single bound, and
+// the gate self-deadline (runTimeoutMs=840s) backstops the whole failover chain. Do not
+// re-add a tighter hardcoded cap without evidence that real reviews finish well under it.
+
+// Hermetic reviewer flags. The hook-free temp CWD only escapes PROJECT-level
+// .claude/settings.json; without these a nested `claude -p` still loads the HOST
+// user-level ~/.claude — every configured MCP server (incl. Gmail/Calendar/Drive
+// connectors) plus SessionStart hooks — into the reviewer subprocess. That is both a
+// hang surface (a blocking MCP init stalls the reviewer to the watchdog) and a
+// privilege leak (the reviewer gains the host's connected-service access).
+// --strict-mcp-config with NO --mcp-config loads zero MCP servers; --setting-sources
+// project skips user/local settings. OAuth creds load independently, so auth survives.
+const HERMETIC_ARGS = ["--strict-mcp-config", "--setting-sources", "project"];
+
 export interface ClaudeAdapterOptions {
   binPath?: string;
 }
@@ -90,6 +111,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       "--permission-mode",
       "dontAsk",
       "--no-session-persistence",
+      ...HERMETIC_ARGS,
     ];
     const env = { ...process.env } as Record<string, string>;
     if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
@@ -192,6 +214,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         "--permission-mode",
         "dontAsk",
         "--no-session-persistence",
+        ...HERMETIC_ARGS,
       ];
       const env = { ...process.env } as Record<string, string>;
       if (opts.auth === "apikey" && opts.apiKeyEnv) {
