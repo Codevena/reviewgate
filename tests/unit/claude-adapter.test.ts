@@ -1,6 +1,6 @@
 // tests/unit/claude-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
@@ -163,5 +163,67 @@ describe("ClaudeAdapter.complete (judge completion)", () => {
       else process.env.TMPDIR = prevTmp;
       rmSync(isolated, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ClaudeAdapter — hermetic spawn (no host MCP/hooks leak into the reviewer)", () => {
+  // The hook-free temp CWD only escapes PROJECT-level .claude/settings.json. Without
+  // these flags a nested `claude -p` still loads the HOST user-level ~/.claude (every
+  // configured MCP server — incl. Gmail/Calendar/Drive connectors — plus SessionStart
+  // hooks) into the reviewer subprocess: a blocking MCP init can stall it to the
+  // watchdog, and the reviewer gains the host's connected-service access. Verified
+  // live 2026-06-01: the flags cut injected host context ~10.3K→5.5K tokens (-40%
+  // cost) with no slowdown and OAuth intact.
+  function fakeArgvBin(dir: string, argvFile: string): string {
+    return makeFakeBin(
+      dir,
+      "fake-claude-argv.sh",
+      `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+cat <<'JSON'
+{"type":"result","subtype":"success","result":"{\\"verdict\\":\\"PASS\\",\\"findings\\":[]}","total_cost_usd":0,"usage":{"input_tokens":1,"output_tokens":1},"session_id":"fake"}
+JSON
+exit 0
+`,
+    );
+  }
+
+  it("review() passes --strict-mcp-config and --setting-sources project", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-argv-"));
+    const argvFile = join(dir, "argv.txt");
+    const bin = fakeArgvBin(dir, argvFile);
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new ClaudeAdapter({ binPath: bin });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 60_000 },
+      reviewerId: "claude-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("ok");
+    const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+    expect(argv).toContain("--strict-mcp-config");
+    const si = argv.indexOf("--setting-sources");
+    expect(si).toBeGreaterThanOrEqual(0);
+    expect(argv[si + 1]).toBe("project");
+  });
+
+  it("complete() (judge) is hermetic too — same flags", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-cargv-"));
+    const argvFile = join(dir, "argv.txt");
+    const bin = fakeArgvBin(dir, argvFile);
+    const adapter = new ClaudeAdapter({ binPath: bin });
+    await adapter.complete("judge this", { model: "claude-sonnet-4-6", auth: "oauth" });
+    const argv = readFileSync(argvFile, "utf8").split("\n").filter(Boolean);
+    expect(argv).toContain("--strict-mcp-config");
+    const si = argv.indexOf("--setting-sources");
+    expect(si).toBeGreaterThanOrEqual(0);
+    expect(argv[si + 1]).toBe("project");
   });
 });
