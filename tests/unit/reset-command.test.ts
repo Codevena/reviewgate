@@ -34,6 +34,7 @@ describe("handleReset summary", () => {
     ]) {
       expect(existsSync(join(rg, p))).toBe(false);
     }
+    expect(cleared).toContain("dirty flag");
     expect(cleared).toContain("session state");
     expect(cleared).toContain("pending findings");
     expect(cleared).toContain("decisions");

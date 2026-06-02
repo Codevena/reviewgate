@@ -4,7 +4,16 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { dirname } from "node:path";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import { gitHeadSha } from "../utils/git.ts";
-import { dirtyFlagPath, proposalsPoolDir, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
+import {
+  decisionsDir,
+  dirtyFlagPath,
+  escalationMdPath,
+  pendingJsonPath,
+  pendingMdPath,
+  proposalsPoolDir,
+  reviewgateDir,
+  stateJsonPath,
+} from "../utils/paths.ts";
 
 export interface TriggerInput {
   repoRoot: string;
@@ -49,7 +58,7 @@ export interface ResetInput {
 }
 
 export interface ResetSummary {
-  /** Human-facing labels of the artifacts that were actually present and removed. */
+  /** Human-facing labels of the artifacts that were present at reset time (best-effort removal). */
   cleared: string[];
 }
 
@@ -61,10 +70,13 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   const groups: { label: string; paths: string[] }[] = [
     { label: "dirty flag", paths: [dirtyFlagPath(input.repoRoot)] },
     { label: "session state", paths: [stateJsonPath(input.repoRoot)] },
-    { label: "decisions", paths: [`${dir}/decisions`] },
-    { label: "pending findings", paths: [`${dir}/pending.md`, `${dir}/pending.json`] },
+    { label: "decisions", paths: [decisionsDir(input.repoRoot)] },
+    {
+      label: "pending findings",
+      paths: [pendingMdPath(input.repoRoot), pendingJsonPath(input.repoRoot)],
+    },
     { label: "research", paths: [`${dir}/research.md`] },
-    { label: "escalation", paths: [`${dir}/ESCALATION.md`] },
+    { label: "escalation", paths: [escalationMdPath(input.repoRoot)] },
   ];
   const cleared: string[] = [];
   for (const g of groups) {
