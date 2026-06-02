@@ -57,6 +57,7 @@ import { type CriticVerdict, runCritic } from "./critic.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
+import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
@@ -1173,6 +1174,24 @@ export class Orchestrator {
     const demoted =
       agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length +
       agg.criticDropped.length;
+
+    // P0 self-improving (write-only, non-blocking): record demoted/dropped finding
+    // outcomes so downstream learners have signal. NEVER changes the verdict or
+    // report — a failure here is swallowed.
+    const ioCfg = this.input.config.phases.implicitOutcomes;
+    if (ioCfg?.enabled) {
+      try {
+        const outcomes = deriveImplicitOutcomes(agg.dedupedFindings, agg.criticDropped, {
+          runId: opts.runId,
+          iter: opts.iter,
+          nowIso: new Date().toISOString(),
+        });
+        await new ImplicitOutcomeStore(repo).append(outcomes, ioCfg.cap);
+      } catch (err) {
+        console.warn(`[reviewgate] implicit-outcomes write failed (non-fatal): ${String(err)}`);
+      }
+    }
+
     await this.writeReport(
       opts,
       start,
