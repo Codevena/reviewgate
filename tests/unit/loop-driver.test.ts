@@ -1901,6 +1901,94 @@ describe("LoopDriver", () => {
     expect(received?.["sig-superseded"]).toBeUndefined();
     expect((await state.load()).claimed_fixed_signatures["sig-superseded"]).toBeUndefined();
   });
+
+  it("does not throw when the decisions file is unreadable (never-throws contract, §4.3/2b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXUNREADABLE");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    // No blocking findings → the decisions-gate is skipped and the fold helpers run;
+    // the iteration proceeds to the stub. The signature-fold helpers still read the
+    // decisions file, exercising the never-throws guard.
+    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [] }));
+    // Create the decisions path as a DIRECTORY → readFileSync throws EISDIR.
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dp, { recursive: true });
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    // Must not throw.
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received).toEqual({}); // nothing recorded, no throw
+  });
+
+  it("resets claimed_fixed_signatures to {} on a clean-PASS re-arm (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDRESET");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 1,
+      claimed_fixed_signatures: { "sig-old": 1 },
+    }));
+    writeDirty(repo);
+    // No findings required → a PASS verdict re-arms the cycle.
+    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [] }));
+    const stub = {
+      runIteration: async () => ({
+        verdict: "PASS" as const,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect((await state.load()).claimed_fixed_signatures).toEqual({});
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {

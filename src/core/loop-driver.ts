@@ -157,8 +157,17 @@ function priorIterationDecisionSignatures(
   }
   // Last-valid-decision-per-id: a later valid line for the same finding_id overwrites an
   // earlier one, so a superseding disposition (e.g. fixed -> deferred) is honored.
+  // Guard the read too (not just JSON.parse): an existing-but-unreadable file, or one
+  // deleted/replaced between existsSync and here (TOCTOU), must honor the never-throws
+  // contract — return [] rather than propagate into LoopDriver.run.
+  let lines: string[];
+  try {
+    lines = readFileSync(dp, "utf8").split("\n");
+  } catch {
+    return [];
+  }
   const lastById = new Map<string, DecisionEntry>();
-  for (const line of readFileSync(dp, "utf8").split("\n")) {
+  for (const line of lines) {
     if (!line.trim()) continue;
     let parsed: unknown;
     try {
@@ -270,39 +279,48 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
   // (NOT parsed back out of the human-readable `invalid` strings) so a future
   // wording change to a reason can never silently mis-attribute an id.
   const invalidIds = new Set<string>();
+  // Guard the read: an existing-but-unreadable file (or one replaced between
+  // existsSync and here) leaves `seen` empty → every required id reads as missing →
+  // the gate fails CLOSED (blocks), the safe direction, rather than throwing into
+  // LoopDriver.run.
+  let lines: string[] = [];
   if (existsSync(p)) {
-    const lines = readFileSync(p, "utf8")
-      .split("\n")
-      .filter((l) => l.trim().length > 0);
-    for (const l of lines) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(l);
-      } catch {
-        invalid.push("a line is not valid JSON");
-        continue; // not JSON → treated as missing decision (fail-closed)
-      }
-      // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
-      // rejection with a too-short reason must NOT satisfy the gate — otherwise
-      // the gate is trivially bypassable with malformed lines.
-      const res = DecisionEntrySchema.safeParse(parsed);
-      if (res.success) {
-        seen.add(res.data.finding_id);
-        continue;
-      }
-      const rawId =
-        parsed &&
-        typeof parsed === "object" &&
-        typeof (parsed as { finding_id?: unknown }).finding_id === "string"
-          ? (parsed as { finding_id: string }).finding_id
-          : null;
-      if (rawId) invalidIds.add(rawId);
-      const issue = res.error.issues[0];
-      const where = issue?.path.length ? issue.path.join(".") : "entry";
-      invalid.push(
-        `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
-      );
+    try {
+      lines = readFileSync(p, "utf8")
+        .split("\n")
+        .filter((l) => l.trim().length > 0);
+    } catch {
+      lines = [];
     }
+  }
+  for (const l of lines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(l);
+    } catch {
+      invalid.push("a line is not valid JSON");
+      continue; // not JSON → treated as missing decision (fail-closed)
+    }
+    // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
+    // rejection with a too-short reason must NOT satisfy the gate — otherwise
+    // the gate is trivially bypassable with malformed lines.
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (res.success) {
+      seen.add(res.data.finding_id);
+      continue;
+    }
+    const rawId =
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { finding_id?: unknown }).finding_id === "string"
+        ? (parsed as { finding_id: string }).finding_id
+        : null;
+    if (rawId) invalidIds.add(rawId);
+    const issue = res.error.issues[0];
+    const where = issue?.path.length ? issue.path.join(".") : "entry";
+    invalid.push(
+      `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
+    );
   }
   // Only report a required id as missing when no VALID line addressed it, and it
   // wasn't already flagged as invalid above (so the agent sees one reason per id).
