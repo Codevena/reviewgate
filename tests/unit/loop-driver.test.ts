@@ -1223,6 +1223,95 @@ describe("LoopDriver", () => {
     expect(opencode?.wrong.length).toBeGreaterThan(0);
   });
 
+  it("absorbs partial decisions BEFORE the decisions-unaddressed escalation early-returns (stop_hook_active)", async () => {
+    // The OTHER early-return: stop_hook_active=true + a required finding left
+    // unaddressed → `decisions-unaddressed` escalation at the TOP of the
+    // iteration>0 block, ABOVE absorbPriorDecisions. If the agent rejected SOME
+    // findings with reviewer_was_wrong before giving up, that valid FP signal
+    // must still be learned, not lost to the early return.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXDECUNADDR");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    const config = {
+      ...defaultConfig,
+      phases: { ...defaultConfig.phases, fpLedger: { enabled: true } },
+    };
+    // F-001 will be rejected reviewer_was_wrong; F-002 (CRITICAL) is required and
+    // left WITHOUT a decision → the decisions gate is NOT addressed.
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "decunaddr-sig-1",
+            severity: "WARN",
+            category: "correctness",
+            rule_id: "phantom",
+            file: "lib/foo.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "phantom",
+            details: "details",
+            reviewer: { provider: "opencode", model: "default", persona: "security" },
+            confidence: 0.9,
+            consensus: "singleton",
+          },
+          { id: "F-002", signature: "decunaddr-sig-2", severity: "CRITICAL" },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "rejected",
+        reason: "confirmed false positive, verified the symbol exists at lib/foo.ts",
+        reviewer_was_wrong: true,
+      })}\n`,
+    );
+    const stub = {
+      runIteration: async () => ({
+        verdict: "FAIL" as const,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: ["x"],
+        summary: {
+          verdict: "FAIL",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: ["x"],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: true,
+    }).run();
+    // It DOES escalate/block (F-002 unaddressed) — that part is unchanged…
+    expect(decision.kind).toBe("block");
+    // …but the valid F-001 reject must STILL have been learned before the return.
+    const fpPath = join(repo, ".reviewgate", "learnings", "known_fp.jsonl");
+    expect(existsSync(fpPath)).toBe(true);
+    const fp = JSON.parse(readFileSync(fpPath, "utf8")) as {
+      entries: Array<{ signature: string }>;
+    };
+    expect(fp.entries.some((e) => e.signature === "decunaddr-sig-1")).toBe(true);
+  });
+
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

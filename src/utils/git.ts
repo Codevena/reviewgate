@@ -119,19 +119,24 @@ export async function collectDiff(
   }
   let out = tracked.status === 0 ? tracked.stdout : "";
 
-  const untracked = await git(repoRoot, ["ls-files", "--others", "--exclude-standard"]);
+  // `-z`: NUL-terminated, UNQUOTED paths. Without it, git C-quotes any non-ASCII
+  // path (core.quotePath defaults to true) — e.g. `"\351\233\242.ts"` — and the
+  // quoted token is passed verbatim to `git diff --no-index`, which can't find
+  // the file, so a brand-new non-ASCII file is silently dropped from the review.
+  const untracked = await git(repoRoot, ["ls-files", "-z", "--others", "--exclude-standard"]);
   // A hung/capped untracked listing can silently omit files → mark incomplete.
   if (untracked.timedOut || untracked.truncated) incomplete = true;
-  if (untracked.stdout.trim()) {
+  if (untracked.stdout) {
     // Sequential awaits (not parallel): preserves the exact output ordering of the
     // previous sync version, so the reviewed diff is byte-stable across runs.
     // Bounded by an aggregate wall-clock budget so a pathological repo (many
     // untracked files, or hung `git diff --no-index` calls) can't run up N×30s
     // here, before the gate self-deadline is even active.
     const deadline = Date.now() + untrackedBudgetMs;
+    // NUL-delimited: split on \0, no per-token trim (paths are exact between
+    // terminators; trimming could corrupt a filename with leading/trailing space).
     for (const file of untracked.stdout
-      .split("\n")
-      .map((s) => s.trim())
+      .split("\0")
       .filter((s) => s.length > 0 && !isExcludedFromReview(s))) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
@@ -184,17 +189,15 @@ export async function collectChangedFileContents(
       .filter((s) => s.length > 0))
       names.add(f);
   }
+  // `-z`: NUL-terminated, UNQUOTED paths (see collectDiff) — otherwise non-ASCII
+  // untracked files are C-quoted and silently dropped from the full-file context.
   const untracked = await git(
     repoRoot,
-    ["ls-files", "--others", "--exclude-standard"],
+    ["ls-files", "-z", "--others", "--exclude-standard"],
     GIT_TIMEOUT_MS,
     signal,
   );
-  for (const f of untracked.stdout
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0))
-    names.add(f);
+  for (const f of untracked.stdout.split("\0").filter((s) => s.length > 0)) names.add(f);
   let out = "";
   let used = 0;
   // Omission markers count toward `used` too, and once the budget is spent we

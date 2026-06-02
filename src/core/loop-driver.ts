@@ -489,6 +489,15 @@ export class LoopDriver {
     if (state.iteration > 0) {
       const requiredIds = previousFindingIds(this.i.repoRoot);
 
+      // Fold decisions INTO the learn loops FIRST — before ANY early-return in
+      // this block (the decisions-unaddressed escalation below AND the
+      // reviewer-fp-streak escalation further down). If the agent rejected SOME
+      // findings with reviewer_was_wrong before leaving others unaddressed, that
+      // valid FP/reputation signal must be consumed even when we then escalate.
+      // absorbPriorDecisions is idempotent (FP-ledger keys run_id on the iter;
+      // reputation on its eid), so a single hoisted call is safe.
+      await this.absorbPriorDecisions(state);
+
       // Decisions-gate: every required finding must have a decision.
       const gate = evaluateDecisions(this.i.repoRoot, state.iteration, requiredIds);
       if (requiredIds.length > 0 && !gate.addressed) {
@@ -520,12 +529,8 @@ export class LoopDriver {
         };
       }
 
-      // Fold decisions INTO the learn loops BEFORE any escalation check below
-      // can early-return. See `absorbPriorDecisions` for the why; in short, the
-      // reviewer-fp-streak escalation (which fires a few lines below) is
-      // *driven by* exactly the rejection signal we want to feed into the FP
-      // ledger + reputation, so we must consume it first.
-      await this.absorbPriorDecisions(state);
+      // (absorbPriorDecisions was hoisted to the TOP of this block so it runs
+      // before the decisions-unaddressed early-return too — see above.)
 
       // Confirmed-FP signal for the PRIOR iteration. computeRejectRate dedups by
       // finding_id + restricts to the real `requiredIds`, so the agent (which authors
@@ -819,6 +824,8 @@ export class LoopDriver {
       await learnFromDecisions({
         repoRoot: this.i.repoRoot,
         prevIter: state.iteration,
+        sessionId: state.session_id,
+        cycleSeq: state.reputation_cycle_seq,
         store: fpStore,
         nowIso,
       })

@@ -42,14 +42,22 @@ export function computeDiffFacts(diff: string): DiffFacts {
   const parsed: DiffFile[] = [];
   let current: DiffFile | null = null;
   for (const line of diff.split("\n")) {
-    const m = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-    if (m) {
-      current = {
-        path: m[2] ?? m[1] ?? "",
-        added: 0,
-        removed: 0,
-        kind: classify(m[2] ?? m[1] ?? ""),
-      };
+    // `diff --git a/<X> b/<X>` is symmetric with IDENTICAL X on both sides. A
+    // lazy/greedy split on " b/" mis-parses any filename that itself contains
+    // " b/" (the b-side path repeats the substring). So first try a backreference
+    // (\1): require the b-side to EQUAL the a-side — this anchors the true
+    // a/↔b/ boundary regardless of " b/" inside the name. Fall back to a greedy
+    // split only for renames/copies (a/old b/new), where the sides differ.
+    let path: string | undefined;
+    const sym = line.match(/^diff --git a\/(.+) b\/\1$/);
+    if (sym) {
+      path = sym[1];
+    } else {
+      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      if (m) path = m[2] ?? m[1];
+    }
+    if (path !== undefined && path !== "") {
+      current = { path, added: 0, removed: 0, kind: classify(path) };
       parsed.push(current);
       continue;
     }

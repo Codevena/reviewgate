@@ -127,14 +127,23 @@ export class OpenRouterAdapter implements ProviderAdapter {
 
     const content = json.choices?.[0]?.message?.content ?? "";
     const out = parseReviewOutput(content);
-    const findings: Finding[] = out
-      ? mapReviewOutputToFindings(out, {
-          provider: "openrouter",
-          model: input.cfg.model,
-          persona: input.persona,
-          workingDir: input.workingDir,
-        })
-      : [];
+    if (!out) {
+      // Fail CLOSED: a content-filtered / refusal / empty / non-JSON response
+      // parses to null. It must NOT become a zero-finding PASS that enters
+      // okRuns and contributes a false PASS — every other adapter (codex/claude/
+      // gemini/opencode) guards `!out` the same way. If the content itself
+      // signals a quota/usage cap, surface 429 so the orchestrator cools the
+      // provider down + fails over instead of treating it as a generic error.
+      return isQuotaExhausted(content)
+        ? errorResult("OpenRouter returned quota/usage-limit content", 429)
+        : errorResult("OpenRouter returned no valid review JSON (empty or unparseable response)");
+    }
+    const findings: Finding[] = mapReviewOutputToFindings(out, {
+      provider: "openrouter",
+      model: input.cfg.model,
+      persona: input.persona,
+      workingDir: input.workingDir,
+    });
     const inputTokens = json.usage?.prompt_tokens ?? 0;
     const outputTokens = json.usage?.completion_tokens ?? 0;
     return {

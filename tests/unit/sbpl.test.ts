@@ -84,6 +84,27 @@ describe("buildMacosSbpl", () => {
     };
     expect(() => buildMacosSbpl(conflictProfile)).toThrow(/write-only|nested|conflict/i);
   });
+
+  it("throws on the REVERSE overlap: a readDeny nested under a broad writeAllow (writable-but-unreadable secret)", () => {
+    // Mirrors the bidirectional bwrap guard (assertNoSandboxOverlap). The missing
+    // direction is isUnder(readDeny, writeAllow): a BROAD writeAllow (/Users/x)
+    // that CONTAINS a readDeny (/Users/x/.ssh) emits (allow file-write* …/Users/x)
+    // AND (deny file-read* …/.ssh), leaving the reviewer able to OVERWRITE
+    // authorized_keys etc. while unable to read them — an integrity hole that
+    // Linux already rejects.
+    const conflictProfile: SandboxProfile = {
+      sandboxRequested: true,
+      fs: {
+        readAllow: [],
+        readDeny: ["/Users/x/.ssh"],
+        readDenyGlobs: [],
+        writeAllow: ["/Users/x"],
+      },
+      net: { allow: [] },
+      budget: { walltimeMs: 300_000 },
+    };
+    expect(() => buildMacosSbpl(conflictProfile)).toThrow(/write-only|nested|conflict|un-?mask/i);
+  });
 });
 
 describe("buildMacosSbpl — glob denies become anchored regexes (F: read-secret bypass)", () => {

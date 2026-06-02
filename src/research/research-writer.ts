@@ -97,7 +97,11 @@ async function gitLog(repoRoot: string, file: string, signal?: AbortSignal): Pro
     signal,
   });
   if (r.status !== 0 || !r.stdout.trim()) return "";
-  return r.stdout.trim().split("\n").slice(0, 3).join("; ");
+  // Commit SUBJECTS are attacker-controllable (a committer can embed [INST] /
+  // "### Instruction:" tokens). gitLog feeds research.md, which is injected as a
+  // TRUSTED prompt section BEFORE the untrusted-diff fence — so neutralize the
+  // same markers the diff (sanitizeDiff) and library-doc paths already strip.
+  return neutralizeInjectionMarkers(r.stdout.trim()).split("\n").slice(0, 3).join("; ");
 }
 
 export async function writeResearch(input: ResearchInput): Promise<string> {

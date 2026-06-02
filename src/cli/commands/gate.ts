@@ -1,5 +1,5 @@
 // src/cli/commands/gate.ts
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
@@ -10,6 +10,7 @@ import { StateStore } from "../../core/state-store.ts";
 import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
+import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { flock } from "../../utils/flock.ts";
 import { DIFF_INCOMPLETE_MARKER, collectDiff, collectGitInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
@@ -148,7 +149,10 @@ async function runStopGate(
     if (sinceLast.trim().length > 0) {
       reviewBase = last;
       precomputedDiff = sinceLast;
-      writeFileSync(
+      // Atomic (tmp+rename): the gate runs under flock (single writer), so a
+      // fixed-suffix temp is safe; rename ensures a reader never sees a partial
+      // dirty.flag (which the gate parses as JSON — a truncated file would error).
+      writeFileAtomic(
         dp,
         JSON.stringify({
           diff_hash: gitInfo.sha.slice(0, 16),

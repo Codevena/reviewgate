@@ -52,6 +52,10 @@ export interface AggregateResult {
   verdict: Verdict;
   dedupedFindings: Finding[];
   counts: { critical: number; warn: number; info: number };
+  /** Count of likely_fp findings the critic DROPPED entirely (INFO → drop). They
+   *  never reach dedupedFindings, so a `demoted` metric filtering dedupedFindings
+   *  must add this to reflect the critic's real activity. */
+  criticDroppedCount: number;
 }
 
 const DEMOTE: Record<Finding["severity"], Finding["severity"] | "drop"> = {
@@ -293,14 +297,28 @@ export function aggregate(input: AggregateInput): AggregateResult {
 
   const critic = input.critic;
   const survivors: Finding[] = [];
+  let criticDroppedCount = 0;
   for (const f of deduped) {
-    const cv = critic?.get(f.signature);
+    // Scan the representative AND every merged member signature (mirror the
+    // fp_ledger_match pass): the critic may have keyed its verdict on a member's
+    // signature, not the promoted representative's — checking only f.signature
+    // would let that likely_fp leak through with full blocking weight.
+    const critSigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+    const cv = critic && critSigs.map((s) => critic.get(s)).find((v) => v?.verdict === "likely_fp");
     if (cv?.verdict === "likely_fp") {
       const isCriticalSecurity = f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f);
-      const isUnanimous = f.consensus === "unanimous";
-      if (!isCriticalSecurity && !isUnanimous) {
+      // A single adversarial critic must not override GROUP agreement. Both
+      // unanimous AND majority are corroborated consensus — the verdict gate
+      // treats them identically (warnFail), and the confidence- and reputation-
+      // demote tiers already exempt majority. Mirror that here so the critic
+      // can't silently flip a corroborated FAIL into a SOFT-PASS.
+      const isCorroborated = f.consensus === "unanimous" || f.consensus === "majority";
+      if (!isCriticalSecurity && !isCorroborated) {
         const next = DEMOTE[f.severity];
-        if (next === "drop") continue; // INFO likely_fp dropped entirely
+        if (next === "drop") {
+          criticDroppedCount += 1; // INFO likely_fp dropped entirely — count it
+          continue;
+        }
         survivors.push({
           ...f,
           severity: next,
@@ -356,8 +374,13 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const fpClusters = input.fpActiveClusters;
   const fpClusterScoped: Finding[] = fpClusters
     ? fpScoped.map((f) => {
-        const key = `${ruleIdToken0(f.rule_id)}@${f.file}`;
-        const hit = fpClusters.get(key);
+        // Check the representative AND every merged member rule_id (clustering is
+        // category/rule-id-independent, so a known-FP rule can ride as a member
+        // under a different representative). Same file for all cluster members.
+        const ruleIds = [f.rule_id, ...(f.members?.map((m) => m.rule_id) ?? [])];
+        const keys = [...new Set(ruleIds.map((rid) => `${ruleIdToken0(rid)}@${f.file}`))];
+        const matchKey = keys.find((k) => fpClusters.has(k));
+        const hit = matchKey ? fpClusters.get(matchKey) : undefined;
         if (!hit) return f;
         const base = f.severity === "INFO" ? f : { ...f, severity: "INFO" as const };
         return {
@@ -508,5 +531,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
     id: `F-${String(i + 1).padStart(3, "0")}`,
   }));
 
-  return { verdict, dedupedFindings: renumbered, counts: { critical, warn, info } };
+  return {
+    verdict,
+    dedupedFindings: renumbered,
+    counts: { critical, warn, info },
+    criticDroppedCount,
+  };
 }
