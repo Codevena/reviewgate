@@ -1,5 +1,5 @@
 // src/providers/claude.ts
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
@@ -99,9 +99,14 @@ export class ClaudeAdapter implements ProviderAdapter {
     const outFile = join(run, "out.json");
     const errFile = join(run, "err.log");
 
+    // Prompt goes over STDIN, never argv. The prompt embeds research.md + the full
+    // review-base diff and can be multiple MB; as a single `-p "<prompt>"` argv it
+    // exceeds the OS ARG_MAX and posix_spawn fails with E2BIG before the reviewer
+    // starts (shoal 2026-06-02 gate-closed bug). `claude -p` reads the prompt from
+    // stdin when run in a pipe, which has no size ceiling. spawnSafely pipes the
+    // file and closes the pipe (EOF) when it ends.
     const args = [
       "-p",
-      readFileSync(input.promptFile, "utf8"),
       "--model",
       input.cfg.model,
       "--output-format",
@@ -123,6 +128,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       args,
       env,
       cwd: run,
+      stdinFile: input.promptFile,
       stdoutFile: outFile,
       stderrFile: errFile,
       timeoutMs: input.cfg.timeoutMs,
@@ -202,9 +208,12 @@ export class ClaudeAdapter implements ProviderAdapter {
     try {
       const outFile = join(run, "out.json");
       const errFile = join(run, "err.log");
+      // Prompt over STDIN, never argv — same E2BIG avoidance as review() (a judge/
+      // critic/curator prompt can also exceed ARG_MAX). `claude -p` reads stdin.
+      const promptFile = join(run, "prompt.txt");
+      writeFileSync(promptFile, prompt);
       const args = [
         "-p",
-        prompt,
         "--model",
         opts.model,
         "--output-format",
@@ -226,6 +235,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         args,
         env,
         cwd: run,
+        stdinFile: promptFile,
         stdoutFile: outFile,
         stderrFile: errFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,
