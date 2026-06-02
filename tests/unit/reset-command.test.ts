@@ -103,7 +103,15 @@ describe("runReset command", () => {
     await runReset({ repoRoot: viaCommand, write: () => {} });
     const viaHook = seedRepo();
     await handleReset({ repoRoot: viaHook });
-    for (const p of ["state.json", "pending.md", "pending.json", "decisions", "ESCALATION.md"]) {
+    for (const p of [
+      "state.json",
+      "dirty.flag",
+      "pending.md",
+      "pending.json",
+      "research.md",
+      "decisions",
+      "ESCALATION.md",
+    ]) {
       expect(existsSync(join(viaCommand, ".reviewgate", p))).toBe(false);
       expect(existsSync(join(viaHook, ".reviewgate", p))).toBe(false);
     }
