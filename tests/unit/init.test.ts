@@ -17,6 +17,18 @@ describe("hooksInstalled", () => {
     expect(hooksInstalled(repo)).toBe(true);
   });
 
+  it("scaffolds a bounded SessionStart hook (timeout, so a wedged reset can't stall start)", async () => {
+    const repo = tmp();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const settings = JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8")) as {
+      hooks: { SessionStart: Array<{ hooks: Array<{ command: string; timeout?: number }> }> };
+    };
+    const reset = settings.hooks.SessionStart.flatMap((g) => g.hooks).find((h) =>
+      h.command.includes(".reviewgate/bin/reset"),
+    );
+    expect(reset?.timeout).toBe(30);
+  });
+
   it("is false when settings.json exists but has no reviewgate hooks", async () => {
     const repo = tmp();
     await Bun.write(
