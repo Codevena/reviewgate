@@ -70,9 +70,10 @@ cover:
   in the SAME decision (accepted vs rejected are disjoint per finding_id). But
   across iterations a signature can be in BOTH maps (accepted/fixed @ iter1, then
   rejected/`reviewer_was_wrong` @ iter4). **Tie-break: cycleRejected WINS** — once
-  the agent has explicitly contested the recurrence as a reviewer FP, it is
-  demoted/suppressed and NOT re-pinned. This keeps the escape hatch working
-  permanently (rev.1 had this backwards, trapping the agent).
+  the agent has explicitly contested the recurrence as a reviewer FP (on the
+  representative OR any clustered member signature), it is demoted/suppressed and NOT
+  re-pinned/tagged. This keeps the escape hatch working permanently (rev.1 had this
+  backwards, trapping the agent).
 
 ### Escape hatch
 
@@ -98,12 +99,19 @@ NEXT recurrence. So the agent is never permanently trapped.
   passes don't run in the spec's listed order; critic actually precedes
   `scopeFindings`, so the pin must exist before the chain regardless of ordering).
   Detection: a deduped finding matches if its representative OR any member signature
-  ∈ `claimedFixed` AND its representative signature is NOT in `cycleRejected`
-  (tie-break). Tag each matched finding `claimed_fixed_recurred: { iter }` (earliest
-  matched iter). **`pinned` is a `Set<string>` of the matched findings' REPRESENTATIVE
-  signatures** (NOT the matched member sig) — detection may match on a member, but
-  the guard below keys on `f.signature` (the representative), so the set must store
-  representatives or the guard misses.
+  ∈ `claimedFixed` AND NONE of its signatures (representative OR member) are in
+  `cycleRejected` (tie-break). The tie-break checks members too — not only the
+  representative — so a finding the agent contested via ANY clustered signature is
+  neither re-pinned nor tagged. (Rationale: the `cycleRejected` demote pass is
+  unguarded and matches on rep-or-member, so it would demote a member-matched pin to
+  INFO regardless; matching the tie-break to the same key space prevents an incoherent
+  INFO-finding-wearing-a-`claimed_fixed_recurred`-badge. The severity outcome is
+  unchanged — cycleRejected still wins — only the misleading tag is suppressed.) Tag
+  each matched finding `claimed_fixed_recurred: { iter }` (earliest matched iter).
+  **`pinned` is a `Set<string>` of the matched findings' REPRESENTATIVE signatures**
+  (NOT the matched member sig) — detection may match on a member, but the guard below
+  keys on `f.signature` (the representative), so the set must store representatives or
+  the guard misses.
 - The critic, confidence-floor, and reputation demote passes get a guard:
   `if (pinned.has(f.signature)) return f;` (skip — keep blocking). `scopeFindings`
   and the fp/cluster passes are unchanged (a pinned finding still scope-demotes if
