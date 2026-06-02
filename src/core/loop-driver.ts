@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
-import { DecisionEntrySchema } from "../schemas/decision.ts";
+import { type DecisionEntry, DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import {
   type EscalationReason,
@@ -111,12 +111,18 @@ function previousFindingIds(repoRoot: string): string[] {
   }
 }
 
-// Signatures of findings the agent rejected as reviewer_was_wrong in `prevIter`
-// (joins decisions/<prevIter>.jsonl → finding_id → its representative + member
-// signatures via pending.json). Folded into state.cycle_rejected_signatures so the
-// next panel demotes any recurrence (per-cycle suppression, 2b). Never throws —
-// returns [] on any gap.
-function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
+// The LAST (most recent) valid decision per finding_id from decisions/<prevIter>.jsonl
+// that satisfies `match`, joined to the finding's FULL signature set (representative +
+// every clustered member) via the prior pending.json. LAST-wins because the append-only
+// decisions file may carry a superseding disposition for a finding within an iteration;
+// the fold reflects the agent's MOST RECENT intent (distinct from evaluateDecisions, which
+// only asks "did the agent decide at all"). rep+member key space keeps the §4.3 tie-break
+// sound (aggregate() matches recurrences on rep-OR-member). Never throws — [] on any gap.
+function priorIterationDecisionSignatures(
+  repoRoot: string,
+  prevIter: number,
+  match: (d: DecisionEntry) => boolean,
+): string[] {
   if (prevIter < 1) return [];
   const dp = decisionsPath(repoRoot, prevIter);
   const pp = pendingJsonPath(repoRoot);
@@ -136,9 +142,6 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
           (f): f is { id: string; signature: string; members?: Array<{ signature?: string }> } =>
             !!f.id && !!f.signature,
         )
-        // Record representative + every clustered member signature so the cycle_rejected
-        // key space matches claimed_fixed's — the §4.3 tie-break (cycleRejected wins on
-        // rep-OR-member) is only sound if both folds share the same key space.
         .map((f) => [
           f.id,
           [
@@ -152,7 +155,9 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
   } catch {
     return [];
   }
-  const out = new Set<string>();
+  // Last-valid-decision-per-id: a later valid line for the same finding_id overwrites an
+  // earlier one, so a superseding disposition (e.g. fixed -> deferred) is honored.
+  const lastById = new Map<string, DecisionEntry>();
   for (const line of readFileSync(dp, "utf8").split("\n")) {
     if (!line.trim()) continue;
     let parsed: unknown;
@@ -163,72 +168,35 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
     }
     const res = DecisionEntrySchema.safeParse(parsed);
     if (!res.success) continue;
-    const d = res.data;
-    if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
-    const sigs = sigsById.get(d.finding_id);
+    lastById.set(res.data.finding_id, res.data);
+  }
+  const out = new Set<string>();
+  for (const [findingId, d] of lastById) {
+    if (!match(d)) continue;
+    const sigs = sigsById.get(findingId);
     if (sigs) for (const s of sigs) out.add(s);
   }
   return [...out];
 }
 
-// Signatures of findings the agent marked accepted/action:"fixed" in `prevIter`
-// (joins decisions/<prevIter>.jsonl → finding_id → its representative + member
-// signatures via pending.json). Folded into state.claimed_fixed_signatures so the
-// next panel re-flags any recurrence (§4.3 Fix-Verification). Never throws —
-// returns [] on any gap.
+// Signatures the agent rejected as reviewer_was_wrong in `prevIter` (2b per-cycle
+// suppression). See priorIterationDecisionSignatures.
+function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
+  return priorIterationDecisionSignatures(
+    repoRoot,
+    prevIter,
+    (d) => d.verdict === "rejected" && d.reviewer_was_wrong === true,
+  );
+}
+
+// Signatures the agent marked accepted/action:"fixed" in `prevIter` (§4.3). See
+// priorIterationDecisionSignatures.
 function priorIterationClaimedFixedSignatures(repoRoot: string, prevIter: number): string[] {
-  if (prevIter < 1) return [];
-  const dp = decisionsPath(repoRoot, prevIter);
-  const pp = pendingJsonPath(repoRoot);
-  if (!existsSync(dp) || !existsSync(pp)) return [];
-  let sigsById: Map<string, string[]>;
-  try {
-    const report = JSON.parse(readFileSync(pp, "utf8")) as {
-      findings?: Array<{
-        id?: string;
-        signature?: string;
-        members?: Array<{ signature?: string }>;
-      }>;
-    };
-    sigsById = new Map(
-      (report.findings ?? [])
-        .filter(
-          (f): f is { id: string; signature: string; members?: Array<{ signature?: string }> } =>
-            !!f.id && !!f.signature,
-        )
-        // Record the representative AND every clustered member signature: aggregate()
-        // pins a recurrence on rep-OR-member, so storing only the representative would
-        // miss a recurrence flagged under a prior member signature.
-        .map((f) => [
-          f.id,
-          [
-            f.signature,
-            ...(f.members ?? [])
-              .map((m) => m.signature)
-              .filter((s): s is string => typeof s === "string" && s.length > 0),
-          ],
-        ]),
-    );
-  } catch {
-    return [];
-  }
-  const out = new Set<string>();
-  for (const line of readFileSync(dp, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (!res.success) continue;
-    const d = res.data;
-    if (d.verdict !== "accepted" || d.action !== "fixed") continue;
-    const sigs = sigsById.get(d.finding_id);
-    if (sigs) for (const s of sigs) out.add(s);
-  }
-  return [...out];
+  return priorIterationDecisionSignatures(
+    repoRoot,
+    prevIter,
+    (d) => d.verdict === "accepted" && d.action === "fixed",
+  );
 }
 
 // The last iteration's findings + severity counts, read from pending.json. The

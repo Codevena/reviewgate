@@ -1781,6 +1781,66 @@ describe("LoopDriver", () => {
     expect(persisted).toContain("rep-sig");
     expect(persisted).toContain("mem-sig");
   });
+
+  it("uses the LAST decision per finding_id: a fixed line later superseded by deferred is NOT recorded as claimed-fixed (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXSUPERSEDE");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", signature: "sig-superseded", severity: "WARN" },
+          { id: "F-002", signature: "sig-final-fixed", severity: "WARN" },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    // F-001: fixed THEN superseded by deferred-with-followup (last wins → NOT claimed-fixed).
+    // F-002: deferred THEN superseded by fixed (last wins → IS claimed-fixed).
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "deferred-with-followup" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "deferred-with-followup" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received?.["sig-superseded"]).toBeUndefined(); // fixed→deferred: last wins, not claimed
+    expect(received?.["sig-final-fixed"]).toBe(1); // deferred→fixed: last wins, claimed
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {
