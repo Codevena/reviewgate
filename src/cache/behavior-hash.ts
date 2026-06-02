@@ -36,6 +36,10 @@ export function computeBehaviorHash(input: {
   docs?: DocsHashEntry[] | undefined;
   // Slice 2: sha256 hex of injected referenced-file content (doc reviews) — invalidates the cache when that source changes.
   refs?: string | undefined;
+  // §3.1: per-persona reaffirmation DELTA from the built-in map (entries sourced
+  // from a persona file / config override), as `<id>:<sha256(text)>`. Empty when
+  // no override → segment omitted → byte-identical to the legacy hash.
+  personas?: string[] | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -61,6 +65,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.refs) {
     out += `|refs:${input.refs}`;
+  }
+  if (input.personas && input.personas.length > 0) {
+    out += `|personas:${[...input.personas].sort().join(",")}`;
   }
   return out;
 }
