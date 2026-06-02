@@ -152,6 +152,9 @@ export interface IterationRunner {
     // Per-cycle suppression (2b): signatures the agent already rejected as
     // reviewer_was_wrong earlier this cycle → demoted to INFO by the aggregator.
     cycleRejectedSignatures?: string[];
+    // §4.3 Fix-Verification: signatures marked accepted/action:"fixed" earlier this
+    // cycle → earliest iter. Passed to aggregate() so a recurrence stays blocking.
+    claimedFixedSignatures?: Record<string, number>;
   }): Promise<IterationResult>;
 }
 
@@ -331,6 +334,7 @@ export class Orchestrator {
     iter: number;
     signal?: AbortSignal;
     cycleRejectedSignatures?: string[];
+    claimedFixedSignatures?: Record<string, number>;
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1230,6 +1234,9 @@ export class Orchestrator {
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
       ...(opts.cycleRejectedSignatures && opts.cycleRejectedSignatures.length > 0
         ? { cycleRejected: new Set(opts.cycleRejectedSignatures) }
+        : {}),
+      ...(opts.claimedFixedSignatures && Object.keys(opts.claimedFixedSignatures).length > 0
+        ? { claimedFixed: new Map(Object.entries(opts.claimedFixedSignatures)) }
         : {}),
     });
 
