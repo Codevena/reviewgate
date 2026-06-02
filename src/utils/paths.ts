@@ -67,6 +67,12 @@ export function knownFpPath(repoRoot: string): string {
 export function fpLedgerLockPath(repoRoot: string): string {
   return join(learningsDir(repoRoot), ".lock");
 }
+export function implicitOutcomesPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), "implicit-outcomes.jsonl");
+}
+export function implicitOutcomesLockPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), ".implicit-outcomes.lock");
+}
 
 export function auditDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "audit");
