@@ -38,7 +38,7 @@ import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
-import { collectChangedFileContents } from "../utils/git.ts";
+import { collectChangedFileContents, isExcludedFromReview } from "../utils/git.ts";
 import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
@@ -1116,7 +1116,13 @@ export class Orchestrator {
 
     // --- Symbol-relative signatures: recompute each finding's signature using
     // its enclosing symbol (when the language is supported) before dedup. ---
-    const rawFindings = okRuns.flatMap((s) => s.res.findings);
+    // Drop reviewer findings on EXCLUDED paths (.reviewgate/, reviewgate.config.ts):
+    // those are outside the review scope by construction, and the gate must never
+    // block on its OWN infrastructure (a reviewer with repo read-access can still
+    // SEE and comment on .reviewgate/ even though it's excluded from the diff).
+    const rawFindings = okRuns
+      .flatMap((s) => s.res.findings)
+      .filter((f) => !isExcludedFromReview(f.file));
     const allFindings = await this.applySymbolSignatures(rawFindings);
 
     // --- Optional critic phase (demote-only) ---

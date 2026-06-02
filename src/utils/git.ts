@@ -64,7 +64,7 @@ export const EXCLUDE_PATHSPEC = [
   ":(exclude)**/.antigravitycli/**",
 ] as const;
 
-function isExcludedFromReview(path: string): boolean {
+export function isExcludedFromReview(path: string): boolean {
   return (
     path === "reviewgate.config.ts" ||
     path === ".reviewgate" ||
