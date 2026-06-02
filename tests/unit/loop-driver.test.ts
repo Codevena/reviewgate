@@ -1542,6 +1542,64 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("not yet addressed"); // decisions-gate wins
     expect(decision.reason).not.toContain("reject-rate-high");
   });
+
+  it("folds prior accepted/action:fixed decisions into claimed_fixed_signatures and passes them to the next run (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDFIX");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", signature: "sig-fixed", severity: "WARN" },
+          { id: "F-002", signature: "sig-elsewhere", severity: "WARN" },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "addressed-elsewhere" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // Only action:"fixed" is recorded; addressed-elsewhere is NOT.
+    expect(received?.["sig-fixed"]).toBe(1);
+    expect(received?.["sig-elsewhere"]).toBeUndefined();
+    expect((await state.load()).claimed_fixed_signatures["sig-fixed"]).toBe(1);
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {

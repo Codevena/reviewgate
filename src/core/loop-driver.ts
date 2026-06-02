@@ -152,6 +152,47 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
   return [...out];
 }
 
+// Signatures of findings the agent marked accepted/action:"fixed" in `prevIter`
+// (joins decisions/<prevIter>.jsonl → finding_id → signature via pending.json).
+// Folded into state.claimed_fixed_signatures so the next panel re-flags any
+// recurrence (§4.3 Fix-Verification). Never throws — returns [] on any gap.
+function priorIterationClaimedFixedSignatures(repoRoot: string, prevIter: number): string[] {
+  if (prevIter < 1) return [];
+  const dp = decisionsPath(repoRoot, prevIter);
+  const pp = pendingJsonPath(repoRoot);
+  if (!existsSync(dp) || !existsSync(pp)) return [];
+  let sigById: Map<string, string>;
+  try {
+    const report = JSON.parse(readFileSync(pp, "utf8")) as {
+      findings?: Array<{ id?: string; signature?: string }>;
+    };
+    sigById = new Map(
+      (report.findings ?? [])
+        .filter((f): f is { id: string; signature: string } => !!f.id && !!f.signature)
+        .map((f) => [f.id, f.signature]),
+    );
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const line of readFileSync(dp, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    const d = res.data;
+    if (d.verdict !== "accepted" || d.action !== "fixed") continue;
+    const sig = sigById.get(d.finding_id);
+    if (sig) out.add(sig);
+  }
+  return [...out];
+}
+
 // The last iteration's findings + severity counts, read from pending.json. The
 // gate escalates as a PRECONDITION (before running a new iteration), so pending.json
 // still reflects the prior iteration — used to populate the escalation report so it
@@ -377,6 +418,7 @@ export class LoopDriver {
                 cumulative_fp_rejects: 0,
                 fp_counted_through_iter: 0,
                 cycle_rejected_signatures: [],
+                claimed_fixed_signatures: {},
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
@@ -420,6 +462,7 @@ export class LoopDriver {
           cumulative_fp_rejects: 0,
           fp_counted_through_iter: 0,
           cycle_rejected_signatures: [],
+          claimed_fixed_signatures: {},
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
         }),
       );
@@ -550,18 +593,43 @@ export class LoopDriver {
       // reputation on its eid), so a single hoisted call is safe.
       await this.absorbPriorDecisions(state);
 
-      // Per-cycle suppression (2b): fold the PRIOR iteration's reviewer_was_wrong
-      // rejections into the cycle's suppressed-signature set, persisted so it
-      // accumulates across the cycle's iterations. The new panel (below) demotes
-      // any recurrence to INFO → the agent never re-rejects the same finding and
-      // it stops feeding the reviewer-fp-streak. Reset to [] on re-arm.
+      // Per-cycle suppression (2b) + claimed-fixed tracking (§4.3): fold the PRIOR
+      // iteration's reviewer_was_wrong rejections AND accepted/action:"fixed"
+      // dispositions into their respective cycle-scoped maps in a SINGLE state.update
+      // so the two folds can't tear state. The new panel demotes rejected
+      // recurrences and re-flags claimed-fixed recurrences. Both reset on re-arm.
       const priorRejected = priorIterationRejectedSignatures(this.i.repoRoot, state.iteration);
-      if (priorRejected.length > 0) {
-        const merged = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
-        if (merged.length !== state.cycle_rejected_signatures.length) {
-          await this.i.state.update((cur) => ({ ...cur, cycle_rejected_signatures: merged }));
-          state = { ...state, cycle_rejected_signatures: merged };
-        }
+      const priorClaimedFixed = priorIterationClaimedFixedSignatures(
+        this.i.repoRoot,
+        state.iteration,
+      );
+      const mergedRejected = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
+      const mergedClaimedFixed: Record<string, number> = { ...state.claimed_fixed_signatures };
+      const claimedIter = state.iteration; // the iteration whose decisions we just folded
+      for (const sig of priorClaimedFixed) {
+        const existing = mergedClaimedFixed[sig];
+        // Keep the EARLIEST iteration the fix was claimed (idempotent re-stops + a
+        // re-flagged-then-re-fixed signature must not advance its recorded iter).
+        if (existing === undefined || claimedIter < existing) mergedClaimedFixed[sig] = claimedIter;
+      }
+      const rejectedChanged = mergedRejected.length !== state.cycle_rejected_signatures.length;
+      const claimedChanged =
+        Object.keys(mergedClaimedFixed).length !==
+          Object.keys(state.claimed_fixed_signatures).length ||
+        Object.entries(mergedClaimedFixed).some(
+          ([k, v]) => state.claimed_fixed_signatures[k] !== v,
+        );
+      if (rejectedChanged || claimedChanged) {
+        await this.i.state.update((cur) => ({
+          ...cur,
+          cycle_rejected_signatures: mergedRejected,
+          claimed_fixed_signatures: mergedClaimedFixed,
+        }));
+        state = {
+          ...state,
+          cycle_rejected_signatures: mergedRejected,
+          claimed_fixed_signatures: mergedClaimedFixed,
+        };
       }
 
       // Decisions-gate: every required finding must have a decision.
@@ -678,6 +746,7 @@ export class LoopDriver {
         iter: nextIter,
         signal: ac.signal,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        claimedFixedSignatures: state.claimed_fixed_signatures,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -719,6 +788,7 @@ export class LoopDriver {
         runId: state.session_id,
         iter: nextIter,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        claimedFixedSignatures: state.claimed_fixed_signatures,
       });
     }
 
@@ -788,6 +858,8 @@ export class LoopDriver {
         // Per-cycle suppression set (2b): cleared on re-arm so a fresh cycle
         // starts with no suppressed signatures; preserved across a cycle's FAILs.
         cycle_rejected_signatures: passed ? [] : cur.cycle_rejected_signatures,
+        // §4.3: claimed-fixed map is cycle-scoped — cleared on re-arm, preserved across a cycle's FAILs.
+        claimed_fixed_signatures: passed ? {} : cur.claimed_fixed_signatures,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,
