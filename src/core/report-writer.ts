@@ -40,6 +40,10 @@ function demoteBadges(f: Finding): string | null {
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
+  if (f.claimed_fixed_recurred)
+    badges.push(
+      `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — still present; the fix did not resolve it`,
+    );
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 

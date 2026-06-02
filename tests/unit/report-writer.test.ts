@@ -178,5 +178,16 @@ describe("ReportWriter", () => {
       expect(badgeLine).toContain("🧠");
       expect(badgeLine).toContain("🎯");
     });
+
+    it("claimed_fixed_recurred → renders the recurrence badge (blocking, not advisory)", async () => {
+      const md = await renderFinding({ claimed_fixed_recurred: { iter: 2 } });
+      expect(md).toContain("claimed fixed @ iter 2");
+      // The default fixture finding is CRITICAL; a pinned recurrence is NOT advisory,
+      // so it renders in the CRITICAL section, which precedes the Advisory section.
+      const findingIdx = md.indexOf("F-001");
+      const advisoryIdx = md.indexOf("## Advisory");
+      expect(findingIdx).toBeGreaterThan(-1);
+      if (advisoryIdx > -1) expect(findingIdx).toBeLessThan(advisoryIdx);
+    });
   });
 });
