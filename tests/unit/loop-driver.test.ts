@@ -1657,6 +1657,68 @@ describe("LoopDriver", () => {
     expect(received?.["sig-X"]).toBe(1);
     expect((await state.load()).claimed_fixed_signatures["sig-X"]).toBe(1);
   });
+
+  it("records BOTH representative and member signatures of an accepted/fixed clustered finding (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDMEMBER");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "rep-sig",
+            severity: "WARN",
+            members: [{ signature: "rep-sig" }, { signature: "mem-sig" }],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received?.["rep-sig"]).toBe(1);
+    expect(received?.["mem-sig"]).toBe(1); // member signature captured too
+    const persisted = (await state.load()).claimed_fixed_signatures;
+    expect(persisted["rep-sig"]).toBe(1);
+    expect(persisted["mem-sig"]).toBe(1);
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {
