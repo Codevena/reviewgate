@@ -252,6 +252,18 @@ export function cooldownEffectFor(
   return null;
 }
 
+// Deterministic order for last-resort failover (OAuth/$0 providers first, the
+// paid API provider last). Used only after a reviewer slot's DECLARED fallback
+// chain is exhausted — to recruit any other enabled+available reviewer rather
+// than collapse the panel to zero on a quota outage.
+const LAST_RESORT_ORDER: ProviderId[] = [
+  "claude-code",
+  "codex",
+  "gemini",
+  "opencode",
+  "openrouter",
+];
+
 // Number of DISTINCT reviewer identities (provider:persona) in the ok-run panel.
 // Used as `reviewersTotal` for the singleton-CRITICAL failsafe instead of the raw
 // slot count: two slots that both fall back to the SAME provider:persona produce
@@ -949,6 +961,46 @@ export class Orchestrator {
                   .slice(0, 1000);
               const fbEff = effectFor(fb, run.res); // record/clear the fallback too
               if (fbEff) effects.push(fbEff);
+              if (run.res.status === "ok") break;
+            }
+          }
+
+          // Last-resort failover: the slot's DECLARED chain is exhausted (all
+          // cooled/unavailable), but ANOTHER configured+enabled+available+non-cooled
+          // provider may still work. Try them (deterministic, OAuth/$0 first) so a
+          // quota outage on the chain doesn't collapse the panel to zero when a
+          // working reviewer exists — i.e. fall back to claude/openrouter even if
+          // they were not listed in this slot's chain. Same cooldown/availability
+          // gates as the chain walk; skipped on a self-deadline abort.
+          if (run.res.status !== "ok" && !opts.signal?.aborted) {
+            const attempted = new Set<ProviderId>([r.provider, ...(r.fallback ?? [])]);
+            const lrAvailable = this.input.providerAvailable ?? isProviderAvailable;
+            for (const lr of LAST_RESORT_ORDER) {
+              if (attempted.has(lr)) continue;
+              const lrCfg = this.input.config.providers[lr] as ProviderConfig | undefined;
+              if (!lrCfg?.enabled || !this.input.adapters[lr]) continue;
+              if (!lrAvailable(lr, lrCfg.apiKeyEnv)) continue;
+              if (cooldownStore.skipUntil(lr, now)) continue;
+              const lrModel = resolveReviewerModel(lr, lrCfg.model);
+              if (lrModel === null) continue;
+              const fromProvider = run.provider;
+              const fromStatus = run.res.status;
+              run = await runProvider(
+                lr,
+                persona,
+                lrModel,
+                lrCfg,
+                promptFile,
+                findingsPath,
+                diffPath,
+                runDir,
+              );
+              run.res.statusDetail =
+                `[last-resort from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
+                  .trim()
+                  .slice(0, 1000);
+              const lrEff = effectFor(lr, run.res);
+              if (lrEff) effects.push(lrEff);
               if (run.res.status === "ok") break;
             }
           }
