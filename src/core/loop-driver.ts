@@ -37,6 +37,15 @@ const MIN_DECISIONS_FOR_REJECT_RATE = 4;
 // permanently-hanging provider can't loop the block→re-run forever.
 const MAX_CONSECUTIVE_INCOMPLETE_RUNS = 2;
 
+// Escalation reasons where the REVIEWER (or a transient provider outage) is the
+// problem, not the agent's code. Blocking there punishes correct agent behavior
+// (e.g. consistently rejecting a noisy reviewer's findings) and holds the dev
+// hostage. For these the gate still writes ESCALATION.md + audit (the human is
+// informed) but ALLOWS the stop with a loud warning instead of blocking.
+const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<EscalationReason>([
+  "reviewer-fp-streak",
+]);
+
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
 // (a sub-second deadline must not round down to a confusing "0s").
 function formatDuration(ms: number): string {
@@ -938,10 +947,21 @@ export class LoopDriver {
     } catch {
       /* noop */
     }
-    if (firstAnnounce) {
+    // Some escalations mean "the REVIEWER is the problem, not the agent's code"
+    // (reviewer-fp-streak: the agent kept correctly rejecting a noisy reviewer's
+    // findings). Blocking there punishes correct behavior and holds the dev
+    // hostage. For those we still write ESCALATION.md + audit (the human IS
+    // informed) but ALLOW the stop with a loud warning instead of blocking.
+    if (firstAnnounce && !ALLOW_STOP_ESCALATIONS.has(reasonCode)) {
       return {
         kind: "block",
         reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
+      };
+    }
+    if (firstAnnounce) {
+      return {
+        kind: "allow_stop",
+        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the reviewer panel is being treated as UNRELIABLE here, not your code; NOT blocking your turn. Read .reviewgate/ESCALATION.md and consider disabling/replacing that reviewer in reviewgate.config.ts.${suffix}`,
       };
     }
     return {
