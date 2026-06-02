@@ -42,6 +42,9 @@ const HOOKS_TEMPLATE = {
         {
           type: "command",
           command: "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset",
+          // Bounded: `reset` is fast + local, but a missing timeout lets a wedged
+          // reset stall session start indefinitely. 30s is generous headroom.
+          timeout: 30,
         },
       ],
     },

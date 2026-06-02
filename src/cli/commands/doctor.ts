@@ -251,6 +251,56 @@ export function fallbackChainCheck(
   };
 }
 
+// The Stop-hook timeout MUST stay ABOVE the gate's own self-deadline
+// (loop.runTimeoutMs): if Claude Code kills the hook before the gate aborts
+// itself, the turn ends NON-BLOCKING = un-reviewed (fail-open). So a too-LOW
+// Stop-hook timeout is the dangerous misconfig (the opposite of intuition — the
+// naive "lower it to shorten hangs" breaks the invariant). Also flags a
+// SessionStart hook with no timeout (a wedged reset stalls session start).
+// Returns null when the reviewgate Stop hook isn't installed (nothing to check).
+export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check | null {
+  const settingsPath = join(repoRoot, ".claude", "settings.json");
+  if (!existsSync(settingsPath)) return null;
+  let settings: {
+    hooks?: Record<string, Array<{ hooks?: Array<{ command?: string; timeout?: number }> }>>;
+  };
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+  } catch {
+    return null;
+  }
+  const groups = settings.hooks ?? {};
+  const findHook = (event: string, binSuffix: string) =>
+    (groups[event] ?? []).flatMap((g) => g.hooks ?? []).find((h) => h.command?.includes(binSuffix));
+  const stop = findHook("Stop", ".reviewgate/bin/gate");
+  if (!stop) return null; // reviewgate Stop hook not installed → nothing to check
+  const reset = findHook("SessionStart", ".reviewgate/bin/reset");
+
+  const runTimeoutS = Math.round(cfg.loop.runTimeoutMs / 1000);
+  const issues: string[] = [];
+  if (stop.timeout !== undefined && stop.timeout * 1000 <= cfg.loop.runTimeoutMs) {
+    issues.push(
+      `Stop-hook timeout (${stop.timeout}s) ≤ gate self-deadline loop.runTimeoutMs (${runTimeoutS}s) → the hook is killed mid-review (non-blocking) and a turn can end UN-reviewed (fail-open)`,
+    );
+  }
+  if (reset && reset.timeout === undefined) {
+    issues.push("SessionStart hook has no timeout → a wedged reset can stall session start");
+  }
+  if (issues.length === 0) {
+    return {
+      name: "hook timeouts",
+      status: "ok",
+      detail: `Stop-hook timeout > loop.runTimeoutMs (${runTimeoutS}s); SessionStart bounded`,
+    };
+  }
+  return {
+    name: "hook timeouts",
+    status: "warn",
+    detail: issues.join(" · "),
+    hint: `Keep the Stop-hook timeout ABOVE loop.runTimeoutMs (currently ${runTimeoutS}s). To shorten hangs, lower BOTH together (e.g. runTimeoutMs 420s + Stop-hook timeout 480), and give SessionStart a timeout (e.g. 30).`,
+  };
+}
+
 // doctor cannot detect quota exhaustion proactively (a --version probe never
 // makes a billed call), so it surfaces it RETROSPECTIVELY: if the last review
 // recorded a `quota-exhausted` reviewer, warn that the provider was recently
@@ -377,6 +427,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (cd) checks.push(cd);
     const fb = fallbackChainCheck(cfg, curatorAvailable);
     if (fb) checks.push(fb);
+    const ht = hookTimeoutCheck(input.repoRoot, cfg);
+    if (ht) checks.push(ht);
     const sbMode = cfg.sandbox.mode;
     if (sbMode !== "off") {
       const ok = await sandboxRuntimeAvailable();
