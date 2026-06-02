@@ -92,6 +92,16 @@ cover:
   representative OR any clustered member signature), it is demoted/suppressed and NOT
   re-pinned/tagged. This keeps the escape hatch working permanently (rev.1 had this
   backwards, trapping the agent).
+  - **Key-space symmetry (required).** The tie-break is only sound if BOTH maps are
+    populated over the SAME key space. Because `claimed_fixed_signatures` records a
+    fixed finding's representative AND member signatures (mechanism §1), the
+    `cycle_rejected_signatures` fold MUST do the same — i.e.
+    `priorIterationRejectedSignatures` also records representative + member signatures.
+    Otherwise a clustered finding fixed then contested would have only its
+    representative in `cycle_rejected` while its member is in `claimed_fixed`; a
+    member-flagged recurrence would then be pinned (and now force-FAILed) despite the
+    agent's rejection — re-introducing the escape-hatch trap. (This also strengthens
+    2b: a contested cluster's member-flagged recurrence is now suppressed too.)
 
 ### Escape hatch
 
