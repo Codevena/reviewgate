@@ -48,6 +48,9 @@ export const ConfigSchema = z.object({
           }),
         )
         .min(1),
+      // §3.1: per-persona reaffirmation override. Beats the .reviewgate/personas/<id>.md
+      // file and the built-in default for that persona id. Absent → file/built-in.
+      personas: z.record(z.string(), z.string()).optional(),
       // Max bytes of full changed-file content fed to each reviewer alongside the
       // diff (for symbol verification). Smaller = smaller prompts = faster reviews
       // and fewer timeouts on slow remote models; larger = more context.

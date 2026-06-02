@@ -6,5 +6,3 @@ Look for:
 - Secret leakage to logs, errors, or remote endpoints
 - TOCTOU bugs and race conditions
 - Insecure defaults that surface in user-facing config
-
-Output ONLY a JSON object matching the schema you were given. No prose.

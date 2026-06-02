@@ -155,3 +155,7 @@ export function proposalsPoolPath(repoRoot: string, runId: string): string {
 export function proposalsPoolErrorLog(repoRoot: string): string {
   return join(proposalsPoolDir(repoRoot), "errors.jsonl");
 }
+
+export function personaFilePath(repoRoot: string, id: string): string {
+  return join(reviewgateDir(repoRoot), "personas", `${id}.md`);
+}

@@ -6,5 +6,3 @@ Assume the author was optimistic. Look for:
 - Steps that cannot be verified or tested as written
 - Unstated assumptions and unrealistic effort/scope claims
 - References to files, functions, or symbols that do not exist
-
-Output ONLY a JSON object matching the schema you were given. No prose.
