@@ -1106,7 +1106,7 @@ export class LoopDriver {
       .filter((x): x is { p: string; until: string } => x.until !== null);
     if (capped.length === 0) return null;
     const list = capped.map((x) => `${x.p} (capped until ${x.until})`).join(", ");
-    return `\n\n⚠ Quota-degraded panel: ${list} could not review this cycle. A capped reviewer cannot corroborate or refute the others' findings — if its failover did not cover the slot, this escalation rests on a degraded panel. Consider waiting for the quota reset, then re-run \`reviewgate gate --hook reset\` before treating these findings as final.`;
+    return `\n\n⚠ Quota-degraded panel: ${list} could not review this cycle. A capped reviewer cannot corroborate or refute the others' findings — if its failover did not cover the slot, this escalation rests on a degraded panel. Consider waiting for the quota reset, then re-run \`reviewgate reset\` before treating these findings as final.`;
   }
 
   // Escalate, then decide whether to BLOCK (to surface it to the agent) or
@@ -1150,7 +1150,7 @@ export class LoopDriver {
     if (firstAnnounce && !ALLOW_STOP_ESCALATIONS.has(reasonCode)) {
       return {
         kind: "block",
-        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate gate --hook reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
+        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
       };
     }
     if (firstAnnounce) {

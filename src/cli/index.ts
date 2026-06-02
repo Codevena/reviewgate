@@ -16,6 +16,7 @@ import { runGate } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
 import { runReport } from "./commands/report.ts";
+import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import { runSetup, setupTip } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
@@ -67,6 +68,19 @@ const doctor = defineCommand({
   async run() {
     const exitCode = await runDoctor({ repoRoot: process.cwd() });
     process.exit(exitCode);
+  },
+});
+
+const reset = defineCommand({
+  meta: {
+    name: "reset",
+    description:
+      "Re-arm the gate: clear this session's review state (pending findings, decisions, escalation, session state). Learned memory (FP-ledger, brain) is preserved.",
+  },
+  async run() {
+    // No stdin read, no --hook: this is the user-facing alias for the
+    // SessionStart reset path. Shares handleReset → 1:1 parity.
+    process.exit(await runReset({ repoRoot: process.cwd() }));
   },
 });
 
@@ -340,6 +354,7 @@ const main = defineCommand({
     gate,
     "review-plan": reviewPlan,
     doctor,
+    reset,
     audit,
     brain,
     fp,

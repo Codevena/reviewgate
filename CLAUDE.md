@@ -25,7 +25,7 @@ bun run test:unit / test:integration     # by directory
 
 Always run `bunx tsc --noEmit` **and** `bun run lint` before considering a change done — both must be clean. After editing schemas/config, run the full `bun test`.
 
-CLI subcommands: `init` (install hooks into `.claude/settings.json`), `gate` (hook entry point — see below), `doctor` (health-check provider CLIs), `audit verify`, `brain list|show|revoke`, `review-plan <file…>` (one-shot review of a plan/spec markdown).
+CLI subcommands: `init` (install hooks into `.claude/settings.json`), `gate` (hook entry point — see below), `reset` (user-facing re-arm: clears this session's review state; same effect as the SessionStart hook), `doctor` (health-check provider CLIs), `audit verify`, `brain list|show|revoke`, `review-plan <file…>` (one-shot review of a plan/spec markdown).
 
 ## How the gate runs (control flow)
 

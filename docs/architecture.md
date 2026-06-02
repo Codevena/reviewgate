@@ -37,7 +37,7 @@ The entire pipeline is driven by hooks calling
 
 - **`trigger`** (PostToolUse) — just marks `.reviewgate/dirty.flag`. Cheap; runs
   after every edit.
-- **`reset`** (SessionStart) — wipes per-session state.
+- **`reset`** (SessionStart) — wipes per-session state. The same logic is exposed to humans/agents as the top-level `reviewgate reset` command (`src/cli/commands/reset.ts` → `handleReset`), used to re-arm an escalated gate.
 - **`stop`** (Stop) — the real work: `LoopDriver.run()` → `Orchestrator.runIteration()`.
 
 ### LoopDriver (`src/core/loop-driver.ts`)
