@@ -612,6 +612,16 @@ export class LoopDriver {
       const mergedRejected = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
       const mergedClaimedFixed: Record<string, number> = { ...state.claimed_fixed_signatures };
       const claimedIter = state.iteration; // the iteration whose decisions we just folded
+      // Reconcile THIS iteration's contribution before re-adding: the decisions-gate
+      // re-blocks across multiple stops of one iteration, so an early partial-file fold
+      // may have recorded a claim the agent later (same iteration) superseded to a
+      // non-fixed disposition. The persisted map is add-only, so drop every entry
+      // recorded AT this iteration, then re-add from the current last-wins set below.
+      // Entries from EARLIER iterations (value < claimedIter) are locked and preserved
+      // (a fix genuinely claimed in iter1 is not erased by an iter3 supersede).
+      for (const sig of Object.keys(mergedClaimedFixed)) {
+        if (mergedClaimedFixed[sig] === claimedIter) delete mergedClaimedFixed[sig];
+      }
       for (const sig of priorClaimedFixed) {
         const existing = mergedClaimedFixed[sig];
         // Keep the EARLIEST iteration the fix was claimed (idempotent re-stops + a

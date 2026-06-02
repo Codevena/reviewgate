@@ -1841,6 +1841,66 @@ describe("LoopDriver", () => {
     expect(received?.["sig-superseded"]).toBeUndefined(); // fixed→deferred: last wins, not claimed
     expect(received?.["sig-final-fixed"]).toBe(1); // deferred→fixed: last wins, claimed
   });
+
+  it("reconciles a within-iteration supersede: a claimed-fixed entry from an earlier stop is DROPPED when the latest decision is no longer fixed (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXRECONCILE");
+    // Simulate stop#1 of iteration 1 already having recorded sig-superseded as claimed-fixed.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 1,
+      claimed_fixed_signatures: { "sig-superseded": 1 },
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [{ id: "F-001", signature: "sig-superseded", severity: "WARN" }],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    // Latest decision for F-001 is a non-fixed supersede (fixed earlier, now deferred).
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "deferred-with-followup" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // The stale claim is reconciled away because the latest decision is not "fixed".
+    expect(received?.["sig-superseded"]).toBeUndefined();
+    expect((await state.load()).claimed_fixed_signatures["sig-superseded"]).toBeUndefined();
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {
