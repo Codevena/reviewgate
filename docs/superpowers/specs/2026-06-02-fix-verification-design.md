@@ -38,10 +38,16 @@ matching `(file, normalizeRuleId, category)` is a possible later enhancement.
 1. **Track claimed-fixed signatures.** For each prior-iteration decision with
    `verdict:"accepted"` AND `action:"fixed"` (the exact `decision.ts` literal;
    `addressed-elsewhere`/`deferred-with-followup` do NOT count), resolve
-   `finding_id` → signature via the prior `pending.json` and record
-   `signature → iteration` in `state.claimed_fixed_signatures` (keep the EARLIEST
-   iteration). Reset on re-arm. Accumulated in the SAME `state.update` as the 2b
-   `cycle_rejected_signatures` fold (one flock cycle, no torn state).
+   `finding_id` → the finding's FULL signature set (its representative signature AND
+   every clustered member signature) via the prior `pending.json`, and record EACH of
+   those `signature → iteration` in `state.claimed_fixed_signatures` (keep the
+   EARLIEST iteration per signature). Recording the members too — not just the
+   representative — is required because `aggregate()` pins a recurrence on rep-OR-member;
+   if only the representative were stored, a recurrence later flagged under one of the
+   prior finding's MEMBER signatures (a different reviewer, or after the representative
+   selection changes) would not match and would escape the pin. Reset on re-arm.
+   Accumulated in the SAME `state.update` as the 2b `cycle_rejected_signatures` fold
+   (one flock cycle, no torn state).
 2. **Detect recurrence.** The map is passed into `aggregate()` as
    `claimedFixed: Map<string, number>`. A deduped finding whose representative OR
    any member signature is in `claimedFixed` (and NOT also currently
@@ -99,7 +105,7 @@ NEXT recurrence. So the agent is never permanently trapped.
 **`src/schemas/state.ts`** — add `claimed_fixed_signatures: z.record(z.string(), z.number().int().positive()).default({})` (signature → earliest claimed-fixed iter; `positive` since a claim only follows iteration ≥1's findings). Add `claimed_fixed_signatures: {}` to the explicit `initialState()` return (REQUIRED — the output type lists it; tsc fails otherwise). Reset to `{}` at the SAME three sites as `cycle_rejected_signatures`: clean-PASS re-arm (`loop-driver.ts:~790`), escalation re-arm (`~422`), and the HEAD-move-WHILE-ESCALATED branch ONLY (`~379`) — NOT on every HEAD move (a mid-FAIL commit must not reset cycle state).
 
 **`src/core/loop-driver.ts`** —
-- Helper `priorIterationClaimedFixedSignatures(repoRoot, prevIter): string[]` (mirrors `priorIterationRejectedSignatures`): read `decisions/<prevIter>.jsonl` + prior `pending.json`; for each `verdict:"accepted"` with `action:"fixed"`, map `finding_id` → signature. Never throws.
+- Helper `priorIterationClaimedFixedSignatures(repoRoot, prevIter): string[]` (mirrors `priorIterationRejectedSignatures`): read `decisions/<prevIter>.jsonl` + prior `pending.json`; for each `verdict:"accepted"` with `action:"fixed"`, map `finding_id` → the finding's representative signature AND every `members[].signature`, and emit ALL of them (so a recurrence under any clustered signature is caught). Never throws.
 - In the `iteration > 0` block, FOLD into the SAME `state.update` that already updates `cycle_rejected_signatures` (one flock cycle): merge prior claimed-fixed sigs into `state.claimed_fixed_signatures`, keeping the earliest iter. Update the local `state`.
 - Pass `claimedFixedSignatures: state.claimed_fixed_signatures` to BOTH `runIteration` calls.
 
