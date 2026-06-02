@@ -1,8 +1,50 @@
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { type ImplicitOutcome, ImplicitOutcomeSchema } from "../../schemas/implicit-outcome.ts";
+import type { Finding } from "../../schemas/finding.ts";
+import {
+  type DemoteReason,
+  type ImplicitOutcome,
+  ImplicitOutcomeSchema,
+} from "../../schemas/implicit-outcome.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { flock } from "../../utils/flock.ts";
 import { implicitOutcomesLockPath, implicitOutcomesPath, learningsDir } from "../../utils/paths.ts";
+
+// Highest-priority demote tag for a finding present in dedupedFindings, or null
+// if it carries no demote tag (so it is not an "outcome" worth recording).
+function reasonOf(f: Finding): DemoteReason | null {
+  if (f.critic_verdict === "likely_fp") return "critic_likely_fp";
+  if (f.scope_demoted) return "scope_demoted";
+  if (f.fp_ledger_match) return "fp_ledger_match";
+  if (f.reputation_demoted) return "reputation_demoted";
+  if (f.low_confidence) return "low_confidence";
+  return null;
+}
+
+/** Map an aggregate's demoted survivors + critic-dropped findings to outcomes.
+ *  Pure (no I/O, no clock): `nowIso`/`runId`/`iter` are passed in. */
+export function deriveImplicitOutcomes(
+  dedupedFindings: Finding[],
+  criticDropped: Finding[],
+  ctx: { runId: string; iter: number; nowIso: string },
+): ImplicitOutcome[] {
+  const make = (f: Finding, reason: DemoteReason): ImplicitOutcome => ({
+    schema: "reviewgate.implicit_outcome.v1",
+    signature: f.signature,
+    reviewer_key: `${f.reviewer.provider}:${f.reviewer.persona}`,
+    category: f.category,
+    demote_reason: reason,
+    run_id: ctx.runId,
+    iter: ctx.iter,
+    created_at: ctx.nowIso,
+  });
+  const out: ImplicitOutcome[] = [];
+  for (const f of dedupedFindings) {
+    const reason = reasonOf(f);
+    if (reason) out.push(make(f, reason));
+  }
+  for (const f of criticDropped) out.push(make(f, "critic_dropped"));
+  return out;
+}
 
 /** Write-only learning-signal corpus of demoted/dropped findings. flock'd,
  *  atomic, prune-at-write (oldest-drop). */
