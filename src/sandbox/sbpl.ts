@@ -45,9 +45,13 @@ export function globToSbplRegex(glob: string): string {
 export function buildMacosSbpl(profile: SandboxProfile): string {
   for (const w of profile.fs.writeAllow) {
     for (const d of profile.fs.readDeny) {
-      if (isUnder(w, d))
+      // Bidirectional (mirror bwrap's assertNoSandboxOverlap): reject BOTH
+      // isUnder(w, d) — writeAllow nested under readDeny (write-only) — AND
+      // isUnder(d, w) — readDeny nested under a broad writeAllow, which would
+      // leave a writable-but-unreadable secret (integrity hole).
+      if (isUnder(w, d) || isUnder(d, w))
         throw new Error(
-          `SBPL conflict: writeAllow ${w} is nested under readDeny ${d} (write-only)`,
+          `SBPL conflict: writeAllow ${w} and readDeny ${d} are nested (write-only/un-mask)`,
         );
     }
   }

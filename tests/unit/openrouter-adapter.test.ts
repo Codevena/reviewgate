@@ -198,6 +198,26 @@ describe("OpenRouterAdapter (mocked fetch)", () => {
     const res = await reviewWith(500, "internal server error");
     expect(res.status).toBe("error");
   });
+
+  it("fails closed on a 200 with empty content (no silent zero-finding PASS)", async () => {
+    // A content-filtered / refusal / empty response parses to null. Every other
+    // adapter (codex/claude/gemini/opencode) guards `!out` and returns an error
+    // run so it is EXCLUDED from okRuns. OpenRouter must do the same — otherwise
+    // it enters okRuns as a 0-finding PASS and contributes a false PASS.
+    const res = await reviewWith(200, JSON.stringify({ choices: [{ message: { content: "" } }] }));
+    expect(res.status).not.toBe("ok");
+    expect(res.verdict).not.toBe("PASS");
+  });
+
+  it("maps quota/usage-limit content in a 200 body to quota-exhausted", async () => {
+    const res = await reviewWith(
+      200,
+      JSON.stringify({
+        choices: [{ message: { content: "You have reached your usage limit. Try again later." } }],
+      }),
+    );
+    expect(res.status).toBe("quota-exhausted");
+  });
 });
 
 describe("OpenRouterAdapter.review (gate self-deadline abort)", () => {

@@ -45,6 +45,8 @@ describe("learnFromDecisions", () => {
     await learnFromDecisions({
       repoRoot: repo,
       prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
       store,
       nowIso: "2026-05-21T00:00:00Z",
     });
@@ -65,14 +67,202 @@ describe("learnFromDecisions", () => {
       `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
     );
     const store = new FpLedgerStore(repo);
-    await learnFromDecisions({ repoRoot: repo, prevIter: 1, store, nowIso: "t" });
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "t",
+    });
     expect((await store.snapshot()).entries).toHaveLength(0);
+  });
+
+  it("accumulates a reject EACH cycle a recurring false-positive is rejected", async () => {
+    // A reviewer that hallucinates the SAME false-positive (same signature) every
+    // cycle must accumulate one reject PER cycle so the entry can reach
+    // active/sticky. The reject idempotency key is (run_id, provider): keying
+    // run_id on the POSITIONAL finding_id ("F-001", reused every iteration)
+    // collapses every recurrence into one reject — the ledger never learns.
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-recur-"));
+    const pj = pendingJsonPath(repo);
+    mkdirSync(dirname(pj), { recursive: true });
+    const pendingFor = () =>
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "sig-X",
+            rule_id: "r",
+            category: "correctness",
+            file: "a.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.5,
+            consensus: "singleton",
+          },
+        ],
+      });
+    const decisionFor = () =>
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive, the symbol exists at a.ts:1", reviewer_was_wrong: true })}\n`;
+    const store = new FpLedgerStore(repo);
+
+    // Cycle 1
+    writeFileSync(pj, pendingFor());
+    const dp1 = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp1), { recursive: true });
+    writeFileSync(dp1, decisionFor());
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-02T00:00:00Z",
+    });
+
+    // Cycle 2 — same signature rejected again
+    writeFileSync(pj, pendingFor());
+    const dp2 = decisionsPath(repo, 2);
+    mkdirSync(dirname(dp2), { recursive: true });
+    writeFileSync(dp2, decisionFor());
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 2,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-02T01:00:00Z",
+    });
+
+    const entry = (await store.snapshot()).entries.find((e) => e.signature === "sig-X");
+    expect(entry?.rejects).toHaveLength(2);
+  });
+
+  it("accumulates ACROSS cycles when iteration resets (clean-PASS re-arm → iter back to 1)", async () => {
+    // After a clean PASS the loop resets `iteration` to 0 but bumps
+    // reputation_cycle_seq, and the per-repo FP ledger persists. A recurring FP
+    // rejected at iter 1 of cycle 0 and again at iter 1 of cycle 1 must count as
+    // TWO rejects — keying run_id on iter alone ("iter-1" both) would dedupe them.
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-xcycle-"));
+    const pj = pendingJsonPath(repo);
+    mkdirSync(dirname(pj), { recursive: true });
+    const pending = JSON.stringify({
+      findings: [
+        {
+          id: "F-001",
+          signature: "sig-Z",
+          rule_id: "r",
+          category: "correctness",
+          file: "a.ts",
+          line_start: 1,
+          line_end: 1,
+          message: "m",
+          details: "d",
+          reviewer: { provider: "codex", model: "x", persona: "security" },
+          confidence: 0.5,
+          consensus: "singleton",
+        },
+      ],
+    });
+    const decision = `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive, the symbol exists at a.ts:1", reviewer_was_wrong: true })}\n`;
+    const store = new FpLedgerStore(repo);
+
+    // Cycle 0, iter 1
+    writeFileSync(pj, pending);
+    const dp1 = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp1), { recursive: true });
+    writeFileSync(dp1, decision);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-02T00:00:00Z",
+    });
+
+    // Clean PASS happened → iteration reset to 1 again, but cycleSeq advanced to 1.
+    writeFileSync(pj, pending);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 1,
+      store,
+      nowIso: "2026-06-02T02:00:00Z",
+    });
+
+    const entry = (await store.snapshot()).entries.find((e) => e.signature === "sig-Z");
+    expect(entry?.rejects).toHaveLength(2);
+  });
+
+  it("is idempotent when the SAME cycle is re-absorbed (no double-count)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-idem-"));
+    const pj = pendingJsonPath(repo);
+    mkdirSync(dirname(pj), { recursive: true });
+    writeFileSync(
+      pj,
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "sig-Y",
+            rule_id: "r",
+            category: "correctness",
+            file: "a.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.5,
+            consensus: "singleton",
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive, the symbol exists", reviewer_was_wrong: true })}\n`,
+    );
+    const store = new FpLedgerStore(repo);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-02T00:00:00Z",
+    });
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-02T00:00:00Z",
+    });
+    const entry = (await store.snapshot()).entries.find((e) => e.signature === "sig-Y");
+    expect(entry?.rejects).toHaveLength(1);
   });
 
   it("is a no-op for prevIter < 1", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-fpl3-"));
     const store = new FpLedgerStore(repo);
-    await learnFromDecisions({ repoRoot: repo, prevIter: 0, store, nowIso: "t" });
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 0,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "t",
+    });
     expect((await store.snapshot()).entries).toHaveLength(0);
   });
 
@@ -118,6 +308,8 @@ describe("learnFromDecisions", () => {
     await learnFromDecisions({
       repoRoot: repo,
       prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
       store,
       nowIso: "2026-05-21T00:00:00Z",
     });

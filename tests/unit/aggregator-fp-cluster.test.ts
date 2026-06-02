@@ -73,6 +73,37 @@ describe("F3 Phase 2 aggregator — fpActiveClusters demote", () => {
     expect(result.dedupedFindings[0]?.fp_cluster_match).toBeUndefined();
   });
 
+  it("matches a cluster key on a MEMBER's rule_id, not only the representative's", () => {
+    // Two reports cluster (same file+region); the representative carries rule_id
+    // "alpha-rule", the merged member carries "beta-rule". An FP cluster keyed on
+    // the member's token0 (beta@…) must still demote — checking only the
+    // representative's rule_id (alpha@…) misses it.
+    const rep = mkFinding({
+      signature: "sig-rep",
+      rule_id: "alpha-rule",
+      file: "x.ts",
+      line_start: 1,
+      line_end: 1,
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const mem = mkFinding({
+      signature: "sig-mem",
+      rule_id: "beta-rule",
+      file: "x.ts",
+      line_start: 1,
+      line_end: 1,
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const result = aggregate({
+      findings: [rep, mem],
+      reviewersTotal: 1,
+      fpActiveClusters: new Map([["beta@x.ts", { key: "beta@x.ts", member_ids: ["FP-9"] }]]),
+    });
+    expect(result.dedupedFindings).toHaveLength(1);
+    expect(result.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(result.dedupedFindings[0]?.fp_cluster_match?.cluster_key).toBe("beta@x.ts");
+  });
+
   it("DOES NOT demote when file differs", () => {
     const f = mkFinding({ file: "src/other.ts" });
     const result = aggregate({

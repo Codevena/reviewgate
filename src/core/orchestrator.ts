@@ -186,8 +186,32 @@ const PERSONA_REAFFIRM: Record<string, string> = {
   architecture: "You are a senior software architect. Judge design, coupling, and maintainability.",
   adversarial: "You are an adversarial critic. Attack assumptions; find what others miss.",
   plan: "You are a meticulous staff engineer reviewing an implementation plan. Find gaps, contradictions, untestable steps, and unstated assumptions before code is written.",
+  quality:
+    "You are a senior engineer reviewing for code quality, correctness, and maintainability. Find real defects, not style nits.",
+  correctness:
+    "You are a senior engineer focused on correctness. Trace the changed code paths and find real logic bugs.",
+  performance:
+    "You are a performance engineer. Find real inefficiencies, hot-path allocations, and algorithmic regressions.",
+  testing:
+    "You are a test engineer. Judge test correctness and coverage; find missing edge cases and weak assertions.",
 };
-const DEFAULT_REAFFIRM = PERSONA_REAFFIRM.security as string;
+// NEUTRAL fallback — must NOT be the security persona's text. Reaffirming an
+// unknown/quality/performance reviewer as a "hostile security auditor" corrupts
+// its persona-specific review (F: unknown persona silently became security).
+const DEFAULT_REAFFIRM =
+  "You are a meticulous senior code reviewer. Assume the author was overconfident. Find real bugs, correctness issues, and risks.";
+
+/** Persona reaffirmation text, with a neutral (non-security) fallback for any
+ *  persona not in PERSONA_REAFFIRM. Warns once per miss so a typo'd/added persona
+ *  is visible rather than silently mis-reviewed as security. */
+export function reaffirmFor(persona: string): string {
+  const r = PERSONA_REAFFIRM[persona];
+  if (r) return r;
+  console.warn(
+    `[reviewgate] unknown reviewer persona "${persona}" — using the generic reviewer reaffirmation (not security-specific)`,
+  );
+  return DEFAULT_REAFFIRM;
+}
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
 // cache ttlDays). Best-effort — a slow API never stalls a review.
@@ -195,6 +219,48 @@ const DOCS_REQUEST_TIMEOUT_MS = 15_000;
 // M6: overall deadline for the WHOLE docs phase (extraction + every per-lib
 // fetch), so a pre-cache stall can never block the review regardless of lib count.
 const DOCS_TOTAL_TIMEOUT_MS = 30_000;
+
+// The cooldown bookkeeping a finished reviewer run implies. Returned by
+// cooldownEffectFor and applied once after the panel settles (one writer).
+export type CooldownEffect =
+  | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
+  | { provider: ProviderId; clear: true };
+
+// What a finished run implies for the provider's quota cooldown:
+//  - quota-exhausted → record (parsed reset time, else a default window)
+//  - ok              → clear (the provider demonstrably works → quota isn't the issue)
+//  - anything else   → null = INCONCLUSIVE: timeout/error (incl. a gate self-deadline
+//                      SIGKILL surfacing as timeout/error) is NOT proof of recovery,
+//                      so neither clear nor record — any existing cooldown stands.
+export function cooldownEffectFor(
+  provider: ProviderId,
+  res: ReviewResult,
+  now: Date,
+): CooldownEffect | null {
+  if (res.status === "quota-exhausted") {
+    const parsed = parseQuotaResetAt(res.statusDetail, now);
+    return parsed
+      ? { provider, resetAt: parsed, source: "parsed" }
+      : {
+          provider,
+          resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
+          source: "default",
+        };
+  }
+  if (res.status === "ok") return { provider, clear: true };
+  return null;
+}
+
+// Number of DISTINCT reviewer identities (provider:persona) in the ok-run panel.
+// Used as `reviewersTotal` for the singleton-CRITICAL failsafe instead of the raw
+// slot count: two slots that both fall back to the SAME provider:persona produce
+// one deduped reviewer key, so the panel is effectively a single reviewer and a
+// lone CRITICAL must still hard-FAIL rather than SOFT-PASS.
+export function effectiveReviewerCount(
+  okRuns: ReadonlyArray<{ provider: string; persona: string }>,
+): number {
+  return new Set(okRuns.map((s) => `${s.provider}:${s.persona}`)).size;
+}
 
 // M6: best-effort diagnostic — per-lib docs outcomes for "why no docs". Written
 // under .reviewgate/ (excluded from the reviewed diff). Never throws.
@@ -703,10 +769,6 @@ export class Orchestrator {
     // panel runs in parallel).
     const now = this.input.now?.() ?? new Date();
     const cooldownStore = new QuotaCooldownStore(repo);
-    type CooldownEffect =
-      | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
-      | { provider: ProviderId; clear: true };
-
     // Reviewer quarantine (Slice C, opt-in): drop reviewer slots whose provider:persona is below
     // the hard quarantine floor BEFORE running them. If that would empty the panel, run the full
     // panel anyway (quarantine yields). repCfg is hoisted here so the demote pass below reuses it.
@@ -742,7 +804,7 @@ export class Orchestrator {
         if (model === null) return null; // claude-code host-tier disabled
 
         const persona = docPersona ?? r.persona;
-        const reaffirm = PERSONA_REAFFIRM[persona] ?? DEFAULT_REAFFIRM;
+        const reaffirm = reaffirmFor(persona);
         const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
         const sanitisedCtx = fileContext
           ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
@@ -807,19 +869,8 @@ export class Orchestrator {
           // quota isn't the problem). Applied for the primary AND every fallback
           // tried, so a quota-capped FALLBACK is also cooled down (else it would be
           // retried on every review).
-          const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect => {
-            if (res.status === "quota-exhausted") {
-              const parsed = parseQuotaResetAt(res.statusDetail, now);
-              return parsed
-                ? { provider, resetAt: parsed, source: "parsed" }
-                : {
-                    provider,
-                    resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
-                    source: "default",
-                  };
-            }
-            return { provider, clear: true };
-          };
+          const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
+            cooldownEffectFor(provider, res, now);
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;
@@ -854,7 +905,8 @@ export class Orchestrator {
               diffPath,
               runDir,
             );
-            effects.push(effectFor(r.provider, run.res));
+            const eff = effectFor(r.provider, run.res);
+            if (eff) effects.push(eff);
           }
 
           // Failover: when the primary did NOT produce a usable review (quota-exhausted,
@@ -894,7 +946,8 @@ export class Orchestrator {
                 `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
                   .trim()
                   .slice(0, 1000);
-              effects.push(effectFor(fb, run.res)); // record/clear the fallback too
+              const fbEff = effectFor(fb, run.res); // record/clear the fallback too
+              if (fbEff) effects.push(fbEff);
               if (run.res.status === "ok") break;
             }
           }
@@ -907,6 +960,9 @@ export class Orchestrator {
 
     // allSettled (not all): a single adapter that THROWS (not just returns
     // ERROR) must not abort the whole panel — treat a rejection as no run.
+    // (The common case — adapter.review() throwing — is already converted to an
+    // error run inside runProvider's own try/catch, so it IS counted; a rejection
+    // here only escapes for a throw outside that, which is tolerated as no run.)
     const outcomes = await Promise.allSettled(tasks);
     const taskResults = outcomes
       .map((o) => (o.status === "fulfilled" ? o.value : null))
@@ -1092,7 +1148,10 @@ export class Orchestrator {
 
     const agg = aggregate({
       findings: allFindings,
-      reviewersTotal: okRuns.length,
+      // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
+      // (two slots → same provider:persona) must not satisfy the singleton-
+      // CRITICAL failsafe as a phantom multi-reviewer panel.
+      reviewersTotal: effectiveReviewerCount(okRuns),
       changedRanges: parseChangedRanges(this.input.diff),
       // One-shot reviews (plan/spec) review a WHOLE document, not a code change —
       // there are no "unchanged lines" to exclude, so diff-scoping must not apply
@@ -1109,7 +1168,11 @@ export class Orchestrator {
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
     });
 
-    const demoted = agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length;
+    // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
+    // dedupedFindings, so filtering it alone undercounts the critic's activity.
+    const demoted =
+      agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length +
+      agg.criticDroppedCount;
     await this.writeReport(
       opts,
       start,

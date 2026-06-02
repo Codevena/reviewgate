@@ -7,10 +7,17 @@ import type { FpLedgerStore } from "./store.ts";
 export async function learnFromDecisions(input: {
   repoRoot: string;
   prevIter: number;
+  // Monotonic cycle identity (mirrors reputation's eid): `iteration` RESETS to 0
+  // on every clean-PASS re-arm, so iter alone collides across cycles. session_id
+  // + reputation_cycle_seq (a general per-cycle counter, incremented on re-arm
+  // regardless of whether reputation is enabled) make the reject run_id unique
+  // per (session, cycle, iter) — so a recurring FP accumulates across cycles.
+  sessionId: string;
+  cycleSeq: number;
   store: FpLedgerStore;
   nowIso: string;
 }): Promise<void> {
-  const { repoRoot, prevIter, store, nowIso } = input;
+  const { repoRoot, prevIter, sessionId, cycleSeq, store, nowIso } = input;
   if (prevIter < 1) return;
 
   const dp = decisionsPath(repoRoot, prevIter);
@@ -69,7 +76,20 @@ export async function learnFromDecisions(input: {
       await store.recordReject(
         m.signature,
         { rule_id: m.rule_id, category: m.category, file: f.file, symbol: "" },
-        { run_id: d.finding_id, provider: m.provider, reason: d.reason ?? "" },
+        // run_id keys the (run_id, provider) reject-idempotency. It MUST be unique
+        // per absorb-invocation but STABLE on re-absorb of the same one. NOT
+        // `d.finding_id` (the POSITIONAL "F-001", reused every iter) and NOT iter
+        // alone (`iteration` RESETS to 0 on every clean-PASS re-arm, so iter 1 of
+        // cycle N collides with iter 1 of cycle N+1). session_id + cycleSeq +
+        // prevIter is unique per (session, cycle, iter) — mirrors reputation's eid
+        // — so a recurring false-positive accumulates across cycles toward
+        // active/sticky, while re-absorbing the SAME (session, cycle, iter) stays
+        // idempotent.
+        {
+          run_id: `${sessionId}:${cycleSeq}:${prevIter}`,
+          provider: m.provider,
+          reason: d.reason ?? "",
+        },
         nowIso,
       );
     }

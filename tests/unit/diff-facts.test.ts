@@ -24,6 +24,15 @@ describe("computeDiffFacts", () => {
     expect(ts?.added).toBe(2);
     expect(ts?.removed).toBe(1);
   });
+  it("parses a filename that contains the literal substring ' b/'", () => {
+    // `diff --git a/<X> b/<X>` is symmetric: a lazy a-side capture stops at the
+    // FIRST " b/" inside the filename, mis-splitting the header. The path must be
+    // recovered as the real b-side, not "c.ts b/src/a b/c.ts".
+    const diff =
+      "diff --git a/src/a b/c.ts b/src/a b/c.ts\n--- a/src/a b/c.ts\n+++ b/src/a b/c.ts\n@@ -1 +1 @@\n-x\n+y\n";
+    const f = computeDiffFacts(diff);
+    expect(f.files.map((x) => x.path)).toEqual(["src/a b/c.ts"]);
+  });
   it("classifies file kinds (code / docs)", () => {
     const f = computeDiffFacts(DIFF);
     expect(f.files.find((x) => x.path === "README.md")?.kind).toBe("docs");
