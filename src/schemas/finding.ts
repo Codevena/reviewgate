@@ -91,6 +91,12 @@ export const FindingSchema = z.object({
       suppressed: z.boolean(),
     })
     .optional(),
+  // §4.3 Fix-Verification: set by the aggregator when this finding's signature was
+  // marked accepted/action:"fixed" in an earlier iteration of the current cycle and
+  // has RECURRED. The finding is PINNED (critic/confidence/reputation demote passes
+  // skip it) so an ineffective "fix" stays blocking. `iter` = earliest iteration the
+  // fix was claimed. Rendered as a blocking-section badge by report-writer.
+  claimed_fixed_recurred: z.object({ iter: z.number().int().positive() }).optional(),
   contradicts_memory: z
     .object({
       brain_entry_id: z.string(),

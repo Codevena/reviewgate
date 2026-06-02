@@ -23,3 +23,18 @@ describe("FindingSchema scope_demoted", () => {
     expect(FindingSchema.parse(base).scope_demoted).toBeUndefined();
   });
 });
+
+describe("claimed_fixed_recurred tag", () => {
+  it("accepts an optional { iter } tag with a positive iter", () => {
+    const f = FindingSchema.parse({ ...base, claimed_fixed_recurred: { iter: 2 } });
+    expect(f.claimed_fixed_recurred?.iter).toBe(2);
+  });
+
+  it("is optional (absent → undefined)", () => {
+    expect(FindingSchema.parse(base).claimed_fixed_recurred).toBeUndefined();
+  });
+
+  it("rejects a non-positive iter", () => {
+    expect(() => FindingSchema.parse({ ...base, claimed_fixed_recurred: { iter: 0 } })).toThrow();
+  });
+});
