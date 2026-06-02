@@ -179,15 +179,30 @@ describe("ReportWriter", () => {
       expect(badgeLine).toContain("🎯");
     });
 
-    it("claimed_fixed_recurred → renders the recurrence badge (blocking, not advisory)", async () => {
+    it("claimed_fixed_recurred (blocking CRITICAL/WARN) → asserts the fix did not resolve it", async () => {
       const md = await renderFinding({ claimed_fixed_recurred: { iter: 2 } });
       expect(md).toContain("claimed fixed @ iter 2");
+      // Default fixture is CRITICAL (blocking) → the strong wording.
+      expect(md).toContain("the fix did not resolve it");
       // The default fixture finding is CRITICAL; a pinned recurrence is NOT advisory,
       // so it renders in the CRITICAL section, which precedes the Advisory section.
       const findingIdx = md.indexOf("F-001");
       const advisoryIdx = md.indexOf("## Advisory");
       expect(findingIdx).toBeGreaterThan(-1);
       if (advisoryIdx > -1) expect(findingIdx).toBeLessThan(advisoryIdx);
+    });
+
+    it("claimed_fixed_recurred (scope-demoted advisory INFO) → softens to 'recurred (advisory…)', NOT 'did not resolve it'", async () => {
+      // A pinned recurrence demoted to INFO by scope/fp is advisory; the strong
+      // "did not resolve it" wording would mislead for an out-of-diff recurrence.
+      const md = await renderFinding({
+        severity: "INFO",
+        scope_demoted: true,
+        claimed_fixed_recurred: { iter: 3 },
+      });
+      expect(md).toContain("claimed fixed @ iter 3");
+      expect(md).toContain("recurred (advisory");
+      expect(md).not.toContain("the fix did not resolve it");
     });
   });
 });
