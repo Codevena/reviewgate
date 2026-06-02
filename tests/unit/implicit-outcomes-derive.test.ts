@@ -39,6 +39,10 @@ describe("deriveImplicitOutcomes", () => {
     const demoted = [
       base({ signature: "c", critic_verdict: "likely_fp" }),
       base({ signature: "s", scope_demoted: true }),
+      base({
+        signature: "f",
+        fp_ledger_match: { pattern_id: "FP-1", matched_count: 1, suppressed: true },
+      }),
       base({ signature: "r", reputation_demoted: true }),
       base({ signature: "l", low_confidence: true }),
     ];
@@ -47,6 +51,7 @@ describe("deriveImplicitOutcomes", () => {
     expect(byReason).toEqual({
       c: "critic_likely_fp",
       s: "scope_demoted",
+      f: "fp_ledger_match",
       r: "reputation_demoted",
       l: "low_confidence",
     });
