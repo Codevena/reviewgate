@@ -1315,6 +1315,56 @@ describe("LoopDriver", () => {
     expect(fp.entries.some((e) => e.signature === "decunaddr-sig-1")).toBe(true);
   });
 
+  it("folds prior reviewer_was_wrong rejections into cycle_rejected_signatures and passes them to the next run (2b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCYCLEREJ2B");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", signature: "sig-X", severity: "CRITICAL" }] }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive, verified the symbol exists at x.ts:1", reviewer_was_wrong: true })}\n`,
+    );
+    let received: string[] | undefined;
+    const stub = {
+      runIteration: async (opts: { cycleRejectedSignatures?: string[] }) => {
+        received = opts.cycleRejectedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received).toContain("sig-X");
+    expect((await state.load()).cycle_rejected_signatures).toContain("sig-X");
+  });
+
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

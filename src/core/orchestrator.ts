@@ -143,6 +143,9 @@ export interface IterationRunner {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    // Per-cycle suppression (2b): signatures the agent already rejected as
+    // reviewer_was_wrong earlier this cycle → demoted to INFO by the aggregator.
+    cycleRejectedSignatures?: string[];
   }): Promise<IterationResult>;
 }
 
@@ -354,6 +357,7 @@ export class Orchestrator {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    cycleRejectedSignatures?: string[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1225,6 +1229,9 @@ export class Orchestrator {
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
+      ...(opts.cycleRejectedSignatures && opts.cycleRejectedSignatures.length > 0
+        ? { cycleRejected: new Set(opts.cycleRejectedSignatures) }
+        : {}),
     });
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach

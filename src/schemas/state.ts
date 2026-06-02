@@ -63,6 +63,11 @@ export const ReviewgateStateSchema = z.object({
   // (real findings = signatures − FP). Reset to [] on re-arm. `.default([])` for
   // back-compat with state.json written before this field existed.
   fp_rejects_history: z.array(z.number().int().nonnegative()).default([]),
+  // Per-cycle suppression (2b): signatures the agent rejected as reviewer_was_wrong
+  // in an EARLIER iteration of the CURRENT cycle. The panel demotes any recurrence
+  // to INFO so the agent never re-rejects the same finding (and it stops feeding
+  // the reviewer-fp-streak). Reset to [] on re-arm. `.default([])` for back-compat.
+  cycle_rejected_signatures: z.array(z.string()).default([]),
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
@@ -103,6 +108,7 @@ export function initialState(sessionId: string): ReviewgateState {
     decision_history: [],
     cumulative_fp_rejects: 0,
     fp_counted_through_iter: 0,
+    cycle_rejected_signatures: [],
     last_diff_hash: null,
     last_stop_ts: null,
     last_pass_diff_hash: null,
