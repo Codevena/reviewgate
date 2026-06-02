@@ -136,6 +136,7 @@ You can also run the gate manually outside the loop:
 
 ```bash
 reviewgate gate                      # review current `git diff HEAD`
+reviewgate reset                     # re-arm the gate (clear this session's review state)
 reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 ```
 
