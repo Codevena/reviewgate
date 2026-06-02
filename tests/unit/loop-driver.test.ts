@@ -1542,6 +1542,453 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("not yet addressed"); // decisions-gate wins
     expect(decision.reason).not.toContain("reject-rate-high");
   });
+
+  it("folds prior accepted/action:fixed decisions into claimed_fixed_signatures and passes them to the next run (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDFIX");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", signature: "sig-fixed", severity: "WARN" },
+          { id: "F-002", signature: "sig-elsewhere", severity: "WARN" },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "addressed-elsewhere" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // Only action:"fixed" is recorded; addressed-elsewhere is NOT.
+    expect(received?.["sig-fixed"]).toBe(1);
+    expect(received?.["sig-elsewhere"]).toBeUndefined();
+    expect((await state.load()).claimed_fixed_signatures["sig-fixed"]).toBe(1);
+  });
+
+  it("keeps the EARLIEST claimed-fixed iter when the same signature is re-claimed in a later iteration (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDEARLIEST");
+    // Pre-seed: sig-X was already recorded as claimed-fixed at iter 1, and we are now
+    // folding iteration 2's decisions (which claim sig-X fixed AGAIN).
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 2,
+      claimed_fixed_signatures: { "sig-X": 1 },
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", signature: "sig-X", severity: "WARN" }] }),
+    );
+    const dp = decisionsPath(repo, 2);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // Earliest iter (1) preserved — NOT advanced to 2.
+    expect(received?.["sig-X"]).toBe(1);
+    expect((await state.load()).claimed_fixed_signatures["sig-X"]).toBe(1);
+  });
+
+  it("records BOTH representative and member signatures of an accepted/fixed clustered finding (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDMEMBER");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "rep-sig",
+            severity: "WARN",
+            members: [{ signature: "rep-sig" }, { signature: "mem-sig" }],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received?.["rep-sig"]).toBe(1);
+    expect(received?.["mem-sig"]).toBe(1); // member signature captured too
+    const persisted = (await state.load()).claimed_fixed_signatures;
+    expect(persisted["rep-sig"]).toBe(1);
+    expect(persisted["mem-sig"]).toBe(1);
+  });
+
+  it("records BOTH representative and member signatures of a reviewer_was_wrong rejection (2b key-space symmetry)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXREJMEMBER");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "rep-sig",
+            severity: "WARN",
+            members: [{ signature: "rep-sig" }, { signature: "mem-sig" }],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive — verified the symbol exists at x.ts:1", reviewer_was_wrong: true })}\n`,
+    );
+    let received: string[] | undefined;
+    const stub = {
+      runIteration: async (opts: { cycleRejectedSignatures?: string[] }) => {
+        received = opts.cycleRejectedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received).toContain("rep-sig");
+    expect(received).toContain("mem-sig");
+    const persisted = (await state.load()).cycle_rejected_signatures;
+    expect(persisted).toContain("rep-sig");
+    expect(persisted).toContain("mem-sig");
+  });
+
+  it("uses the LAST decision per finding_id: a fixed line later superseded by deferred is NOT recorded as claimed-fixed (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXSUPERSEDE");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          { id: "F-001", signature: "sig-superseded", severity: "WARN" },
+          { id: "F-002", signature: "sig-final-fixed", severity: "WARN" },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    // F-001: fixed THEN superseded by deferred-with-followup (last wins → NOT claimed-fixed).
+    // F-002: deferred THEN superseded by fixed (last wins → IS claimed-fixed).
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "deferred-with-followup" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "deferred-with-followup" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-002", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received?.["sig-superseded"]).toBeUndefined(); // fixed→deferred: last wins, not claimed
+    expect(received?.["sig-final-fixed"]).toBe(1); // deferred→fixed: last wins, claimed
+  });
+
+  it("reconciles a within-iteration supersede: a claimed-fixed entry from an earlier stop is DROPPED when the latest decision is no longer fixed (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXRECONCILE");
+    // Simulate stop#1 of iteration 1 already having recorded sig-superseded as claimed-fixed.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 1,
+      claimed_fixed_signatures: { "sig-superseded": 1 },
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [{ id: "F-001", signature: "sig-superseded", severity: "WARN" }],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    // Latest decision for F-001 is a non-fixed supersede (fixed earlier, now deferred).
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n` +
+        `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "deferred-with-followup" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // The stale claim is reconciled away because the latest decision is not "fixed".
+    expect(received?.["sig-superseded"]).toBeUndefined();
+    expect((await state.load()).claimed_fixed_signatures["sig-superseded"]).toBeUndefined();
+  });
+
+  it("does not throw when the decisions file is unreadable (never-throws contract, §4.3/2b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXUNREADABLE");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    // No blocking findings → the decisions-gate is skipped and the fold helpers run;
+    // the iteration proceeds to the stub. The signature-fold helpers still read the
+    // decisions file, exercising the never-throws guard.
+    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [] }));
+    // Create the decisions path as a DIRECTORY → readFileSync throws EISDIR.
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dp, { recursive: true });
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    // Must not throw.
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received).toEqual({}); // nothing recorded, no throw
+  });
+
+  it("resets claimed_fixed_signatures to {} on a clean-PASS re-arm (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDRESET");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 1,
+      claimed_fixed_signatures: { "sig-old": 1 },
+    }));
+    writeDirty(repo);
+    // No findings required → a PASS verdict re-arms the cycle.
+    writeFileSync(pendingJsonPath(repo), JSON.stringify({ findings: [] }));
+    const stub = {
+      runIteration: async () => ({
+        verdict: "PASS" as const,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect((await state.load()).claimed_fixed_signatures).toEqual({});
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {

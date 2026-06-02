@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ReviewgateStateSchema } from "../../src/schemas/state.ts";
+import { ReviewgateStateSchema, initialState } from "../../src/schemas/state.ts";
 
 describe("ReviewgateStateSchema back-compat", () => {
   it("defaults fp_rejects_history to [] for state written before the field existed", () => {
@@ -21,5 +21,25 @@ describe("ReviewgateStateSchema back-compat", () => {
       escalation_reason: null,
     });
     expect(parsed.fp_rejects_history).toEqual([]);
+  });
+});
+
+describe("claimed_fixed_signatures field", () => {
+  it("defaults to {} for state.json written before the field existed", () => {
+    const base = initialState("01HXTEST");
+    // Simulate an older persisted state missing the field.
+    const { claimed_fixed_signatures, ...older } = base;
+    const parsed = ReviewgateStateSchema.parse(older);
+    expect(parsed.claimed_fixed_signatures).toEqual({});
+  });
+
+  it("initialState() includes claimed_fixed_signatures: {}", () => {
+    expect(initialState("01HXTEST").claimed_fixed_signatures).toEqual({});
+  });
+
+  it("rejects a non-positive iteration value", () => {
+    expect(() =>
+      ReviewgateStateSchema.parse({ ...initialState("x"), claimed_fixed_signatures: { sig: 0 } }),
+    ).toThrow();
   });
 });

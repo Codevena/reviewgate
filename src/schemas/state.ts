@@ -68,6 +68,13 @@ export const ReviewgateStateSchema = z.object({
   // to INFO so the agent never re-rejects the same finding (and it stops feeding
   // the reviewer-fp-streak). Reset to [] on re-arm. `.default([])` for back-compat.
   cycle_rejected_signatures: z.array(z.string()).default([]),
+  // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
+  // an EARLIER iteration of the CURRENT cycle, mapped to the EARLIEST iteration the
+  // claim was made. A later recurrence of the same signature is re-flagged as
+  // still-blocking by the aggregator (the claimed fix did not resolve it). `positive`
+  // because a claim only follows iteration ≥1's findings. Reset on re-arm.
+  // `.default({})` for back-compat with state.json written before this field.
+  claimed_fixed_signatures: z.record(z.string(), z.number().int().positive()).default({}),
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
@@ -109,6 +116,7 @@ export function initialState(sessionId: string): ReviewgateState {
     cumulative_fp_rejects: 0,
     fp_counted_through_iter: 0,
     cycle_rejected_signatures: [],
+    claimed_fixed_signatures: {},
     last_diff_hash: null,
     last_stop_ts: null,
     last_pass_diff_hash: null,

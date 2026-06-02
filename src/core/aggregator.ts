@@ -52,6 +52,13 @@ export interface AggregateInput {
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
   // (preserves the pre-feature behavior; production passes true from config).
   demoteCorrectness?: boolean;
+  // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
+  // an EARLIER iteration of the current cycle → earliest claimed iter. A deduped
+  // finding whose representative OR any member signature matches (and whose
+  // representative signature is NOT in `cycleRejected` — tie-break) is PINNED:
+  // the critic, confidence-floor, and reputation demote passes skip it so an
+  // ineffective "fix" stays blocking. NOT exempt from scopeFindings/fp passes.
+  claimedFixed?: Map<string, number>;
 }
 
 export interface AggregateResult {
@@ -302,10 +309,43 @@ export function aggregate(input: AggregateInput): AggregateResult {
     });
   }
 
+  // §4.3 Fix-Verification — pin claimed-fixed recurrences UP FRONT (before any
+  // demote pass; the passes do not run in a single linear order — critic precedes
+  // scope — so the pin must exist before the chain regardless of ordering). A
+  // deduped finding matches if its representative OR any member signature is in
+  // claimedFixed. Tie-break: a finding contested via ANY of those signatures in
+  // cycleRejected is NOT pinned — the agent has contested it, so cycleRejected wins
+  // and the escape hatch stays open. `pinned` stores REPRESENTATIVE signatures
+  // (the guards below key on `f.signature`), even when the match was on a member.
+  const claimedFixed = input.claimedFixed;
+  const pinned = new Set<string>();
+  const taggedFindings: Finding[] =
+    claimedFixed && claimedFixed.size > 0
+      ? deduped.map((f) => {
+          const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+          // Tie-break: the agent contested this finding via ANY clustered signature
+          // → cycleRejected wins; do not pin or tag (the unguarded cycleRejected pass
+          // still demotes it to INFO, so suppressing the tag avoids an INFO finding
+          // wearing a claimed_fixed_recurred badge).
+          if (input.cycleRejected && sigs.some((s) => input.cycleRejected?.has(s))) return f;
+          const iters = sigs
+            .map((s) => claimedFixed.get(s))
+            .filter((n): n is number => typeof n === "number");
+          if (iters.length === 0) return f;
+          pinned.add(f.signature);
+          return { ...f, claimed_fixed_recurred: { iter: Math.min(...iters) } };
+        })
+      : deduped;
+
   const critic = input.critic;
   const survivors: Finding[] = [];
   const criticDropped: Finding[] = [];
-  for (const f of deduped) {
+  for (const f of taggedFindings) {
+    // §4.3: a pinned recurrence keeps its blocking severity — skip the critic demote.
+    if (pinned.has(f.signature)) {
+      survivors.push(f);
+      continue;
+    }
     // Scan the representative AND every merged member signature (mirror the
     // fp_ledger_match pass): the critic may have keyed its verdict on a member's
     // signature, not the promoted representative's — checking only f.signature
@@ -432,6 +472,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const confScoped: Finding[] =
     floor > 0
       ? fpClusterScoped.map((f) => {
+          if (pinned.has(f.signature)) return f; // §4.3: pinned recurrence stays blocking
           // Cluster confidence = MAX over the representative and all merged members,
           // so a co-located high-confidence member is never masked by a
           // low-confidence representative. (memberOf records each member's
@@ -465,6 +506,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const repScoped: Finding[] =
     repUnreliable && repUnreliable.size > 0
       ? confScoped.map((f) => {
+          if (pinned.has(f.signature)) return f; // §4.3: pinned recurrence stays blocking
           if (f.severity === "INFO") return f;
           if (f.consensus === "unanimous" || f.consensus === "majority") return f;
           // security is NEVER softened — hard veto preserved.
@@ -533,10 +575,19 @@ export function aggregate(input: AggregateInput): AggregateResult {
         // ≥2 reviewers the consensus gate above still guards against one reviewer's
         // lone over-call.)
         fail = true;
+      } else if (f.claimed_fixed_recurred) {
+        // §4.3: a pinned claimed-fixed recurrence still CRITICAL here is a hard FAIL —
+        // the agent claimed to fix it and it is still present; the gate must not open.
+        fail = true;
       }
     } else if (f.severity === "WARN") {
       warn++;
       if (f.consensus === "unanimous" || f.consensus === "majority") {
+        warnFail = true;
+      } else if (f.claimed_fixed_recurred) {
+        // §4.3: a pinned WARN recurrence forces FAIL even as a singleton — otherwise a
+        // lone-reviewer claimed-fixed recurrence would only SOFT-PASS and the gate would
+        // open, breaking the "still-blocking" guarantee.
         warnFail = true;
       }
     } else {

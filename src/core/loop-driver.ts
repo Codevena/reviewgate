@@ -3,7 +3,7 @@ import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
-import { DecisionEntrySchema } from "../schemas/decision.ts";
+import { type DecisionEntry, DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import {
   type EscalationReason,
@@ -111,30 +111,63 @@ function previousFindingIds(repoRoot: string): string[] {
   }
 }
 
-// Signatures of findings the agent rejected as reviewer_was_wrong in `prevIter`
-// (joins decisions/<prevIter>.jsonl → finding_id → signature via pending.json).
-// Folded into state.cycle_rejected_signatures so the next panel demotes any
-// recurrence (per-cycle suppression, 2b). Never throws — returns [] on any gap.
-function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
+// The LAST (most recent) valid decision per finding_id from decisions/<prevIter>.jsonl
+// that satisfies `match`, joined to the finding's FULL signature set (representative +
+// every clustered member) via the prior pending.json. LAST-wins because the append-only
+// decisions file may carry a superseding disposition for a finding within an iteration;
+// the fold reflects the agent's MOST RECENT intent (distinct from evaluateDecisions, which
+// only asks "did the agent decide at all"). rep+member key space keeps the §4.3 tie-break
+// sound (aggregate() matches recurrences on rep-OR-member). Never throws — [] on any gap.
+function priorIterationDecisionSignatures(
+  repoRoot: string,
+  prevIter: number,
+  match: (d: DecisionEntry) => boolean,
+): string[] {
   if (prevIter < 1) return [];
   const dp = decisionsPath(repoRoot, prevIter);
   const pp = pendingJsonPath(repoRoot);
   if (!existsSync(dp) || !existsSync(pp)) return [];
-  let sigById: Map<string, string>;
+  let sigsById: Map<string, string[]>;
   try {
     const report = JSON.parse(readFileSync(pp, "utf8")) as {
-      findings?: Array<{ id?: string; signature?: string }>;
+      findings?: Array<{
+        id?: string;
+        signature?: string;
+        members?: Array<{ signature?: string }>;
+      }>;
     };
-    sigById = new Map(
+    sigsById = new Map(
       (report.findings ?? [])
-        .filter((f): f is { id: string; signature: string } => !!f.id && !!f.signature)
-        .map((f) => [f.id, f.signature]),
+        .filter(
+          (f): f is { id: string; signature: string; members?: Array<{ signature?: string }> } =>
+            !!f.id && !!f.signature,
+        )
+        .map((f) => [
+          f.id,
+          [
+            f.signature,
+            ...(f.members ?? [])
+              .map((m) => m.signature)
+              .filter((s): s is string => typeof s === "string" && s.length > 0),
+          ],
+        ]),
     );
   } catch {
     return [];
   }
-  const out = new Set<string>();
-  for (const line of readFileSync(dp, "utf8").split("\n")) {
+  // Last-valid-decision-per-id: a later valid line for the same finding_id overwrites an
+  // earlier one, so a superseding disposition (e.g. fixed -> deferred) is honored.
+  // Guard the read too (not just JSON.parse): an existing-but-unreadable file, or one
+  // deleted/replaced between existsSync and here (TOCTOU), must honor the never-throws
+  // contract — return [] rather than propagate into LoopDriver.run.
+  let lines: string[];
+  try {
+    lines = readFileSync(dp, "utf8").split("\n");
+  } catch {
+    return [];
+  }
+  const lastById = new Map<string, DecisionEntry>();
+  for (const line of lines) {
     if (!line.trim()) continue;
     let parsed: unknown;
     try {
@@ -144,12 +177,35 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
     }
     const res = DecisionEntrySchema.safeParse(parsed);
     if (!res.success) continue;
-    const d = res.data;
-    if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
-    const sig = sigById.get(d.finding_id);
-    if (sig) out.add(sig);
+    lastById.set(res.data.finding_id, res.data);
+  }
+  const out = new Set<string>();
+  for (const [findingId, d] of lastById) {
+    if (!match(d)) continue;
+    const sigs = sigsById.get(findingId);
+    if (sigs) for (const s of sigs) out.add(s);
   }
   return [...out];
+}
+
+// Signatures the agent rejected as reviewer_was_wrong in `prevIter` (2b per-cycle
+// suppression). See priorIterationDecisionSignatures.
+function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
+  return priorIterationDecisionSignatures(
+    repoRoot,
+    prevIter,
+    (d) => d.verdict === "rejected" && d.reviewer_was_wrong === true,
+  );
+}
+
+// Signatures the agent marked accepted/action:"fixed" in `prevIter` (§4.3). See
+// priorIterationDecisionSignatures.
+function priorIterationClaimedFixedSignatures(repoRoot: string, prevIter: number): string[] {
+  return priorIterationDecisionSignatures(
+    repoRoot,
+    prevIter,
+    (d) => d.verdict === "accepted" && d.action === "fixed",
+  );
 }
 
 // The last iteration's findings + severity counts, read from pending.json. The
@@ -223,39 +279,48 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
   // (NOT parsed back out of the human-readable `invalid` strings) so a future
   // wording change to a reason can never silently mis-attribute an id.
   const invalidIds = new Set<string>();
+  // Guard the read: an existing-but-unreadable file (or one replaced between
+  // existsSync and here) leaves `seen` empty → every required id reads as missing →
+  // the gate fails CLOSED (blocks), the safe direction, rather than throwing into
+  // LoopDriver.run.
+  let lines: string[] = [];
   if (existsSync(p)) {
-    const lines = readFileSync(p, "utf8")
-      .split("\n")
-      .filter((l) => l.trim().length > 0);
-    for (const l of lines) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(l);
-      } catch {
-        invalid.push("a line is not valid JSON");
-        continue; // not JSON → treated as missing decision (fail-closed)
-      }
-      // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
-      // rejection with a too-short reason must NOT satisfy the gate — otherwise
-      // the gate is trivially bypassable with malformed lines.
-      const res = DecisionEntrySchema.safeParse(parsed);
-      if (res.success) {
-        seen.add(res.data.finding_id);
-        continue;
-      }
-      const rawId =
-        parsed &&
-        typeof parsed === "object" &&
-        typeof (parsed as { finding_id?: unknown }).finding_id === "string"
-          ? (parsed as { finding_id: string }).finding_id
-          : null;
-      if (rawId) invalidIds.add(rawId);
-      const issue = res.error.issues[0];
-      const where = issue?.path.length ? issue.path.join(".") : "entry";
-      invalid.push(
-        `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
-      );
+    try {
+      lines = readFileSync(p, "utf8")
+        .split("\n")
+        .filter((l) => l.trim().length > 0);
+    } catch {
+      lines = [];
     }
+  }
+  for (const l of lines) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(l);
+    } catch {
+      invalid.push("a line is not valid JSON");
+      continue; // not JSON → treated as missing decision (fail-closed)
+    }
+    // Only a fully valid DecisionEntry counts. A bare {finding_id} stub or a
+    // rejection with a too-short reason must NOT satisfy the gate — otherwise
+    // the gate is trivially bypassable with malformed lines.
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (res.success) {
+      seen.add(res.data.finding_id);
+      continue;
+    }
+    const rawId =
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { finding_id?: unknown }).finding_id === "string"
+        ? (parsed as { finding_id: string }).finding_id
+        : null;
+    if (rawId) invalidIds.add(rawId);
+    const issue = res.error.issues[0];
+    const where = issue?.path.length ? issue.path.join(".") : "entry";
+    invalid.push(
+      `${rawId ?? "(missing finding_id)"}: ${where} — ${issue?.message ?? "invalid decision"}`,
+    );
   }
   // Only report a required id as missing when no VALID line addressed it, and it
   // wasn't already flagged as invalid above (so the agent sees one reason per id).
@@ -377,6 +442,7 @@ export class LoopDriver {
                 cumulative_fp_rejects: 0,
                 fp_counted_through_iter: 0,
                 cycle_rejected_signatures: [],
+                claimed_fixed_signatures: {},
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
@@ -420,6 +486,7 @@ export class LoopDriver {
           cumulative_fp_rejects: 0,
           fp_counted_through_iter: 0,
           cycle_rejected_signatures: [],
+          claimed_fixed_signatures: {},
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
         }),
       );
@@ -550,18 +617,53 @@ export class LoopDriver {
       // reputation on its eid), so a single hoisted call is safe.
       await this.absorbPriorDecisions(state);
 
-      // Per-cycle suppression (2b): fold the PRIOR iteration's reviewer_was_wrong
-      // rejections into the cycle's suppressed-signature set, persisted so it
-      // accumulates across the cycle's iterations. The new panel (below) demotes
-      // any recurrence to INFO → the agent never re-rejects the same finding and
-      // it stops feeding the reviewer-fp-streak. Reset to [] on re-arm.
+      // Per-cycle suppression (2b) + claimed-fixed tracking (§4.3): fold the PRIOR
+      // iteration's reviewer_was_wrong rejections AND accepted/action:"fixed"
+      // dispositions into their respective cycle-scoped maps in a SINGLE state.update
+      // so the two folds can't tear state. The new panel demotes rejected
+      // recurrences and re-flags claimed-fixed recurrences. Both reset on re-arm.
       const priorRejected = priorIterationRejectedSignatures(this.i.repoRoot, state.iteration);
-      if (priorRejected.length > 0) {
-        const merged = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
-        if (merged.length !== state.cycle_rejected_signatures.length) {
-          await this.i.state.update((cur) => ({ ...cur, cycle_rejected_signatures: merged }));
-          state = { ...state, cycle_rejected_signatures: merged };
-        }
+      const priorClaimedFixed = priorIterationClaimedFixedSignatures(
+        this.i.repoRoot,
+        state.iteration,
+      );
+      const mergedRejected = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
+      const mergedClaimedFixed: Record<string, number> = { ...state.claimed_fixed_signatures };
+      const claimedIter = state.iteration; // the iteration whose decisions we just folded
+      // Reconcile THIS iteration's contribution before re-adding: the decisions-gate
+      // re-blocks across multiple stops of one iteration, so an early partial-file fold
+      // may have recorded a claim the agent later (same iteration) superseded to a
+      // non-fixed disposition. The persisted map is add-only, so drop every entry
+      // recorded AT this iteration, then re-add from the current last-wins set below.
+      // Entries from EARLIER iterations (value < claimedIter) are locked and preserved
+      // (a fix genuinely claimed in iter1 is not erased by an iter3 supersede).
+      for (const sig of Object.keys(mergedClaimedFixed)) {
+        if (mergedClaimedFixed[sig] === claimedIter) delete mergedClaimedFixed[sig];
+      }
+      for (const sig of priorClaimedFixed) {
+        const existing = mergedClaimedFixed[sig];
+        // Keep the EARLIEST iteration the fix was claimed (idempotent re-stops + a
+        // re-flagged-then-re-fixed signature must not advance its recorded iter).
+        if (existing === undefined || claimedIter < existing) mergedClaimedFixed[sig] = claimedIter;
+      }
+      const rejectedChanged = mergedRejected.length !== state.cycle_rejected_signatures.length;
+      const claimedChanged =
+        Object.keys(mergedClaimedFixed).length !==
+          Object.keys(state.claimed_fixed_signatures).length ||
+        Object.entries(mergedClaimedFixed).some(
+          ([k, v]) => state.claimed_fixed_signatures[k] !== v,
+        );
+      if (rejectedChanged || claimedChanged) {
+        await this.i.state.update((cur) => ({
+          ...cur,
+          cycle_rejected_signatures: mergedRejected,
+          claimed_fixed_signatures: mergedClaimedFixed,
+        }));
+        state = {
+          ...state,
+          cycle_rejected_signatures: mergedRejected,
+          claimed_fixed_signatures: mergedClaimedFixed,
+        };
       }
 
       // Decisions-gate: every required finding must have a decision.
@@ -678,6 +780,7 @@ export class LoopDriver {
         iter: nextIter,
         signal: ac.signal,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        claimedFixedSignatures: state.claimed_fixed_signatures,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -719,6 +822,7 @@ export class LoopDriver {
         runId: state.session_id,
         iter: nextIter,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        claimedFixedSignatures: state.claimed_fixed_signatures,
       });
     }
 
@@ -788,6 +892,8 @@ export class LoopDriver {
         // Per-cycle suppression set (2b): cleared on re-arm so a fresh cycle
         // starts with no suppressed signatures; preserved across a cycle's FAILs.
         cycle_rejected_signatures: passed ? [] : cur.cycle_rejected_signatures,
+        // §4.3: claimed-fixed map is cycle-scoped — cleared on re-arm, preserved across a cycle's FAILs.
+        claimed_fixed_signatures: passed ? {} : cur.claimed_fixed_signatures,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,

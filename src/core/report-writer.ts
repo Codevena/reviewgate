@@ -40,6 +40,16 @@ function demoteBadges(f: Finding): string | null {
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
+  if (f.claimed_fixed_recurred)
+    // A pinned recurrence that survived the demote chain (CRITICAL/WARN) is blocking →
+    // assert the fix failed. One that was scope/fp-demoted to advisory INFO recurred but
+    // is out-of-scope or a known FP, so soften the wording (claiming "did not resolve it"
+    // on a non-blocking out-of-diff recurrence would mislead).
+    badges.push(
+      f.severity === "INFO"
+        ? `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — recurred (advisory: out of scope or known FP)`
+        : `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — still present; the fix did not resolve it`,
+    );
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 
