@@ -152,4 +152,87 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
   });
+
+  it("pin overrides the confidence-floor demote: a low-confidence recurrence stays blocking", () => {
+    const f = fin({ signature: "sig-fix", severity: "WARN", confidence: 0.1 });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5, // 0.1 < 0.5 would normally demote an uncorroborated WARN to INFO
+      claimedFixed: new Map([["sig-fix", 1]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN"); // pinned → not demoted
+    expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
+    expect(r.dedupedFindings[0]?.claimed_fixed_recurred?.iter).toBe(1);
+    expect(r.verdict).toBe("FAIL");
+  });
+
+  it("control: a low-confidence uncorroborated WARN WITHOUT claimedFixed demotes to INFO", () => {
+    const f = fin({ signature: "sig-x", severity: "WARN", confidence: 0.1 });
+    const r = aggregate({ findings: [f], reviewersTotal: 1, confidenceFloor: 0.5 });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.low_confidence).toBe(true);
+  });
+
+  it("pin overrides the reputation demote: a recurrence from an unreliable lone reviewer stays blocking", () => {
+    const f = fin({
+      signature: "sig-fix",
+      severity: "WARN",
+      category: "quality",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      repUnreliable: new Set(["codex:security"]),
+      demoteCorrectness: true,
+      claimedFixed: new Map([["sig-fix", 1]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN"); // pinned → not demoted
+    expect(r.dedupedFindings[0]?.reputation_demoted).toBeUndefined();
+  });
+
+  it("control: a WARN quality singleton from an unreliable reviewer demotes to INFO (no claimedFixed)", () => {
+    const f = fin({
+      signature: "sig-x",
+      severity: "WARN",
+      category: "quality",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      repUnreliable: new Set(["codex:security"]),
+      demoteCorrectness: true,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.reputation_demoted).toBe(true);
+  });
+
+  it("suppressor precedence: fpActive demotes a claimed-fixed recurrence to INFO (fp wins, documented)", () => {
+    const f = fin({ signature: "sig-fix", severity: "WARN" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      fpActive: new Map([["sig-fix", { id: "FP-001" }]]),
+      claimedFixed: new Map([["sig-fix", 1]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO"); // fp suppressor wins over the pin
+    expect(r.dedupedFindings[0]?.fp_ledger_match?.suppressed).toBe(true);
+    expect(r.verdict).toBe("PASS"); // INFO → no force-FAIL
+  });
+
+  it("suppressor precedence: fpActiveClusters demotes a claimed-fixed recurrence to INFO (fp-cluster wins)", () => {
+    // The cluster key is `${ruleIdToken0(rule_id)}@${file}`. ruleIdToken0("ruleX")
+    // returns "ruleX" (no '-' delimiter → the whole string) → key "ruleX@a.ts".
+    const f = fin({ signature: "sig-fix", severity: "WARN", rule_id: "ruleX", file: "a.ts" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      fpActiveClusters: new Map([["ruleX@a.ts", { key: "ruleX@a.ts", member_ids: ["FP-001"] }]]),
+      claimedFixed: new Map([["sig-fix", 1]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.fp_cluster_match?.suppressed).toBe(true);
+  });
 });
