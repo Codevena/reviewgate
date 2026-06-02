@@ -35,6 +35,22 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
     expect(r.dedupedFindings[0]?.critic_verdict).toBeUndefined();
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred?.iter).toBe(1);
+    expect(r.verdict).toBe("FAIL"); // §4.3: singleton WARN recurrence forces FAIL, not SOFT-PASS
+  });
+
+  it("a singleton WARN recurrence forces FAIL (not SOFT-PASS), but an identical non-recurrence does not", () => {
+    const recur = fin({ signature: "sig-fix", severity: "WARN" });
+    const rFail = aggregate({
+      findings: [recur],
+      reviewersTotal: 1,
+      claimedFixed: new Map([["sig-fix", 1]]),
+    });
+    expect(rFail.verdict).toBe("FAIL");
+    expect(rFail.dedupedFindings[0]?.severity).toBe("WARN");
+
+    const control = fin({ signature: "sig-other", severity: "WARN" });
+    const rSoft = aggregate({ findings: [control], reviewersTotal: 1 });
+    expect(rSoft.verdict).toBe("SOFT-PASS"); // same shape, no claimedFixed → unchanged behavior
   });
 
   it("detects a recurrence via a MEMBER signature and tags the earliest iter", () => {
@@ -63,6 +79,7 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
     });
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
+    expect(r.verdict).toBe("PASS"); // demoted to INFO, not pinned → no block
   });
 
   it("tie-break via a MEMBER sig: claimedFixed match on a member that is ALSO cycleRejected → not pinned, not tagged", () => {
@@ -99,6 +116,7 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
     });
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
     expect(r.dedupedFindings[0]?.scope_demoted).toBe(true);
+    expect(r.verdict).toBe("PASS"); // INFO → no block
   });
 
   it("a pinned out-of-diff recurrence is scope-demoted to INFO but retains the recurrence tag", () => {

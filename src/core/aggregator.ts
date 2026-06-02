@@ -575,10 +575,19 @@ export function aggregate(input: AggregateInput): AggregateResult {
         // ≥2 reviewers the consensus gate above still guards against one reviewer's
         // lone over-call.)
         fail = true;
+      } else if (f.claimed_fixed_recurred) {
+        // §4.3: a pinned claimed-fixed recurrence still CRITICAL here is a hard FAIL —
+        // the agent claimed to fix it and it is still present; the gate must not open.
+        fail = true;
       }
     } else if (f.severity === "WARN") {
       warn++;
       if (f.consensus === "unanimous" || f.consensus === "majority") {
+        warnFail = true;
+      } else if (f.claimed_fixed_recurred) {
+        // §4.3: a pinned WARN recurrence forces FAIL even as a singleton — otherwise a
+        // lone-reviewer claimed-fixed recurrence would only SOFT-PASS and the gate would
+        // open, breaking the "still-blocking" guarantee.
         warnFail = true;
       }
     } else {
