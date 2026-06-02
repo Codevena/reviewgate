@@ -1172,7 +1172,7 @@ export class Orchestrator {
     // dedupedFindings, so filtering it alone undercounts the critic's activity.
     const demoted =
       agg.dedupedFindings.filter((f) => f.critic_verdict === "likely_fp").length +
-      agg.criticDroppedCount;
+      agg.criticDropped.length;
     await this.writeReport(
       opts,
       start,

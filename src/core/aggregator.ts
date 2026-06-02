@@ -52,9 +52,10 @@ export interface AggregateResult {
   verdict: Verdict;
   dedupedFindings: Finding[];
   counts: { critical: number; warn: number; info: number };
-  /** Count of likely_fp findings the critic DROPPED entirely (INFO → drop). They
-   *  never reach dedupedFindings, so a `demoted` metric filtering dedupedFindings
-   *  must add this to reflect the critic's real activity. */
+  /** Findings the critic DROPPED entirely (INFO likely_fp → drop). Exposed so a
+   *  side-consumer (implicit-outcomes) can attribute them; the count is derived. */
+  criticDropped: Finding[];
+  /** Convenience count (== criticDropped.length); kept for existing callers. */
   criticDroppedCount: number;
 }
 
@@ -297,7 +298,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
 
   const critic = input.critic;
   const survivors: Finding[] = [];
-  let criticDroppedCount = 0;
+  const criticDropped: Finding[] = [];
   for (const f of deduped) {
     // Scan the representative AND every merged member signature (mirror the
     // fp_ledger_match pass): the critic may have keyed its verdict on a member's
@@ -316,7 +317,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       if (!isCriticalSecurity && !isCorroborated) {
         const next = DEMOTE[f.severity];
         if (next === "drop") {
-          criticDroppedCount += 1; // INFO likely_fp dropped entirely — count it
+          criticDropped.push(f); // INFO likely_fp dropped entirely — keep it attributable
           continue;
         }
         survivors.push({
@@ -535,6 +536,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
     verdict,
     dedupedFindings: renumbered,
     counts: { critical, warn, info },
-    criticDroppedCount,
+    criticDropped,
+    criticDroppedCount: criticDropped.length,
   };
 }
