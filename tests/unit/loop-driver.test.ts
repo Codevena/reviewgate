@@ -1600,6 +1600,63 @@ describe("LoopDriver", () => {
     expect(received?.["sig-elsewhere"]).toBeUndefined();
     expect((await state.load()).claimed_fixed_signatures["sig-fixed"]).toBe(1);
   });
+
+  it("keeps the EARLIEST claimed-fixed iter when the same signature is re-claimed in a later iteration (§4.3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCLAIMEDEARLIEST");
+    // Pre-seed: sig-X was already recorded as claimed-fixed at iter 1, and we are now
+    // folding iteration 2's decisions (which claim sig-X fixed AGAIN).
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 2,
+      claimed_fixed_signatures: { "sig-X": 1 },
+    }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", signature: "sig-X", severity: "WARN" }] }),
+    );
+    const dp = decisionsPath(repo, 2);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "accepted", action: "fixed" })}\n`,
+    );
+    let received: Record<string, number> | undefined;
+    const stub = {
+      runIteration: async (opts: { claimedFixedSignatures?: Record<string, number> }) => {
+        received = opts.claimedFixedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // Earliest iter (1) preserved — NOT advanced to 2.
+    expect(received?.["sig-X"]).toBe(1);
+    expect((await state.load()).claimed_fixed_signatures["sig-X"]).toBe(1);
+  });
 });
 
 describe("LoopDriver stuck-signature threshold (configurable)", () => {
