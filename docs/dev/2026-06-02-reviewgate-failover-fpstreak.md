@@ -38,11 +38,13 @@ human** (the reviewer is the problem, not the code) — don't block.
 |---|---|---|---|
 | **1A** | Last-resort failover: after the declared chain, try any other enabled+available+non-cooled provider (deterministic, OAuth/$0 first). `LAST_RESORT_ORDER` in `orchestrator.ts`. | ✅ DONE | `656bae3` |
 | **2c** | reviewer-fp-streak escalation → allow-stop + warning (writes ESCALATION.md, doesn't block). `ALLOW_STOP_ESCALATIONS` set in `loop-driver.ts`. | ✅ DONE | `c6208c9` |
-| **1B** | All-quota-locked transient → allow-stop + warning + re-review next turn (don't block, keep dirty.flag). | ⏳ OPEN | — |
-| **2a** | Drop reviewer findings on EXCLUDED paths (`.reviewgate/`, `reviewgate.config.ts`) — gate must never block on its own infra (kills F-003 at source). | ⏳ OPEN | — |
-| **2b** | Per-cycle suppression: a finding the agent already rejected as `reviewer_was_wrong` in a prior iteration of the SAME cycle is demoted to INFO on recurrence (same signature) → no re-reject → streak never accumulates from it. | ⏳ OPEN | — |
+| **1B** | All-quota-locked transient → allow-stop + warning + re-review next turn (don't block, keep dirty.flag, don't advance iteration). `handleAllQuotaLocked` + `allReviewersQuotaLocked` signal. | ✅ DONE | `ca54e0a` |
+| **2a** | Drop reviewer findings on EXCLUDED paths (`.reviewgate/`, `reviewgate.config.ts`). | ✅ DONE | `7037c21` |
+| **2b** | Per-cycle suppression: a finding rejected `reviewer_was_wrong` earlier this cycle is demoted to INFO on recurrence (rep or member sig) → no re-reject → no streak. `state.cycle_rejected_signatures` + aggregator `cycleRejected`. | ✅ DONE | `bcc7d30` |
 
-**1A + 2c functionally address both reported complaints.** 1B/2a/2b are completeness/hardening.
+**ALL FIVE fixes done.** Both reported bugs fully addressed. Branch green: unit 1236/0,
+integration 35/0, tsc + lint + build clean. Codex DoD pass deferred (provider quota — the
+very bug being fixed); Claude/TDD coverage complete. Not pushed.
 
 ## Remaining-work notes (for clean continuation)
 
