@@ -736,6 +736,15 @@ export class LoopDriver {
       })
       .catch(() => {});
 
+    // Transient quota outage: every reviewer was quota-capped (distinct from a
+    // misconfig/crash ERROR). Defer instead of hard-blocking — don't advance the
+    // iteration (no real review happened, so this must not march toward the
+    // max-iterations escalation) and KEEP the dirty flag so the next turn
+    // re-reviews once quota resets. Handled BEFORE the normal state update.
+    if (result.verdict === "ERROR" && result.allReviewersQuotaLocked) {
+      return await this.handleAllQuotaLocked(state);
+    }
+
     // A clean PASS means this change-set converged → re-arm the budget so the
     // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
     // advances the counter toward the iter-cap escalation. Either way, record the
@@ -916,6 +925,24 @@ export class LoopDriver {
         halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
       }).catch(() => undefined);
     }
+  }
+
+  // All reviewers were quota-capped (transient outage). DEFER rather than block:
+  // blocking would hold the dev hostage for hours during a pure quota outage, and
+  // the change WAS not reviewed (so we can't pass it either). Keep the dirty flag
+  // (untouched here) so the next turn re-reviews once quota resets, and do NOT
+  // advance the iteration (skip the normal state update entirely) so a string of
+  // quota-locked turns can't march to the max-iterations escalation. Distinct
+  // from a misconfig ERROR, which still hard-blocks on the ERROR branch above.
+  private async handleAllQuotaLocked(state: ReviewgateState): Promise<LoopDecision> {
+    await this.i.state.update((cur) =>
+      ReviewgateStateSchema.parse({ ...cur, last_stop_ts: new Date().toISOString() }),
+    );
+    const note = this.quotaDegradationNote(new Date()) ?? "";
+    return {
+      kind: "allow_stop",
+      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets.${note}`,
+    };
   }
 
   // Fail CLOSED: count the consecutive incomplete, keep the dirty.flag (so the
