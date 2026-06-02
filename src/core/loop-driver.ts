@@ -112,23 +112,42 @@ function previousFindingIds(repoRoot: string): string[] {
 }
 
 // Signatures of findings the agent rejected as reviewer_was_wrong in `prevIter`
-// (joins decisions/<prevIter>.jsonl → finding_id → signature via pending.json).
-// Folded into state.cycle_rejected_signatures so the next panel demotes any
-// recurrence (per-cycle suppression, 2b). Never throws — returns [] on any gap.
+// (joins decisions/<prevIter>.jsonl → finding_id → its representative + member
+// signatures via pending.json). Folded into state.cycle_rejected_signatures so the
+// next panel demotes any recurrence (per-cycle suppression, 2b). Never throws —
+// returns [] on any gap.
 function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
   if (prevIter < 1) return [];
   const dp = decisionsPath(repoRoot, prevIter);
   const pp = pendingJsonPath(repoRoot);
   if (!existsSync(dp) || !existsSync(pp)) return [];
-  let sigById: Map<string, string>;
+  let sigsById: Map<string, string[]>;
   try {
     const report = JSON.parse(readFileSync(pp, "utf8")) as {
-      findings?: Array<{ id?: string; signature?: string }>;
+      findings?: Array<{
+        id?: string;
+        signature?: string;
+        members?: Array<{ signature?: string }>;
+      }>;
     };
-    sigById = new Map(
+    sigsById = new Map(
       (report.findings ?? [])
-        .filter((f): f is { id: string; signature: string } => !!f.id && !!f.signature)
-        .map((f) => [f.id, f.signature]),
+        .filter(
+          (f): f is { id: string; signature: string; members?: Array<{ signature?: string }> } =>
+            !!f.id && !!f.signature,
+        )
+        // Record representative + every clustered member signature so the cycle_rejected
+        // key space matches claimed_fixed's — the §4.3 tie-break (cycleRejected wins on
+        // rep-OR-member) is only sound if both folds share the same key space.
+        .map((f) => [
+          f.id,
+          [
+            f.signature,
+            ...(f.members ?? [])
+              .map((m) => m.signature)
+              .filter((s): s is string => typeof s === "string" && s.length > 0),
+          ],
+        ]),
     );
   } catch {
     return [];
@@ -146,8 +165,8 @@ function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): s
     if (!res.success) continue;
     const d = res.data;
     if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
-    const sig = sigById.get(d.finding_id);
-    if (sig) out.add(sig);
+    const sigs = sigsById.get(d.finding_id);
+    if (sigs) for (const s of sigs) out.add(s);
   }
   return [...out];
 }
