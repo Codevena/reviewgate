@@ -4,7 +4,7 @@
 // provider id stays "gemini" for config compatibility. agy `-p` prints the model
 // response verbatim on stdout — there is no -m, no -o json envelope, and no
 // API-key auth (OAuth via the Antigravity session only).
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
@@ -137,18 +137,21 @@ export class GeminiAdapter implements ProviderAdapter {
       // the real bound on agentic runaway is the capped print-timeout below + the
       // print-timeout-sentinel cooldown in classifyAgyOutcome.
       const budgetMs = Math.min(input.cfg.timeoutMs, AGY_REVIEW_TIMEOUT_CAP_MS);
-      const args = [
-        "-p",
-        readFileSync(input.promptFile, "utf8"),
-        "--dangerously-skip-permissions",
-        "--print-timeout",
-        `${budgetMs}ms`,
-      ];
+      // Prompt over STDIN, never argv. The prompt embeds research.md + the full
+      // review-base diff and can be multiple MB; as a single `-p "<prompt>"` argv it
+      // exceeds the OS ARG_MAX and posix_spawn fails with E2BIG before agy starts
+      // (shoal 2026-06-02 gate-closed bug). spawnSafely pipes the file and sends EOF.
+      // PENDING real-CLI verification (agy rate-limited ~2 days as of 2026-06-02):
+      // a probe confirmed `agy -p` with no positional prompt is NOT rejected at
+      // argparse, but that agy semantically reads the piped prompt must be re-confirmed
+      // live once quota returns. See tests/unit/large-prompt-stdin.test.ts.
+      const args = ["-p", "--dangerously-skip-permissions", "--print-timeout", `${budgetMs}ms`];
       const res = await spawnSafely({
         command: this.binPath,
         args,
         env: { ...process.env } as Record<string, string>,
         cwd: input.workingDir,
+        stdinFile: input.promptFile,
         stdoutFile: outFile,
         stderrFile: errFile,
         // Wall-timeout sits a buffer ABOVE agy's own --print-timeout so agy self-aborts
@@ -245,18 +248,16 @@ export class GeminiAdapter implements ProviderAdapter {
       const outFile = join(run, "out.txt");
       const errFile = join(run, "err.log");
       const timeoutMs = opts.timeoutMs ?? COMPLETE_TIMEOUT_MS;
-      const args = [
-        "-p",
-        prompt,
-        "--dangerously-skip-permissions",
-        "--print-timeout",
-        `${timeoutMs}ms`,
-      ];
+      // Prompt over STDIN, never argv — same E2BIG avoidance as review() (see note there).
+      const promptFile = join(run, "prompt.txt");
+      writeFileSync(promptFile, prompt);
+      const args = ["-p", "--dangerously-skip-permissions", "--print-timeout", `${timeoutMs}ms`];
       const res = await spawnSafely({
         command: this.binPath,
         args,
         env: { ...process.env } as Record<string, string>,
         cwd: run,
+        stdinFile: promptFile,
         stdoutFile: outFile,
         stderrFile: errFile,
         timeoutMs,
