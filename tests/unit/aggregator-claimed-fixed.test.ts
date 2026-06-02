@@ -47,6 +47,8 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
       claimedFixed: new Map([["mem", 2]]),
     });
     expect(r.dedupedFindings).toHaveLength(1);
+    expect(r.dedupedFindings[0]?.signature).toBe("rep");
+    expect(r.dedupedFindings[0]?.members?.map((m) => m.signature)).toContain("mem");
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred?.iter).toBe(2);
   });
@@ -59,6 +61,23 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
       claimedFixed: new Map([["both", 1]]),
       cycleRejected: new Set(["both"]),
     });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
+  });
+
+  it("tie-break via a MEMBER sig: claimedFixed match on a member that is ALSO cycleRejected → not pinned, not tagged", () => {
+    const rep = fin({ signature: "rep", severity: "WARN", line_start: 1, line_end: 1 });
+    const mem = fin({ signature: "mem", severity: "WARN", line_start: 1, line_end: 1 });
+    const r = aggregate({
+      findings: [rep, mem],
+      reviewersTotal: 1,
+      claimedFixed: new Map([["mem", 1]]),
+      cycleRejected: new Set(["mem"]),
+    });
+    expect(r.dedupedFindings).toHaveLength(1);
+    expect(r.dedupedFindings[0]?.signature).toBe("rep");
+    // cycleRejected wins via the member sig → demoted to INFO and NOT tagged,
+    // so no INFO finding wears a claimed_fixed_recurred badge.
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
   });
@@ -82,9 +101,36 @@ describe("aggregate claimedFixed pin (§4.3)", () => {
     expect(r.dedupedFindings[0]?.scope_demoted).toBe(true);
   });
 
+  it("a pinned out-of-diff recurrence is scope-demoted to INFO but retains the recurrence tag", () => {
+    const f = fin({
+      signature: "sig-fix",
+      severity: "WARN",
+      file: "a.ts",
+      line_start: 100,
+      line_end: 100,
+    });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      claimedFixed: new Map([["sig-fix", 1]]),
+      changedRanges: new Map([["a.ts", [[10, 14]] as Array<[number, number]>]]),
+      scopeToDiff: true,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.scope_demoted).toBe(true);
+    expect(r.dedupedFindings[0]?.claimed_fixed_recurred?.iter).toBe(1);
+  });
+
   it("no-op: empty/absent claimedFixed leaves findings untouched", () => {
     const f = fin({ signature: "x", severity: "WARN" });
     const r = aggregate({ findings: [f], reviewersTotal: 1 });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
+  });
+
+  it("no-op: an explicitly empty claimedFixed Map leaves findings untouched", () => {
+    const f = fin({ signature: "x", severity: "WARN" });
+    const r = aggregate({ findings: [f], reviewersTotal: 1, claimedFixed: new Map() });
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
     expect(r.dedupedFindings[0]?.claimed_fixed_recurred).toBeUndefined();
   });

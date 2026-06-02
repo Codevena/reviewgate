@@ -313,17 +313,21 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // demote pass; the passes do not run in a single linear order — critic precedes
   // scope — so the pin must exist before the chain regardless of ordering). A
   // deduped finding matches if its representative OR any member signature is in
-  // claimedFixed. Tie-break: a finding whose REPRESENTATIVE signature is in
+  // claimedFixed. Tie-break: a finding contested via ANY of those signatures in
   // cycleRejected is NOT pinned — the agent has contested it, so cycleRejected wins
   // and the escape hatch stays open. `pinned` stores REPRESENTATIVE signatures
   // (the guards below key on `f.signature`), even when the match was on a member.
   const claimedFixed = input.claimedFixed;
   const pinned = new Set<string>();
-  const dedupedPinned: Finding[] =
+  const taggedFindings: Finding[] =
     claimedFixed && claimedFixed.size > 0
       ? deduped.map((f) => {
-          if (input.cycleRejected?.has(f.signature)) return f; // tie-break: cycleRejected wins
           const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+          // Tie-break: the agent contested this finding via ANY clustered signature
+          // → cycleRejected wins; do not pin or tag (the unguarded cycleRejected pass
+          // still demotes it to INFO, so suppressing the tag avoids an INFO finding
+          // wearing a claimed_fixed_recurred badge).
+          if (input.cycleRejected && sigs.some((s) => input.cycleRejected?.has(s))) return f;
           const iters = sigs
             .map((s) => claimedFixed.get(s))
             .filter((n): n is number => typeof n === "number");
@@ -336,7 +340,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const critic = input.critic;
   const survivors: Finding[] = [];
   const criticDropped: Finding[] = [];
-  for (const f of dedupedPinned) {
+  for (const f of taggedFindings) {
     // §4.3: a pinned recurrence keeps its blocking severity — skip the critic demote.
     if (pinned.has(f.signature)) {
       survivors.push(f);
