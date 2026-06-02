@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { runReset } from "../../src/cli/commands/reset.ts";
 import { handleReset } from "../../src/hooks/handlers.ts";
 
 function seedRepo(): string {
@@ -47,5 +48,64 @@ describe("handleReset summary", () => {
     mkdirSync(join(root, ".reviewgate"), { recursive: true });
     const { cleared } = await handleReset({ repoRoot: root });
     expect(cleared).toEqual([]);
+  });
+});
+
+describe("runReset command", () => {
+  it("clears artifacts and prints a re-armed summary listing them", async () => {
+    const root = seedRepo();
+    let out = "";
+    const code = await runReset({
+      repoRoot: root,
+      write: (s) => {
+        out += s;
+      },
+    });
+    expect(code).toBe(0);
+    expect(out).toContain("gate re-armed");
+    expect(out).toContain("Cleared:");
+    expect(out).toContain("pending findings");
+    expect(out).toContain("Preserved: FP-ledger & brain");
+    expect(existsSync(join(root, ".reviewgate", "pending.md"))).toBe(false);
+  });
+
+  it("prints 'nothing to clear' on an already-clean .reviewgate", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-reset-clean-"));
+    mkdirSync(join(root, ".reviewgate"), { recursive: true });
+    let out = "";
+    const code = await runReset({
+      repoRoot: root,
+      write: (s) => {
+        out += s;
+      },
+    });
+    expect(code).toBe(0);
+    expect(out).toContain("nothing to clear");
+  });
+
+  it("prints a gentle hint and exits 0 when .reviewgate is absent", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-reset-noinit-"));
+    let out = "";
+    const code = await runReset({
+      repoRoot: root,
+      write: (s) => {
+        out += s;
+      },
+    });
+    expect(code).toBe(0);
+    expect(out).toContain("doesn't look like a Reviewgate");
+  });
+
+  it("clears the same artifacts as the gate --hook reset path (parity)", async () => {
+    // Both runReset and the SessionStart hook drive the SAME handleReset, so a
+    // freshly seeded tree must end up identically empty either way.
+    const viaCommand = seedRepo();
+    await runReset({ repoRoot: viaCommand, write: () => {} });
+    const viaHook = seedRepo();
+    await handleReset({ repoRoot: viaHook });
+    for (const p of ["state.json", "pending.md", "pending.json", "decisions", "ESCALATION.md"]) {
+      expect(existsSync(join(viaCommand, ".reviewgate", p))).toBe(false);
+      expect(existsSync(join(viaHook, ".reviewgate", p))).toBe(false);
+    }
   });
 });
