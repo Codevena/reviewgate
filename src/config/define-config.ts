@@ -104,6 +104,13 @@ export const ConfigSchema = z.object({
       .optional(),
     // M5 Part B1: FP-ledger (signature-keyed false-positive learning). Opt-in.
     fpLedger: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
+    // P0 self-improving: write-only capture of demoted/dropped finding outcomes.
+    // Default ON; cap bounds the NDJSON (oldest-drop). No verdict/behavior effect.
+    implicitOutcomes: z
+      .object({ enabled: z.boolean(), cap: z.number().int().positive().default(5000) })
+      .nullable()
+      .default({ enabled: true, cap: 5000 })
+      .optional(),
     // Reviewer Reputation Slice 1: per-reviewer accuracy tracking. Default ON.
     reputation: z
       .object({

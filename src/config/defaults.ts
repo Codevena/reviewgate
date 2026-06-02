@@ -108,6 +108,7 @@ export const defaultConfig = {
       demoteCorrectness: true,
       quarantine: { enabled: false, floor: 0.15 },
     },
+    implicitOutcomes: { enabled: true, cap: 5000 },
   },
   cache: { enabled: true, reviewTtlDays: 7 },
   research: { languages: ["typescript", "tsx", "python"] },
