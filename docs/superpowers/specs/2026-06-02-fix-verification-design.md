@@ -100,6 +100,36 @@ matching `(file, normalizeRuleId, category)` is a possible later enhancement.
    BLOCKING section with a clear note (kept short, the demote-note 2000-char cap
    does not apply since pinned findings skip the note-appending passes).
 
+### Conflict precedence (suppressors win over claimed-fixed — DELIBERATE)
+
+`claimed_fixed` is a STRICT signal (force-FAIL). The other passes are LENIENT
+suppressors (demote to INFO): `cycleRejected` (the agent contested it), `fpActive` /
+`fpActiveClusters` (the FP-ledger knows it as a cross-run false positive), and
+`scopeFindings` (the recurrence is out-of-diff). **When they conflict, the suppressor
+wins** — a claimed-fixed recurrence force-blocks ONLY if NO suppressor applies to it.
+Concretely the pin guards just critic/confidence/reputation; it does NOT guard
+cycleRejected/fp/scope, and a finding contested via ANY clustered signature is not
+pinned at all. This is intentional, not an oversight:
+
+- **Why suppressors are stronger.** `fpActive`/`fpActiveClusters` reflect an ACCUMULATED
+  cross-run signal (the agent rejected the signature as FP enough times to promote it in
+  the ledger); `cycleRejected` is an EXPLICIT contestation this cycle; `scope` means the
+  code isn't even in the diff. Each is a more-considered judgment than a single
+  `action:"fixed"` claim. Letting one fix-claim override them would resurrect the exact
+  classes this project exists to suppress: the unchanged-code hallucination (scope) and
+  the reviewer-FP trap (cycleRejected/fp).
+- **The conflict is near-impossible in practice.** For a signature to be BOTH
+  claimed-fixed AND a suppressor target, the agent must have contradictorily marked the
+  SAME finding "fixed" while ALSO (repeatedly) rejecting it as a false positive. Agents
+  do not fix what they believe is a hallucination.
+- **No information is lost.** A suppressed recurrence still renders (as advisory INFO),
+  and the agent can always re-escalate it by fixing it for real. The common, valuable
+  case — agent marks fixed, it recurs, NO suppressor applies — still force-FAILs.
+
+(Codex's DoD pass flagged 6a "an unrelated rejected member can hide a failed fix" and
+6b "fp passes demote a pinned recurrence" as gaps; they are this deliberate precedence.
+Recorded here so the choice is explicit and re-auditable rather than re-litigated.)
+
 ### Exemption scope (corrected from rev.1)
 
 The pin exempts ONLY the passes that can actually soften a FRESH recurrence:
