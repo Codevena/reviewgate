@@ -58,6 +58,22 @@ matching `(file, normalizeRuleId, category)` is a possible later enhancement.
      "did the agent decide at all" (any valid line counts) — a different question.
      Symmetric for the rejected fold. Both helpers share one `priorIterationDecisionSignatures(repoRoot, prevIter, match)`
      (last-valid-per-id, joined to rep+member sigs) and differ only in the `match` predicate.
+   - **Reconcile the current iteration's contribution (persisted map is add-only).**
+     The decisions-gate re-blocks across MULTIPLE stop-hook invocations within one
+     iteration, so the fold runs repeatedly against the same growing decisions file.
+     Last-wins fixes a single read, but `state.claimed_fixed_signatures` persists across
+     stops and only ever ADDS — so an early partial-file fold that recorded `sig→K` would
+     survive even after the agent later (same iteration K) supersedes that finding to a
+     non-fixed disposition. Fix: before re-adding the current last-wins set, DROP every
+     entry whose recorded iteration `=== claimedIter` (the current iteration), then re-add.
+     Entries from EARLIER iterations (value `< claimedIter`) are locked and preserved (a
+     fix genuinely claimed in iter1 is not erased by an iter3 supersede). This keeps
+     `claimed_fixed` faithful to decisions/<K>.jsonl's LATEST state on every stop.
+   - **`cycle_rejected` staleness is left as-is (safe direction).** The 2b set is also
+     add-only and lacks per-iteration values, so it cannot reconcile the same way. This is
+     acceptable because a stale `cycle_rejected` entry only ever DEMOTES a recurrence to
+     advisory (frees it) — it can never force-FAIL/trap the agent. Only the `claimed_fixed`
+     map (which force-FAILs) needs reconciliation; erring toward not-blocking is safe.
 2. **Detect recurrence.** The map is passed into `aggregate()` as
    `claimedFixed: Map<string, number>`. A deduped finding whose representative OR
    any member signature is in `claimedFixed` (and NOT also currently
