@@ -111,6 +111,47 @@ function previousFindingIds(repoRoot: string): string[] {
   }
 }
 
+// Signatures of findings the agent rejected as reviewer_was_wrong in `prevIter`
+// (joins decisions/<prevIter>.jsonl → finding_id → signature via pending.json).
+// Folded into state.cycle_rejected_signatures so the next panel demotes any
+// recurrence (per-cycle suppression, 2b). Never throws — returns [] on any gap.
+function priorIterationRejectedSignatures(repoRoot: string, prevIter: number): string[] {
+  if (prevIter < 1) return [];
+  const dp = decisionsPath(repoRoot, prevIter);
+  const pp = pendingJsonPath(repoRoot);
+  if (!existsSync(dp) || !existsSync(pp)) return [];
+  let sigById: Map<string, string>;
+  try {
+    const report = JSON.parse(readFileSync(pp, "utf8")) as {
+      findings?: Array<{ id?: string; signature?: string }>;
+    };
+    sigById = new Map(
+      (report.findings ?? [])
+        .filter((f): f is { id: string; signature: string } => !!f.id && !!f.signature)
+        .map((f) => [f.id, f.signature]),
+    );
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const line of readFileSync(dp, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    const d = res.data;
+    if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
+    const sig = sigById.get(d.finding_id);
+    if (sig) out.add(sig);
+  }
+  return [...out];
+}
+
 // The last iteration's findings + severity counts, read from pending.json. The
 // gate escalates as a PRECONDITION (before running a new iteration), so pending.json
 // still reflects the prior iteration — used to populate the escalation report so it
@@ -335,6 +376,7 @@ export class LoopDriver {
                 // Fresh cycle → drop the cross-iteration confirmed-FP accumulator.
                 cumulative_fp_rejects: 0,
                 fp_counted_through_iter: 0,
+                cycle_rejected_signatures: [],
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
@@ -377,6 +419,7 @@ export class LoopDriver {
           incomplete_runs: 0,
           cumulative_fp_rejects: 0,
           fp_counted_through_iter: 0,
+          cycle_rejected_signatures: [],
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
         }),
       );
@@ -507,6 +550,20 @@ export class LoopDriver {
       // reputation on its eid), so a single hoisted call is safe.
       await this.absorbPriorDecisions(state);
 
+      // Per-cycle suppression (2b): fold the PRIOR iteration's reviewer_was_wrong
+      // rejections into the cycle's suppressed-signature set, persisted so it
+      // accumulates across the cycle's iterations. The new panel (below) demotes
+      // any recurrence to INFO → the agent never re-rejects the same finding and
+      // it stops feeding the reviewer-fp-streak. Reset to [] on re-arm.
+      const priorRejected = priorIterationRejectedSignatures(this.i.repoRoot, state.iteration);
+      if (priorRejected.length > 0) {
+        const merged = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
+        if (merged.length !== state.cycle_rejected_signatures.length) {
+          await this.i.state.update((cur) => ({ ...cur, cycle_rejected_signatures: merged }));
+          state = { ...state, cycle_rejected_signatures: merged };
+        }
+      }
+
       // Decisions-gate: every required finding must have a decision.
       const gate = evaluateDecisions(this.i.repoRoot, state.iteration, requiredIds);
       if (requiredIds.length > 0 && !gate.addressed) {
@@ -620,6 +677,7 @@ export class LoopDriver {
         runId: state.session_id,
         iter: nextIter,
         signal: ac.signal,
+        cycleRejectedSignatures: state.cycle_rejected_signatures,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -660,6 +718,7 @@ export class LoopDriver {
       result = await this.i.orchestrator.runIteration({
         runId: state.session_id,
         iter: nextIter,
+        cycleRejectedSignatures: state.cycle_rejected_signatures,
       });
     }
 
@@ -676,6 +735,15 @@ export class LoopDriver {
         run_summary: result.summary,
       })
       .catch(() => {});
+
+    // Transient quota outage: every reviewer was quota-capped (distinct from a
+    // misconfig/crash ERROR). Defer instead of hard-blocking — don't advance the
+    // iteration (no real review happened, so this must not march toward the
+    // max-iterations escalation) and KEEP the dirty flag so the next turn
+    // re-reviews once quota resets. Handled BEFORE the normal state update.
+    if (result.verdict === "ERROR" && result.allReviewersQuotaLocked) {
+      return await this.handleAllQuotaLocked(state);
+    }
 
     // A clean PASS means this change-set converged → re-arm the budget so the
     // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
@@ -717,6 +785,9 @@ export class LoopDriver {
         cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
         fp_counted_through_iter: passed ? 0 : cur.fp_counted_through_iter,
         fp_rejects_history: passed ? [] : cur.fp_rejects_history,
+        // Per-cycle suppression set (2b): cleared on re-arm so a fresh cycle
+        // starts with no suppressed signatures; preserved across a cycle's FAILs.
+        cycle_rejected_signatures: passed ? [] : cur.cycle_rejected_signatures,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,
@@ -854,6 +925,24 @@ export class LoopDriver {
         halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
       }).catch(() => undefined);
     }
+  }
+
+  // All reviewers were quota-capped (transient outage). DEFER rather than block:
+  // blocking would hold the dev hostage for hours during a pure quota outage, and
+  // the change WAS not reviewed (so we can't pass it either). Keep the dirty flag
+  // (untouched here) so the next turn re-reviews once quota resets, and do NOT
+  // advance the iteration (skip the normal state update entirely) so a string of
+  // quota-locked turns can't march to the max-iterations escalation. Distinct
+  // from a misconfig ERROR, which still hard-blocks on the ERROR branch above.
+  private async handleAllQuotaLocked(state: ReviewgateState): Promise<LoopDecision> {
+    await this.i.state.update((cur) =>
+      ReviewgateStateSchema.parse({ ...cur, last_stop_ts: new Date().toISOString() }),
+    );
+    const note = this.quotaDegradationNote(new Date()) ?? "";
+    return {
+      kind: "allow_stop",
+      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets.${note}`,
+    };
   }
 
   // Fail CLOSED: count the consecutive incomplete, keep the dirty.flag (so the

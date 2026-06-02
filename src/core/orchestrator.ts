@@ -133,6 +133,11 @@ export interface IterationResult {
   durationMs: number;
   signaturesThisIter: string[];
   summary: RunSummary;
+  // True when the panel collapsed to ZERO usable reviews AND every attempted
+  // reviewer was quota-exhausted (transient outage, distinguishable from a
+  // misconfig/crash ERROR). Lets the LoopDriver defer (allow-stop + re-review
+  // next turn) instead of hard-blocking the dev during a pure quota outage.
+  allReviewersQuotaLocked?: boolean;
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -143,6 +148,9 @@ export interface IterationRunner {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    // Per-cycle suppression (2b): signatures the agent already rejected as
+    // reviewer_was_wrong earlier this cycle → demoted to INFO by the aggregator.
+    cycleRejectedSignatures?: string[];
   }): Promise<IterationResult>;
 }
 
@@ -354,6 +362,7 @@ export class Orchestrator {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    cycleRejectedSignatures?: string[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1097,8 +1106,14 @@ export class Orchestrator {
     // ERROR makes the LoopDriver block with a reviewer-error message.
     if (okRuns.length === 0) {
       await this.writeReport(opts, start, settled, [], "ERROR", undefined, undefined, panelNote);
+      // Transient quota outage (every attempted reviewer is quota-capped) vs a
+      // misconfig/crash ERROR — the former lets the LoopDriver defer instead of
+      // hard-blocking the dev for hours.
+      const allReviewersQuotaLocked =
+        settled.length > 0 && settled.every((s) => s.res.status === "quota-exhausted");
       return {
         verdict: "ERROR",
+        allReviewersQuotaLocked,
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
@@ -1225,6 +1240,9 @@ export class Orchestrator {
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
+      ...(opts.cycleRejectedSignatures && opts.cycleRejectedSignatures.length > 0
+        ? { cycleRejected: new Set(opts.cycleRejectedSignatures) }
+        : {}),
     });
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach

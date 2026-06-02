@@ -1315,6 +1315,98 @@ describe("LoopDriver", () => {
     expect(fp.entries.some((e) => e.signature === "decunaddr-sig-1")).toBe(true);
   });
 
+  it("folds prior reviewer_was_wrong rejections into cycle_rejected_signatures and passes them to the next run (2b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXCYCLEREJ2B");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", signature: "sig-X", severity: "CRITICAL" }] }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: "F-001", verdict: "rejected", reason: "false positive, verified the symbol exists at x.ts:1", reviewer_was_wrong: true })}\n`,
+    );
+    let received: string[] | undefined;
+    const stub = {
+      runIteration: async (opts: { cycleRejectedSignatures?: string[] }) => {
+        received = opts.cycleRejectedSignatures;
+        return {
+          verdict: "FAIL" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: ["s"],
+          summary: {
+            verdict: "FAIL",
+            source: "panel",
+            counts: { critical: 0, warn: 0, info: 0 },
+            cost_usd: 0,
+            duration_ms: 1,
+            demoted: 0,
+            signatures: ["s"],
+            providers: [],
+          } as RunSummary,
+        };
+      },
+    };
+    await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    expect(received).toContain("sig-X");
+    expect((await state.load()).cycle_rejected_signatures).toContain("sig-X");
+  });
+
+  it("all-reviewers-quota-locked defers (allow-stop), keeps dirty.flag, does NOT advance iteration (1B)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXALLQUOTA1B");
+    await state.update((cur) => ({ ...cur, iteration: 2 }));
+    writeDirty(repo);
+    const stub = {
+      runIteration: async () => ({
+        verdict: "ERROR" as const,
+        allReviewersQuotaLocked: true,
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: {
+          verdict: "ERROR",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+        } as RunSummary,
+      }),
+    };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: stub,
+      stopHookActive: false,
+    }).run();
+    // Transient quota outage → allow the stop (don't block the dev for hours) …
+    expect(decision.kind).toBe("allow_stop");
+    expect(decision.reason).toMatch(/quota/i);
+    // … keep the dirty flag (re-review next turn after reset) …
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    // … and do NOT advance the iteration (no real review happened → no march to max-iter).
+    expect((await state.load()).iteration).toBe(2);
+  });
+
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

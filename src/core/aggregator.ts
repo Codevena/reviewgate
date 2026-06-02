@@ -23,6 +23,12 @@ export interface AggregateInput {
   // M5 Part B1: active/sticky FP-ledger entries keyed by signature. A finding
   // whose representative or any member signature matches is demoted to INFO.
   fpActive?: Map<string, { id: string }>;
+  // Per-cycle suppression: signatures the agent already rejected as
+  // reviewer_was_wrong in an EARLIER iteration of the CURRENT review cycle. A
+  // finding whose representative or any member signature matches is demoted to
+  // INFO (advisory) so the agent never re-rejects the same recurring finding and
+  // it stops feeding the reviewer-fp-streak. Reset on re-arm.
+  cycleRejected?: Set<string>;
   // F3 Phase 2: active/sticky FP CLUSTERS keyed by `<rule_id_token0>@<file>`. A
   // finding whose (rule_id_token0, file) matches an active cluster is demoted
   // to INFO and tagged with `fp_cluster_match`. Catches multi-rule_id
@@ -366,6 +372,26 @@ export function aggregate(input: AggregateInput): AggregateResult {
       })
     : scoped;
 
+  // Per-cycle suppression: a finding whose representative OR any member signature
+  // the agent already rejected (reviewer_was_wrong) earlier this cycle is demoted
+  // to INFO (advisory). Breaks the re-flag→re-reject→fp-streak loop: the agent
+  // dispositions a finding once and never sees it as blocking again this cycle.
+  const cycleRejected = input.cycleRejected;
+  const cycleScoped: Finding[] =
+    cycleRejected && cycleRejected.size > 0
+      ? fpScoped.map((f) => {
+          const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+          if (!sigs.some((s) => cycleRejected.has(s))) return f;
+          return f.severity === "INFO"
+            ? f
+            : {
+                ...f,
+                severity: "INFO" as const,
+                details: `${f.details.slice(0, 1900)}\n\n↓ already rejected earlier this cycle — advisory only.`,
+              };
+        })
+      : fpScoped;
+
   // F3 Phase 2 — DERIVED FP-cluster demote. Applies AFTER the signature-keyed
   // pass so a finding already tagged via fp_ledger_match keeps both tags
   // (signature match + cluster match are both true). Same demote-not-drop
@@ -374,7 +400,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // re-applies the identical tag + INFO severity. No explicit short-circuit.
   const fpClusters = input.fpActiveClusters;
   const fpClusterScoped: Finding[] = fpClusters
-    ? fpScoped.map((f) => {
+    ? cycleScoped.map((f) => {
         // Check the representative AND every merged member rule_id (clustering is
         // category/rule-id-independent, so a known-FP rule can ride as a member
         // under a different representative). Same file for all cluster members.
@@ -393,7 +419,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
           },
         };
       })
-    : fpScoped;
+    : cycleScoped;
 
   // Phase 4 #7 — confidence demote: an uncorroborated finding below the floor is
   // advisory only. Exempt: corroborated findings (majority/unanimous — multiple
