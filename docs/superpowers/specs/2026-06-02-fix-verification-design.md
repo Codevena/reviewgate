@@ -48,6 +48,16 @@ matching `(file, normalizeRuleId, category)` is a possible later enhancement.
    selection changes) would not match and would escape the pin. Reset on re-arm.
    Accumulated in the SAME `state.update` as the 2b `cycle_rejected_signatures` fold
    (one flock cycle, no torn state).
+   - **Last-decision-wins per finding_id.** The decisions file is append-only and the
+     agent may append a SUPERSEDING disposition for a finding within an iteration (e.g.
+     `accepted/fixed` then later `accepted/deferred-with-followup`). The fold asks "what
+     did the agent ultimately decide", so it uses ONLY the LAST valid decision line per
+     `finding_id` — a stale earlier `fixed` line that the agent later down-graded must
+     NOT record a claimed-fix (which would force-FAIL a recurrence the agent no longer
+     claims to have fixed). This is distinct from `evaluateDecisions`, which only asks
+     "did the agent decide at all" (any valid line counts) — a different question.
+     Symmetric for the rejected fold. Both helpers share one `priorIterationDecisionSignatures(repoRoot, prevIter, match)`
+     (last-valid-per-id, joined to rep+member sigs) and differ only in the `match` predicate.
 2. **Detect recurrence.** The map is passed into `aggregate()` as
    `claimedFixed: Map<string, number>`. A deduped finding whose representative OR
    any member signature is in `claimedFixed` (and NOT also currently
