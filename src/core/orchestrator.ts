@@ -38,7 +38,7 @@ import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
-import { collectChangedFileContents } from "../utils/git.ts";
+import { collectChangedFileContents, isExcludedFromReview } from "../utils/git.ts";
 import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
@@ -251,6 +251,18 @@ export function cooldownEffectFor(
   if (res.status === "ok") return { provider, clear: true };
   return null;
 }
+
+// Deterministic order for last-resort failover (OAuth/$0 providers first, the
+// paid API provider last). Used only after a reviewer slot's DECLARED fallback
+// chain is exhausted — to recruit any other enabled+available reviewer rather
+// than collapse the panel to zero on a quota outage.
+const LAST_RESORT_ORDER: ProviderId[] = [
+  "claude-code",
+  "codex",
+  "gemini",
+  "opencode",
+  "openrouter",
+];
 
 // Number of DISTINCT reviewer identities (provider:persona) in the ok-run panel.
 // Used as `reviewersTotal` for the singleton-CRITICAL failsafe instead of the raw
@@ -952,6 +964,46 @@ export class Orchestrator {
               if (run.res.status === "ok") break;
             }
           }
+
+          // Last-resort failover: the slot's DECLARED chain is exhausted (all
+          // cooled/unavailable), but ANOTHER configured+enabled+available+non-cooled
+          // provider may still work. Try them (deterministic, OAuth/$0 first) so a
+          // quota outage on the chain doesn't collapse the panel to zero when a
+          // working reviewer exists — i.e. fall back to claude/openrouter even if
+          // they were not listed in this slot's chain. Same cooldown/availability
+          // gates as the chain walk; skipped on a self-deadline abort.
+          if (run.res.status !== "ok" && !opts.signal?.aborted) {
+            const attempted = new Set<ProviderId>([r.provider, ...(r.fallback ?? [])]);
+            const lrAvailable = this.input.providerAvailable ?? isProviderAvailable;
+            for (const lr of LAST_RESORT_ORDER) {
+              if (attempted.has(lr)) continue;
+              const lrCfg = this.input.config.providers[lr] as ProviderConfig | undefined;
+              if (!lrCfg?.enabled || !this.input.adapters[lr]) continue;
+              if (!lrAvailable(lr, lrCfg.apiKeyEnv)) continue;
+              if (cooldownStore.skipUntil(lr, now)) continue;
+              const lrModel = resolveReviewerModel(lr, lrCfg.model);
+              if (lrModel === null) continue;
+              const fromProvider = run.provider;
+              const fromStatus = run.res.status;
+              run = await runProvider(
+                lr,
+                persona,
+                lrModel,
+                lrCfg,
+                promptFile,
+                findingsPath,
+                diffPath,
+                runDir,
+              );
+              run.res.statusDetail =
+                `[last-resort from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
+                  .trim()
+                  .slice(0, 1000);
+              const lrEff = effectFor(lr, run.res);
+              if (lrEff) effects.push(lrEff);
+              if (run.res.status === "ok") break;
+            }
+          }
           return { run, effects };
         } finally {
           rmSync(runDir, { recursive: true, force: true });
@@ -1064,7 +1116,13 @@ export class Orchestrator {
 
     // --- Symbol-relative signatures: recompute each finding's signature using
     // its enclosing symbol (when the language is supported) before dedup. ---
-    const rawFindings = okRuns.flatMap((s) => s.res.findings);
+    // Drop reviewer findings on EXCLUDED paths (.reviewgate/, reviewgate.config.ts):
+    // those are outside the review scope by construction, and the gate must never
+    // block on its OWN infrastructure (a reviewer with repo read-access can still
+    // SEE and comment on .reviewgate/ even though it's excluded from the diff).
+    const rawFindings = okRuns
+      .flatMap((s) => s.res.findings)
+      .filter((f) => !isExcludedFromReview(f.file));
     const allFindings = await this.applySymbolSignatures(rawFindings);
 
     // --- Optional critic phase (demote-only) ---

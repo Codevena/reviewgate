@@ -51,6 +51,19 @@ export function parseQuotaResetAt(text: string | undefined | null, now: Date): s
     if (Number.isFinite(t) && t > now.getTime() && t - now.getTime() <= MAX_COOLDOWN_MS) {
       return new Date(t).toISOString();
     }
+    // codex's banner is usually TIME-ONLY ("try again at 1:30 AM.") — Date.parse
+    // can't read a bare clock time and returns NaN, which previously fell through
+    // to the 15-min DEFAULT_COOLDOWN_MS (an inaccurate guess when codex is actually
+    // capped hours out). Interpret a bare wall-clock time as the next occurrence of
+    // that LOCAL time relative to `now` (today if still ahead, else tomorrow). Always
+    // < 24h out, so trivially within MAX_COOLDOWN_MS.
+    const clock = parseClockTime(cleaned);
+    if (clock) {
+      const d = new Date(now.getTime());
+      d.setHours(clock.h, clock.m, 0, 0);
+      if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+      return d.toISOString();
+    }
   }
 
   // agy's relative "Resets in 25m38s" / "resets in 1h2m3s" / "resets in 90s". The
@@ -69,6 +82,27 @@ export function parseQuotaResetAt(text: string | undefined | null, now: Date): s
     }
   }
   return null;
+}
+
+/**
+ * Parse a bare wall-clock time ("1:30 AM", "1 PM", "13:30") into 24h {h,m}, else
+ * null. 12h with am/pm OR 24h without; rejects out-of-range hours/minutes.
+ */
+function parseClockTime(s: string): { h: number; m: number } | null {
+  const m = s.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = m[2] ? Number(m[2]) : 0;
+  if (min > 59) return null;
+  const ap = m[3]?.toLowerCase();
+  if (ap) {
+    if (h < 1 || h > 12) return null; // 12h clock
+    if (ap === "pm" && h !== 12) h += 12;
+    if (ap === "am" && h === 12) h = 0;
+  } else if (h > 23) {
+    return null; // 24h clock
+  }
+  return { h, m: min };
 }
 
 const EMPTY: QuotaCooldown = { schema: "reviewgate.quota-cooldown.v1", providers: {} };

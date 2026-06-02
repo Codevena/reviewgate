@@ -1097,7 +1097,10 @@ describe("LoopDriver", () => {
       );
       decision = await mkDriver().run();
     }
-    expect(decision.kind).toBe("block");
+    // reviewer-fp-streak ALLOWS the stop (the REVIEWER is the problem, not the
+    // agent's code — blocking would punish correct rejections). It still writes
+    // ESCALATION.md + warns the human to fix the reviewer config.
+    expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toContain("ESCALATED");
     expect(decision.reason).toContain("reviewer-fp-streak");
     const after = await state.load();

@@ -18,6 +18,33 @@ describe("parseQuotaResetAt", () => {
     expect(new Date(iso as string).toISOString()).toContain("2026-05-2");
   });
 
+  test("parses codex's TIME-ONLY 'try again at 1:30 AM' as the next local occurrence", () => {
+    // codex's real usage-limit banner is time-only ("...or try again at 1:30 AM.").
+    // Date.parse can't read a bare clock time, so this used to fall through to the
+    // 15-min DEFAULT_COOLDOWN_MS — the inaccurate "23:40 guess" seen in 2026-06-02
+    // dogfood when codex was actually capped until 1:30 AM.
+    const iso = parseQuotaResetAt(
+      "ERROR: You've hit your usage limit. ... or try again at 1:30 AM.",
+      NOW,
+    );
+    expect(iso).not.toBeNull();
+    const d = new Date(iso as string);
+    // Local wall-clock 01:30 (assertion is TZ-independent: getHours()/getMinutes() are local).
+    expect(d.getHours()).toBe(1);
+    expect(d.getMinutes()).toBe(30);
+    // Next occurrence: strictly in the future, never more than 24h out.
+    expect(d.getTime()).toBeGreaterThan(NOW.getTime());
+    expect(d.getTime() - NOW.getTime()).toBeLessThanOrEqual(24 * 60 * 60_000);
+  });
+
+  test("parses a time-only 'try again at 1:30 PM' (12h PM → local 13:30)", () => {
+    const iso = parseQuotaResetAt("You've hit your usage limit. Try again at 1:30 PM.", NOW);
+    expect(iso).not.toBeNull();
+    const d = new Date(iso as string);
+    expect(d.getHours()).toBe(13);
+    expect(d.getMinutes()).toBe(30);
+  });
+
   test("parses the reset time even when embedded in codex JSONL events (trailing JSON)", () => {
     const events =
       '{"type":"error","message":"You\'ve hit your usage limit. ... or try again at May 27th, 2026 12:57 AM."}}{"type":"turn.failed"}';
