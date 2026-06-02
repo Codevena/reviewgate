@@ -119,6 +119,18 @@ describe("aggregate with critic", () => {
     expect(r.criticDroppedCount).toBe(1);
   });
 
+  it("exposes dropped INFO likely_fp findings in criticDropped (attributable)", () => {
+    const f = fin({ signature: "sigDropX", severity: "INFO", category: "quality" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      critic: new Map([["sigDropX", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings).toHaveLength(0);
+    expect(r.criticDropped.map((d) => d.signature)).toEqual(["sigDropX"]);
+    expect(r.criticDroppedCount).toBe(r.criticDropped.length);
+  });
+
   it("never demotes a unanimous-panel finding", () => {
     const a = fin({
       signature: "sigC",

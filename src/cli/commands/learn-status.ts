@@ -23,6 +23,7 @@ import { ProposalStore } from "../../core/brain/proposal-store.ts";
 import { BrainStore } from "../../core/brain/store.ts";
 import { computeFpClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
+import { ImplicitOutcomeStore } from "../../core/learnings/implicit-outcomes.ts";
 import { decayedCount, trustScore } from "../../core/reputation/score.ts";
 import { ReputationStore } from "../../core/reputation/store.ts";
 import { brainDir, proposalsPoolDir } from "../../utils/paths.ts";
@@ -107,6 +108,11 @@ export interface LearnStatusReport {
     correct: number;
     wrong: number;
   }>;
+  implicit_outcomes: {
+    total: number;
+    by_reason: Record<string, number>;
+    by_reviewer: Record<string, number>;
+  };
 }
 
 function readJsonlEntries(path: string): unknown[] {
@@ -257,6 +263,15 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
     })
     .sort((a, b) => a.trust - b.trust); // worst trust first — flags problem reviewers
 
+  // --- Implicit outcomes (write-only learning-signal corpus) ---
+  const implicit = await new ImplicitOutcomeStore(input.repoRoot).load();
+  const byReason: Record<string, number> = {};
+  const byReviewer: Record<string, number> = {};
+  for (const o of implicit) {
+    byReason[o.demote_reason] = (byReason[o.demote_reason] ?? 0) + 1;
+    byReviewer[o.reviewer_key] = (byReviewer[o.reviewer_key] ?? 0) + 1;
+  }
+
   return {
     generated_at: now.toISOString(),
     since: sinceDate.toISOString(),
@@ -304,6 +319,7 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
       },
     },
     reputation,
+    implicit_outcomes: { total: implicit.length, by_reason: byReason, by_reviewer: byReviewer },
   };
 }
 
@@ -413,6 +429,17 @@ function renderText(r: LearnStatusReport): string {
     lines.push(
       `  ${rev.key.padEnd(28)}  trust ${trustStr}  samples ${samplesStr.padStart(5)}  (${rev.correct}c/${rev.wrong}w)`,
     );
+  }
+  lines.push("");
+
+  // Implicit outcomes (write-only signal corpus)
+  lines.push("Implicit outcomes    (write-only signal corpus)");
+  if (r.implicit_outcomes.total === 0) {
+    lines.push("  none yet");
+  } else {
+    lines.push(`  total: ${r.implicit_outcomes.total}`);
+    lines.push(`  by reason: ${JSON.stringify(r.implicit_outcomes.by_reason)}`);
+    lines.push(`  by reviewer: ${JSON.stringify(r.implicit_outcomes.by_reviewer)}`);
   }
 
   return `${lines.join("\n")}\n`;
