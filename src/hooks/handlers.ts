@@ -1,10 +1,10 @@
 // src/hooks/handlers.ts
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import { gitHeadSha } from "../utils/git.ts";
-import { dirtyFlagPath, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
+import { dirtyFlagPath, proposalsPoolDir, reviewgateDir, stateJsonPath } from "../utils/paths.ts";
 
 export interface TriggerInput {
   repoRoot: string;
@@ -48,27 +48,51 @@ export interface ResetInput {
   repoRoot: string;
 }
 
-export async function handleReset(input: ResetInput): Promise<void> {
-  for (const f of [dirtyFlagPath(input.repoRoot), stateJsonPath(input.repoRoot)]) {
-    try {
-      rmSync(f, { force: true });
-    } catch {
-      // noop
-    }
-  }
-  // Also wipe per-session decisions and pending.* — the new session is a clean slate.
+export interface ResetSummary {
+  /** Human-facing labels of the artifacts that were actually present and removed. */
+  cleared: string[];
+}
+
+export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   const dir = reviewgateDir(input.repoRoot);
-  for (const name of ["decisions", "pending.md", "pending.json", "research.md", "ESCALATION.md"]) {
-    const p = `${dir}/${name}`;
-    try {
-      rmSync(p, { recursive: true, force: true });
-    } catch {
-      // noop
+  // Ordered artifact groups. Each group is removed together (behaviour unchanged
+  // from before: best-effort rmSync with force) and contributes ONE human-facing
+  // label to the summary if any of its paths was present.
+  const groups: { label: string; paths: string[] }[] = [
+    { label: "dirty flag", paths: [dirtyFlagPath(input.repoRoot)] },
+    { label: "session state", paths: [stateJsonPath(input.repoRoot)] },
+    { label: "decisions", paths: [`${dir}/decisions`] },
+    { label: "pending findings", paths: [`${dir}/pending.md`, `${dir}/pending.json`] },
+    { label: "research", paths: [`${dir}/research.md`] },
+    { label: "escalation", paths: [`${dir}/ESCALATION.md`] },
+  ];
+  const cleared: string[] = [];
+  for (const g of groups) {
+    const present = g.paths.some((p) => existsSync(p));
+    for (const p of g.paths) {
+      try {
+        rmSync(p, { recursive: true, force: true });
+      } catch {
+        // noop (best-effort, unchanged)
+      }
     }
+    if (present) cleared.push(g.label);
   }
   // F2: drop all per-run proposal pools so a new session can't see a prior
-  // session's accumulated proposals (which would skew quorum on the next run).
+  // session's accumulated proposals. Detect presence BEFORE clearing because
+  // clearAllProposalPools is silent.
+  let poolPresent = false;
+  try {
+    const poolDir = proposalsPoolDir(input.repoRoot);
+    poolPresent =
+      existsSync(poolDir) &&
+      readdirSync(poolDir).some((n) => n.endsWith(".jsonl") && n !== "errors.jsonl");
+  } catch {
+    poolPresent = false;
+  }
   clearAllProposalPools(input.repoRoot);
+  if (poolPresent) cleared.push("proposal pools");
+  return { cleared };
 }
 
 export interface GateOutput {
