@@ -58,6 +58,7 @@ import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
+import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
@@ -188,39 +189,6 @@ const DOC_REVIEW_PROMPT_PREAMBLE = [
   "and wrong file/symbol references. Report every real issue. Use verdict PASS",
   "with an empty findings array only if the plan is genuinely sound.",
 ].join("\n");
-
-const PERSONA_REAFFIRM: Record<string, string> = {
-  security:
-    "You are a hostile senior security auditor. Assume the author was overconfident. Find real bugs.",
-  architecture: "You are a senior software architect. Judge design, coupling, and maintainability.",
-  adversarial: "You are an adversarial critic. Attack assumptions; find what others miss.",
-  plan: "You are a meticulous staff engineer reviewing an implementation plan. Find gaps, contradictions, untestable steps, and unstated assumptions before code is written.",
-  quality:
-    "You are a senior engineer reviewing for code quality, correctness, and maintainability. Find real defects, not style nits.",
-  correctness:
-    "You are a senior engineer focused on correctness. Trace the changed code paths and find real logic bugs.",
-  performance:
-    "You are a performance engineer. Find real inefficiencies, hot-path allocations, and algorithmic regressions.",
-  testing:
-    "You are a test engineer. Judge test correctness and coverage; find missing edge cases and weak assertions.",
-};
-// NEUTRAL fallback — must NOT be the security persona's text. Reaffirming an
-// unknown/quality/performance reviewer as a "hostile security auditor" corrupts
-// its persona-specific review (F: unknown persona silently became security).
-const DEFAULT_REAFFIRM =
-  "You are a meticulous senior code reviewer. Assume the author was overconfident. Find real bugs, correctness issues, and risks.";
-
-/** Persona reaffirmation text, with a neutral (non-security) fallback for any
- *  persona not in PERSONA_REAFFIRM. Warns once per miss so a typo'd/added persona
- *  is visible rather than silently mis-reviewed as security. */
-export function reaffirmFor(persona: string): string {
-  const r = PERSONA_REAFFIRM[persona];
-  if (r) return r;
-  console.warn(
-    `[reviewgate] unknown reviewer persona "${persona}" — using the generic reviewer reaffirmation (not security-specific)`,
-  );
-  return DEFAULT_REAFFIRM;
-}
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
 // cache ttlDays). Best-effort — a slow API never stalls a review.
@@ -391,6 +359,25 @@ export class Orchestrator {
       this.input.forcePersona ??
       (triage.riskClass === "docs" ? this.input.config.docReview.persona : null);
 
+    // §3.1: resolve effective persona reaffirmations ONCE — before the cache
+    // behavior-hash (so a persona-file/config change invalidates the cache) and
+    // before the panel loop (which consumes the map). In-use ids = reviewer slot
+    // personas ∪ the resolved docPersona.
+    const personas = resolvePersonas(
+      repo,
+      [
+        ...this.input.config.phases.review.reviewers.map((r) => r.persona),
+        ...(docPersona ? [docPersona] : []),
+      ],
+      this.input.config.phases.review.personas,
+    );
+    // Behavior-hash delta: resolved entries whose text differs from the built-in
+    // (file- or config-sourced). The config path also rides configHash (harmless
+    // overlap); the FILE contribution is the gap this closes.
+    const personaDelta = Object.entries(personas)
+      .filter(([id, text]) => text !== PERSONA_REAFFIRM[id])
+      .map(([id, text]) => `${id}:${createHash("sha256").update(text).digest("hex")}`);
+
     if (!triage.runReview && !this.input.forcePersona) {
       // Doc-only / trivial diff: pass without spawning any reviewer ($0).
       await this.writeReport(opts, start, [], [], "PASS");
@@ -556,6 +543,7 @@ export class Orchestrator {
         : [],
       docs: contextDocs?.corpus,
       refs: referencedRaw ? createHash("sha256").update(referencedRaw).digest("hex") : undefined,
+      personas: personaDelta,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -826,7 +814,7 @@ export class Orchestrator {
         if (model === null) return null; // claude-code host-tier disabled
 
         const persona = docPersona ?? r.persona;
-        const reaffirm = reaffirmFor(persona);
+        const reaffirm = reaffirmFor(persona, personas);
         const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
         const sanitisedCtx = fileContext
           ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
