@@ -51,6 +51,18 @@ matching `(file, normalizeRuleId, category)` is a possible later enhancement.
    pinned finding (`if (pinned.has(f.signature)) return f`), so it keeps its
    reviewer CRITICAL/WARN severity. It is tagged `claimed_fixed_recurred: { iter }`
    with the EARLIEST matched iteration. NOT exempt from `scopeFindings` (see below).
+3a. **Force FAIL (the actual block).** Preventing demotion is not enough: a
+   *singleton* WARN recurrence keeps WARN but, under the default `softPassPolicy:
+   "allow"`, would only SOFT-PASS — so the gate would still open and "still-blocking"
+   would be a lie. Therefore, in the verdict-counting loop, a finding that STILL
+   carries `claimed_fixed_recurred` AND is STILL `CRITICAL`/`WARN` at that point
+   forces a hard FAIL (CRITICAL → `fail=true`; WARN → `warnFail=true`). This is the
+   strongest possible signal — the agent explicitly claimed to fix it and it is still
+   present — so the gate must not open until the agent fixes it for real OR contests
+   it as a reviewer FP (which routes it through `cycle_rejected`, where the tie-break
+   frees it). A recurrence that was scope/fp-demoted to INFO does NOT force FAIL (it
+   is no longer CRITICAL/WARN at the count, so it stays advisory — out-of-diff
+   recurrences remain non-blocking per the exemption).
 4. **Warn.** `report-writer` adds a system badge (via the existing `demoteBadges`
    mechanism) "⚠ claimed fixed @ iter N — still present" so it renders in the
    BLOCKING section with a clear note (kept short, the demote-note 2000-char cap
@@ -116,6 +128,10 @@ NEXT recurrence. So the agent is never permanently trapped.
   `if (pinned.has(f.signature)) return f;` (skip — keep blocking). `scopeFindings`
   and the fp/cluster passes are unchanged (a pinned finding still scope-demotes if
   out-of-diff; fp/cluster rarely apply and are not load-bearing here).
+- In the final verdict-counting loop, a finding that still carries
+  `claimed_fixed_recurred` at its CRITICAL/WARN branch forces the block: CRITICAL →
+  `fail = true`, WARN → `warnFail = true` (so a singleton WARN recurrence FAILs
+  instead of SOFT-PASS-ing). An INFO finding (scope/fp-demoted) is untouched.
 
 **`src/schemas/finding.ts`** — add `claimed_fixed_recurred: z.object({ iter: z.number().int().positive() }).optional()`.
 
