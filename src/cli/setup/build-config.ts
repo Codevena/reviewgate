@@ -29,6 +29,10 @@ export interface CustomAnswers {
   fpLedger: boolean;
   contextDocs: boolean;
   reputation: boolean;
+  /** OpenRouter upstream-provider slug to pin (e.g. "deepseek" for deepseek/*
+   *  models). Empty/absent → auto-route. Written as providers.openrouter
+   *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
+  openrouterProvider?: string;
 }
 
 const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter"> = {
@@ -39,15 +43,21 @@ const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter"> = {
   openrouter: "openrouter",
 };
 
-// Enables each used provider with its chosen model. apiKeyEnv is set for openrouter.
+// Enables each used provider with its chosen model. apiKeyEnv is set for openrouter,
+// plus its optional upstream-provider routing (openrouterProvider → { only: [slug] }).
 function providersFor(
   ids: { provider: ProviderId; model?: string }[],
+  openrouterProvider?: string,
 ): DeepPartial<ReviewgateConfig>["providers"] {
   const out: Record<string, unknown> = {};
   for (const { provider, model } of ids) {
     const entry: Record<string, unknown> = { enabled: true, auth: DEFAULT_AUTH[provider] };
     if (model) entry.model = model;
-    if (provider === "openrouter") entry.apiKeyEnv = "OPENROUTER_API_KEY";
+    if (provider === "openrouter") {
+      entry.apiKeyEnv = "OPENROUTER_API_KEY";
+      const slug = openrouterProvider?.trim();
+      if (slug) entry.openrouterProvider = { only: [slug] };
+    }
     out[provider] = { ...(out[provider] as object), ...entry };
   }
   return out as DeepPartial<ReviewgateConfig>["providers"];
@@ -138,7 +148,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
   phases.contextDocs = a.contextDocs ? { enabled: true } : null;
 
   return {
-    providers: providersFor(providerIds),
+    providers: providersFor(providerIds, a.openrouterProvider),
     phases: phases as DeepPartial<ReviewgateConfig>["phases"],
   } as DeepPartial<ReviewgateConfig>;
 }

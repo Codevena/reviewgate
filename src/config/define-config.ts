@@ -16,6 +16,18 @@ export const ProviderConfigSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive(),
   costPerMTokensUsd: z.number().nonnegative().optional(),
+  // OpenRouter ONLY: upstream-provider routing (OpenRouter's request `provider`
+  // field). Pins which upstream serves the model — e.g. deepseek/deepseek-v4 must
+  // be served by the `deepseek` upstream, not a worse/quantized OpenRouter
+  // alternative. `only`/`order` are passed verbatim; allowFallbacks →
+  // allow_fallbacks. Ignored by non-OpenRouter providers.
+  openrouterProvider: z
+    .object({
+      only: z.array(z.string()).optional(),
+      order: z.array(z.string()).optional(),
+      allowFallbacks: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
@@ -90,6 +102,17 @@ export const ConfigSchema = z.object({
           provider: z.literal("openrouter"),
           model: z.string().default("baai/bge-base-en-v1.5"),
           apiKeyEnv: z.string().default("OPENROUTER_API_KEY"),
+          // Optional OpenRouter upstream routing for the EMBEDDINGS model — separate
+          // from providers.openrouter.openrouterProvider (which pins the REVIEWER's
+          // model, e.g. deepseek for deepseek-v4; that upstream doesn't serve the
+          // bge embedding model, so it must NOT be reused here). Default: auto-route.
+          openrouterProvider: z
+            .object({
+              only: z.array(z.string()).optional(),
+              order: z.array(z.string()).optional(),
+              allowFallbacks: z.boolean().optional(),
+            })
+            .optional(),
         }),
         egressAllowlist: z.array(z.string()).default([]),
         curatorTimeoutMs: z.number().int().positive().default(20_000),

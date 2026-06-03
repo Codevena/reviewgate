@@ -19,6 +19,9 @@ export interface WizardDefaults {
   fpLedger: boolean;
   contextDocs: boolean;
   reputation: boolean;
+  /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
+   *  re-run prompt. Empty string = none. */
+  openrouterProvider: string;
 }
 
 // The fresh-setup recommendation (no existing config). Preserves today's wizard behavior —
@@ -34,6 +37,7 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   fpLedger: true,
   contextDocs: false,
   reputation: true,
+  openrouterProvider: "",
 };
 
 function modelFor(cfg: ReviewgateConfig, provider: ProviderId, override?: string): string {
@@ -61,6 +65,8 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
   const brainCurator = cur
     ? { provider: cur.provider, model: modelFor(cfg, cur.provider, cur.model) }
     : null;
+  const orRouting = cfg.providers.openrouter?.openrouterProvider;
+  const openrouterProvider = orRouting?.only?.[0] ?? orRouting?.order?.[0] ?? "";
   return {
     reviewerProviders,
     perReviewer,
@@ -69,5 +75,6 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     fpLedger: Boolean(cfg.phases.fpLedger?.enabled),
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
+    openrouterProvider,
   };
 }

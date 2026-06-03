@@ -10,6 +10,23 @@ export function verdictFromFindings(findings: Finding[]): "PASS" | "FAIL" {
   return findings.some((f) => f.severity === "CRITICAL" || f.severity === "WARN") ? "FAIL" : "PASS";
 }
 
+// OpenRouter upstream-provider routing (its request-body `provider` field). Pins
+// which upstream actually serves the model — e.g. `deepseek/deepseek-v4` should be
+// served by the `deepseek` upstream, not a worse/quantized OpenRouter alternative.
+// Maps to OpenRouter's `provider`: only/order verbatim, allowFallbacks →
+// allow_fallbacks. Ignored by non-OpenRouter providers.
+export interface OpenRouterProviderRouting {
+  // `| undefined` (not bare optional) so this accepts zod-inferred config types
+  // under tsconfig's exactOptionalPropertyTypes — z.array(...).optional() yields
+  // `string[] | undefined`, which a bare `only?: string[]` would reject.
+  /** Restrict to these upstream provider slugs (errors if none available). */
+  only?: string[] | undefined;
+  /** Preferred upstream order. */
+  order?: string[] | undefined;
+  /** false = use ONLY the listed providers (no fallback beyond them). */
+  allowFallbacks?: boolean | undefined;
+}
+
 export interface ProviderConfig {
   enabled: boolean;
   auth: "oauth" | "apikey" | "openrouter";
@@ -19,6 +36,8 @@ export interface ProviderConfig {
   maxTokens?: number;
   timeoutMs: number;
   costPerMTokensUsd?: number;
+  /** OpenRouter-only: upstream-provider routing (see OpenRouterProviderRouting). */
+  openrouterProvider?: OpenRouterProviderRouting;
 }
 
 export interface Preflight {
@@ -84,6 +103,8 @@ export interface CompleteOptions {
   apiKeyEnv?: string;
   timeoutMs?: number;
   auth?: "oauth" | "apikey" | "openrouter";
+  /** OpenRouter-only: upstream-provider routing (see OpenRouterProviderRouting). */
+  openrouterProvider?: OpenRouterProviderRouting;
   // Aborts the underlying call when the gate's self-deadline fires
   // (loop.runTimeoutMs). Adapters MUST forward this to spawnSafely / their fetch
   // controller so a judge or critic running under the deadline is cut short too.

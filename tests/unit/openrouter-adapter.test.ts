@@ -220,6 +220,135 @@ describe("OpenRouterAdapter (mocked fetch)", () => {
   });
 });
 
+describe("OpenRouterAdapter — upstream provider routing", () => {
+  // Capture the request body the adapter sends.
+  function capturingFetch(): { fetchImpl: typeof fetch; body: () => Record<string, unknown> } {
+    let captured: Record<string, unknown> = {};
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      captured = JSON.parse(init.body);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '{"verdict":"PASS","findings":[],"memory_proposals":[],"summary":"ok"}',
+              },
+            },
+          ],
+          usage: { prompt_tokens: 1, completion_tokens: 1 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    return { fetchImpl, body: () => captured };
+  }
+
+  it("review() sends OpenRouter `provider` routing when cfg.openrouterProvider is set (deepseek for deepseek-v4)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-prov-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const cap = capturingFetch();
+    const adapter = new OpenRouterAdapter({ fetchImpl: cap.fetchImpl });
+    await adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "deepseek/deepseek-v4-pro",
+        timeoutMs: 60_000,
+        openrouterProvider: { only: ["deepseek"] },
+      },
+      reviewerId: "openrouter-security",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(cap.body().provider).toEqual({ only: ["deepseek"] });
+  });
+
+  it("review() maps order + allowFallbacks to OpenRouter's snake_case allow_fallbacks", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-prov2-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const cap = capturingFetch();
+    const adapter = new OpenRouterAdapter({ fetchImpl: cap.fetchImpl });
+    await adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "deepseek/deepseek-v4-pro",
+        timeoutMs: 60_000,
+        openrouterProvider: { order: ["deepseek"], allowFallbacks: false },
+      },
+      reviewerId: "r",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(cap.body().provider).toEqual({ order: ["deepseek"], allow_fallbacks: false });
+  });
+
+  it("review() omits `provider` when openrouterProvider is unset (no regression)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-or-prov3-"));
+    writeFileSync(join(dir, "prompt.txt"), "review this");
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const cap = capturingFetch();
+    const adapter = new OpenRouterAdapter({ fetchImpl: cap.fetchImpl });
+    await adapter.review({
+      cfg: {
+        enabled: true,
+        auth: "openrouter",
+        apiKeyEnv: "OPENROUTER_API_KEY",
+        model: "x/y",
+        timeoutMs: 60_000,
+      },
+      reviewerId: "r",
+      promptFile: join(dir, "prompt.txt"),
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(cap.body().provider).toBeUndefined();
+  });
+
+  it("complete() sends `provider` routing when opts.openrouterProvider is set", async () => {
+    process.env.OR_JUDGE_KEY = "k";
+    const cap = capturingFetch();
+    const adapter = new OpenRouterAdapter({ fetchImpl: cap.fetchImpl });
+    await adapter.complete("judge", {
+      model: "deepseek/deepseek-v4-pro",
+      apiKeyEnv: "OR_JUDGE_KEY",
+      openrouterProvider: { only: ["deepseek"] },
+    });
+    expect(cap.body().provider).toEqual({ only: ["deepseek"] });
+  });
+
+  it("embed() sends `provider` routing when opts.openrouterProvider is set", async () => {
+    process.env.OR_EMB_KEY = "k";
+    let captured: Record<string, unknown> = {};
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      captured = JSON.parse(init.body);
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2], index: 0 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    await adapter.embed("text", {
+      model: "baai/bge-base-en-v1.5",
+      apiKeyEnv: "OR_EMB_KEY",
+      openrouterProvider: { order: ["novita"], allowFallbacks: true },
+    });
+    expect(captured.provider).toEqual({ order: ["novita"], allow_fallbacks: true });
+  });
+});
+
 describe("OpenRouterAdapter.review (gate self-deadline abort)", () => {
   it("aborts the in-flight request when the external deadline signal fires", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-or-abort-"));

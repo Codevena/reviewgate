@@ -33,6 +33,10 @@ export default {
       model: "deepseek/deepseek-v4-pro",
       apiKeyEnv: "OPENROUTER_API_KEY",
       timeoutMs: 300_000,
+      // Pin the upstream: deepseek/deepseek-v4-pro must be served by the official
+      // `deepseek` provider, not an arbitrary (often worse/quantized) OpenRouter
+      // alternative. Maps to OpenRouter's request `provider: { only: ["deepseek"] }`.
+      openrouterProvider: { only: ["deepseek"] },
     },
     // opencode is reserved here as the independent brain curator (NOT a
     // reviewer) — keeps the LLM judge out of the panel it adjudicates.

@@ -311,6 +311,32 @@ async function runCustom(
   if (isCancel(ctx)) return null;
   if (ctx) note("contextDocs works keyless; set CONTEXT7_API_KEY for higher rate limits.");
 
+  // OpenRouter upstream-provider routing — asked ONCE, only when openrouter is
+  // actually used (as reviewer/critic/curator). Pins which upstream serves the
+  // model (OpenRouter otherwise auto-routes to ANY provider, which for a model
+  // like deepseek/deepseek-v4 can be a worse/quantized alternative).
+  let openrouterProvider: string | undefined;
+  const orModels = [
+    ...reviewers.filter((r) => r.provider === "openrouter").map((r) => r.model),
+    ...(critic?.provider === "openrouter" ? [critic.model] : []),
+    ...(brain?.curator.provider === "openrouter" ? [brain.curator.model] : []),
+  ];
+  if (orModels.length > 0) {
+    // Smart default: a deepseek/* model is best served by the `deepseek` upstream.
+    const suggested =
+      defaults.openrouterProvider ||
+      (orModels.some((m) => m.startsWith("deepseek/")) ? "deepseek" : "");
+    const op = await text({
+      message:
+        "OpenRouter upstream provider (e.g. `deepseek` for deepseek/* models; empty = auto-route)",
+      initialValue: suggested,
+      placeholder: "deepseek",
+    });
+    if (isCancel(op)) return null;
+    const trimmed = String(op).trim();
+    if (trimmed) openrouterProvider = trimmed;
+  }
+
   return buildCustomConfig({
     reviewers,
     critic,
@@ -318,6 +344,7 @@ async function runCustom(
     fpLedger: Boolean(fp),
     contextDocs: Boolean(ctx),
     reputation: Boolean(rep),
+    ...(openrouterProvider ? { openrouterProvider } : {}),
   });
 }
 
