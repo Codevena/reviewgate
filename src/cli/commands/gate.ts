@@ -12,7 +12,7 @@ import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
-import { flock, readLockHolder } from "../../utils/flock.ts";
+import { FlockTimeoutError, flock, readLockHolder } from "../../utils/flock.ts";
 import {
   DIFF_INCOMPLETE_MARKER,
   collectDiff,
@@ -113,6 +113,38 @@ function formatLockHolder(repoRoot: string): string {
     : ` (PID ${h.pid})`;
 }
 
+// Decide what to do when flock() failed to acquire the gate lock (F-002). ONLY
+// genuine CONTENTION (a FlockTimeoutError — timed out waiting on a live holder)
+// DEFERS, and only if the deferred-review marker can be durably written (else the
+// eventual-review guarantee is void). A lock-SYSTEM failure (EACCES/ENOSPC/
+// unwritable .reviewgate — flock rethrew a raw fs error, NOT a timeout) means we
+// have no reliable lock and likely can't persist a marker → FAIL CLOSED, never
+// allow an unreviewed turn. M-A3: name the holder so a human can kill a hung one.
+export function lockContentionDecision(repoRoot: string, err: unknown): GateOutput {
+  if (!(err instanceof FlockTimeoutError)) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const reason = `🔴 Reviewgate · GATE CLOSED — could not acquire the gate lock (lock-system error: ${msg}). Failing closed (this is not normal contention). Ensure .reviewgate is writable, then re-run; \`reviewgate doctor\` for diagnostics.`;
+    return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+  }
+  // Genuine contention → DEFER, but only with a durable retry marker.
+  let markerWritten = false;
+  try {
+    writeFileAtomic(deferredFlagPath(repoRoot), JSON.stringify({ ts: new Date().toISOString() }), {
+      mode: 0o600,
+    });
+    markerWritten = true;
+  } catch {
+    markerWritten = false;
+  }
+  if (!markerWritten) {
+    const reason =
+      "🔴 Reviewgate · GATE CLOSED — the gate lock is contended AND the deferred-review marker could not be written; failing closed rather than ending the turn unreviewed. Re-run; ensure .reviewgate is writable.";
+    return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+  }
+  const reason = `🟠 Reviewgate · GATE DEFERRED — another review${formatLockHolder(repoRoot)} is in progress; this turn was not reviewed and is NOT blocked. Your change stays flagged and is reviewed automatically on your next turn.`;
+  return { exitCode: 0, stdout: "", stderr: reason };
+}
+
 // M-A1: cheap "is there anything to review?" probe, run BEFORE the gate lock so a
 // pure read/analysis turn (no dirty.flag AND HEAD unchanged since the last review)
 // short-circuits to allow_stop WITHOUT acquiring the global lock or doing git/
@@ -202,27 +234,8 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
       : (input.lockTimeoutMs ?? GATE_LOCK_ACQUIRE_TIMEOUT_MS);
   try {
     lock = await flock(gateLockPath(input.repoRoot), lockAcquireMs);
-  } catch {
-    // M-A2 (D-1 fail-safe-degrade): the lock is held by another (possibly long or
-    // hung) gate run. Do NOT block the turn — the old fail-closed behavior made
-    // every parallel session busy-loop block→re-stop→block. Instead DEFER: drop a
-    // deferred.flag so THIS session's next stop is forced to take the lock and
-    // review (even if the dirty.flag is cleared meanwhile by whoever holds the lock
-    // now), and allow the stop. The change stays flagged → it WILL be reviewed.
-    try {
-      writeFileAtomic(
-        deferredFlagPath(input.repoRoot),
-        JSON.stringify({ ts: new Date().toISOString() }),
-        { mode: 0o600 },
-      );
-    } catch {
-      /* best-effort: even without the marker, the persisting dirty.flag re-triggers */
-    }
-    // M-A3 diagnostics: name the holder (PID + how long it's run) so a human can
-    // spot a hung holder (0% CPU for minutes) and `kill` it — a dead PID is then
-    // reclaimed automatically by flock's dead-pid recovery on the next stop.
-    const reason = `🟠 Reviewgate · GATE DEFERRED — another review${formatLockHolder(input.repoRoot)} is in progress; this turn was not reviewed and is NOT blocked. Your change stays flagged and is reviewed automatically on your next turn.`;
-    return { exitCode: 0, stdout: "", stderr: reason };
+  } catch (err) {
+    return lockContentionDecision(input.repoRoot, err);
   }
   try {
     // M-A2: we hold the lock → any prior contention is resolved. Consume a

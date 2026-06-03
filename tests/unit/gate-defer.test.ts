@@ -11,12 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   consumeDeferredFlag,
+  lockContentionDecision,
   runGate,
   stopHasNothingToReview,
 } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { handleReset } from "../../src/hooks/handlers.ts";
-import { flock, readLockHolder } from "../../src/utils/flock.ts";
+import { FlockTimeoutError, flock, readLockHolder } from "../../src/utils/flock.ts";
 import {
   deferredFlagPath,
   dirtyFlagPath,
@@ -114,5 +115,35 @@ describe("gate defer-on-contention", () => {
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
     await handleReset({ repoRoot: repo });
     expect(existsSync(deferredFlagPath(repo))).toBe(false);
+  });
+});
+
+describe("lockContentionDecision — only genuine contention defers (F-002)", () => {
+  it("defers on a FlockTimeoutError (real contention) and writes the marker", () => {
+    const repo = gitRepo("rg-lcd-defer-");
+    const out = lockContentionDecision(repo, new FlockTimeoutError("timed out"));
+    expect(out.stdout).toBe(""); // allow_stop
+    expect(out.stderr.toLowerCase()).toContain("deferred");
+    expect(existsSync(deferredFlagPath(repo))).toBe(true);
+  });
+
+  it("FAILS CLOSED on a lock-SYSTEM error (non-timeout), never defers", () => {
+    const repo = gitRepo("rg-lcd-infra-");
+    const err = Object.assign(new Error("EACCES: permission denied, open lock"), {
+      code: "EACCES",
+    });
+    const out = lockContentionDecision(repo, err);
+    const parsed = JSON.parse(out.stdout || "{}") as { decision?: string };
+    expect(parsed.decision).toBe("block");
+    expect(existsSync(deferredFlagPath(repo))).toBe(false); // no spurious marker
+  });
+
+  it("FAILS CLOSED on contention when the deferred marker cannot be durably written", () => {
+    const repo = gitRepo("rg-lcd-nomark-");
+    // Force writeFileAtomic(deferredFlagPath) to throw (dir at its .tmp path).
+    mkdirSync(`${deferredFlagPath(repo)}.tmp`, { recursive: true });
+    const out = lockContentionDecision(repo, new FlockTimeoutError("timed out"));
+    const parsed = JSON.parse(out.stdout || "{}") as { decision?: string };
+    expect(parsed.decision).toBe("block");
   });
 });

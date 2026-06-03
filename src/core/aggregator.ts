@@ -4,6 +4,7 @@ import { normalizeRepoPath } from "../diff/repo-path.ts";
 import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
+import { isHarnessConfigPath } from "../utils/git.ts";
 import type { CriticVerdict } from "./critic.ts";
 import { ruleIdToken0 } from "./fp-ledger/clusters.ts";
 
@@ -204,6 +205,18 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
     if (!f.line_start) return f; // no usable line → keep (conservative)
     const ranges = normalizedRanges.get(normalizeRepoPath(f.file));
     if (!ranges) {
+      // I-17: a finding on harness config (.claude/) the diff did NOT touch is
+      // exploration noise — the every-branch "repo-local hooks = RCE" wolf-cry on
+      // PRE-EXISTING hook config. Demote regardless of category (incl. the security
+      // out-of-diff escape hatch): it isn't introduced by this change. An IN-DIFF
+      // .claude change hits the ranges branch below and CAN still block, so
+      // malicious/accidental hook edits stay reviewed (F-003).
+      if (isHarnessConfigPath(normalizeRepoPath(f.file))) {
+        return demote(
+          f,
+          "\n\n↓ pre-existing harness config not changed by this diff — advisory only.",
+        );
+      }
       // Category-independent clustering can merge several categories into one
       // finding, so honor the escape hatch if ANY merged member category (not just
       // the representative's) is configured to stay blocking.

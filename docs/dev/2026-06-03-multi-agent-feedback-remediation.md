@@ -114,6 +114,8 @@ Effort: S ≤ ½ day · M ≈ 1–2 days · L ≈ 3+ days. Each task lists files
 
 ### M-A · Multi-session survival (P0) — *fixes the actively-broken environment*
 
+> **Status (2026-06-03): A1 ✅, A2 ✅, A3 ✅ (diagnostics; heartbeat-steal intentionally skipped), A5 ✅ — SHIPPED** on branch `fix/m-a0-fail-closed-hardening` (commits 6a94cbd, 24a7c97, a267402; TDD + full Codex/Claude DoD each; 1374 tests pass). **A4 (namespacing) deferred** per decision D-2 (defer+heartbeat now, per-worktree later). With M-A0, the entire P0 theme is done.
+
 **A1 — Pre-lock empty-diff fast-path** [S]
 Before `flock` in `runGate`, `existsSync(dirtyFlagPath)`; if absent and HEAD hasn't advanced past `last_reviewed_head_sha`, return `allow_stop` with **no lock and no git I/O**.
 *Files:* `src/cli/commands/gate.ts`. *Risk:* low (LoopDriver already does the semantic check). *DoD:* unit test asserts flock not attempted on no-dirty-flag stop.

@@ -7,6 +7,12 @@ export interface FileLock {
   release(): Promise<void>;
 }
 
+// Thrown ONLY when acquisition times out waiting on a live holder (genuine
+// CONTENTION). Lets callers distinguish contention (safe to defer) from a
+// lock-SYSTEM failure (EACCES/ENOSPC/unwritable dir — flock rethrows the raw fs
+// error), which must fail CLOSED rather than defer (M-A2 / F-002).
+export class FlockTimeoutError extends Error {}
+
 let counter = 0;
 function newToken(): string {
   // Unique per acquisition: pid + monotonic counter + time + randomness. Used as
@@ -222,7 +228,7 @@ export async function flock(path: string, timeoutMs = 30_000): Promise<FileLock>
       delay = Math.min(delay * 2, 500);
     }
     if (Date.now() - start > timeoutMs) {
-      throw new Error(`flock: timed out acquiring ${path} after ${timeoutMs}ms`);
+      throw new FlockTimeoutError(`flock: timed out acquiring ${path} after ${timeoutMs}ms`);
     }
   }
 }

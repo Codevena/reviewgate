@@ -41,14 +41,16 @@ const COLLECT_DIFF_UNTRACKED_BUDGET_MS = 60_000;
 export const DIFF_INCOMPLETE_MARKER =
   "[reviewgate] WARNING: this diff was TRUNCATED or TIMED OUT during collection and may be INCOMPLETE — do not treat a clean result as conclusive.";
 
-// Paths excluded from review entirely: Reviewgate's own managed files, the Claude
-// Code harness config dir `.claude/` (where Reviewgate installs its Stop/PostToolUse
-// hooks — reviewers explore it off-diff and flag the "repo-local hooks = code
-// execution" pattern as a CRITICAL RCE on EVERY branch, a wolf-cry on the gate's
-// own machinery, I-17), AND the Antigravity CLI's (`agy`, the gemini reviewer)
-// `.antigravitycli` working-tree artifact — matched at ANY depth, since agy run in
-// a subdir yields `sub/.antigravitycli`. Reviewing these (a) loops the gate on its
-// own scaffold and (b) emits false "committed credential" positives on the artifact dir.
+// Paths excluded from review entirely: Reviewgate's own managed files AND the
+// Antigravity CLI's (`agy`, the gemini reviewer) `.antigravitycli` working-tree
+// artifact — matched at ANY depth, since agy run in a subdir yields
+// `sub/.antigravitycli`. Reviewing these (a) loops the gate on its own scaffold
+// and (b) emits false "committed credential" positives on the artifact dir.
+// NOTE: `.claude/` (the harness config where Reviewgate installs its hooks) is
+// deliberately NOT excluded here — an IN-DIFF change to a hook IS a supply-chain
+// change worth reviewing (F-003). The every-branch "repo-local hooks = RCE"
+// wolf-cry on PRE-EXISTING .claude config (I-17) is suppressed diff-awarely in the
+// aggregator instead (off-diff harness findings demoted; see scopeFindings).
 const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/i;
 
 // The git-pathspec form of the same exclusion set isExcludedFromReview() applies
@@ -61,8 +63,6 @@ export const EXCLUDE_PATHSPEC = [
   ":(exclude)reviewgate.config.ts",
   ":(exclude).reviewgate",
   ":(exclude).reviewgate/**",
-  ":(exclude).claude",
-  ":(exclude).claude/**",
   ":(exclude).antigravitycli",
   ":(exclude).antigravitycli/**",
   ":(exclude)**/.antigravitycli",
@@ -74,10 +74,18 @@ export function isExcludedFromReview(path: string): boolean {
     path === "reviewgate.config.ts" ||
     path === ".reviewgate" ||
     path.startsWith(".reviewgate/") ||
-    path === ".claude" ||
-    path.startsWith(".claude/") ||
     ANTIGRAVITY_ARTIFACT.test(path)
   );
+}
+
+// Harness/tooling config dirs whose OFF-DIFF findings are exploration noise (I-17):
+// reviewers with filesystem access flag the pre-existing `.claude/` hook model as a
+// CRITICAL RCE on every branch. Unlike isExcludedFromReview (which drops a path
+// ENTIRELY), this is diff-aware — the aggregator demotes findings on these paths
+// only when the file is NOT in the diff; an IN-DIFF change to a hook is still
+// reviewed and can block (F-003). `.claude/` is the harness config dir.
+export function isHarnessConfigPath(path: string): boolean {
+  return path === ".claude" || path.startsWith(".claude/");
 }
 
 // The working-tree diff Reviewgate reviews. Includes BOTH tracked modifications
