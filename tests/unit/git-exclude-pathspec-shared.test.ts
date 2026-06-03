@@ -30,11 +30,13 @@ function tmpRepo(): string {
 }
 
 describe("git exclude-pathspec is a single shared source", () => {
-  it("exports EXCLUDE_PATHSPEC covering reviewgate + antigravity artifacts", () => {
+  it("exports EXCLUDE_PATHSPEC covering reviewgate + .claude harness + antigravity artifacts", () => {
     expect(EXCLUDE_PATHSPEC).toEqual([
       ":(exclude)reviewgate.config.ts",
       ":(exclude).reviewgate",
       ":(exclude).reviewgate/**",
+      ":(exclude).claude",
+      ":(exclude).claude/**",
       ":(exclude).antigravitycli",
       ":(exclude).antigravitycli/**",
       ":(exclude)**/.antigravitycli",
