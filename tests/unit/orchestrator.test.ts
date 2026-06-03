@@ -50,9 +50,10 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tok
 exit 0
 `;
 
-// Fake codex emitting a CRITICAL *correctness* finding that fabricates a CSS custom
-// property (`--ghost-token`) absent from the reviewed corpus. A correctness CRITICAL
-// normally hard-FAILs unconditionally; S6 grounding must demote it to WARN.
+// Fake codex emitting a CRITICAL *quality* finding that fabricates a CSS custom property
+// (`--ghost-token`) absent from the reviewed corpus. A lone CRITICAL hard-FAILs; S6
+// grounding layer 1 must demote it to WARN. (Category is `quality`, NOT security/
+// correctness — those are exempt from the deterministic layer-1 demote; see grounding.ts.)
 const HALLUCINATED_CRITICAL_CODEX_SCRIPT = `#!/usr/bin/env bash
 set -u
 LAST_MSG=""
@@ -63,7 +64,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$LAST_MSG" ] && cat > "$LAST_MSG" <<'JSON'
-{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"correctness","rule_id":"hallu","file":"foo.ts","line":1,"message":"dark mode regression","details":"The --ghost-token CSS variable is wrong here.","confidence":0.9}]}
+{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"quality","rule_id":"hallu","file":"foo.ts","line":1,"message":"dark mode regression","details":"The --ghost-token CSS variable is wrong here.","confidence":0.9}]}
 JSON
 printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":50}}'
 exit 0

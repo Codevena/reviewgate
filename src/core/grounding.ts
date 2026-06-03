@@ -49,19 +49,31 @@ function citedTokens(text: string): { cssVars: string[]; codeRefs: string[] } {
   return { cssVars: [...cssVars], codeRefs: [...codeRefs] };
 }
 
+// Mirrors aggregator.touchesSecurityOrCorrectness. Pre-aggregation findings have no
+// `members` yet, but check them defensively for parity.
+function isSecurityOrCorrectness(f: Finding): boolean {
+  const cats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+  return cats.some((c) => c === "security" || c === "correctness");
+}
+
 // Demote-only, CRITICAL-only, fail-safe. A finding with no extractable code token, or
 // whose core claim is present in the corpus, is returned UNCHANGED.
 //
-// Precision split (F-001): CSS custom properties are HIGH-precision — ANY absent one is
-// almost certainly fabricated (CSS vars are defined in the very files under review), so
-// any absent CSS var triggers a demote. Dotted/backtick code refs are LOWER-precision —
-// a real CRITICAL may cite a present core symbol (`db.query`) PLUS an incidental absent
-// one (a helper in an unchanged file the corpus omits). Demoting on a single absent ref
-// would weaken the security/correctness hard-fail, so code refs only trigger when ALL of
-// them are absent (the claim is wholly ungrounded).
+// SECURITY/CORRECTNESS ARE EXEMPT (F-001 iter 3): layer 1 is a deterministic TEXT heuristic
+// over the finding's own message/details — which are reviewer-LLM output OVER the attacker
+// diff. Demoting a security/correctness CRITICAL on an absent token in that text is a
+// fail-open, and it is inconsistent with the rest of the gate (the confidence- and
+// reputation-demote passes already never weaken security/correctness CRITICALs). Their
+// grounding is reserved for LAYER 2, which reads the ACTUAL code and is injection-hardened.
+// Layer 1 only relaxes lower-harm categories (quality/architecture/performance/testing/docs).
+//
+// Precision split (F-001 iter 1): for those non-exempt categories, CSS custom properties are
+// HIGH-precision — ANY absent one is almost certainly fabricated, so it triggers. Dotted/
+// backtick code refs are LOWER-precision (a real finding may cite a present core symbol plus
+// an incidental absent one), so they only trigger when ALL are absent.
 export function groundFindings(findings: Finding[], corpus: string): Finding[] {
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL") return f;
+    if (f.severity !== "CRITICAL" || isSecurityOrCorrectness(f)) return f;
     const { cssVars, codeRefs } = citedTokens(`${f.message} ${f.details}`);
     if (cssVars.length === 0 && codeRefs.length === 0) return f;
     const cssAbsent = cssVars.filter((t) => !corpus.includes(t));

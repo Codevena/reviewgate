@@ -7,7 +7,9 @@ function mk(over: Partial<Finding> = {}): Finding {
     id: "F-001",
     signature: "sig-1",
     severity: "CRITICAL",
-    category: "correctness",
+    // quality = a non-exempt category, so the layer-1 demote logic is exercised. Security/
+    // correctness CRITICALs are EXEMPT from layer 1 (see the dedicated test below).
+    category: "quality",
     rule_id: "x",
     file: "src/app.css",
     line_start: 1,
@@ -66,7 +68,7 @@ describe("groundFindings (S6 layer 1)", () => {
 
   it("demotes a CRITICAL citing an absent backtick code token", () => {
     const out = groundFindings(
-      [mk({ category: "security", details: "Calling `auth.refreshToken` leaks the secret." })],
+      [mk({ details: "Calling `auth.refreshToken` is dead code." })],
       CORPUS,
     );
     expect(out[0]?.severity).toBe("WARN");
@@ -104,5 +106,27 @@ describe("groundFindings (S6 layer 1)", () => {
     );
     expect(out[0]?.severity).toBe("WARN");
     expect(out[0]?.grounding_demoted).toBe(true);
+  });
+
+  // F-001 iter 3: layer 1 is a deterministic heuristic over the finding's own
+  // (untrusted-derived) text — it must NEVER weaken a security/correctness CRITICAL (that
+  // is layer 2's job, which reads the actual code). Otherwise an absent token in
+  // attacker-influenced finding text is a fail-open.
+  it("NEVER demotes a security CRITICAL, even citing an absent token (exempt — fail-open guard)", () => {
+    const out = groundFindings(
+      [mk({ category: "security", details: "leak via --ghost-token" })],
+      CORPUS,
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
+  });
+
+  it("NEVER demotes a correctness CRITICAL citing an absent token (exempt)", () => {
+    const out = groundFindings(
+      [mk({ category: "correctness", details: "wrong via --ghost-token" })],
+      CORPUS,
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
   });
 });
