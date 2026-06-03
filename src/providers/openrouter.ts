@@ -4,6 +4,7 @@ import type { EmbedOptions } from "../core/brain/embeddings.ts";
 import type { Finding } from "../schemas/finding.ts";
 import type {
   CompleteOptions,
+  OpenRouterProviderRouting,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -32,6 +33,21 @@ interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
   error?: { message?: string };
+}
+
+// Build OpenRouter's request-body `provider` routing object from our config shape,
+// or {} when none/empty. `only`/`order` pass through verbatim; allowFallbacks →
+// OpenRouter's snake_case `allow_fallbacks`. Spread into the request body so a
+// model like deepseek/deepseek-v4 is served by the pinned upstream (e.g. deepseek).
+export function providerRoutingBody(routing: OpenRouterProviderRouting | undefined): {
+  provider?: Record<string, unknown>;
+} {
+  if (!routing) return {};
+  const provider: Record<string, unknown> = {};
+  if (routing.only && routing.only.length > 0) provider.only = routing.only;
+  if (routing.order && routing.order.length > 0) provider.order = routing.order;
+  if (routing.allowFallbacks !== undefined) provider.allow_fallbacks = routing.allowFallbacks;
+  return Object.keys(provider).length > 0 ? { provider } : {};
 }
 
 export function estimateCostUsd(
@@ -91,6 +107,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
         type: "json_schema",
         json_schema: { name: "review", strict: true, schema: REVIEW_OUTPUT_SCHEMA },
       },
+      ...providerRoutingBody(input.cfg.openrouterProvider),
     };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.cfg.timeoutMs);
@@ -178,6 +195,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     const body = {
       model: opts.model,
       input: text,
+      ...providerRoutingBody(opts.openrouterProvider),
     };
 
     interface EmbedResponse {
@@ -233,7 +251,11 @@ export class OpenRouterAdapter implements ProviderAdapter {
     if (!key) {
       throw new Error(`OpenRouter complete: API key env '${apiKeyEnv}' is not set`);
     }
-    const body = { model: opts.model, messages: [{ role: "user", content: prompt }] };
+    const body = {
+      model: opts.model,
+      messages: [{ role: "user", content: prompt }],
+      ...providerRoutingBody(opts.openrouterProvider),
+    };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? EMBED_TIMEOUT_MS);
     // Forward the gate's self-deadline (loop.runTimeoutMs) into this request so a

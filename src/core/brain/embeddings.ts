@@ -1,4 +1,5 @@
 // src/core/brain/embeddings.ts
+import type { OpenRouterProviderRouting } from "../../providers/adapter-base.ts";
 
 /**
  * Cosine similarity between two numeric vectors.
@@ -36,6 +37,8 @@ export interface EmbedOptions {
   model: string;
   /** Request timeout in ms (defaults applied by the adapter). */
   timeoutMs?: number;
+  /** OpenRouter-only: upstream-provider routing (see OpenRouterProviderRouting). */
+  openrouterProvider?: OpenRouterProviderRouting;
 }
 
 /**

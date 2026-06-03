@@ -29,6 +29,27 @@ describe("hooksInstalled", () => {
     expect(reset?.timeout).toBe(30);
   });
 
+  it("shell-quotes the hook command paths so a repo path with spaces doesn't word-split", async () => {
+    const repo = tmp();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const settings = JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const allCmds = Object.values(settings.hooks)
+      .flat()
+      .flatMap((g) => g.hooks)
+      .map((h) => h.command)
+      .filter((c) => c.includes(".reviewgate/bin/"));
+    expect(allCmds.length).toBeGreaterThanOrEqual(3); // trigger + gate + reset
+    for (const cmd of allCmds) {
+      // The path must be wrapped in double-quotes so ${CLAUDE_PROJECT_DIR} (which can
+      // contain spaces) is protected from shell word-splitting.
+      expect(cmd).toBe(`"${cmd.replace(/^"|"$/g, "")}"`);
+      expect(cmd.startsWith('"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/')).toBe(true);
+      expect(cmd.endsWith('"')).toBe(true);
+    }
+  });
+
   it("is false when settings.json exists but has no reviewgate hooks", async () => {
     const repo = tmp();
     await Bun.write(

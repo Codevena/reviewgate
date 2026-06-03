@@ -80,6 +80,20 @@ class FastOrchestrator {
   }
 }
 
+// Models the worst case: a run that IGNORES the abort signal and NEVER settles
+// (a reviewer subprocess that won't die, or unbounded post-verdict work). Without
+// a post-abort settle cap, `await runP` hangs past the OS Stop-hook kill = silent
+// fail-open. The cap must convert this into a fail-closed "did not complete".
+class HungOrchestrator {
+  runIteration(_opts: {
+    runId: string;
+    iter: number;
+    signal?: AbortSignal;
+  }): Promise<IterationResult> {
+    return new Promise(() => {}); // never resolves, never rejects, ignores abort
+  }
+}
+
 function repoWithDirty(): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-deadline-"));
   return dir;
@@ -244,6 +258,28 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
     expect(st.incomplete_runs).toBe(0);
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
   });
+
+  it("fails closed if the run never settles after abort (post-abort settle cap, M-A0.3)", async () => {
+    const repo = repoWithDirty();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDLA");
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: withDeadline(50),
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new HungOrchestrator(),
+      stopHookActive: false,
+      // Tiny cap so the test doesn't wait the 30s default.
+      postAbortSettleMs: 60,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason.toLowerCase()).toContain("did not complete");
+    const st = await state.load();
+    expect(st.incomplete_runs).toBe(1);
+  }, 5_000);
 
   it("imposes no deadline when runTimeoutMs is 0 (disabled)", async () => {
     const repo = repoWithDirty();

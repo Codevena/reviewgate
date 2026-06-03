@@ -52,6 +52,37 @@ describe("buildCustomConfig", () => {
     expect(on.phases?.reputation?.enabled).toBe(true);
   });
 
+  it("wires the OpenRouter upstream-provider into providers.openrouter.openrouterProvider", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [
+          { provider: "openrouter", persona: "security", model: "deepseek/deepseek-v4-pro" },
+        ],
+        critic: null,
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        openrouterProvider: "deepseek",
+      }) as Parameters<typeof defineConfig>[0],
+    );
+    expect(cfg.providers.openrouter?.openrouterProvider).toEqual({ only: ["deepseek"] });
+  });
+
+  it("omits openrouterProvider when not chosen (auto-route)", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [{ provider: "openrouter", persona: "security", model: "x/y" }],
+        critic: null,
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+      }) as Parameters<typeof defineConfig>[0],
+    );
+    expect(cfg.providers.openrouter?.openrouterProvider).toBeUndefined();
+  });
+
   it("maps reviewers + critic (with model) + fpLedger toggles", () => {
     const partial = buildCustomConfig({
       reviewers: [

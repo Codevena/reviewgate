@@ -46,7 +46,7 @@ import { RG_VERSION } from "../version.ts";
 import { aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
-import type { Embedder } from "./brain/embeddings.ts";
+import type { EmbedOptions, Embedder } from "./brain/embeddings.ts";
 import { BrainEngine } from "./brain/engine.ts";
 import { type EgressLog, enrichProposal } from "./brain/enrich.ts";
 import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-coupling.ts";
@@ -1163,6 +1163,9 @@ export class Orchestrator {
             ...(cProviderCfg.auth ? { auth: cProviderCfg.auth } : {}),
             timeoutMs: cProviderCfg.timeoutMs,
             ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(cProviderCfg.openrouterProvider
+              ? { openrouterProvider: cProviderCfg.openrouterProvider }
+              : {}),
           },
           allFindings,
         );
@@ -1316,19 +1319,30 @@ export class Orchestrator {
       const embedder = this.buildEmbedder(brainCfg);
       if (embedder) {
         const judge = this.buildContradictionJudge(repo, brainCfg);
-        await pairActiveFpEntries({
-          fpStore,
-          brainStore: new BrainStore(repo),
-          embedder,
-          embedCfg: {
-            model: brainCfg.embeddings.model,
-            apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
-            timeoutMs: brainCfg.curatorTimeoutMs,
-          },
-          runId: opts.runId,
-          nowIso: now.toISOString(),
-          ...(judge ? { judge } : {}),
-        }).catch(() => undefined);
+        // M-A0.3: bound this post-verdict phase with BOTH a hard timeout AND the
+        // abort signal. Previously it was awaited unbounded — with many active FP
+        // entries the per-entry judge calls could run N×curatorTimeoutMs past the
+        // self-deadline, keeping the gate process alive until the OS killed it
+        // mid-`await runP` with empty stdout (fail-open). withTimeout caps the
+        // aggregate; the signal lets the loop short-circuit immediately on abort.
+        await withTimeout(
+          pairActiveFpEntries({
+            fpStore,
+            brainStore: new BrainStore(repo),
+            embedder,
+            embedCfg: {
+              model: brainCfg.embeddings.model,
+              apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
+              timeoutMs: brainCfg.curatorTimeoutMs,
+            },
+            runId: opts.runId,
+            nowIso: now.toISOString(),
+            ...(judge ? { judge } : {}),
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          }),
+          brainCfg.curatorTimeoutMs,
+          "fp-brain-coupling",
+        ).catch(() => undefined);
       }
     }
 
@@ -1423,6 +1437,7 @@ export class Orchestrator {
           ...(pcfg.apiKeyEnv ? { apiKeyEnv: pcfg.apiKeyEnv } : {}),
           auth: pcfg.auth,
           timeoutMs: brainCfg.curatorTimeoutMs,
+          ...(pcfg.openrouterProvider ? { openrouterProvider: pcfg.openrouterProvider } : {}),
         });
         const first = text.indexOf("{");
         const last = text.lastIndexOf("}");
@@ -1454,11 +1469,12 @@ export class Orchestrator {
     const orAdapter = this.input.adapters.openrouter;
     if (!orAdapter || typeof (orAdapter as { embed?: unknown }).embed !== "function") return null;
     const orEmbed = orAdapter as unknown as {
-      embed(
-        text: string,
-        opts: { model: string; apiKeyEnv: string; timeoutMs?: number },
-      ): Promise<number[]>;
+      embed(text: string, opts: EmbedOptions): Promise<number[]>;
     };
+    // The EMBEDDINGS-level upstream routing (separate from the reviewer's
+    // providers.openrouter.openrouterProvider, whose deepseek pin is for the
+    // reviewer model — it does NOT serve the bge embedding model). Default: none.
+    const embedRouting = brainCfg.embeddings.openrouterProvider;
     return {
       embed: async (texts, cfg) =>
         Promise.all(
@@ -1467,6 +1483,7 @@ export class Orchestrator {
               model: cfg?.model ?? brainCfg.embeddings.model,
               apiKeyEnv: cfg?.apiKeyEnv ?? brainCfg.embeddings.apiKeyEnv,
               ...(cfg?.timeoutMs != null ? { timeoutMs: cfg.timeoutMs } : {}),
+              ...(embedRouting ? { openrouterProvider: embedRouting } : {}),
             }),
           ),
         ),
@@ -1562,6 +1579,7 @@ export class Orchestrator {
               ...(pcfg.apiKeyEnv ? { apiKeyEnv: pcfg.apiKeyEnv } : {}),
               auth: pcfg.auth,
               timeoutMs: brainCfg.curatorTimeoutMs,
+              ...(pcfg.openrouterProvider ? { openrouterProvider: pcfg.openrouterProvider } : {}),
             });
             const first = text.indexOf("{");
             const last = text.lastIndexOf("}");

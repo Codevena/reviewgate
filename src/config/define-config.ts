@@ -16,6 +16,18 @@ export const ProviderConfigSchema = z.object({
   maxTokens: z.number().int().positive().optional(),
   timeoutMs: z.number().int().positive(),
   costPerMTokensUsd: z.number().nonnegative().optional(),
+  // OpenRouter ONLY: upstream-provider routing (OpenRouter's request `provider`
+  // field). Pins which upstream serves the model — e.g. deepseek/deepseek-v4 must
+  // be served by the `deepseek` upstream, not a worse/quantized OpenRouter
+  // alternative. `only`/`order` are passed verbatim; allowFallbacks →
+  // allow_fallbacks. Ignored by non-OpenRouter providers.
+  openrouterProvider: z
+    .object({
+      only: z.array(z.string()).optional(),
+      order: z.array(z.string()).optional(),
+      allowFallbacks: z.boolean().optional(),
+    })
+    .optional(),
 });
 
 const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
@@ -90,6 +102,17 @@ export const ConfigSchema = z.object({
           provider: z.literal("openrouter"),
           model: z.string().default("baai/bge-base-en-v1.5"),
           apiKeyEnv: z.string().default("OPENROUTER_API_KEY"),
+          // Optional OpenRouter upstream routing for the EMBEDDINGS model — separate
+          // from providers.openrouter.openrouterProvider (which pins the REVIEWER's
+          // model, e.g. deepseek for deepseek-v4; that upstream doesn't serve the
+          // bge embedding model, so it must NOT be reused here). Default: auto-route.
+          openrouterProvider: z
+            .object({
+              only: z.array(z.string()).optional(),
+              order: z.array(z.string()).optional(),
+              allowFallbacks: z.boolean().optional(),
+            })
+            .optional(),
         }),
         egressAllowlist: z.array(z.string()).default([]),
         curatorTimeoutMs: z.number().int().positive().default(20_000),
@@ -180,10 +203,11 @@ export const ConfigSchema = z.object({
     // time the gate aborts the in-flight reviewers and FAILS CLOSED (blocks
     // "review did not complete — re-run") instead of being killed silently by
     // Claude Code — a killed Stop hook is non-blocking, so the turn would end
-    // UN-reviewed (fail-open). Default 840_000 (14min): ~60s under the default
-    // 900s hook for teardown + state/audit writes. Raise BOTH together when you
-    // raise the hook timeout. 0 disables the deadline (legacy behavior).
-    runTimeoutMs: z.number().int().nonnegative().default(840_000),
+    // UN-reviewed (fail-open). Default 720_000 (12min): ≥120s under the default
+    // 900s hook for pre-deadline setup (git/state load, OUTSIDE this deadline) +
+    // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
+    // the hook timeout. 0 disables the deadline (legacy behavior).
+    runTimeoutMs: z.number().int().nonnegative().default(720_000),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

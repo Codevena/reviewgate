@@ -31,6 +31,9 @@ function tmpRepo(): string {
 
 describe("git exclude-pathspec is a single shared source", () => {
   it("exports EXCLUDE_PATHSPEC covering reviewgate + antigravity artifacts", () => {
+    // NOTE: .claude/ is deliberately NOT excluded from the diff — in-diff hook
+    // changes are reviewed (F-003); off-diff .claude noise is demoted in the
+    // aggregator (see aggregator-claude-scope.test.ts), not excluded here.
     expect(EXCLUDE_PATHSPEC).toEqual([
       ":(exclude)reviewgate.config.ts",
       ":(exclude).reviewgate",

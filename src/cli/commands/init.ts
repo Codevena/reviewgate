@@ -16,7 +16,9 @@ const HOOKS_TEMPLATE = {
       hooks: [
         {
           type: "command",
-          command: "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger",
+          // Quote the path: CLAUDE_PROJECT_DIR may contain spaces, and an unquoted
+          // ${CLAUDE_PROJECT_DIR}/... word-splits in the shell and fails the hook.
+          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger"',
           timeout: 5,
           async: true,
           statusMessage: "Reviewgate: analyzing…",
@@ -30,7 +32,7 @@ const HOOKS_TEMPLATE = {
       hooks: [
         {
           type: "command",
-          command: "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate",
+          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
           timeout: 900,
         },
       ],
@@ -41,7 +43,7 @@ const HOOKS_TEMPLATE = {
       hooks: [
         {
           type: "command",
-          command: "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset",
+          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset"',
           // Bounded: `reset` is fast + local, but a missing timeout lets a wedged
           // reset stall session start indefinitely. 30s is generous headroom.
           timeout: 30,

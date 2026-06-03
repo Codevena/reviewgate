@@ -6,6 +6,7 @@ import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import { gitHeadSha } from "../utils/git.ts";
 import {
   decisionsDir,
+  deferredFlagPath,
   dirtyFlagPath,
   escalationMdPath,
   pendingJsonPath,
@@ -69,6 +70,7 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   // label to the summary if any of its paths was present.
   const groups: { label: string; paths: string[] }[] = [
     { label: "dirty flag", paths: [dirtyFlagPath(input.repoRoot)] },
+    { label: "deferred review", paths: [deferredFlagPath(input.repoRoot)] },
     { label: "session state", paths: [stateJsonPath(input.repoRoot)] },
     { label: "decisions", paths: [decisionsDir(input.repoRoot)] },
     {

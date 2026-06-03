@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { POST_ABORT_SETTLE_MS_DEFAULT, SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
@@ -277,10 +278,30 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
   const reset = findHook("SessionStart", ".reviewgate/bin/reset");
 
   const runTimeoutS = Math.round(cfg.loop.runTimeoutMs / 1000);
+  // The Stop-hook timeout must exceed runTimeoutMs by enough to cover everything
+  // that runs OUTSIDE the self-deadline: the shared setup budget (config + lock +
+  // git/diff) PLUS the post-abort settle cap. DERIVED from the source-of-truth
+  // budget constants (config/budgets.ts) — not a literal — so a future change to
+  // either budget can't silently invalidate the fail-open margin (M-A0). Too thin
+  // a margin → the OS kills the gate mid-run with empty stdout = fail-open.
+  const MIN_SETUP_MARGIN_S = Math.ceil(
+    (SETUP_BUDGET_MS_DEFAULT + POST_ABORT_SETTLE_MS_DEFAULT) / 1000,
+  );
+  // The invariant (config/budgets.ts) is STRICT: setup + runTimeoutMs + settle <
+  // OS Stop-hook timeout. At margin == setup+settle the sum EQUALS the timeout,
+  // leaving no room for post-settle state/audit/stdout work → boundary fail-open.
+  // So require the margin to STRICTLY exceed MIN_SETUP_MARGIN_S, and recommend an
+  // extra teardown slack on top (the default 900s hook = 720 + 150 + 30 lands here).
+  const TEARDOWN_SLACK_S = 30;
+  const recommendedStopS = runTimeoutS + MIN_SETUP_MARGIN_S + TEARDOWN_SLACK_S;
   const issues: string[] = [];
   if (stop.timeout !== undefined && stop.timeout * 1000 <= cfg.loop.runTimeoutMs) {
     issues.push(
       `Stop-hook timeout (${stop.timeout}s) ≤ gate self-deadline loop.runTimeoutMs (${runTimeoutS}s) → the hook is killed mid-review (non-blocking) and a turn can end UN-reviewed (fail-open)`,
+    );
+  } else if (stop.timeout !== undefined && stop.timeout - runTimeoutS <= MIN_SETUP_MARGIN_S) {
+    issues.push(
+      `Stop-hook timeout (${stop.timeout}s) leaves only ${stop.timeout - runTimeoutS}s margin over loop.runTimeoutMs (${runTimeoutS}s) — at or under the ${MIN_SETUP_MARGIN_S}s needed for pre-deadline setup (git/state load) + post-abort settle. The gate can be OS-killed mid-run (fail-open)`,
     );
   }
   if (reset && reset.timeout === undefined) {
@@ -297,7 +318,7 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
     name: "hook timeouts",
     status: "warn",
     detail: issues.join(" · "),
-    hint: `Keep the Stop-hook timeout ABOVE loop.runTimeoutMs (currently ${runTimeoutS}s). To shorten hangs, lower BOTH together (e.g. runTimeoutMs 420s + Stop-hook timeout 480), and give SessionStart a timeout (e.g. 30).`,
+    hint: `Set the Stop-hook timeout to ≥ ${recommendedStopS}s (loop.runTimeoutMs ${runTimeoutS}s + ${MIN_SETUP_MARGIN_S}s setup margin) in .claude/settings.json. To shorten hangs, lower BOTH together (e.g. runTimeoutMs 420s + Stop-hook timeout 540s), and give SessionStart a timeout (e.g. 30).`,
   };
 }
 
