@@ -13,7 +13,12 @@ import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { flock } from "../../utils/flock.ts";
-import { DIFF_INCOMPLETE_MARKER, collectDiff, collectGitInfo } from "../../utils/git.ts";
+import {
+  DIFF_INCOMPLETE_MARKER,
+  collectDiff,
+  collectGitInfo,
+  gitHeadSha,
+} from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
 import { auditDir, dirtyFlagPath, gateLockPath } from "../../utils/paths.ts";
@@ -87,6 +92,31 @@ export function diffMarkedIncomplete(diff: string): boolean {
   return diff.trimEnd().endsWith(DIFF_INCOMPLETE_MARKER);
 }
 
+// M-A1: cheap "is there anything to review?" probe, run BEFORE the gate lock so a
+// pure read/analysis turn (no dirty.flag AND HEAD unchanged since the last review)
+// short-circuits to allow_stop WITHOUT acquiring the global lock or doing git/
+// pipeline work — removing lock contention for parallel sessions on one checkout.
+// Preserves HEAD-advance review: if HEAD moved past the last reviewed sha (e.g.
+// work committed via Bash with no Edit/Write), returns false so the lock path runs
+// the HEAD-advanced synthesis. State is read WITHOUT the lock — StateStore writes
+// are atomic (tmp+rename) so there's no torn read, and a stale read only ever errs
+// toward taking the lock (safe). headShaFn is injectable for tests.
+export async function stopHasNothingToReview(
+  repoRoot: string,
+  headShaFn: typeof gitHeadSha = gitHeadSha,
+): Promise<boolean> {
+  if (existsSync(dirtyFlagPath(repoRoot))) return false;
+  try {
+    const st = await new StateStore(repoRoot).load();
+    const last = st.last_reviewed_head_sha;
+    if (last === null) return true; // never reviewed + no edits → nothing to review
+    const sha = await headShaFn(repoRoot);
+    return sha === last; // no dirty flag + HEAD unchanged → nothing to review
+  } catch {
+    return false; // any uncertainty → take the lock and let the full path decide
+  }
+}
+
 export async function runGate(input: GateInput): Promise<GateOutput> {
   // ONE setup deadline shared across config-load + lock + git setup (M-A0.2 /
   // codex CRITICAL): the per-phase budgets must not each be the full budget, or
@@ -120,10 +150,21 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     return { exitCode: 0, stdout: "", stderr: "" };
   }
 
-  // hook === 'stop' — serialize the whole pipeline so two stop-hooks on the same
-  // checkout can't run reviews in parallel and interleave writes to pending.*,
-  // decisions, and the dirty flag. Fail CLOSED on contention (never allow an
-  // unreviewed turn through).
+  // hook === 'stop'. M-A1: before taking the (contended, multi-minute) gate lock,
+  // skip entirely when there's nothing to review — a pure read/analysis turn with
+  // no dirty.flag and an unchanged HEAD. This is the common case in a busy
+  // multi-session checkout and must not pay lock contention or git/pipeline cost.
+  if (await stopHasNothingToReview(input.repoRoot)) {
+    return {
+      exitCode: 0,
+      stdout: "",
+      stderr: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
+    };
+  }
+
+  // Otherwise serialize the whole pipeline so two stop-hooks on the same checkout
+  // can't run reviews in parallel and interleave writes to pending.*, decisions,
+  // and the dirty flag. Fail CLOSED on contention (never allow an unreviewed turn).
   let lock: { release: () => Promise<void> };
   // Cap the lock acquire by the REMAINING shared setup budget too, so lock wait +
   // config + state + git can't collectively exceed setupBudgetMs (codex CRITICAL).
