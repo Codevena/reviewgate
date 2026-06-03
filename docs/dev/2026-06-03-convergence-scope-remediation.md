@@ -314,15 +314,31 @@ e.g. minified/edge syntax) and whether layer 2 is in this slice or a follow-up.
 
 ---
 
+### Slice 7 — Label untracked working-tree files in the reviewed diff · **S/M** · low risk
+
+**Field report (hammihan F-001, confident-wrong CRITICAL @0.94):** the reviewer flagged an
+**untracked** working-tree migration as "committed in the diff / will break the deploy". Root
+cause: `collectDiff` (`src/utils/git.ts`) folds untracked non-ignored files into the reviewed
+diff via `git diff --no-index` — correct, a brand-new module IS reviewable — but the reviewer
+can't distinguish a committed/deploy-path change from an untracked local file, so it makes false
+commit/deploy-state claims. **Change:** annotate each untracked file's section with an
+`[UNTRACKED — local working tree, not committed, not in the deploy path]` marker at collection
+time + a prompt-preamble line: "review untracked code for real bugs, but never claim it is
+committed, in the diff to deploy, or that it breaks the deploy." Do NOT drop untracked files —
+they are real review surface. **NOT YET BUILT.**
+
+---
+
 ## Recommended sequencing
 
 0. **Slice 0** (config + doctor) — ✅ **DONE** (branch `feat/convergence-scope-s0`, local commit
    `7b10941`): floor 0.3→0.6, doctor single-reviewer warn. tsc/lint/1381 tests green.
-1. **Slice 6** (grounding demote) — ✅ **DONE, layer 1** (local commit `b5166ec`): deterministic
-   CSS-var + dotted-backtick token-existence demote (CRITICAL→WARN when cited token absent from
-   the diff+changed-file corpus). 7 unit + 1 real-Orchestrator e2e test; tsc/lint/1389 green.
-   Layer 2 (LLM grounding judge for wrong-value claims) deferred per D-5. Cache path verified
-   safe (only PASS/SOFT-PASS are cache-served; a fabricated CRITICAL always re-runs live).
+1. **Slice 6** (grounding demote) — ✅ **DONE, layer 1 (`b5166ec`) + layer 2 (`7e8376a`)**.
+   L1 = deterministic token-existence demote. L2 = opt-in LLM grounding judge for semantic
+   fabrications (flashbuddy invented-XSS class), **verified LIVE** (openrouter/flash →
+   grounded:false on the real XSS claim). 7+9 unit + 1 e2e; tsc/lint/1398 green. D-5 resolved.
+   Cache path safe (only PASS/SOFT-PASS cache-served; a fabricated CRITICAL always re-runs live).
+   **Slice 7** (untracked-diff labeling, hammihan F-001) added above — NOT YET BUILT.
 2. **Slice 1** (cross-iteration memory) — kills the self-contradiction / non-convergence
    symptom. Brainstorm wording first.
 3. **Slice 3** (FP-ledger single-reviewer) — fixes the recurring-FP class; pairs with Slice 0.
