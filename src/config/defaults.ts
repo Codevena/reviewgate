@@ -71,6 +71,9 @@ export const defaultConfig = {
       // so this floor is the only live noise brake — a low value let every lone
       // sub-0.6 nitpick block (field report 2026-06-03).
       confidenceFloor: 0.6,
+      // Maintainer-authored repo facts injected as trusted reviewer context (e.g. "this repo
+      // uses hex color tokens, not HSL"). Default none — set per repo in reviewgate.config.ts.
+      houseRules: [] as string[],
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

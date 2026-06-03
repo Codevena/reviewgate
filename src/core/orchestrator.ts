@@ -59,6 +59,7 @@ import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
+import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
@@ -355,6 +356,9 @@ export class Orchestrator {
     // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
     // untrusted diff fence) AND hashed into the behavior cache key below.
     const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
+    // House rules (maintainer-authored trusted facts). Config-constant; the full config is
+    // already in the cache key, so no separate behavior-hash entry is needed.
+    const houseRulesText = renderHouseRules(this.input.config.phases.review.houseRules ?? []);
 
     // --- M5 Part B1 — FP-ledger store handle (opt-in). The previous-iter
     // decision learn + decay was hoisted UP to LoopDriver.absorbPriorDecisions
@@ -858,6 +862,8 @@ export class Orchestrator {
             docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE,
             "",
           ];
+          // House rules first — the most authoritative trusted context (maintainer ground truth).
+          if (houseRulesText) promptParts.push(houseRulesText, "");
           if (researchText) promptParts.push("## Research context", researchText, "");
           if (brainText) promptParts.push("## Brain context", brainText, "");
           if (fpFewShot)
