@@ -318,9 +318,11 @@ e.g. minified/edge syntax) and whether layer 2 is in this slice or a follow-up.
 
 0. **Slice 0** (config + doctor) — ✅ **DONE** (branch `feat/convergence-scope-s0`, local commit
    `7b10941`): floor 0.3→0.6, doctor single-reviewer warn. tsc/lint/1381 tests green.
-1. **Slice 6** (grounding demote) — **re-prioritized to the front** by the 2/2-hallucinated-
-   CRITICAL evidence: it is the only lever for fabricated correctness/security CRITICALs, which
-   consensus provably cannot fix. Brainstorm token-extraction first.
+1. **Slice 6** (grounding demote) — ✅ **DONE, layer 1** (local commit `b5166ec`): deterministic
+   CSS-var + dotted-backtick token-existence demote (CRITICAL→WARN when cited token absent from
+   the diff+changed-file corpus). 7 unit + 1 real-Orchestrator e2e test; tsc/lint/1389 green.
+   Layer 2 (LLM grounding judge for wrong-value claims) deferred per D-5. Cache path verified
+   safe (only PASS/SOFT-PASS are cache-served; a fabricated CRITICAL always re-runs live).
 2. **Slice 1** (cross-iteration memory) — kills the self-contradiction / non-convergence
    symptom. Brainstorm wording first.
 3. **Slice 3** (FP-ledger single-reviewer) — fixes the recurring-FP class; pairs with Slice 0.
