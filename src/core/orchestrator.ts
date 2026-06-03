@@ -43,6 +43,7 @@ import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
+import { type Adjudication, renderAdjudications } from "./adjudications.ts";
 import { aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
@@ -156,6 +157,10 @@ export interface IterationRunner {
     // §4.3 Fix-Verification: signatures marked accepted/action:"fixed" earlier this
     // cycle → earliest iter. Passed to aggregate() so a recurrence stays blocking.
     claimedFixedSignatures?: Record<string, number>;
+    // S1 cross-iteration memory: prior-iteration adjudications (region + disposition +
+    // agent reason) rendered into the reviewer prompt so it does not re-litigate settled
+    // regions. Hashed into the cache key so a changed adjudication set re-runs the panel.
+    priorAdjudications?: Adjudication[];
   }): Promise<IterationResult>;
 }
 
@@ -343,9 +348,13 @@ export class Orchestrator {
     signal?: AbortSignal;
     cycleRejectedSignatures?: string[];
     claimedFixedSignatures?: Record<string, number>;
+    priorAdjudications?: Adjudication[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
+    // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
+    // untrusted diff fence) AND hashed into the behavior cache key below.
+    const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
 
     // --- M5 Part B1 — FP-ledger store handle (opt-in). The previous-iter
     // decision learn + decay was hoisted UP to LoopDriver.absorbPriorDecisions
@@ -556,6 +565,11 @@ export class Orchestrator {
       docs: contextDocs?.corpus,
       refs: referencedRaw ? createHash("sha256").update(referencedRaw).digest("hex") : undefined,
       personas: personaDelta,
+      // S1: a changed prior-adjudication set must invalidate a cached verdict (else iter N
+      // could serve iter N-1's review that lacked the adjudication context). Empty → omitted.
+      adjudications: adjudicationsText
+        ? createHash("sha256").update(adjudicationsText).digest("hex")
+        : undefined,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -848,6 +862,9 @@ export class Orchestrator {
           if (brainText) promptParts.push("## Brain context", brainText, "");
           if (fpFewShot)
             promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
+          // S1: prior-iteration adjudications — trusted, BEFORE the untrusted diff fence.
+          // renderAdjudications already includes its own header; "" when none.
+          if (adjudicationsText) promptParts.push(adjudicationsText, "");
           // TRUSTED diff-completeness warning — placed BEFORE the untrusted fence so
           // reviewers heed it (inside the fence it reads as inert data). A partial
           // diff must never earn a conclusive clean verdict.

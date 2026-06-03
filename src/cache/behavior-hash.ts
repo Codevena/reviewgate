@@ -40,6 +40,10 @@ export function computeBehaviorHash(input: {
   // from a persona file / config override), as `<id>:<sha256(text)>`. Empty when
   // no override → segment omitted → byte-identical to the legacy hash.
   personas?: string[] | undefined;
+  // S1: sha256 hex of the rendered prior-iteration adjudications injected into the
+  // reviewer prompt — invalidates the cache when that cross-iteration context changes.
+  // Empty/absent → segment omitted (continuity rule).
+  adjudications?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -68,6 +72,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.personas && input.personas.length > 0) {
     out += `|personas:${[...input.personas].sort().join(",")}`;
+  }
+  if (input.adjudications) {
+    out += `|adj:${input.adjudications}`;
   }
   return out;
 }
