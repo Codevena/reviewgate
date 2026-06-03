@@ -57,7 +57,7 @@ import { type CriticVerdict, runCritic } from "./critic.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
-import { groundFindings } from "./grounding.ts";
+import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
@@ -1132,15 +1132,42 @@ export class Orchestrator {
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
     const allFindings = await this.applySymbolSignatures(rawFindings);
-    // S6 grounding (layer 1): demote a CRITICAL that cites a code-shaped token absent
-    // from the corpus the reviewer was actually shown (diff + full content of changed
-    // files) — a fabricated correctness/security CRITICAL otherwise hard-FAILs the gate
-    // unconditionally (aggregator.ts:576-590). Runs before the critic + aggregate so the
-    // demoted severity flows through both. Deterministic, fail-safe, demote-only.
-    const groundedFindings = groundFindings(
-      allFindings,
-      `${this.input.diff}\n${fileContext ?? ""}`,
-    );
+    // S6 grounding corpus = exactly what the reviewer was shown (diff + full content of
+    // changed files). A fabricated correctness/security CRITICAL otherwise hard-FAILs the
+    // gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +
+    // aggregate to let the demoted severity flow through. Both are demote-only + fail-safe.
+    const groundingCorpus = `${this.input.diff}\n${fileContext ?? ""}`;
+    // Layer 1 (deterministic, no LLM): demote a CRITICAL citing a code-shaped token absent
+    // from the corpus.
+    let groundedFindings = groundFindings(allFindings, groundingCorpus);
+    // Layer 2 (LLM judge, opt-in via phases.grounding): demote a CRITICAL whose claim is
+    // SEMANTICALLY fabricated (e.g. an invented `outerHTML` XSS sink where the code only sets
+    // a React aria-label). Only fires when there is a CRITICAL to judge; any error → no demote.
+    const groundingCfg = this.input.config.phases.grounding;
+    if (groundingCfg && groundedFindings.some((f) => f.severity === "CRITICAL")) {
+      const gAdapter = this.input.adapters[groundingCfg.provider];
+      const gProviderCfg = this.input.config.providers[groundingCfg.provider] as
+        | ProviderConfig
+        | undefined;
+      if (gAdapter && gProviderCfg) {
+        const { map } = await judgeGrounding(
+          gAdapter,
+          {
+            model: groundingCfg.model ?? gProviderCfg.model,
+            ...(gProviderCfg.apiKeyEnv ? { apiKeyEnv: gProviderCfg.apiKeyEnv } : {}),
+            ...(gProviderCfg.auth ? { auth: gProviderCfg.auth } : {}),
+            timeoutMs: gProviderCfg.timeoutMs,
+            ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(gProviderCfg.openrouterProvider
+              ? { openrouterProvider: gProviderCfg.openrouterProvider }
+              : {}),
+          },
+          groundedFindings,
+          groundingCorpus,
+        );
+        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map);
+      }
+    }
 
     // --- Optional critic phase (demote-only) ---
     let criticMap: Map<string, CriticVerdict> | undefined;

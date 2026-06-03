@@ -1,4 +1,6 @@
+import type { CompleteOptions, ProviderAdapter } from "../providers/adapter-base.ts";
 import type { Finding } from "../schemas/finding.ts";
+import { safeJsonParse } from "../utils/safe-json.ts";
 
 // S6 grounding (layer 1) — deterministic, no LLM. A reviewer occasionally fabricates
 // a CRITICAL by inventing a code fact (field report 2026-06-03: F-003 claimed a
@@ -8,8 +10,20 @@ import type { Finding } from "../schemas/finding.ts";
 // blocks even a large reviewer panel. This pass demotes a CRITICAL one step (→WARN)
 // when it cites a code-shaped token that is wholly ABSENT from the reviewed corpus
 // (the diff + full content of changed files — exactly what the reviewer was shown),
-// i.e. ungrounded relative to its own input. Layer 2 (an LLM grounding judge) is
-// deferred — it covers semantic fabrications (wrong values) this pass cannot see.
+// i.e. ungrounded relative to its own input. Layer 2 (LLM judge, below) covers the
+// SEMANTIC fabrications this deterministic pass cannot see.
+
+// Demote a CRITICAL one step (→WARN) with a grounding note, keeping details within
+// FindingSchema's 2000-char cap (truncate the original, never the note). Shared by
+// both grounding layers.
+function groundingDemote(f: Finding, note: string): Finding {
+  return {
+    ...f,
+    severity: "WARN" as const,
+    grounding_demoted: true,
+    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+  };
+}
 
 // CSS custom properties: highly distinctive (`--` prefix), safe to extract even from
 // prose. An absent `--foo-bar` is almost certainly invented (CSS vars are defined in
@@ -47,13 +61,121 @@ export function groundFindings(findings: Finding[], corpus: string): Finding[] {
       .join(
         ", ",
       )} not found in the reviewed code — likely fabricated; demoted to advisory. Verify before treating as real.`;
-    // Keep details within FindingSchema's 2000-char cap (truncate the original, never
-    // the note) — same convention as the aggregator's scope/confidence demotes.
-    return {
-      ...f,
-      severity: "WARN" as const,
-      grounding_demoted: true,
-      details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-    };
+    return groundingDemote(f, note);
+  });
+}
+
+// --- S6 grounding (layer 2) — LLM judge. Layer 1 only catches an INVENTED code TOKEN
+// (an identifier/CSS-var absent from the corpus). It cannot catch a SEMANTIC
+// fabrication — e.g. a security CRITICAL claiming an `outerHTML` XSS sink where the
+// code only sets a React `aria-label` (field report 2026-06-03, flashbuddy). This pass
+// hands the actual code + each CRITICAL's claim to an LLM and demotes the finding only
+// when the judge confirms the claim references code/behaviour that is NOT present.
+// Demote-only, CRITICAL-only, fail-safe (any judge error/timeout/garbage → zero
+// demotions, the finding stays blocking). Opt-in via phases.grounding.
+
+export interface GroundingVerdict {
+  grounded: boolean;
+  reason?: string;
+}
+
+export type GroundingJudgeStatus = "ran" | "empty" | "error" | "misconfigured" | "skipped";
+
+export function buildGroundingJudgePrompt(findings: Finding[], corpus: string): string {
+  const list = findings
+    .map(
+      (f) =>
+        `- signature=${f.signature} [${f.severity}/${f.category}] rule=${f.rule_id} ${f.file}:${f.line_start}\n  claim: ${f.message}\n  detail: ${f.details}`,
+    )
+    .join("\n");
+  return [
+    "You are a GROUNDING judge. Each finding below claims a problem in the code shown.",
+    "Decide ONLY whether each claim is GROUNDED in the actual code: does the cited sink,",
+    "symbol, value, or structure REALLY exist and does the code REALLY do what the finding",
+    "says? A finding is UNGROUNDED when it references code that is not present — e.g. it",
+    "claims an `outerHTML`/`innerHTML`/`dangerouslySetInnerHTML` XSS sink where the code only",
+    "sets a React `aria-label`/text prop, invents a value, or mischaracterises the structure.",
+    "You may ONLY judge grounding — never invent findings, never upgrade a severity.",
+    "Be CONSERVATIVE: if you cannot confirm the claim is fabricated, answer grounded:true.",
+    'Output ONLY JSON: {"verdicts":[{"signature":"<sig>","grounded":true|false,"reason":"<short>"}]}',
+    "",
+    "## Code under review (TRUSTED — the diff + full contents of changed files)",
+    corpus,
+    "",
+    "## Findings to judge",
+    list,
+  ].join("\n");
+}
+
+// Tolerant payload extraction: try the whole string, then strip markdown fences / prose
+// and take the outermost {...}. Returns undefined on no parseable object.
+function extractJsonPayload(text: string): unknown {
+  if (typeof text !== "string") return undefined;
+  const direct = safeJsonParse(text.trim());
+  if (direct !== undefined) return direct;
+  const stripped = text.replace(/```(?:json)?/gi, "");
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start >= 0 && end > start) return safeJsonParse(stripped.slice(start, end + 1));
+  return undefined;
+}
+
+export function parseGroundingOutput(text: string): Map<string, GroundingVerdict> {
+  const map = new Map<string, GroundingVerdict>();
+  const parsed = extractJsonPayload(text);
+  // Guard the payload, `.verdicts`, AND each element: untrusted LLM output must never
+  // throw an uncaught TypeError (that would fail OPEN). Mirrors parseCriticOutput.
+  const verdicts =
+    parsed &&
+    typeof parsed === "object" &&
+    Array.isArray((parsed as { verdicts?: unknown }).verdicts)
+      ? (parsed as { verdicts: Array<{ signature?: string; grounded?: unknown; reason?: string }> })
+          .verdicts
+      : [];
+  for (const v of verdicts) {
+    if (!v || typeof v !== "object") continue;
+    if (typeof v.signature === "string" && typeof v.grounded === "boolean") {
+      map.set(v.signature, { grounded: v.grounded, ...(v.reason ? { reason: v.reason } : {}) });
+    }
+  }
+  return map;
+}
+
+// Judges ONLY CRITICAL findings (the unique unconditional hard-FAIL class layer 1 and
+// the other demote passes cannot touch). No CRITICALs → skipped, no LLM call.
+export async function judgeGrounding(
+  adapter: Pick<ProviderAdapter, "complete">,
+  opts: CompleteOptions,
+  findings: Finding[],
+  corpus: string,
+): Promise<{ map: Map<string, GroundingVerdict>; status: GroundingJudgeStatus }> {
+  const criticals = findings.filter((f) => f.severity === "CRITICAL");
+  if (criticals.length === 0) return { map: new Map(), status: "skipped" };
+  if (typeof adapter.complete !== "function") return { map: new Map(), status: "misconfigured" };
+  let text: string;
+  try {
+    text = await adapter.complete(buildGroundingJudgePrompt(criticals, corpus), opts);
+  } catch {
+    return { map: new Map(), status: "error" };
+  }
+  const map = parseGroundingOutput(text);
+  return { map, status: map.size > 0 ? "ran" : "empty" };
+}
+
+// Demote-only, CRITICAL-only, fail-safe. A CRITICAL the judge marked grounded:false →
+// WARN (grounding_demoted). A finding absent from the map, marked grounded:true, or
+// non-CRITICAL is returned UNCHANGED.
+export function applyGroundingJudgeVerdicts(
+  findings: Finding[],
+  map: Map<string, GroundingVerdict>,
+): Finding[] {
+  return findings.map((f) => {
+    if (f.severity !== "CRITICAL") return f;
+    const v = map.get(f.signature);
+    if (!v || v.grounded !== false) return f;
+    const note = `\n\n↓ grounding judge: the claim is not supported by the reviewed code${
+      v.reason ? ` — ${v.reason}` : ""
+    }; likely fabricated, demoted to advisory.`;
+    return groundingDemote(f, note);
   });
 }

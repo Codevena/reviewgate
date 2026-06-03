@@ -1,0 +1,137 @@
+import { describe, expect, it } from "bun:test";
+import {
+  applyGroundingJudgeVerdicts,
+  buildGroundingJudgePrompt,
+  judgeGrounding,
+  parseGroundingOutput,
+} from "../../src/core/grounding.ts";
+import type { Finding } from "../../src/schemas/finding.ts";
+
+function mk(over: Partial<Finding> = {}): Finding {
+  return {
+    id: "F-001",
+    signature: "sig-1",
+    severity: "CRITICAL",
+    category: "security",
+    rule_id: "xss-in-unsafe-outerhtml",
+    file: "src/page.tsx",
+    line_start: 348,
+    line_end: 348,
+    message: "XSS: user.name interpolated into outerHTML",
+    details: "the aria-label interpolates user.name unsanitized",
+    reviewer: { provider: "codex", model: "m", persona: "security" },
+    confidence: 0.9,
+    consensus: "singleton",
+    ...over,
+  };
+}
+
+const CORPUS = "<button aria-label={`Delete ${user.name}`}>x</button>";
+
+describe("grounding judge (S6 layer 2)", () => {
+  it("buildGroundingJudgePrompt includes the corpus, the finding signature, and asks for grounded JSON", () => {
+    const p = buildGroundingJudgePrompt([mk({ signature: "sig-xss" })], CORPUS);
+    expect(p).toContain("sig-xss");
+    expect(p).toContain("aria-label");
+    expect(p).toContain("grounded");
+  });
+
+  it("parseGroundingOutput parses verdicts and tolerates markdown fences", () => {
+    const m = parseGroundingOutput(
+      '```json\n{"verdicts":[{"signature":"s1","grounded":false,"reason":"no outerHTML sink"}]}\n```',
+    );
+    expect(m.get("s1")?.grounded).toBe(false);
+    expect(m.get("s1")?.reason).toBe("no outerHTML sink");
+  });
+
+  it("parseGroundingOutput returns empty on garbage (fail-safe)", () => {
+    expect(parseGroundingOutput("not json").size).toBe(0);
+    expect(parseGroundingOutput("null").size).toBe(0);
+    expect(parseGroundingOutput('{"verdicts":42}').size).toBe(0);
+    expect(parseGroundingOutput('{"verdicts":[null,42]}').size).toBe(0);
+  });
+
+  it("judgeGrounding only sends CRITICAL findings to the judge and returns their verdicts", async () => {
+    let captured = "";
+    const adapter = {
+      complete: async (prompt: string) => {
+        captured = prompt;
+        return '{"verdicts":[{"signature":"sig-xss","grounded":false,"reason":"aria-label is not an HTML sink"}]}';
+      },
+    };
+    const findings = [
+      mk({ signature: "sig-xss", severity: "CRITICAL" }),
+      mk({ signature: "sig-warn", severity: "WARN" }),
+    ];
+    const { map, status } = await judgeGrounding(adapter, { model: "x" }, findings, CORPUS);
+    expect(status).toBe("ran");
+    expect(map.get("sig-xss")?.grounded).toBe(false);
+    expect(captured).toContain("sig-xss");
+    expect(captured).not.toContain("sig-warn");
+  });
+
+  it("judgeGrounding is fail-safe: a thrown adapter yields an empty map + error status", async () => {
+    const adapter = {
+      complete: async () => {
+        throw new Error("boom");
+      },
+    };
+    const { map, status } = await judgeGrounding(
+      adapter,
+      { model: "x" },
+      [mk({ severity: "CRITICAL" })],
+      CORPUS,
+    );
+    expect(status).toBe("error");
+    expect(map.size).toBe(0);
+  });
+
+  it("judgeGrounding skips (no LLM call) when there are no CRITICAL findings", async () => {
+    let called = false;
+    const adapter = {
+      complete: async () => {
+        called = true;
+        return "{}";
+      },
+    };
+    const { status } = await judgeGrounding(
+      adapter,
+      { model: "x" },
+      [mk({ severity: "WARN" })],
+      CORPUS,
+    );
+    expect(status).toBe("skipped");
+    expect(called).toBe(false);
+  });
+
+  it("applyGroundingJudgeVerdicts demotes an ungrounded CRITICAL to WARN", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "CRITICAL" })],
+      new Map([["s1", { grounded: false, reason: "not an HTML sink" }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.grounding_demoted).toBe(true);
+    expect(out[0]?.details).toContain("not an HTML sink");
+  });
+
+  it("applyGroundingJudgeVerdicts keeps grounded CRITICALs and findings absent from the map", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [
+        mk({ signature: "s1", severity: "CRITICAL" }),
+        mk({ signature: "s2", severity: "CRITICAL" }),
+      ],
+      new Map([["s1", { grounded: true }]]),
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[1]?.severity).toBe("CRITICAL");
+  });
+
+  it("applyGroundingJudgeVerdicts never touches a non-CRITICAL finding even if mapped ungrounded", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "WARN" })],
+      new Map([["s1", { grounded: false }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
+  });
+});

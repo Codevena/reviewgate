@@ -81,6 +81,12 @@ export const defaultConfig = {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
       model?: string;
     },
+    // S6 grounding layer 2 (LLM judge) — default OFF (opt-in). Enable with a cheap
+    // provider (e.g. openrouter/deepseek-v4-flash) to demote fabricated CRITICALs.
+    grounding: null as null | {
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+      model?: string;
+    },
     brain: null as null | {
       enabled: boolean;
       maxPromptTokens: number;

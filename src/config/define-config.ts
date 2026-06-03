@@ -91,6 +91,13 @@ export const ConfigSchema = z.object({
       .object({ provider: ProviderId, model: z.string().optional() })
       .nullable()
       .default(null),
+    // S6 grounding layer 2 (LLM judge): demote a CRITICAL whose claim is not supported
+    // by the actual code (a fabricated XSS sink, invented value). Demote-only,
+    // fail-safe, opt-in. null = off.
+    grounding: z
+      .object({ provider: ProviderId, model: z.string().optional() })
+      .nullable()
+      .default(null),
     brain: z
       .object({
         enabled: z.boolean(),
