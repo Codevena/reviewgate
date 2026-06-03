@@ -57,6 +57,7 @@ import { type CriticVerdict, runCritic } from "./critic.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
+import { groundFindings } from "./grounding.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
@@ -1131,6 +1132,15 @@ export class Orchestrator {
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
     const allFindings = await this.applySymbolSignatures(rawFindings);
+    // S6 grounding (layer 1): demote a CRITICAL that cites a code-shaped token absent
+    // from the corpus the reviewer was actually shown (diff + full content of changed
+    // files) — a fabricated correctness/security CRITICAL otherwise hard-FAILs the gate
+    // unconditionally (aggregator.ts:576-590). Runs before the critic + aggregate so the
+    // demoted severity flows through both. Deterministic, fail-safe, demote-only.
+    const groundedFindings = groundFindings(
+      allFindings,
+      `${this.input.diff}\n${fileContext ?? ""}`,
+    );
 
     // --- Optional critic phase (demote-only) ---
     let criticMap: Map<string, CriticVerdict> | undefined;
@@ -1144,7 +1154,7 @@ export class Orchestrator {
     // (no usage envelope). Kept as a named field for the IterationResult shape.
     const criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
-    if (criticCfg && allFindings.length > 0) {
+    if (criticCfg && groundedFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
       const cProviderCfg = this.input.config.providers[criticCfg.provider] as
         | ProviderConfig
@@ -1167,7 +1177,7 @@ export class Orchestrator {
               ? { openrouterProvider: cProviderCfg.openrouterProvider }
               : {}),
           },
-          allFindings,
+          groundedFindings,
         );
         criticMap = r.map.size > 0 ? r.map : undefined;
         criticInfo = r.info;
@@ -1216,7 +1226,7 @@ export class Orchestrator {
     }
 
     const agg = aggregate({
-      findings: allFindings,
+      findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
       // (two slots → same provider:persona) must not satisfy the singleton-
       // CRITICAL failsafe as a phantom multi-reviewer panel.
