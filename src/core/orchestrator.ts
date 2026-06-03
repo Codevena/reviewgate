@@ -159,7 +159,7 @@ export interface IterationRunner {
   }): Promise<IterationResult>;
 }
 
-const REVIEW_PROMPT_PREAMBLE = [
+export const REVIEW_PROMPT_PREAMBLE = [
   "You are reviewing a code diff. Output ONLY a single JSON object — no prose, no",
   "markdown fences — of exactly this shape:",
   '{"verdict":"PASS|FAIL","findings":[{"severity":"CRITICAL|WARN|INFO",',
@@ -178,6 +178,13 @@ const REVIEW_PROMPT_PREAMBLE = [
   "full-file content — failure to do so produces false-positive findings.",
   "Report issues INTRODUCED OR AFFECTED BY THIS diff. Pre-existing issues in",
   "unchanged code (outside the changed lines) are out of scope — do not report them.",
+  // S7 (hammihan F-001): correct the reviewer's commit/deploy mental model — an untracked
+  // working-tree file was flagged as "committed / breaks the deploy" (confident-wrong CRITICAL).
+  "This diff reflects WORKING-TREE state — committed, staged AND untracked new files together.",
+  "It is NOT a record of what is committed or deployed. An untracked/new file is local-only and",
+  "may never reach the deploy path. Review every change for real CODE issues, but do NOT assert",
+  "that a file is 'committed', 'already in the deploy diff', or that it 'breaks the deploy' — you",
+  "cannot determine commit/deploy state from this diff. Judge the code on its own merits.",
 ].join("\n");
 
 const DOC_REVIEW_PROMPT_PREAMBLE = [
