@@ -87,6 +87,60 @@ export async function gitHeadSha(repoRoot: string): Promise<string | null> {
   return r.status === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
 }
 
+// True iff `ancestor` is an ancestor of (or equal to) `descendant`. False if not,
+// or if the check can't run (missing ref, not a repo). Used to detect a rebase:
+// when the captured review base is no longer an ancestor of HEAD, history was
+// rewritten (M-A5) and diffing against it would pull in foreign commits.
+export async function isAncestor(
+  repoRoot: string,
+  ancestor: string,
+  descendant: string,
+): Promise<boolean> {
+  const r = await git(repoRoot, ["merge-base", "--is-ancestor", ancestor, descendant]);
+  return r.status === 0;
+}
+
+// The branch's divergence point from the INTEGRATION branch it was rebased onto —
+// the base that excludes the foreign commits a rebase pulled in (rebase-stable).
+// It is the MOST RECENT (deepest) merge-base of HEAD with any common integration
+// branch (the remote default branch, origin/main|master, local main|master).
+// Most-recent = excludes the MOST foreign commits while staying a valid ancestor
+// of HEAD. DELIBERATELY does NOT use the configured upstream `@{u}`: that is often
+// `origin/<feature>` (the branch's OWN remote ref), whose merge-base sits AFTER
+// some of the branch's own commits → using it would DROP committed branch-owned
+// work from review (codex). Merge-bases that equal HEAD are skipped (a ref at/ahead
+// of HEAD gives an empty diff). Null when none resolve (detached HEAD, no remote,
+// no such branches) — the caller then falls back to merge-base(HEAD, stale-base).
+export async function mergeBaseUpstream(repoRoot: string): Promise<string | null> {
+  const head = await gitHeadSha(repoRoot);
+  const candidates = ["origin/HEAD", "origin/main", "origin/master", "main", "master"];
+  let best: string | null = null;
+  for (const ref of candidates) {
+    const r = await git(repoRoot, ["merge-base", "HEAD", ref]);
+    const sha = r.stdout.trim();
+    if (r.status !== 0 || !/^[0-9a-f]{40}$/i.test(sha)) continue;
+    // Skip a merge-base that IS HEAD: it means the ref is HEAD or ahead of it (e.g.
+    // we're ON the integration branch, or @{u} already points at the rewritten
+    // HEAD), so diffing against it would be EMPTY → committed work hidden
+    // (under-review). The caller then falls back to merge-base(HEAD, stale-base).
+    if (head !== null && sha === head) continue;
+    // Keep the more-recent merge-base (the one that is a DESCENDANT of the current
+    // best), since a deeper divergence point excludes more foreign commits. All
+    // merge-bases with HEAD are ancestors of HEAD, so this never under-reviews.
+    if (best === null || (await isAncestor(repoRoot, best, sha))) best = sha;
+  }
+  return best;
+}
+
+// The merge-base (common ancestor) of two commits: `git merge-base <a> <b>`. It is
+// an ancestor of both, so using it as a diff base never under-reviews `a`'s side.
+// Null if they share no common ancestor (unrelated histories) or it can't run.
+export async function mergeBase(repoRoot: string, a: string, b: string): Promise<string | null> {
+  const r = await git(repoRoot, ["merge-base", a, b]);
+  const sha = r.stdout.trim();
+  return r.status === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
 // `baseSha` (optional) — the commit to diff the working tree against. When the
 // agent commits work mid-batch (commit-per-task), `git diff HEAD` is empty at
 // turn-end so the gate would review nothing; diffing against the pre-batch base

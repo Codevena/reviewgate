@@ -18,6 +18,9 @@ import {
   collectDiff,
   collectGitInfo,
   gitHeadSha,
+  isAncestor,
+  mergeBase,
+  mergeBaseUpstream,
 } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
@@ -306,6 +309,43 @@ export async function runGateSafe(
   }
 }
 
+// M-A5: resolve the effective review base, correcting for a rebase. If the captured
+// base is still an ancestor of HEAD it is used as-is (the normal commit-per-task
+// case). If NOT, a rebase rewrote history — diffing against it would pull in the
+// foreign commits the rebase landed (e.g. a parallel merged PR); re-base on the
+// branch's upstream divergence point (rebase-stable), or null (working-tree-only)
+// when there is no upstream. Deps are injectable for tests.
+export async function resolveReviewBase(
+  repoRoot: string,
+  base: string | null,
+  deps?: {
+    isAncestor?: typeof isAncestor;
+    mergeBaseUpstream?: typeof mergeBaseUpstream;
+    mergeBase?: typeof mergeBase;
+  },
+): Promise<string | null> {
+  if (base === null) return null;
+  const isAnc = deps?.isAncestor ?? isAncestor;
+  const mbu = deps?.mergeBaseUpstream ?? mergeBaseUpstream;
+  const mb = deps?.mergeBase ?? mergeBase;
+  if (await isAnc(repoRoot, base, "HEAD")) return base; // normal: base still valid
+  // Rebase/amend rewrote history → the captured base is no longer an ancestor of
+  // HEAD. Prefer the upstream divergence point (excludes the foreign commits a
+  // rebase pulled in). With NO upstream, do NOT narrow to working-tree-only — that
+  // would DROP committed branch-owned work (codex CRITICAL). Over-review from the
+  // common ancestor of the stale base and HEAD (always a valid ancestor of HEAD),
+  // or — unrelated histories — the stale base itself. Over-review is acceptable;
+  // under-review (missing committed changes) is not.
+  const fork = await mbu(repoRoot);
+  if (fork !== null) return fork;
+  // No upstream. Use the common ancestor of the stale base and HEAD (a verified
+  // ancestor of HEAD → over-reviews, never under-reviews). If there is NO common
+  // ancestor (unrelated histories — pathological), return null (working-tree-only)
+  // rather than the stale base: a non-ancestor base makes `git diff base..HEAD` a
+  // TREE comparison that can HIDE real changes via coincidental matches (codex).
+  return await mb(repoRoot, "HEAD", base);
+}
+
 // Pre-deadline setup: resolve the review base + collect the diff (incl. the
 // HEAD-advanced synthesis path). Extracted so runStopGate can bound it with a
 // setup budget (M-A0.2). The git helpers are injected so the budget path can be
@@ -369,6 +409,15 @@ async function gatherReviewContext(
         /* flag persistence failed — current review still runs on the in-memory base */
       }
     }
+  }
+  // M-A5: correct the resolved base for a rebase (covers both the dirty.flag base
+  // and the HEAD-advanced `last`). If it changed, the captured base was stale
+  // (history rewritten) — drop any eagerly-precomputed diff and recompute against
+  // the corrected base so the review excludes foreign commits a rebase pulled in.
+  const correctedBase = await resolveReviewBase(input.repoRoot, reviewBase);
+  if (correctedBase !== reviewBase) {
+    reviewBase = correctedBase;
+    precomputedDiff = undefined;
   }
   const diff = precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase));
   return { gitInfo, diff, reviewBase };
