@@ -67,8 +67,10 @@ export const defaultConfig = {
       // Uncorroborated findings a reviewer rated below this confidence are demoted
       // to INFO (advisory) — they no longer block as hard as confident ones.
       // CRITICAL security/correctness and corroborated findings stay blocking. Set
-      // 0 to disable.
-      confidenceFloor: 0.3,
+      // 0 to disable. 0.6 (S0): with a single reviewer NOTHING is ever corroborated,
+      // so this floor is the only live noise brake — a low value let every lone
+      // sub-0.6 nitpick block (field report 2026-06-03).
+      confidenceFloor: 0.6,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
