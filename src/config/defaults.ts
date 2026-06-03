@@ -31,9 +31,16 @@ export const defaultConfig = {
       apiKeyEnv: "OPENROUTER_API_KEY",
       // Production default OpenRouter model. Users override per project with any
       // slug from https://openrouter.ai/models (and choose OAuth vs OpenRouter
-      // per provider). Verified end-to-end (CRITICAL timing finding, ~38s).
-      model: "deepseek/deepseek-v4-pro",
+      // per provider). `flash` is ~6× cheaper than `-pro` and cheap on every
+      // upstream, so the un-pinned default can't bleed money the way -pro did.
+      model: "deepseek/deepseek-v4-flash",
       timeoutMs: 300_000,
+      // NOTE: the upstream pin (openrouterProvider) is DELIBERATELY NOT set here.
+      // defineConfig deep-merges defaults under the user config, so a default pin
+      // would leak onto a user's overridden model (e.g. wizard "auto-route") and
+      // mis-route it. The pin is MODEL-COUPLED, so it lives in the explicit configs
+      // that also fix the model: the init scaffold + reviewgate.config.ts pin
+      // `alibaba` (cheapest full-precision upstream for deepseek-v4-flash).
     },
     // opencode CLI; uses its own configured provider creds; model is provider/model format
     opencode: {

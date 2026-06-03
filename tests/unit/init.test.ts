@@ -172,5 +172,9 @@ describe("runInit", () => {
     // openrouter must be enabled — the brain's embeddings depend on it.
     expect(cfg.providers.openrouter?.enabled).toBe(true);
     expect(cfg.phases.brain?.embeddings.provider).toBe("openrouter");
+    // The scaffold MUST pin the upstream provider, else OpenRouter routes
+    // deepseek/* to an arbitrary (expensive) upstream — real money.
+    expect(cfg.providers.openrouter?.model).toBe("deepseek/deepseek-v4-flash");
+    expect(cfg.providers.openrouter?.openrouterProvider).toEqual({ only: ["alibaba"] });
   });
 });

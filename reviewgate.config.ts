@@ -30,13 +30,15 @@ export default {
     openrouter: {
       enabled: true,
       auth: "openrouter",
-      model: "deepseek/deepseek-v4-pro",
+      model: "deepseek/deepseek-v4-flash",
       apiKeyEnv: "OPENROUTER_API_KEY",
       timeoutMs: 300_000,
-      // Pin the upstream: deepseek/deepseek-v4-pro must be served by the official
-      // `deepseek` provider, not an arbitrary (often worse/quantized) OpenRouter
-      // alternative. Maps to OpenRouter's request `provider: { only: ["deepseek"] }`.
-      openrouterProvider: { only: ["deepseek"] },
+      // Pin the upstream: WITHOUT this OpenRouter load-balances deepseek/* to an
+      // arbitrary upstream — often the priciest (DigitalOcean/Baidu), ~13× alibaba.
+      // `alibaba` = cheapest full-precision (non-fp8) upstream for deepseek-v4-flash
+      // at full 1M ctx. Maps to OpenRouter's `provider: { only: ["alibaba"] }`.
+      // MODEL-COUPLED: alibaba is cheap for -flash but EXPENSIVE for -pro.
+      openrouterProvider: { only: ["alibaba"] },
     },
     // opencode is reserved here as the independent brain curator (NOT a
     // reviewer) — keeps the LLM judge out of the panel it adjudicates.
