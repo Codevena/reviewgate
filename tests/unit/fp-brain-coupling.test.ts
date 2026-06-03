@@ -56,6 +56,26 @@ describe("pairActiveFpEntries", () => {
     expect(brain?.linked_fp_id).toBe(fp?.id);
   });
 
+  it("respects an already-aborted signal — does no pairing (M-A0.3)", async () => {
+    // The self-deadline aborts the run; this post-verdict gravy must short-circuit
+    // so it can't keep the gate process alive past the OS Stop-hook kill (fail-open).
+    const repo = mkdtempSync(join(tmpdir(), "rg-b3-abort-"));
+    const fpStore = await seedActive(repo);
+    const brainStore = new BrainStore(repo);
+    const ac = new AbortController();
+    ac.abort();
+    const res = await pairActiveFpEntries({
+      fpStore,
+      brainStore,
+      embedder: fakeEmbedder([1, 0]),
+      runId: "run1",
+      nowIso: "2026-05-21T00:00:00Z",
+      signal: ac.signal,
+    });
+    expect(res.paired).toBe(0);
+    expect((await brainStore.snapshot()).entries).toHaveLength(0);
+  });
+
   it("is idempotent — an already-linked entry is not paired again", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-b3-idem-"));
     const fpStore = await seedActive(repo);

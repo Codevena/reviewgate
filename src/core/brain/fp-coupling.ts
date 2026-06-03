@@ -33,7 +33,12 @@ export async function pairActiveFpEntries(input: {
   runId: string;
   nowIso: string;
   judge?: ContradictionJudge;
+  // M-A0.3: the gate self-deadline aborts the run via this signal. This phase is
+  // post-verdict gravy — if aborted, bail out so it can't keep the gate process
+  // alive past the OS Stop-hook kill (which would leave empty stdout = fail-open).
+  signal?: AbortSignal;
 }): Promise<{ paired: number; contradictions: number }> {
+  if (input.signal?.aborted) return { paired: 0, contradictions: 0 };
   const snap = await input.fpStore.snapshot();
   const toPair = snap.entries.filter(
     (e) => e.stage !== "candidate" && !e.linked_brain_id && !e.contradicts_brain_id,
@@ -82,6 +87,9 @@ export async function pairActiveFpEntries(input: {
   let paired = 0;
   let contradictions = 0;
   for (let i = 0; i < toPair.length; i++) {
+    // Abort checkpoint: stop the per-entry judge/embed loop the moment the run is
+    // aborted, so the post-verdict phase can't overrun the OS Stop-hook deadline.
+    if (input.signal?.aborted) break;
     const e = toPair[i] as FpLedgerEntry;
 
     // B3b: skip-and-flag if this known-FP contradicts a pre-existing active brain

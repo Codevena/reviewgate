@@ -12,7 +12,7 @@ import {
   runFpShow,
   runFpUnpin,
 } from "./commands/fp.ts";
-import { runGate } from "./commands/gate.ts";
+import { runGate, runGateSafe } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
 import { runReport } from "./commands/report.ts";
@@ -45,19 +45,36 @@ const gate = defineCommand({
   meta: { name: "gate", description: "Run the review gate (internal hook entry point)" },
   args: { hook: { type: "string", default: "stop" } },
   async run({ args }) {
-    // Never block on an interactive TTY (a human running `gate --hook reset` by
-    // hand) — only the piped hook payload is read. See readHookStdin.
-    const raw = await readHookStdin();
-    const res = await runGate({
-      repoRoot: process.cwd(),
-      hook: args.hook as "trigger" | "stop" | "reset",
-      hookStdinRaw: raw,
+    const hook = args.hook as "trigger" | "stop" | "reset";
+    // Backstop (M-A0.1): a truly uncaught exception (Node/Bun's default is to
+    // terminate the process → EMPTY stdout → Claude Code reads the Stop hook as
+    // "allow" → un-reviewed turn = fail-OPEN). For a STOP hook, intercept it and
+    // emit a block instead (fail CLOSED — strictly better than dying silently).
+    // Only for `stop`; trigger/reset are not the review and must not block.
+    if (hook === "stop") {
+      process.on("uncaughtException", (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        const reason = `🔴 Reviewgate · GATE CLOSED — internal error: ${msg}. Run \`reviewgate doctor\`; end your turn again to retry.`;
+        try {
+          process.stdout.write(JSON.stringify({ decision: "block", reason }));
+        } catch {
+          /* stdout gone — nothing more we can do */
+        }
+        process.exit(0);
+      });
+    }
+    // runGateSafe wraps the WHOLE pipeline (incl. readHookStdin) in a
+    // fail-closed catch so no awaited throw can escape to citty. Never block on
+    // an interactive TTY — only the piped hook payload is read (see readHookStdin).
+    const res = await runGateSafe({ repoRoot: process.cwd(), hook, hookStdinRaw: "" }, async () => {
+      const raw = await readHookStdin();
+      return runGate({ repoRoot: process.cwd(), hook, hookStdinRaw: raw });
     });
     if (res.stdout) process.stdout.write(res.stdout);
     if (res.stderr) process.stderr.write(res.stderr);
     // Interactive-only confirmation (a human running the hook by hand); silent
     // under a real piped hook so the hook protocol is never polluted.
-    const feedback = hookFeedbackMessage(args.hook as string, Boolean(process.stdout.isTTY));
+    const feedback = hookFeedbackMessage(hook, Boolean(process.stdout.isTTY));
     if (feedback) process.stdout.write(`${feedback}\n`);
     process.exit(res.exitCode);
   },

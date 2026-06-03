@@ -129,7 +129,11 @@ export const defaultConfig = {
     acknowledgePass: false,
     // Self-imposed run deadline (ms), strictly below the Stop-hook timeout. The
     // gate aborts + fails closed rather than being killed silently. See schema.
-    runTimeoutMs: 840_000,
+    // M-A0.4: lowered 840s→720s so the default leaves a ≥120s margin under the
+    // 900s Stop-hook timeout for pre-deadline setup (config + git + state load,
+    // which can run long under index.lock contention) + post-abort settle —
+    // otherwise the OS kills the gate mid-run with empty stdout = fail-open.
+    runTimeoutMs: 720_000,
   },
   sandbox: {
     // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished

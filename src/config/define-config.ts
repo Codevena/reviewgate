@@ -180,10 +180,11 @@ export const ConfigSchema = z.object({
     // time the gate aborts the in-flight reviewers and FAILS CLOSED (blocks
     // "review did not complete — re-run") instead of being killed silently by
     // Claude Code — a killed Stop hook is non-blocking, so the turn would end
-    // UN-reviewed (fail-open). Default 840_000 (14min): ~60s under the default
-    // 900s hook for teardown + state/audit writes. Raise BOTH together when you
-    // raise the hook timeout. 0 disables the deadline (legacy behavior).
-    runTimeoutMs: z.number().int().nonnegative().default(840_000),
+    // UN-reviewed (fail-open). Default 720_000 (12min): ≥120s under the default
+    // 900s hook for pre-deadline setup (git/state load, OUTSIDE this deadline) +
+    // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
+    // the hook timeout. 0 disables the deadline (legacy behavior).
+    runTimeoutMs: z.number().int().nonnegative().default(720_000),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

@@ -29,7 +29,7 @@ const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,To
 // codex is quota-locked and claude is the only working fallback. `claude -p` is buffered
 // (no progress signal), so a wall cap cannot tell "slow" from "hung"; the configured
 // cfg.timeoutMs (300s default, user-tunable) is therefore the correct single bound, and
-// the gate self-deadline (runTimeoutMs=840s) backstops the whole failover chain. Do not
+// the gate self-deadline (runTimeoutMs=720s) backstops the whole failover chain. Do not
 // re-add a tighter hardcoded cap without evidence that real reviews finish well under it.
 
 // Hermetic reviewer flags. The hook-free temp CWD only escapes PROJECT-level

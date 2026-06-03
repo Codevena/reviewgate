@@ -1316,19 +1316,30 @@ export class Orchestrator {
       const embedder = this.buildEmbedder(brainCfg);
       if (embedder) {
         const judge = this.buildContradictionJudge(repo, brainCfg);
-        await pairActiveFpEntries({
-          fpStore,
-          brainStore: new BrainStore(repo),
-          embedder,
-          embedCfg: {
-            model: brainCfg.embeddings.model,
-            apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
-            timeoutMs: brainCfg.curatorTimeoutMs,
-          },
-          runId: opts.runId,
-          nowIso: now.toISOString(),
-          ...(judge ? { judge } : {}),
-        }).catch(() => undefined);
+        // M-A0.3: bound this post-verdict phase with BOTH a hard timeout AND the
+        // abort signal. Previously it was awaited unbounded — with many active FP
+        // entries the per-entry judge calls could run N×curatorTimeoutMs past the
+        // self-deadline, keeping the gate process alive until the OS killed it
+        // mid-`await runP` with empty stdout (fail-open). withTimeout caps the
+        // aggregate; the signal lets the loop short-circuit immediately on abort.
+        await withTimeout(
+          pairActiveFpEntries({
+            fpStore,
+            brainStore: new BrainStore(repo),
+            embedder,
+            embedCfg: {
+              model: brainCfg.embeddings.model,
+              apiKeyEnv: brainCfg.embeddings.apiKeyEnv,
+              timeoutMs: brainCfg.curatorTimeoutMs,
+            },
+            runId: opts.runId,
+            nowIso: now.toISOString(),
+            ...(judge ? { judge } : {}),
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          }),
+          brainCfg.curatorTimeoutMs,
+          "fp-brain-coupling",
+        ).catch(() => undefined);
       }
     }
 

@@ -1,6 +1,7 @@
 // src/core/loop-driver.ts
 import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
+import { POST_ABORT_SETTLE_MS_DEFAULT } from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type DecisionEntry, DecisionEntrySchema } from "../schemas/decision.ts";
@@ -37,6 +38,10 @@ const MIN_DECISIONS_FOR_REJECT_RATE = 4;
 // permanently-hanging provider can't loop the block→re-run forever.
 const MAX_CONSECUTIVE_INCOMPLETE_RUNS = 2;
 
+// POST_ABORT_SETTLE_MS_DEFAULT (the cap for awaiting the run to settle after the
+// self-deadline aborts it — see its definition in config/budgets.ts) lives with
+// SETUP_BUDGET_MS_DEFAULT so the doctor can derive its fail-open margin from both.
+
 // Escalation reasons where the REVIEWER (or a transient provider outage) is the
 // problem, not the agent's code. Blocking there punishes correct agent behavior
 // (e.g. consistently rejecting a noisy reviewer's findings) and holds the dev
@@ -64,6 +69,9 @@ export interface LoopInput {
   // Current HEAD sha. When it differs from the last reviewed sha, a commit
   // landed and the gate re-arms (fresh budget for the next batch).
   headSha?: string;
+  // Post-abort settle cap (ms). Defaults to POST_ABORT_SETTLE_MS_DEFAULT; tests
+  // inject a tiny value to exercise the hung-run fail-closed path quickly (M-A0.3).
+  postAbortSettleMs?: number;
 }
 
 export type LoopDecision =
@@ -806,10 +814,23 @@ export class LoopDriver {
         // The post-verdict gravy is timeout-bounded (curatorTimeoutMs), and
         // runTimeoutMs sits below the Stop-hook timeout with margin to absorb it.
         ac.abort();
-        const settledRun = await runP.then(
-          (r) => ({ ok: true as const, r }),
-          () => null,
-        );
+        // Bound the post-abort settle: if runP never settles (a reviewer that
+        // ignores the abort / unbounded gravy), do NOT await it forever — that
+        // would hang past the OS Stop-hook kill = silent fail-open (M-A0.3).
+        // Race the settle against a cap; if the cap wins, treat as incomplete.
+        const settleCap = this.i.postAbortSettleMs ?? POST_ABORT_SETTLE_MS_DEFAULT;
+        let settleTimer: ReturnType<typeof setTimeout> | undefined;
+        const settledRun = await Promise.race([
+          runP.then(
+            (r) => ({ ok: true as const, r }),
+            () => null,
+          ),
+          new Promise<null>((resolve) => {
+            settleTimer = setTimeout(() => resolve(null), settleCap);
+          }),
+        ]).finally(() => {
+          if (settleTimer) clearTimeout(settleTimer);
+        });
         if (!settledRun) {
           return await this.handleIncompleteRun(state, runTimeoutMs);
         }
