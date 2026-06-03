@@ -43,6 +43,7 @@ import type { HostTier } from "../utils/host-model.ts";
 import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
+import { type Adjudication, renderAdjudications } from "./adjudications.ts";
 import { aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
@@ -57,6 +58,8 @@ import { type CriticVerdict, runCritic } from "./critic.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
+import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
+import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
@@ -155,10 +158,14 @@ export interface IterationRunner {
     // §4.3 Fix-Verification: signatures marked accepted/action:"fixed" earlier this
     // cycle → earliest iter. Passed to aggregate() so a recurrence stays blocking.
     claimedFixedSignatures?: Record<string, number>;
+    // S1 cross-iteration memory: prior-iteration adjudications (region + disposition +
+    // agent reason) rendered into the reviewer prompt so it does not re-litigate settled
+    // regions. Hashed into the cache key so a changed adjudication set re-runs the panel.
+    priorAdjudications?: Adjudication[];
   }): Promise<IterationResult>;
 }
 
-const REVIEW_PROMPT_PREAMBLE = [
+export const REVIEW_PROMPT_PREAMBLE = [
   "You are reviewing a code diff. Output ONLY a single JSON object — no prose, no",
   "markdown fences — of exactly this shape:",
   '{"verdict":"PASS|FAIL","findings":[{"severity":"CRITICAL|WARN|INFO",',
@@ -177,6 +184,13 @@ const REVIEW_PROMPT_PREAMBLE = [
   "full-file content — failure to do so produces false-positive findings.",
   "Report issues INTRODUCED OR AFFECTED BY THIS diff. Pre-existing issues in",
   "unchanged code (outside the changed lines) are out of scope — do not report them.",
+  // S7 (hammihan F-001): correct the reviewer's commit/deploy mental model — an untracked
+  // working-tree file was flagged as "committed / breaks the deploy" (confident-wrong CRITICAL).
+  "This diff reflects WORKING-TREE state — committed, staged AND untracked new files together.",
+  "It is NOT a record of what is committed or deployed. An untracked/new file is local-only and",
+  "may never reach the deploy path. Review every change for real CODE issues, but do NOT assert",
+  "that a file is 'committed', 'already in the deploy diff', or that it 'breaks the deploy' — you",
+  "cannot determine commit/deploy state from this diff. Judge the code on its own merits.",
 ].join("\n");
 
 const DOC_REVIEW_PROMPT_PREAMBLE = [
@@ -335,9 +349,16 @@ export class Orchestrator {
     signal?: AbortSignal;
     cycleRejectedSignatures?: string[];
     claimedFixedSignatures?: Record<string, number>;
+    priorAdjudications?: Adjudication[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
+    // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
+    // untrusted diff fence) AND hashed into the behavior cache key below.
+    const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
+    // House rules (maintainer-authored trusted facts). Config-constant; the full config is
+    // already in the cache key, so no separate behavior-hash entry is needed.
+    const houseRulesText = renderHouseRules(this.input.config.phases.review.houseRules ?? []);
 
     // --- M5 Part B1 — FP-ledger store handle (opt-in). The previous-iter
     // decision learn + decay was hoisted UP to LoopDriver.absorbPriorDecisions
@@ -548,6 +569,11 @@ export class Orchestrator {
       docs: contextDocs?.corpus,
       refs: referencedRaw ? createHash("sha256").update(referencedRaw).digest("hex") : undefined,
       personas: personaDelta,
+      // S1: a changed prior-adjudication set must invalidate a cached verdict (else iter N
+      // could serve iter N-1's review that lacked the adjudication context). Empty → omitted.
+      adjudications: adjudicationsText
+        ? createHash("sha256").update(adjudicationsText).digest("hex")
+        : undefined,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -836,10 +862,15 @@ export class Orchestrator {
             docPersona ? DOC_REVIEW_PROMPT_PREAMBLE : REVIEW_PROMPT_PREAMBLE,
             "",
           ];
+          // House rules first — the most authoritative trusted context (maintainer ground truth).
+          if (houseRulesText) promptParts.push(houseRulesText, "");
           if (researchText) promptParts.push("## Research context", researchText, "");
           if (brainText) promptParts.push("## Brain context", brainText, "");
           if (fpFewShot)
             promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");
+          // S1: prior-iteration adjudications — trusted, BEFORE the untrusted diff fence.
+          // renderAdjudications already includes its own header; "" when none.
+          if (adjudicationsText) promptParts.push(adjudicationsText, "");
           // TRUSTED diff-completeness warning — placed BEFORE the untrusted fence so
           // reviewers heed it (inside the fence it reads as inert data). A partial
           // diff must never earn a conclusive clean verdict.
@@ -1131,6 +1162,42 @@ export class Orchestrator {
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
     const allFindings = await this.applySymbolSignatures(rawFindings);
+    // S6 grounding corpus = exactly what the reviewer was shown (diff + full content of
+    // changed files). A fabricated correctness/security CRITICAL otherwise hard-FAILs the
+    // gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +
+    // aggregate to let the demoted severity flow through. Both are demote-only + fail-safe.
+    const groundingCorpus = `${this.input.diff}\n${fileContext ?? ""}`;
+    // Layer 1 (deterministic, no LLM): demote a CRITICAL citing a code-shaped token absent
+    // from the corpus.
+    let groundedFindings = groundFindings(allFindings, groundingCorpus);
+    // Layer 2 (LLM judge, opt-in via phases.grounding): demote a CRITICAL whose claim is
+    // SEMANTICALLY fabricated (e.g. an invented `outerHTML` XSS sink where the code only sets
+    // a React aria-label). Only fires when there is a CRITICAL to judge; any error → no demote.
+    const groundingCfg = this.input.config.phases.grounding;
+    if (groundingCfg && groundedFindings.some((f) => f.severity === "CRITICAL")) {
+      const gAdapter = this.input.adapters[groundingCfg.provider];
+      const gProviderCfg = this.input.config.providers[groundingCfg.provider] as
+        | ProviderConfig
+        | undefined;
+      if (gAdapter && gProviderCfg) {
+        const { map } = await judgeGrounding(
+          gAdapter,
+          {
+            model: groundingCfg.model ?? gProviderCfg.model,
+            ...(gProviderCfg.apiKeyEnv ? { apiKeyEnv: gProviderCfg.apiKeyEnv } : {}),
+            ...(gProviderCfg.auth ? { auth: gProviderCfg.auth } : {}),
+            timeoutMs: gProviderCfg.timeoutMs,
+            ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(gProviderCfg.openrouterProvider
+              ? { openrouterProvider: gProviderCfg.openrouterProvider }
+              : {}),
+          },
+          groundedFindings,
+          groundingCorpus,
+        );
+        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map);
+      }
+    }
 
     // --- Optional critic phase (demote-only) ---
     let criticMap: Map<string, CriticVerdict> | undefined;
@@ -1144,7 +1211,7 @@ export class Orchestrator {
     // (no usage envelope). Kept as a named field for the IterationResult shape.
     const criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
-    if (criticCfg && allFindings.length > 0) {
+    if (criticCfg && groundedFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
       const cProviderCfg = this.input.config.providers[criticCfg.provider] as
         | ProviderConfig
@@ -1167,7 +1234,7 @@ export class Orchestrator {
               ? { openrouterProvider: cProviderCfg.openrouterProvider }
               : {}),
           },
-          allFindings,
+          groundedFindings,
         );
         criticMap = r.map.size > 0 ? r.map : undefined;
         criticInfo = r.info;
@@ -1216,7 +1283,7 @@ export class Orchestrator {
     }
 
     const agg = aggregate({
-      findings: allFindings,
+      findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
       // (two slots → same provider:persona) must not satisfy the singleton-
       // CRITICAL failsafe as a phantom multi-reviewer panel.

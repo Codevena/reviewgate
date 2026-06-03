@@ -98,4 +98,16 @@ describe("computeBehaviorHash", () => {
     expect(a).not.toBe(noRefs);
     expect(a).not.toBe(b);
   });
+
+  it("appends an adj segment only when present, and a changed adj set changes the hash (S1)", () => {
+    const base = { brain: [{ id: "B-1", status: "active" }], fp: [] };
+    const none = computeBehaviorHash(base);
+    // continuity: absent/undefined adjudications must not perturb the hash
+    expect(computeBehaviorHash({ ...base, adjudications: undefined })).toBe(none);
+    const a = computeBehaviorHash({ ...base, adjudications: "adjHashA" });
+    const b = computeBehaviorHash({ ...base, adjudications: "adjHashB" });
+    expect(a).toBe(`${none}|adj:adjHashA`);
+    expect(a).not.toBe(none);
+    expect(a).not.toBe(b);
+  });
 });

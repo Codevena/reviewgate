@@ -51,6 +51,13 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // S6 grounding (layer 1): set true when the grounding pass demoted this finding
+  // one severity step (CRITICAL→WARN) because it cited a code-shaped token (CSS
+  // custom property or backtick code-span) that is wholly absent from the reviewed
+  // corpus (diff + full content of changed files) — i.e. the reviewer fabricated
+  // it. Breaks the otherwise-unconditional security/correctness CRITICAL hard-FAIL
+  // ONLY for provably-ungrounded claims; advisory-leaning, still surfaced.
+  grounding_demoted: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base

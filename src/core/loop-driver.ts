@@ -19,6 +19,7 @@ import {
   pendingJsonPath,
   pendingMdPath,
 } from "../utils/paths.ts";
+import type { Adjudication } from "./adjudications.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
@@ -214,6 +215,67 @@ function priorIterationClaimedFixedSignatures(repoRoot: string, prevIter: number
     prevIter,
     (d) => d.verdict === "accepted" && d.action === "fixed",
   );
+}
+
+// S1 cross-iteration memory: the prior iteration's adjudications (finding location +
+// disposition + agent reason), joining pending.json findings (id → file/lines) with the LAST
+// decision per id in decisions/<prevIter>.jsonl. Fed to the next iteration's reviewer prompt
+// so it does not re-litigate settled regions. Never throws → [] (same contract as the sibling
+// readers; a malformed/partial artifact must never break LoopDriver.run).
+export function priorAdjudications(repoRoot: string, prevIter: number): Adjudication[] {
+  if (prevIter < 1) return [];
+  const dp = decisionsPath(repoRoot, prevIter);
+  const pp = pendingJsonPath(repoRoot);
+  if (!existsSync(dp) || !existsSync(pp)) return [];
+  let locById: Map<string, { file: string; lineStart: number; lineEnd: number }>;
+  try {
+    const report = JSON.parse(readFileSync(pp, "utf8")) as {
+      findings?: Array<{ id?: string; file?: string; line_start?: number; line_end?: number }>;
+    };
+    locById = new Map(
+      (report.findings ?? [])
+        .filter(
+          (f): f is { id: string; file: string; line_start: number; line_end: number } =>
+            !!f.id &&
+            typeof f.file === "string" &&
+            typeof f.line_start === "number" &&
+            typeof f.line_end === "number",
+        )
+        .map((f) => [f.id, { file: f.file, lineStart: f.line_start, lineEnd: f.line_end }]),
+    );
+  } catch {
+    return [];
+  }
+  let lines: string[];
+  try {
+    lines = readFileSync(dp, "utf8").split("\n");
+  } catch {
+    return [];
+  }
+  const lastById = new Map<string, DecisionEntry>();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    lastById.set(res.data.finding_id, res.data);
+  }
+  const out: Adjudication[] = [];
+  for (const [findingId, d] of lastById) {
+    const loc = locById.get(findingId);
+    if (!loc) continue;
+    out.push(
+      d.verdict === "rejected"
+        ? { ...loc, disposition: "rejected", reason: d.reason }
+        : { ...loc, disposition: "addressed" },
+    );
+  }
+  return out;
 }
 
 // The last iteration's findings + severity counts, read from pending.json. The
@@ -778,6 +840,10 @@ export class LoopDriver {
     // ends un-reviewed). The abort signal lets runIteration stop writing
     // pending/state so it can't clobber the incomplete decision after the race.
     const nextIter = state.iteration + 1;
+    // S1: the just-completed iteration's adjudications (state.iteration is the prior iter;
+    // [] when state.iteration < 1). Injected into the next panel's prompt so it does not
+    // re-litigate settled regions.
+    const priorAdjs = priorAdjudications(this.i.repoRoot, state.iteration);
     const runTimeoutMs = this.i.config.loop.runTimeoutMs;
     let result: IterationResult;
     if (runTimeoutMs > 0) {
@@ -789,6 +855,7 @@ export class LoopDriver {
         signal: ac.signal,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
         claimedFixedSignatures: state.claimed_fixed_signatures,
+        priorAdjudications: priorAdjs,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -844,6 +911,7 @@ export class LoopDriver {
         iter: nextIter,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
         claimedFixedSignatures: state.claimed_fixed_signatures,
+        priorAdjudications: priorAdjs,
       });
     }
 

@@ -50,6 +50,26 @@ printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tok
 exit 0
 `;
 
+// Fake codex emitting a CRITICAL *quality* finding that fabricates a CSS custom property
+// (`--ghost-token`) absent from the reviewed corpus. A lone CRITICAL hard-FAILs; S6
+// grounding layer 1 must demote it to WARN. (Category is `quality`, NOT security/
+// correctness — those are exempt from the deterministic layer-1 demote; see grounding.ts.)
+const HALLUCINATED_CRITICAL_CODEX_SCRIPT = `#!/usr/bin/env bash
+set -u
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$LAST_MSG" ] && cat > "$LAST_MSG" <<'JSON'
+{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"quality","rule_id":"hallu","file":"foo.ts","line":1,"message":"dark mode regression","details":"The --ghost-token CSS variable is wrong here.","confidence":0.9}]}
+JSON
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":50}}'
+exit 0
+`;
+
 function fakeRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-orch-"));
   writeFileSync(join(dir, "foo.ts"), "function compare(a, b) { return a === b; }");
@@ -174,6 +194,34 @@ describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
     // cache so pending.json is repopulated with the WARN findings the gate needs.
     const r2 = await orchFor(repo, "block").runIteration({ runId: "01HXQB", iter: 2 });
     expect(r2.summary.source).toBe("panel");
+  });
+});
+
+describe("Orchestrator S6 grounding (end-to-end)", () => {
+  it("demotes a fabricated correctness CRITICAL to WARN → SOFT-PASS, not FAIL", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-ground-"));
+    writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
+    const bin = join(repo, "fake-codex-hallu.sh");
+    writeFileSync(bin, HALLUCINATED_CRITICAL_CODEX_SCRIPT, { mode: 0o755 });
+    chmodSync(bin, 0o755);
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: defaultConfig,
+      adapters: { codex: new CodexAdapter({ binPath: bin }) },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: SOFT_DIFF,
+      reasonOnFailEnabled: true,
+    });
+    const result = await orch.runIteration({ runId: "01HXQGRND", iter: 1 });
+    // The reviewer cited `--ghost-token`, absent from foo.ts + the diff → grounding
+    // breaks the otherwise-unconditional correctness-CRITICAL hard-FAIL.
+    expect(result.verdict).not.toBe("FAIL");
+    const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8")) as {
+      findings: Array<{ severity: string; grounding_demoted?: boolean }>;
+    };
+    const demoted = report.findings.find((f) => f.grounding_demoted);
+    expect(demoted?.severity).toBe("WARN");
   });
 });
 

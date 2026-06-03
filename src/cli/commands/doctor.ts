@@ -65,6 +65,28 @@ export function reviewersEnabledCheck(cfg: ReviewgateConfig): Check {
   };
 }
 
+// A single effective reviewer structurally disables three of the four noise-
+// suppression layers: consensus demote (everything is `singleton`), FP-ledger
+// promotion (needs distinct providers >= 2), and reputation demote (per-provider).
+// Only confidenceFloor survives — so a single-reviewer panel is much noisier and
+// converges slower (field report 2026-06-03). Surface it. Returns null at >=2 (the
+// healthy case) and at 0 (reviewersEnabledCheck owns that harder ERROR), so this
+// fires only at exactly one enabled reviewer.
+export function singleReviewerCheck(cfg: ReviewgateConfig): Check | null {
+  const enabled = [
+    ...new Set(
+      cfg.phases.review.reviewers.map((r) => r.provider).filter((p) => cfg.providers[p]?.enabled),
+    ),
+  ];
+  if (enabled.length !== 1) return null;
+  return {
+    name: "reviewer panel size",
+    status: "warn",
+    detail: `Single effective reviewer (${enabled[0]}): consensus, FP-ledger promotion, and reputation demote are all inert — expect more lone-finding noise and slower convergence.`,
+    hint: "Add a 2nd provider to phases.review.reviewers and enable it in providers.<id> so corroboration and cross-provider FP-suppression engage.",
+  };
+}
+
 // The brain Curator / FP↔Brain Contradiction judge calls the curator provider's
 // adapter.complete(). Its adapter is always built (a consumed provider), so the
 // failure mode is NOT "disabled" — it is "the CLI/key isn't actually usable", in
@@ -419,6 +441,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
       home: homedir(),
     });
     checks.push(reviewersEnabledCheck(cfg));
+    const solo = singleReviewerCheck(cfg);
+    if (solo) checks.push(solo);
     // gemini → agy is OAuth-only; an apikey auth on the gemini provider is inert.
     const gem = cfg.providers.gemini;
     if (gem?.enabled && gem.auth === "apikey") {

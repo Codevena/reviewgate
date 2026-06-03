@@ -82,12 +82,26 @@ export const ConfigSchema = z.object({
       // 0 disables the signal. Default 0.3 (defaults.ts) — only quite-unsure
       // findings are demoted.
       confidenceFloor: z.number().min(0).max(1).optional(),
+      // Maintainer-authored repo facts/conventions, injected as TRUSTED reviewer context.
+      // Use for a recurring hallucination class the FP-ledger can't promote (e.g. "this repo
+      // uses hex color tokens, not shadcn HSL tuples — never flag hex as a missing HSL
+      // wrapper"). The reviewer must never raise a finding that contradicts a rule.
+      // Optional (like the sibling review knobs); defaults.ts supplies [] so the output type
+      // stays compatible with hand-built configs.
+      houseRules: z.array(z.string()).optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
       .nullable()
       .default(null),
     triage: z
+      .object({ provider: ProviderId, model: z.string().optional() })
+      .nullable()
+      .default(null),
+    // S6 grounding layer 2 (LLM judge): demote a CRITICAL whose claim is not supported
+    // by the actual code (a fabricated XSS sink, invented value). Demote-only,
+    // fail-safe, opt-in. null = off.
+    grounding: z
       .object({ provider: ProviderId, model: z.string().optional() })
       .nullable()
       .default(null),
