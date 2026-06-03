@@ -9,7 +9,12 @@ describe("config houseRules", () => {
 
   it("preserves maintainer-set rules", () => {
     const c = defineConfig({
-      phases: { review: { reviewers: [{ provider: "codex", persona: "security" }], houseRules: ["uses hex tokens"] } },
+      phases: {
+        review: {
+          reviewers: [{ provider: "codex", persona: "security" }],
+          houseRules: ["uses hex tokens"],
+        },
+      },
     } as Parameters<typeof defineConfig>[0]);
     expect(c.phases.review.houseRules).toEqual(["uses hex tokens"]);
   });
