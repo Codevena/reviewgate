@@ -84,4 +84,25 @@ describe("groundFindings (S6 layer 1)", () => {
     expect(out[0]?.severity).toBe("CRITICAL");
     expect(out[0]?.grounding_demoted).toBeUndefined();
   });
+
+  // F-001: a real CRITICAL may cite a present core symbol PLUS an incidental absent
+  // dotted ref (a helper in an unchanged file). Code refs only trigger when ALL are
+  // absent — so this stays a blocking CRITICAL.
+  it("keeps a CRITICAL whose core dotted token is present even if an incidental dotted token is absent (F-001)", () => {
+    const out = groundFindings(
+      [mk({ details: "`auth.session` is fine but `helper.format` leaks" })],
+      CORPUS,
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
+  });
+
+  it("still demotes a CRITICAL citing an absent CSS var even when a dotted token is present (CSS is high-precision)", () => {
+    const out = groundFindings(
+      [mk({ details: "the `auth.session` theme uses --ghost-color" })],
+      CORPUS,
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.grounding_demoted).toBe(true);
+  });
 });
