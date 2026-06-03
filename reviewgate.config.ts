@@ -57,6 +57,10 @@ export default {
     // FP-ledger: learns which finding signatures you reject as false
     // positives and stops re-reporting them. Standalone.
     fpLedger: { enabled: true },
+    // S6 grounding layer 2: an LLM judge demotes a CRITICAL whose claim is not supported
+    // by the actual code (e.g. an invented XSS sink). openrouter = deepseek-v4-flash via
+    // alibaba (cheap). Demote-only, fail-safe, CRITICAL-only.
+    grounding: { provider: "openrouter" },
     // Brain: committed per-repo memory + cross-run quorum (PR #35). Cross-run
     // is on by default (TTL=60d, cap=5000) — no need to spell it out here.
     brain: {
