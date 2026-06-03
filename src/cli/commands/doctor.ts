@@ -145,6 +145,29 @@ export function criticCheck(cfg: ReviewgateConfig, available: ProviderAvailable)
   return { name, status: "ok", detail: id };
 }
 
+// S6 grounding layer 2 (LLM judge) demotes a CRITICAL whose claim isn't supported by the
+// actual code, via the provider's adapter.complete(). If the provider can't run, the judge
+// silently no-ops (fail-safe: nothing demoted, the CRITICAL stays blocking) — but the user
+// configured it expecting fabricated CRITICALs to be caught, so surface it like the critic.
+export function groundingCheck(cfg: ReviewgateConfig, available: ProviderAvailable): Check | null {
+  const grounding = cfg.phases.grounding;
+  if (!grounding) return null;
+  const id = grounding.provider;
+  const name = "grounding judge";
+  if (!available(id, cfg.providers[id]?.apiKeyEnv)) {
+    return {
+      name,
+      status: "warn",
+      detail: `'${id}' configured but its CLI/API key is unavailable → the grounding judge can't run and no fabricated CRITICALs will be demoted`,
+      hint:
+        id === "openrouter"
+          ? "Set OPENROUTER_API_KEY in your environment (the grounding judge uses it for completions)."
+          : `Install/authenticate the '${id}' CLI — the grounding judge runs it via complete().`,
+    };
+  }
+  return { name, status: "ok", detail: id };
+}
+
 // The brain's read-path injection AND the curator's pairing both embed text via the
 // OpenRouter embeddings provider. With brain enabled but OPENROUTER_API_KEY unset,
 // the embedder is unavailable → those memory features are SILENTLY skipped. (The
@@ -460,6 +483,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
       isProviderAvailable(id, apiKeyEnv);
     const crit = criticCheck(cfg, curatorAvailable);
     if (crit) checks.push(crit);
+    const grounding = groundingCheck(cfg, curatorAvailable);
+    if (grounding) checks.push(grounding);
     const emb = brainEmbeddingsCheck(cfg, curatorAvailable);
     if (emb) checks.push(emb);
     const mem = await brainMemoryCheck(input.repoRoot, cfg);
