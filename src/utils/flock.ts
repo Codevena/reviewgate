@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 // src/utils/flock.ts
 import { link, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -19,6 +19,21 @@ function parsePid(raw: string): number | undefined {
   const m = raw.match(/pid=(\d+)/);
   const pid = m ? Number(m[1]) : Number.NaN;
   return Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+// Diagnostics for the deferred/contention message (M-A3): who currently holds the
+// lock and since when, so a human can identify (and, if hung, kill) the holder.
+// Best-effort and synchronous — returns null if the lock file is gone/unreadable.
+export function readLockHolder(path: string): { pid: number | null; ts: string | null } | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const pid = parsePid(raw);
+  const tsM = raw.match(/ts=([^\n]+)/);
+  return { pid: pid ?? null, ts: tsM ? (tsM[1] ?? null) : null };
 }
 
 // `process.kill(pid, 0)` sends no signal — it only probes existence/permission.

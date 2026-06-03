@@ -58,8 +58,9 @@ describe("runGate — no-change stop skips the lock", () => {
   it("returns GATE OPEN without acquiring the lock even while it is held", async () => {
     const repo = freshRepo("rg-skip-int-");
     await new StateStore(repo).initialise("01HSKIP010"); // last_reviewed_head_sha = null, no dirty flag
-    // Hold the lock: if runGate TRIED to acquire it, it would fail CLOSED (block
-    // "in progress") within lockTimeoutMs. A1 must skip the lock → allow_stop.
+    // Hold the lock: if runGate TRIED to acquire it, contention would DEFER (M-A2,
+    // also allow_stop but with a deferred.flag). A1 must skip the lock entirely
+    // BEFORE that — no deferred.flag, plain "No code changes".
     const held = await flock(gateLockPath(repo));
     try {
       const out = await runGate({

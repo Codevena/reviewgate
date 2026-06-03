@@ -1,5 +1,5 @@
 // src/cli/commands/gate.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
@@ -12,7 +12,7 @@ import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
-import { flock } from "../../utils/flock.ts";
+import { flock, readLockHolder } from "../../utils/flock.ts";
 import {
   DIFF_INCOMPLETE_MARKER,
   collectDiff,
@@ -21,7 +21,13 @@ import {
 } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
-import { auditDir, dirtyFlagPath, gateLockPath } from "../../utils/paths.ts";
+import {
+  auditDir,
+  deferredFlagPath,
+  dirtyFlagPath,
+  gateLockPath,
+  stateJsonPath,
+} from "../../utils/paths.ts";
 import { withTimeout } from "../../utils/with-timeout.ts";
 import { buildAdapters } from "../build-adapters.ts";
 
@@ -92,6 +98,18 @@ export function diffMarkedIncomplete(diff: string): boolean {
   return diff.trimEnd().endsWith(DIFF_INCOMPLETE_MARKER);
 }
 
+// M-A3: a short " (PID N, running ~Xs)" note about the gate-lock holder for the
+// DEFERRED message, so a hung holder (0% CPU for minutes) is identifiable and a
+// human can kill it. Empty string when the holder can't be determined.
+function formatLockHolder(repoRoot: string): string {
+  const h = readLockHolder(gateLockPath(repoRoot));
+  if (!h || h.pid === null) return "";
+  const ms = h.ts ? Date.now() - Date.parse(h.ts) : Number.NaN;
+  return Number.isFinite(ms)
+    ? ` (PID ${h.pid}, running ~${Math.round(ms / 1000)}s)`
+    : ` (PID ${h.pid})`;
+}
+
 // M-A1: cheap "is there anything to review?" probe, run BEFORE the gate lock so a
 // pure read/analysis turn (no dirty.flag AND HEAD unchanged since the last review)
 // short-circuits to allow_stop WITHOUT acquiring the global lock or doing git/
@@ -105,6 +123,8 @@ export async function stopHasNothingToReview(
   repoRoot: string,
   headShaFn: typeof gitHeadSha = gitHeadSha,
 ): Promise<boolean> {
+  // A pending deferred review (M-A2) always needs the lock path — never skip it.
+  if (existsSync(deferredFlagPath(repoRoot))) return false;
   if (existsSync(dirtyFlagPath(repoRoot))) return false;
   try {
     const st = await new StateStore(repoRoot).load();
@@ -180,14 +200,84 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   try {
     lock = await flock(gateLockPath(input.repoRoot), lockAcquireMs);
   } catch {
-    const reason =
-      "🔴 Reviewgate · GATE CLOSED — another gate run is in progress (could not acquire the gate lock). Re-run to review once it finishes.";
-    return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+    // M-A2 (D-1 fail-safe-degrade): the lock is held by another (possibly long or
+    // hung) gate run. Do NOT block the turn — the old fail-closed behavior made
+    // every parallel session busy-loop block→re-stop→block. Instead DEFER: drop a
+    // deferred.flag so THIS session's next stop is forced to take the lock and
+    // review (even if the dirty.flag is cleared meanwhile by whoever holds the lock
+    // now), and allow the stop. The change stays flagged → it WILL be reviewed.
+    try {
+      writeFileAtomic(
+        deferredFlagPath(input.repoRoot),
+        JSON.stringify({ ts: new Date().toISOString() }),
+        { mode: 0o600 },
+      );
+    } catch {
+      /* best-effort: even without the marker, the persisting dirty.flag re-triggers */
+    }
+    // M-A3 diagnostics: name the holder (PID + how long it's run) so a human can
+    // spot a hung holder (0% CPU for minutes) and `kill` it — a dead PID is then
+    // reclaimed automatically by flock's dead-pid recovery on the next stop.
+    const reason = `🟠 Reviewgate · GATE DEFERRED — another review${formatLockHolder(input.repoRoot)} is in progress; this turn was not reviewed and is NOT blocked. Your change stays flagged and is reviewed automatically on your next turn.`;
+    return { exitCode: 0, stdout: "", stderr: reason };
   }
   try {
+    // M-A2: we hold the lock → any prior contention is resolved. Consume a
+    // deferred.flag left by an earlier contended turn so it can't loop. If the
+    // dirty.flag was already cleared by whichever session won the lock last time,
+    // synthesize one so the deferred change still gets a (working-tree) review.
+    consumeDeferredFlag(input.repoRoot);
     return await runStopGate(input, cfg, audit, setupDeadlineAt);
   } finally {
     await lock.release();
+  }
+}
+
+// Consume a deferred.flag now that the lock is held (M-A2). We must GUARANTEE the
+// deferred change is reviewed: if no dirty.flag remains (the prior holder PASSed
+// and cleared it), synthesize one (base = last reviewed sha, else working-tree) so
+// LoopDriver doesn't take its no-flag allow_stop short-circuit and silently drop
+// the change. CRITICAL (codex): only delete the deferred.flag AFTER a dirty.flag is
+// confirmed present — if synthesis fails (ENOSPC/EACCES/tmp collision), KEEP the
+// marker so the next stop retries. Never delete it with no dirty.flag left, or the
+// deferred review is permanently lost (un-reviewed code ships).
+export function consumeDeferredFlag(repoRoot: string): void {
+  const dfp = deferredFlagPath(repoRoot);
+  if (!existsSync(dfp)) return;
+  if (!existsSync(dirtyFlagPath(repoRoot))) {
+    let base: string | null = null;
+    try {
+      const sp = stateJsonPath(repoRoot);
+      base = existsSync(sp)
+        ? ((JSON.parse(readFileSync(sp, "utf8")) as { last_reviewed_head_sha?: string | null })
+            .last_reviewed_head_sha ?? null)
+        : null;
+    } catch {
+      base = null;
+    }
+    try {
+      writeFileAtomic(
+        dirtyFlagPath(repoRoot),
+        JSON.stringify({
+          diff_hash: "deferred",
+          ts: new Date().toISOString(),
+          ...(base ? { base_sha: base } : {}),
+        }),
+        { mode: 0o600 },
+      );
+    } catch {
+      // Synthesis failed → do NOT consume the marker. Keeping deferred.flag forces
+      // the next stop to retry (stopHasNothingToReview stays false), so the change
+      // is never silently dropped. Fail-safe per the eventual-review guarantee.
+      return;
+    }
+  }
+  // A dirty.flag is now present (pre-existing or freshly synthesized) → the change
+  // WILL be reviewed; safe to consume the deferred marker.
+  try {
+    unlinkSync(dfp);
+  } catch {
+    /* already gone */
   }
 }
 

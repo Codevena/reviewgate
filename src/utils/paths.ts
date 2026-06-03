@@ -25,6 +25,13 @@ export function dirtyFlagPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "dirty.flag");
 }
 
+// M-A2: marks that a stop turn DEFERRED its review because the gate lock was held
+// (contention). Its presence forces the next stop to take the lock and review —
+// the eventual-review guarantee — even if the dirty.flag was cleared meanwhile.
+export function deferredFlagPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "deferred.flag");
+}
+
 export function pendingMdPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "pending.md");
 }
