@@ -115,8 +115,18 @@ unchanged.
 ```
 
 - `action` is required for accepted decisions: one of
-  `"fixed"`, `"addressed-elsewhere"`, `"deferred-with-followup"`.
+  `"fixed"`, `"addressed-elsewhere"`, `"deferred-with-followup"`,
+  `"acknowledged-low-value"`.
 - `files_touched` and `commit_message_hint` are optional.
+
+**Off-ramp — `"acknowledged-low-value"`** (a cosmetic nit you do not intend to fix,
+instead of falsely rejecting it as a reviewer error): only valid for an **INFO/WARN**
+finding that is **not** `security`/`correctness`. The gate counts it as addressed but it
+is **not** a false-positive claim — it has no reputation or FP-ledger effect, and it only
+adds to the reject-rate **denominator** (so acknowledging a nit, rather than falsely
+rejecting it, does not inflate the confirmed-false-positive rate that trips the breaker).
+A **CRITICAL**, or any **security/correctness** finding (including one that rides as a
+merged member), can **never** be acknowledged away — fix it or reject it with a real reason.
 
 **Rejected (the reviewer is wrong):**
 

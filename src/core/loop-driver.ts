@@ -360,7 +360,7 @@ function clearDecisions(repoRoot: string): void {
   }
 }
 
-interface DecisionsGate {
+export interface DecisionsGate {
   addressed: boolean;
   missing: string[]; // required ids with no valid decision line
   invalid: string[]; // human-readable per-line reasons a present line was rejected
@@ -372,7 +372,11 @@ interface DecisionsGate {
 // block message can tell the agent exactly what to fix — otherwise a formatting
 // mistake is dropped silently and the agent re-reads an identical generic block,
 // sees its line IS in the file, and loops without understanding the failure (F-088).
-function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]): DecisionsGate {
+export function evaluateDecisions(
+  repoRoot: string,
+  iter: number,
+  requiredIds: string[],
+): DecisionsGate {
   const p = decisionsPath(repoRoot, iter);
   const seen = new Set<string>();
   const invalid: string[] = [];
@@ -394,6 +398,33 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
       lines = [];
     }
   }
+  // N2: finding severity/category, loaded lazily ONLY when an acknowledged-low-value
+  // line needs validating (a CRITICAL or security/correctness finding can't be
+  // acknowledged away). Read from the same pending.json the required ids came from.
+  let findingMeta: Map<string, { severity: string; highStakes: boolean }> | null = null;
+  const metaOf = (id: string): { severity: string; highStakes: boolean } | undefined => {
+    if (!findingMeta) {
+      findingMeta = new Map(
+        readPendingReport(repoRoot).findings.map((f) => [
+          f.id,
+          {
+            severity: f.severity,
+            // Look past the representative category to the MERGED members (a
+            // wording-similarity merge can park a security/correctness concern as a
+            // member under a quality representative) — mirrors the aggregator's
+            // touchesSecurityOrCorrectness so the off-ramp can't acknowledge it away.
+            highStakes:
+              f.category === "security" ||
+              f.category === "correctness" ||
+              (f.members ?? []).some(
+                (m) => m.category === "security" || m.category === "correctness",
+              ),
+          },
+        ]),
+      );
+    }
+    return findingMeta.get(id);
+  };
   for (const l of lines) {
     let parsed: unknown;
     try {
@@ -407,6 +438,21 @@ function evaluateDecisions(repoRoot: string, iter: number, requiredIds: string[]
     // the gate is trivially bypassable with malformed lines.
     const res = DecisionEntrySchema.safeParse(parsed);
     if (res.success) {
+      // N2: an "acknowledged-low-value" disposition is valid ONLY for an INFO/WARN
+      // finding that is not security/correctness. On a CRITICAL or security/correctness
+      // finding (or one missing from pending — fail-safe) it does NOT satisfy the gate:
+      // the agent cannot acknowledge a real bug away, so the finding stays required.
+      if (res.data.verdict === "accepted" && res.data.action === "acknowledged-low-value") {
+        const meta = metaOf(res.data.finding_id);
+        const cannotAcknowledge = !meta || meta.severity === "CRITICAL" || meta.highStakes;
+        if (cannotAcknowledge) {
+          invalidIds.add(res.data.finding_id);
+          invalid.push(
+            `${res.data.finding_id}: action — "acknowledged-low-value" is only allowed for an INFO/WARN non-security/correctness finding; fix it or reject it (reviewer_was_wrong) instead`,
+          );
+          continue;
+        }
+      }
       seen.add(res.data.finding_id);
       continue;
     }

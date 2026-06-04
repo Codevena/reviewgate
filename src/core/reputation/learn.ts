@@ -47,7 +47,11 @@ export async function learnReputationFromDecisions(input: {
     // are mostly softened to advisory INFO and never fixed, so the only recovery was old
     // `wrong`-event time-decay (a near-absorbing low-trust trap, F-023). Crediting every
     // accepted action widens the legitimate recovery path without crediting rejections.
-    if (d.verdict === "accepted") outcome = "correct";
+    // N2 off-ramp: "acknowledged-low-value" is reputation-NEUTRAL — the agent did not
+    // validate the finding as correct, only chose not to fix a cosmetic nit. Crediting it
+    // would inflate a reviewer's trust for findings nobody acted on. (It is also not a
+    // rejection, so it never debits.) Every OTHER accepted action still credits (F-023).
+    if (d.verdict === "accepted" && d.action !== "acknowledged-low-value") outcome = "correct";
     else if (d.verdict === "rejected" && d.reviewer_was_wrong === true) outcome = "wrong";
     if (!outcome) continue;
     const fallbackKey =

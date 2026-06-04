@@ -114,6 +114,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
           `For each CRITICAL/WARN finding below, append ONE line to \`.reviewgate/decisions/${r.iter}.jsonl\` (Advisory findings need NO decision):`,
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
+          '- For a cosmetic WARN nit you won\'t fix (NOT security/correctness, NOT CRITICAL): `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"acknowledged-low-value"}` — do NOT use this to wave away a real bug.',
           "",
           "Reviewgate refuses to unblock until every CRITICAL/WARN finding ID has a decision.",
           "",

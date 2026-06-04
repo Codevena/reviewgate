@@ -35,6 +35,16 @@ describe("DecisionEntrySchema", () => {
     ).toThrow();
   });
 
+  it("accepts the N2 'acknowledged-low-value' action", () => {
+    const d: DecisionEntry = {
+      schema: "reviewgate.decision.v1",
+      finding_id: "F-009",
+      verdict: "accepted",
+      action: "acknowledged-low-value",
+    };
+    expect(() => DecisionEntrySchema.parse(d)).not.toThrow();
+  });
+
   it("rejects an accepted decision missing action", () => {
     expect(() =>
       DecisionEntrySchema.parse({

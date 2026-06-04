@@ -89,6 +89,9 @@ export const defaultConfig = {
         maxBytes?: number;
         maxFiles?: number;
       },
+      // N7: static Tailwind/CSS fact block — OFF by default. Enable per repo
+      // (`uiAnalysis: { enabled: true }`) so reviewers see resolved class values.
+      uiAnalysis: null as null | { enabled: boolean },
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

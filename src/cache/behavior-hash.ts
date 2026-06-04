@@ -48,6 +48,10 @@ export function computeBehaviorHash(input: {
   // files shown for premise verification). A collaborator's content is NOT in the diff
   // hash, so a change to it must invalidate the cached verdict. Empty/absent → omitted.
   collaborators?: string | undefined;
+  // N7: sha256 hex of the rendered UI/CSS facts block. Derived from the changed files'
+  // content (covered by the diff hash) BUT also from the resolver tables, so fold it in
+  // for determinism/invalidation. Empty/absent → omitted (continuity rule).
+  ui?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -82,6 +86,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.collaborators) {
     out += `|collab:${input.collaborators}`;
+  }
+  if (input.ui) {
+    out += `|ui:${input.ui}`;
   }
   return out;
 }

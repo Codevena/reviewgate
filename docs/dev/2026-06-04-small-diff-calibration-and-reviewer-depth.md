@@ -68,13 +68,20 @@ weakening the net that caught the real bugs.
 
 ## Build status — 2026-06-04
 
-**N1, N3, N4, N5, N6 IMPLEMENTED (TDD)** — `bunx tsc --noEmit` clean, `bun run lint` clean,
-`bun test` 1453 pass / 0 fail. NOT committed; dist binary NOT rebuilt (the
-`~/.local/bin/reviewgate` symlink deploys to ALL repos — awaiting Markus). Remaining DoD:
-the N5 **real-CLI premise check** (a live reviewer confirming the false premise vanishes) is
-owed — the orchestrator integration test proves the injection end-to-end with a stub reviewer,
-but a real codex/agy run is the repo's verification standard. **N2 (off-ramp) and N7 (UI/CSS
-block) deferred** to their own PRs with the design fixed below.
+**ALL SEVEN slices IMPLEMENTED (TDD)** on branch `feat/small-diff-calibration`.
+`bunx tsc --noEmit` clean, `bun run lint` clean, `bun test` 1478 pass / 0 fail.
+
+- **N1, N3, N4, N5, N6** — committed `07c3f28`. DoD: codex + claude code-quality reviews
+  PASS (codex caught a stale-override carry; claude caught a collaborators TOCTOU — both
+  fixed). dist rebuilt + deployed. **N5 verified live in the compiled binary** (collector
+  returns `card.tsx` on real files incl. the `flex flex-col` premise; tree-sitter symbol
+  graph populated in the binary; real codex review PASS, no crash).
+- **N2 (off-ramp) + N7 (UI/CSS block)** — implemented; DoD codex + claude PASS after the
+  reviewers caught & we fixed: a UI-block prompt-injection vector (defang + neutralize),
+  acknowledged-low-value wrongly minting reputation credit (→ neutral), a className-extractor
+  gap (`={"…"}`/template forms), and an off-ramp members-category leak (a security MEMBER
+  under a quality representative could be acknowledged away → now blocked). Awaiting the
+  N2+N7 commit + dist rebuild.
 
 Files touched: `schemas/triage.ts`, `triage/matrix.ts`, `schemas/state.ts`,
 `core/orchestrator.ts`, `core/loop-driver.ts`, `core/aggregator.ts`, `core/report-writer.ts`,

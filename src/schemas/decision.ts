@@ -7,7 +7,18 @@ const Base = z.object({
 
 const Accepted = Base.extend({
   verdict: z.literal("accepted"),
-  action: z.enum(["fixed", "addressed-elsewhere", "deferred-with-followup"]),
+  // N2 off-ramp: "acknowledged-low-value" lets the agent disposition a cosmetic nit
+  // it does not intend to fix (an alternative to lying with reviewer_was_wrong). The
+  // decisions-gate (evaluateDecisions) accepts it ONLY for an INFO/WARN finding that
+  // is NOT security/correctness — a CRITICAL or security/correctness finding can never
+  // be acknowledged away and stays blocking. It is NOT an FP claim (no ledger pin /
+  // reputation hit) and still counts toward the reject-rate/fp-streak denominators.
+  action: z.enum([
+    "fixed",
+    "addressed-elsewhere",
+    "deferred-with-followup",
+    "acknowledged-low-value",
+  ]),
   files_touched: z.array(z.string()).optional(),
   commit_message_hint: z.string().optional(),
 });

@@ -31,6 +31,7 @@ import { extractImportedLibs } from "../research/imports.ts";
 import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
+import { analyzeUiFiles } from "../research/ui-analysis.ts";
 import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import { buildSandboxProfile } from "../sandbox/profile-builder.ts";
@@ -587,6 +588,15 @@ export class Orchestrator {
     }
     const collaboratorRaw = collaborators.map((c) => `// ${c.path}\n${c.content}`).join("\n\n");
 
+    // N7: static UI/CSS facts (opt-in) — resolved Tailwind/CSS values for the changed UI
+    // files, computed BEFORE the behavior-hash so a resolver/content change invalidates it.
+    const uiFacts = this.input.config.phases.review.uiAnalysis?.enabled
+      ? analyzeUiFiles(
+          repo,
+          facts.files.map((f) => f.path),
+        )
+      : "";
+
     // M5 Part B2a: brain + FP identities flow through ONE structured behavior-hash
     // (not an ad-hoc append). FP is keyed on {signature, stage} (the behavior-
     // affecting fields; pattern_id is cosmetic). With no FP entries the result is
@@ -612,6 +622,8 @@ export class Orchestrator {
       collaborators: collaboratorRaw
         ? createHash("sha256").update(collaboratorRaw).digest("hex")
         : undefined,
+      // N7: fold the UI facts block (derived from the changed files + resolver tables).
+      ui: uiFacts ? createHash("sha256").update(uiFacts).digest("hex") : undefined,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -904,6 +916,9 @@ export class Orchestrator {
           // House rules first — the most authoritative trusted context (maintainer ground truth).
           if (houseRulesText) promptParts.push(houseRulesText, "");
           if (researchText) promptParts.push("## Research context", researchText, "");
+          // N7: static UI/CSS facts — trusted, BEFORE the diff fence (the block carries its
+          // own heading). Lets the reviewer read resolved class values instead of guessing.
+          if (uiFacts) promptParts.push(uiFacts, "");
           if (brainText) promptParts.push("## Brain context", brainText, "");
           if (fpFewShot)
             promptParts.push("## Known false positives (do not re-report)", fpFewShot, "");

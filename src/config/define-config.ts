@@ -104,6 +104,10 @@ export const ConfigSchema = z.object({
         .nullable()
         .default(null)
         .optional(),
+      // N7: resolve Tailwind classes + CSS custom properties in changed UI files to their
+      // computed values (gap-3 → 12px) and inject them as trusted facts, so reviewers stop
+      // misreading layout from the raw diff. Opt-in (UI repos); no browser. null = off.
+      uiAnalysis: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

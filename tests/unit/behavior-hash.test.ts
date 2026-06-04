@@ -122,4 +122,15 @@ describe("computeBehaviorHash", () => {
     expect(a).not.toBe(none);
     expect(a).not.toBe(b);
   });
+
+  it("ui segment: absent → byte-identical; a changed UI-facts block changes the hash (N7)", () => {
+    const base = { brain: [{ id: "B-1", status: "active" }], fp: [] };
+    const none = computeBehaviorHash(base);
+    expect(computeBehaviorHash({ ...base, ui: undefined })).toBe(none);
+    const a = computeBehaviorHash({ ...base, ui: "uiHashA" });
+    const b = computeBehaviorHash({ ...base, ui: "uiHashB" });
+    expect(a).toBe(`${none}|ui:uiHashA`);
+    expect(a).not.toBe(none);
+    expect(a).not.toBe(b);
+  });
 });

@@ -237,6 +237,49 @@ describe("learnReputationFromDecisions", () => {
     expect(snap.reviewers["gemini:quality"]?.wrong ?? []).toHaveLength(0);
   });
 
+  it("does NOT credit a reviewer for an acknowledged-low-value off-ramp (neutral, N2)", async () => {
+    // The off-ramp means "noted, not worth fixing" — the agent did NOT validate the
+    // finding as correct, so it must be reputation-neutral (no `correct`, no `wrong`).
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-ack-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "WARN",
+            reviewer: { provider: "codex", persona: "quality" },
+            confirmed_by: ["codex:quality"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "acknowledged-low-value",
+      })}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const snap = await store.snapshot();
+    expect(snap.reviewers["codex:quality"]).toBeUndefined(); // no reputation event at all
+  });
+
   it("does NOT mint a 'wrong' event for a plain rejection (reviewer_was_wrong unset)", async () => {
     // A rejection without reviewer_was_wrong:true is a non-signal (e.g. won't-fix /
     // disagree-but-not-a-hallucination) and must not debit the reviewer — debiting it
