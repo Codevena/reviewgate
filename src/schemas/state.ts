@@ -63,6 +63,12 @@ export const ReviewgateStateSchema = z.object({
   // (real findings = signatures − FP). Reset to [] on re-arm. `.default([])` for
   // back-compat with state.json written before this field existed.
   fp_rejects_history: z.array(z.number().int().nonnegative()).default([]),
+  // N1: the most recent non-passing iteration's triage maxIterationsOverride — the
+  // per-diff soft iteration cap (min'd with config.loop.maxIterations by the cap
+  // precondition). Persisted because the cap is checked in LoopDriver BEFORE a new
+  // iteration runs (where triage isn't recomputed). null ⇒ no override (use config).
+  // Reset to null on a clean PASS / re-arm. `.default(null)` for back-compat.
+  max_iterations_override: z.number().int().positive().nullable().default(null),
   // Per-cycle suppression (2b): signatures the agent rejected as reviewer_was_wrong
   // in an EARLIER iteration of the CURRENT cycle. The panel demotes any recurrence
   // to INFO so the agent never re-rejects the same finding (and it stops feeding
@@ -112,6 +118,7 @@ export function initialState(sessionId: string): ReviewgateState {
     signature_history: [],
     iteration_stats: [],
     fp_rejects_history: [],
+    max_iterations_override: null,
     decision_history: [],
     cumulative_fp_rejects: 0,
     fp_counted_through_iter: 0,

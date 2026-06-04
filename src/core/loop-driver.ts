@@ -278,6 +278,37 @@ export function priorAdjudications(repoRoot: string, prevIter: number): Adjudica
   return out;
 }
 
+// N4: the last-wins DecisionEntry per finding id from decisions/<iter>.jsonl. The
+// escalation report is rendered from the prior iteration's pending.json (a PRECONDITION
+// snapshot, written before the agent's decisions), so joining these decisions lets the
+// report show each finding's CURRENT disposition instead of a stale "all open" view.
+// Never throws → empty map (same best-effort contract as the sibling readers).
+function lastDecisionsById(repoRoot: string, iter: number): Map<string, DecisionEntry> {
+  const out = new Map<string, DecisionEntry>();
+  if (iter < 1) return out;
+  const dp = decisionsPath(repoRoot, iter);
+  if (!existsSync(dp)) return out;
+  let lines: string[];
+  try {
+    lines = readFileSync(dp, "utf8").split("\n");
+  } catch {
+    return out;
+  }
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    out.set(res.data.finding_id, res.data); // last line for an id wins
+  }
+  return out;
+}
+
 // The last iteration's findings + severity counts, read from pending.json. The
 // gate escalates as a PRECONDITION (before running a new iteration), so pending.json
 // still reflects the prior iteration — used to populate the escalation report so it
@@ -587,7 +618,14 @@ export class LoopDriver {
     // used: the panel can add fresh FPs faster than real findings are fixed, masking
     // real progress. The hard backstop + cost-cap + stuck-signature detection remain
     // as upper bounds so this can never run away.
-    const maxIter = this.i.config.loop.maxIterations;
+    // N1: the per-diff soft cap. A small low-risk diff (triage set
+    // max_iterations_override) escalates/stops after fewer rounds; it can only LOWER
+    // the config cap, never raise it. The hard cap (2×) + stuck/cost/fp breakers
+    // below still bound everything.
+    const maxIter =
+      state.max_iterations_override != null
+        ? Math.min(this.i.config.loop.maxIterations, state.max_iterations_override)
+        : this.i.config.loop.maxIterations;
     if (state.iteration >= maxIter) {
       const hist = state.signature_history;
       const fpHist = state.fp_rejects_history;
@@ -623,11 +661,38 @@ export class LoopDriver {
           : Number.POSITIVE_INFINITY;
       const prevReal = prevIdx >= 0 ? realAt(prevIdx) : Number.POSITIVE_INFINITY;
       const fpStreakOn = this.i.config.loop.fpStreakThreshold > 0;
-      // Converging = REAL (non-FP) findings strictly fewer than the prior reviewed
-      // round, OR no real findings remain (only reviewer FPs left — the fp-streak
-      // breaker's job, IF enabled). Total count is NOT used: the panel can add fresh
-      // FPs faster than real findings are fixed, masking real progress.
-      const progressing = m >= 2 && (lastReal < prevReal || (lastReal === 0 && fpStreakOn));
+      // N3: convergence is NOT raw count alone. When the agent switches approach
+      // (e.g. flex → fixed layout) each round surfaces DIFFERENT findings, so the count
+      // can rise even as the code converges — "reviewer attention not converging" is not
+      // "code not converging". Read three signals over the last two REVIEWED rounds; ANY
+      // is progress:
+      //   (1) fewer real (non-FP) findings than the prior round — the original signal;
+      //   (2) severity improving — the worst tier shrinks (CRITICALs, then WARNs): the
+      //       code is getting safer even if a nitpick count rose;
+      //   (3) approach churn — the set of PERSISTENT (recurring) findings is smaller than
+      //       the prior round's real count: prior issues were CLEARED (not re-litigated)
+      //       even though fresh findings appeared.
+      // The genuine-stall case (same findings recur, flat severity) is none of these →
+      // still escalates. All paths remain bounded by the hard cap + stuck/cost/fp breakers.
+      const lastStats = lastIdx >= 0 ? state.iteration_stats[lastIdx] : undefined;
+      const prevStats = prevIdx >= 0 ? state.iteration_stats[prevIdx] : undefined;
+      const severityImproving =
+        !!lastStats &&
+        !!prevStats &&
+        (lastStats.critical < prevStats.critical ||
+          (lastStats.critical === prevStats.critical && lastStats.warn < prevStats.warn));
+      const prevSet = new Set(prevIdx >= 0 ? (hist[prevIdx] ?? []) : []);
+      let recurring = 0;
+      for (const s of lastIdx >= 0 ? (hist[lastIdx] ?? []) : []) {
+        if (prevSet.has(s)) recurring += 1;
+      }
+      const churnProgressing = Number.isFinite(prevReal) && prevReal > 0 && recurring < prevReal;
+      const progressing =
+        m >= 2 &&
+        (lastReal < prevReal ||
+          (lastReal === 0 && fpStreakOn) ||
+          severityImproving ||
+          churnProgressing);
       const hardCap = maxIter * 2;
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(
@@ -637,10 +702,12 @@ export class LoopDriver {
         );
       }
       if (!progressing) {
+        // Diagnostic reason (N3): a genuine stall, not approach-churn — the same issues
+        // keep recurring and severity is not dropping. Lets the human read the right story.
         return this.escalateAndDecide(
           state,
           "max-iterations",
-          `Reached ${state.iteration} iterations without convergence (real findings not decreasing).`,
+          `Reached ${state.iteration} iterations without convergence — ${recurring} of the prior round's findings recurred and severity did not improve (real findings not decreasing).`,
         );
       }
       // Converging (real findings strictly fewer than the previous round) and below
@@ -978,6 +1045,13 @@ export class LoopDriver {
         cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
         fp_counted_through_iter: passed ? 0 : cur.fp_counted_through_iter,
         fp_rejects_history: passed ? [] : cur.fp_rejects_history,
+        // N1: persist THIS diff's per-diff soft cap so the next iteration's escalation
+        // precondition can min() it with the config cap. Reset on a clean pass (re-arm).
+        // On a non-pass take the just-run iteration's override DIRECTLY — including an
+        // explicit null ("no override", e.g. the diff grew large/sensitive). It must NOT
+        // fall back to the prior value, or a stale small-diff cap would wrongly cap a now-
+        // large diff (codex DoD WARN). `?? null` only guards a (theoretical) undefined.
+        max_iterations_override: passed ? null : (result.maxIterationsOverride ?? null),
         // Per-cycle suppression set (2b): cleared on re-arm so a fresh cycle
         // starts with no suppressed signatures; preserved across a cycle's FAILs.
         cycle_rejected_signatures: passed ? [] : cur.cycle_rejected_signatures,
@@ -1216,9 +1290,16 @@ export class LoopDriver {
     // Re-stops (with a fresh dirty flag) would otherwise churn the file and spam
     // the audit log without changing the already-escalated state.
     if (firstAnnounce) {
+      // N1: the report header shows the EFFECTIVE cap (config min'd with this diff's
+      // override), so a small-diff escalation reads "2/2", not "2/3" (codex DoD INFO).
+      const effMaxIter =
+        state.max_iterations_override != null
+          ? Math.min(this.i.config.loop.maxIterations, state.max_iterations_override)
+          : this.i.config.loop.maxIterations;
       await this.escalate(
         state.session_id,
         state.iteration,
+        effMaxIter,
         reasonCode,
         fullSummary,
         state.signature_history,
@@ -1257,6 +1338,7 @@ export class LoopDriver {
   private async escalate(
     runId: string,
     iter: number,
+    maxIterEff: number,
     reasonCode: EscalationReason,
     summary: string,
     history: string[][],
@@ -1264,10 +1346,24 @@ export class LoopDriver {
   ): Promise<void> {
     const w = new ReportWriter(this.i.repoRoot);
     const pending = readPendingReport(this.i.repoRoot);
+    // N4: annotate each pending finding with its CURRENT disposition from this
+    // iteration's decisions, so the report reflects the post-decision state rather
+    // than the pre-decision opening snapshot. Absent decision → still "open".
+    const decisions = lastDecisionsById(this.i.repoRoot, iter);
+    const findingStatus: Record<
+      string,
+      { state: "addressed" | "rejected" | "open"; reason?: string }
+    > = {};
+    for (const f of pending.findings) {
+      const d = decisions.get(f.id);
+      if (!d) findingStatus[f.id] = { state: "open" };
+      else if (d.verdict === "accepted") findingStatus[f.id] = { state: "addressed" };
+      else findingStatus[f.id] = { state: "rejected", reason: d.reason };
+    }
     await w.writeEscalation({
       runId,
       iter,
-      maxIter: this.i.config.loop.maxIterations,
+      maxIter: maxIterEff,
       reasonCode,
       summary,
       // Per-iteration history: finding COUNT from signature_history, severity split
@@ -1293,6 +1389,7 @@ export class LoopDriver {
         };
       }),
       topFindings: pending.findings,
+      findingStatus,
       triggeredAt: new Date().toISOString(),
     });
     await this.i.audit.append({ event: "escalation", run_id: runId, iter, trigger: "stop-hook" });

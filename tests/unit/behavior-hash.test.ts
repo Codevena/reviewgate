@@ -110,4 +110,16 @@ describe("computeBehaviorHash", () => {
     expect(a).not.toBe(none);
     expect(a).not.toBe(b);
   });
+
+  it("collab segment: absent → byte-identical; a changed collaborator corpus changes the hash (N5)", () => {
+    const base = { brain: [{ id: "B-1", status: "active" }], fp: [] };
+    const none = computeBehaviorHash(base);
+    // continuity: absent/undefined collaborators must not perturb the hash
+    expect(computeBehaviorHash({ ...base, collaborators: undefined })).toBe(none);
+    const a = computeBehaviorHash({ ...base, collaborators: "collabHashA" });
+    const b = computeBehaviorHash({ ...base, collaborators: "collabHashB" });
+    expect(a).toBe(`${none}|collab:collabHashA`);
+    expect(a).not.toBe(none);
+    expect(a).not.toBe(b);
+  });
 });

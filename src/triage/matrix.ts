@@ -16,6 +16,14 @@ export interface DocReviewPolicy {
   persona: string;
 }
 
+// N1: a diff at or below this many changed lines (added + removed), in a low-risk
+// tier, is "small" — its soft iteration cap drops to SMALL_DIFF_MAX_ITERATIONS so a
+// trivial fix isn't forced through the full adversarial loop. Sensitive/docs diffs
+// are never small-gated (they keep the global cap regardless of size). Tunable here
+// (not config): the cap is not review CONTENT, so it never affects the review cache.
+export const SMALL_DIFF_LINES = 30;
+export const SMALL_DIFF_MAX_ITERATIONS = 2;
+
 // True when any changed path matches any glob. Uses Bun.Glob (built-in). An
 // invalid glob is skipped with a warning and never throws — matching fails open
 // to "no match" so a bad pattern can never crash the gate.
@@ -37,6 +45,10 @@ function matchesAnyGlob(paths: string[], globs: string[]): boolean {
 
 export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): TriageDecision {
   const base = { schema: "reviewgate.triage.v1" as const };
+  // N1: small low-risk diffs cap to fewer iterations. Sensitive/docs tiers below set
+  // this to null explicitly (never small-gated). Empty/doc-skip tiers don't review.
+  const smallCap =
+    facts.totalAdded + facts.totalRemoved <= SMALL_DIFF_LINES ? SMALL_DIFF_MAX_ITERATIONS : null;
   if (facts.files.length === 0) {
     // Nothing to review (empty diff, or everything was Reviewgate-managed and
     // excluded). Skip the panel entirely instead of spawning reviewers on noise.
@@ -47,6 +59,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       budgetTier: "trivial",
       loopCap: 1,
       reviewerHint: [],
+      maxIterationsOverride: null,
       justification: "No reviewable changes in the diff.",
     };
   }
@@ -65,6 +78,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
         budgetTier: "minimal",
         loopCap: 3,
         reviewerHint: [],
+        maxIterationsOverride: null,
         justification: "Plan/doc review (matched docReview globs).",
       };
     }
@@ -75,6 +89,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       budgetTier: "trivial",
       loopCap: 1,
       reviewerHint: [],
+      maxIterationsOverride: null,
       justification: "Doc-only diff; review skipped.",
     };
   }
@@ -86,6 +101,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       budgetTier: "expanded",
       loopCap: 5,
       reviewerHint: [],
+      maxIterationsOverride: null, // sensitive paths are never small-gated
       justification: `Sensitive paths: ${facts.sensitivityTags.join(", ")}.`,
     };
   }
@@ -97,6 +113,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       budgetTier: "minimal",
       loopCap: 2,
       reviewerHint: [],
+      maxIterationsOverride: smallCap,
       justification: "Tests-only diff.",
     };
   }
@@ -107,6 +124,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
     budgetTier: "standard",
     loopCap: 3,
     reviewerHint: [],
+    maxIterationsOverride: smallCap,
     justification: "Default code change.",
   };
 }

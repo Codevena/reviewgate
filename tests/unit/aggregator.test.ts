@@ -165,6 +165,68 @@ describe("aggregate", () => {
     expect(r.dedupedFindings[0]!.confirmed_by?.length).toBe(2);
   });
 
+  it("does NOT region-merge a correctness bug with a co-located cosmetic nit (N6)", () => {
+    // A real bug and a cosmetic nit land on the same line, differently worded. The
+    // region-merge would bundle them under ONE finding + ONE decision, inflating the
+    // nit to the bug's CRITICAL. N6 keeps them separate. (The wording-similarity dedup
+    // path for genuine cross-category duplicates is unaffected — see the test above.)
+    const bug = fin({
+      severity: "CRITICAL",
+      category: "correctness",
+      file: "Widget.tsx",
+      line_start: 10,
+      line_end: 10,
+      rule_id: "height-collapse",
+      message: "ResponsiveContainer height 100% collapses to zero on mobile",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const nit = fin({
+      severity: "WARN",
+      category: "quality",
+      file: "Widget.tsx",
+      line_start: 10,
+      line_end: 10,
+      rule_id: "indent",
+      message: "inconsistent indentation here",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const r = aggregate({ findings: [bug, nit], reviewersTotal: 1 });
+    expect(r.dedupedFindings.length).toBe(2);
+    const cosmetic = r.dedupedFindings.find((f) => f.category === "quality");
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(cosmetic!.severity).toBe("WARN"); // not inflated to the bug's CRITICAL
+    const real = r.dedupedFindings.find((f) => f.category === "correctness");
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    expect(real!.severity).toBe("CRITICAL");
+  });
+
+  it("STILL region-merges two co-located findings of the SAME stakes class (N6 regression)", () => {
+    // Two correctness findings on the same line (both high-stakes), differently worded
+    // → still ONE finding (genuine dedup of the same concern is preserved).
+    const a = fin({
+      severity: "CRITICAL",
+      category: "correctness",
+      file: "calc.ts",
+      line_start: 7,
+      line_end: 7,
+      rule_id: "off-by-one",
+      message: "loop overruns the array bound",
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "WARN",
+      category: "correctness",
+      file: "calc.ts",
+      line_start: 7,
+      line_end: 7,
+      rule_id: "bounds",
+      message: "index may exceed the length",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1);
+  });
+
   it("does NOT merge differently-worded findings (no masking of distinct issues)", () => {
     const a = fin({
       severity: "CRITICAL",

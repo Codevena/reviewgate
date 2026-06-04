@@ -12,4 +12,11 @@ describe("review prompt git-context (S7)", () => {
     expect(p).toContain("untracked");
     expect(p).toContain("deploy");
   });
+
+  it("instructs the reviewer to verify premises against provided files (N5)", () => {
+    const p = REVIEW_PROMPT_PREAMBLE.toLowerCase();
+    expect(p).toContain("premise");
+    expect(p).toContain("imported collaborator");
+    expect(p).toContain("lower your confidence");
+  });
 });

@@ -159,6 +159,13 @@ function touchesSecurityOrCorrectness(f: Finding): boolean {
   return cats.some((c) => c === "security" || c === "correctness");
 }
 
+// N6: the "high-stakes" category boundary. A correctness/security concern and a
+// cosmetic one (quality/docs/testing/…) must not be REGION-merged under one finding,
+// or one decision would dispose both and the nit inflates to the bug's severity.
+function isHighStakesCategory(c: string): boolean {
+  return c === "security" || c === "correctness";
+}
+
 // True if the finding's representative OR any merged member is `security`.
 // security findings are NEVER reputation-demoted (hard veto preserved).
 function touchesSecurity(f: Finding): boolean {
@@ -271,6 +278,15 @@ export function aggregate(input: AggregateInput): AggregateResult {
         jaccard(c.tokens, fTokens) >= SIM_THRESHOLD &&
         Math.abs(c.sample.line_start - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
       if (sameRegion(c.sample, f) || wordingMerge) {
+        // N6: a REGION-only merge (co-located but differently-worded) that crosses the
+        // high-stakes boundary bundles a real bug with a cosmetic nit under one
+        // decision and inflates the nit's severity — block it, keep them separate. A
+        // WORDING merge (high lexical similarity) is the SAME issue two reviewers
+        // worded/categorized differently → still merge (genuine dedup, F-137).
+        const fHigh = isHighStakesCategory(f.category);
+        if (!wordingMerge && [...c.categories].some((cat) => isHighStakesCategory(cat) !== fHigh)) {
+          continue;
+        }
         target = c;
         break;
       }

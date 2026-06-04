@@ -14,6 +14,7 @@ describe("triage schema", () => {
       budgetTier: "minimal",
       loopCap: 3,
       reviewerHint: [],
+      maxIterationsOverride: null,
       justification: "Plan/doc review.",
     });
     expect(d.riskClass).toBe("docs");

@@ -166,7 +166,10 @@ function specToPackage(spec: string): string | null {
   return name;
 }
 
-async function specifiersFromFile(repoRoot: string, file: string): Promise<string[]> {
+// Exported for N5 collaborator-context collection (which keeps the RELATIVE
+// specifiers this module's specToPackage() discards). Returns EVERY module
+// specifier (relative, external, builtin) in a JS/TS file; [] for other languages.
+export async function specifiersFromFile(repoRoot: string, file: string): Promise<string[]> {
   const abs = join(repoRoot, file);
   const grammar = grammarForFile(abs);
   if (!grammar || !JS_TS_LANGS.has(grammar.lang)) return []; // JS/TS only for M6

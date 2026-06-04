@@ -78,4 +78,44 @@ describe("triageFromFacts (deterministic)", () => {
     });
     expect(d.runReview).toBe(false);
   });
+
+  // N1: small, low-risk diffs should not get the same 3-round soft cap as a big or
+  // sensitive change. Triage emits maxIterationsOverride; the loop-driver caps to it.
+  describe("size-tiered iteration cap (N1)", () => {
+    const smallDefault =
+      "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n";
+
+    it("small low-risk diff → maxIterationsOverride 2", () => {
+      const d = triageFromFacts(facts(smallDefault));
+      expect(d.riskClass).toBe("default");
+      expect(d.maxIterationsOverride).toBe(2);
+    });
+
+    it("small SENSITIVE diff → no override (auth stays heavy)", () => {
+      const d = triageFromFacts(
+        facts(
+          "diff --git a/src/auth/x.ts b/src/auth/x.ts\n--- a/src/auth/x.ts\n+++ b/src/auth/x.ts\n@@ -1 +1 @@\n-a\n+b\n",
+        ),
+      );
+      expect(d.riskClass).toBe("sensitive");
+      expect(d.maxIterationsOverride).toBeNull();
+    });
+
+    it("large low-risk diff (above the small-diff line threshold) → no override", () => {
+      const body = Array.from({ length: 40 }, (_, i) => `+line ${i}`).join("\n");
+      const big = `diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n${body}\n`;
+      const d = triageFromFacts(facts(big));
+      expect(d.riskClass).toBe("default");
+      expect(d.maxIterationsOverride).toBeNull();
+    });
+
+    it("doc-only diff → no override", () => {
+      const d = triageFromFacts(
+        facts(
+          "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n",
+        ),
+      );
+      expect(d.maxIterationsOverride).toBeNull();
+    });
+  });
 });

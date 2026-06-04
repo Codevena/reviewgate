@@ -186,7 +186,32 @@ export interface EscalationInput {
     findings: number;
   }>;
   topFindings: Finding[];
+  // N4: per-finding disposition from the latest decisions/<iter>.jsonl, keyed by
+  // finding id. The gate escalates as a PRECONDITION (before a new iteration), so
+  // pending.json holds the PRIOR iteration's raw findings — but the agent has often
+  // already addressed/rejected them. Joining the decisions here makes the report show
+  // the CURRENT state instead of a stale "all open" snapshot. Absent id → "open".
+  findingStatus?: Record<string, { state: "addressed" | "rejected" | "open"; reason?: string }>;
   triggeredAt: string;
+}
+
+// N4: render a finding with its post-decision status badge inserted right after the
+// `### <id> …` header line, so the human reads whether each finding is still live.
+function fmtFindingWithStatus(
+  f: Finding,
+  st: { state: "addressed" | "rejected" | "open"; reason?: string } | undefined,
+): string {
+  const base = fmtFinding(f);
+  const state = st?.state ?? "open";
+  const badge =
+    state === "addressed"
+      ? "✓ addressed"
+      : state === "rejected"
+        ? `✗ rejected${st?.reason ? `: ${st.reason}` : ""}`
+        : "● open";
+  const nl = base.indexOf("\n");
+  if (nl < 0) return `${base}\n**Decision status:** ${badge}`;
+  return `${base.slice(0, nl)}\n**Decision status:** ${badge}${base.slice(nl)}`;
 }
 
 export class ReportWriter {
@@ -213,7 +238,22 @@ export class ReportWriter {
           `| ${r.iter}    | ${r.verdict.padEnd(4)}    | ${r.crit}    | ${r.warn}    | $${r.costUsd.toFixed(2).padStart(5)} | ${r.findings}        |`,
       )
       .join("\n");
-    const top = input.topFindings.slice(0, 5).map(fmtFinding).join("\n");
+    // N4: bucket each finding by its post-decision status, sort OPEN-first (live
+    // issues the human must still act on lead), then render with a status badge.
+    const status = input.findingStatus ?? {};
+    const stateOf = (f: Finding) => status[f.id]?.state ?? "open";
+    const rank = (s: "open" | "rejected" | "addressed") =>
+      s === "open" ? 0 : s === "rejected" ? 1 : 2;
+    const ordered = input.topFindings
+      .map((f, i) => ({ f, i }))
+      .sort((a, b) => rank(stateOf(a.f)) - rank(stateOf(b.f)) || a.i - b.i)
+      .map(({ f }) => f);
+    const counts = { open: 0, addressed: 0, rejected: 0 };
+    for (const f of input.topFindings) counts[stateOf(f)] += 1;
+    const top = ordered
+      .slice(0, 5)
+      .map((f) => fmtFindingWithStatus(f, status[f.id]))
+      .join("\n");
     const out = [
       "# Reviewgate Escalation",
       "",
@@ -224,7 +264,9 @@ export class ReportWriter {
       "## Summary",
       input.summary,
       "",
-      "## Final findings (last iteration)",
+      "## Final findings (status after the latest decisions)",
+      `_${counts.open} open · ${counts.addressed} addressed · ${counts.rejected} rejected_`,
+      "",
       top,
       "",
       "## Per-iteration history",

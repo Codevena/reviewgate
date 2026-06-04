@@ -395,6 +395,222 @@ describe("LoopDriver", () => {
     expect(second.kind).toBe("allow_stop");
   });
 
+  it("a small-diff cap override (N1) escalates at iteration 2, not the config cap of 3", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN1CAP");
+    // Two non-progressing reviewed rounds (real findings rising 1 → 2) AND a per-diff
+    // soft cap of 2 from triage. min(config 3, override 2) = 2 → escalate now.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 2,
+      max_iterations_override: 2,
+      signature_history: [["s1"], ["s1", "s2"]],
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const md = readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8");
+    expect(md).toContain("Reached 2 iterations"); // capped at 2, not the config 3
+  });
+
+  it("WITHOUT a cap override, the same 2-iteration history does NOT escalate (config cap = 3)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN1NOCAP");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 2,
+      max_iterations_override: null,
+      signature_history: [["s1"], ["s1", "s2"]],
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "", // empty diff → triage skips → PASS → re-arm (no escalation)
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+  });
+
+  it("clears a stale small-diff override on a later large diff (N1 state — does not carry it)", async () => {
+    // codex DoD WARN: `result.maxIterationsOverride ?? cur` treated an explicit null
+    // (no override) as missing and kept the stale value, so a later LARGE diff stayed
+    // wrongly capped at 2. The current iteration's override must win.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN1STALE");
+    await state.update((cur) => ({ ...cur, iteration: 0, max_iterations_override: 2 }));
+    writeDirty(repo);
+    // A LARGE diff (>30 changed lines) on foo.ts covering line 1 → triage override = null;
+    // the fake reviewer's CRITICAL on foo.ts:1 is in-range so it stays blocking → FAIL.
+    const body = Array.from({ length: 35 }, (_, i) => `+line ${i}`).join("\n");
+    const bigDiff = `diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,35 @@\n${body}\n`;
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: bigDiff,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    const after = await state.load();
+    expect(after.max_iterations_override).toBeNull(); // not carried from the stale 2
+  });
+
+  it("treats SEVERITY improvement as progress even when the raw finding count rises (N3)", async () => {
+    // Count rises 1 → 2 → 3 (raw-count heuristic would say "not converging"), but the
+    // last two reviewed rounds drop CRITICAL 2 → 1 — the code is getting safer. The
+    // gate must NOT escalate at the cap on a worsening-count-but-improving-severity loop.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN3SEV");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["s1"], ["s1", "s2"], ["s1", "s2", "s3"]],
+      iteration_stats: [
+        { critical: 3, warn: 0, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 2, warn: 0, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 1, warn: 0, info: 0, cost_usd: 0, verdict: "FAIL" },
+      ],
+    }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "", // empty → triage skips → PASS → re-arm if we fall through (no escalation)
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+  });
+
+  it("treats approach-churn (findings replaced, not recurring) as progress, not a stall (N3)", async () => {
+    // The agent switched approach (flex → fixed): round 3's findings are ENTIRELY new
+    // (s3,s4) — none of round 2's (s1,s2) recurred. Same real count, but the persistent
+    // issue set is empty. Raw count/severity are flat; only the recurrence signal saves it.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN3CHURN");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["s1"], ["s1", "s2"], ["s3", "s4"]],
+      // iteration_stats intentionally unset (back-compat) → severity rule inert; isolates churn.
+    }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    await driver.run();
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+  });
+
+  it("STILL escalates a genuine stall: same findings recur with flat severity (N3 regression)", async () => {
+    // The case N3 must NOT loosen: the identical finding recurs every round and severity
+    // is flat → the loop is genuinely stuck → escalate exactly as before.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN3STALL");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [
+        ["s1", "s2"],
+        ["s1", "s2"],
+        ["s1", "s2"],
+      ],
+      iteration_stats: [
+        { critical: 1, warn: 1, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 1, warn: 1, info: 0, cost_usd: 0, verdict: "FAIL" },
+        { critical: 1, warn: 1, info: 0, cost_usd: 0, verdict: "FAIL" },
+      ],
+    }));
+    writeDirty(repo);
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
   it("does NOT escalate a converging cycle just because a transient ERROR left an empty signature row (F-001)", async () => {
     // maxIterations=3. Real reviewed rows strictly decrease (3 → 2); the middle
     // round was a reviewer ERROR which appends a 0-length signature row. The
@@ -496,6 +712,92 @@ describe("LoopDriver", () => {
     expect(md).toContain("Hardcoded magic number 7200000"); // findings populated
     expect(md).toContain("magic-number");
     expect(md).toContain("| 3    | FAIL    | 1    |"); // last iter CRIT = 1, not 0
+  });
+
+  it("the escalation report reflects the latest decisions, not the stale opening snapshot (N4)", async () => {
+    // The gate escalates as a PRECONDITION (before a new iteration), so pending.json
+    // holds the prior iteration's RAW findings — which the agent has often already
+    // fixed/rejected. ESCALATION.md must show each finding's CURRENT disposition.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQN4REP");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      // Rising real-finding count (1 → 2 → 3): non-progressing → escalate at the cap.
+      signature_history: [["s1"], ["s1", "s2"], ["s1", "s2", "s3"]],
+    }));
+    writeDirty(repo);
+    const mkFinding = (id: string, sig: string, line: number, sev: string, msg: string) => ({
+      id,
+      signature: sig,
+      severity: sev,
+      category: "quality",
+      rule_id: `rule-${id}`,
+      file: "src/Widget.tsx",
+      line_start: line,
+      line_end: line,
+      message: msg,
+      details: "detail",
+      reviewer: { provider: "codex", model: "gpt-5.5", persona: "security" },
+      confidence: 0.6,
+      consensus: "singleton",
+    });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          mkFinding("F-001", "s1", 10, "CRITICAL", "height collapses to 0"),
+          mkFinding("F-002", "s2", 12, "WARN", "gap reduces height"),
+          mkFinding("F-003", "s3", 14, "WARN", "still open"),
+        ],
+        counts: { critical: 1, warn: 2, info: 0 },
+      }),
+    );
+    // Agent already dispositioned F-001 (fixed) and F-002 (rejected); F-003 untouched.
+    mkdirSync(dirname(decisionsPath(repo, 3)), { recursive: true });
+    writeFileSync(
+      decisionsPath(repo, 3),
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "accepted",
+          action: "fixed",
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-002",
+          verdict: "rejected",
+          reason: "gap-3 is smaller than the default gap-6, so it adds space not less",
+        }),
+      ].join("\n")}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const md = readFileSync(join(repo, ".reviewgate", "ESCALATION.md"), "utf8");
+    expect(md).toMatch(/F-001[\s\S]*✓ addressed/);
+    expect(md).toMatch(/F-002[\s\S]*✗ rejected/);
+    expect(md).toContain("gap-3 is smaller than the default gap-6"); // rejection reason
+    expect(md).toMatch(/F-003[\s\S]*● open/);
+    expect(md).toContain("1 open · 1 addressed · 1 rejected");
   });
 
   it("escalation history shows REAL per-iteration CRIT/WARN for EARLIER iterations (Bug A)", async () => {

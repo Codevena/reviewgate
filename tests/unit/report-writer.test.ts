@@ -94,6 +94,58 @@ describe("ReportWriter", () => {
     expect(md).toContain("F-001");
   });
 
+  it("escalation report reflects post-decision status (addressed/rejected/open)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-esc-"));
+    const w = new ReportWriter(dir);
+    const f1 = baseReport.findings[0];
+    if (!f1) throw new Error("fixture missing finding");
+    const f2 = {
+      ...f1,
+      id: "F-002",
+      signature: "sig2",
+      severity: "WARN" as const,
+      category: "quality" as const,
+      rule_id: "style-nit",
+      message: "indentation",
+      details: "indent mismatch",
+    };
+    const f3 = {
+      ...f1,
+      id: "F-003",
+      signature: "sig3",
+      severity: "WARN" as const,
+      category: "quality" as const,
+      rule_id: "maybe-clip",
+      message: "may clip",
+      details: "layout risk",
+    };
+    await w.writeEscalation({
+      runId: "r1",
+      iter: 3,
+      maxIter: 3,
+      reasonCode: "max-iterations",
+      summary: "Hit max iterations.",
+      perIter: [{ iter: 1, verdict: "FAIL", crit: 1, warn: 2, costUsd: 0, findings: 3 }],
+      topFindings: [f1, f2, f3],
+      findingStatus: {
+        "F-001": { state: "addressed" },
+        "F-002": { state: "rejected", reason: "gap-3 is smaller than the default gap-6" },
+        // F-003 intentionally absent → "open"
+      },
+      triggeredAt: "2026-05-20T14:35:00Z",
+    });
+    const md = readFileSync(join(dir, ".reviewgate", "ESCALATION.md"), "utf8");
+    // Each finding's block carries its post-decision status badge.
+    expect(md).toMatch(/F-001[\s\S]*✓ addressed/);
+    expect(md).toMatch(/F-002[\s\S]*✗ rejected/);
+    expect(md).toContain("gap-3 is smaller than the default gap-6"); // rejection reason surfaced
+    expect(md).toMatch(/F-003[\s\S]*● open/);
+    // One-line summary of the current (post-decision) state.
+    expect(md).toContain("1 open · 1 addressed · 1 rejected");
+    // Open findings sort ahead of resolved ones (so the human reads what's still live first).
+    expect(md.indexOf("F-003")).toBeLessThan(md.indexOf("F-001"));
+  });
+
   // --- Visual cues: consensus emoji + demote badges ---
   describe("finding visual cues", () => {
     const f0 = baseReport.findings[0];

@@ -41,6 +41,7 @@ describe("refineTriage", () => {
       budgetTier: "minimal" as const,
       loopCap: 3,
       reviewerHint: [],
+      maxIterationsOverride: null,
       justification: "Plan/doc review.",
     };
     const out = await refineTriage(det, { llm: null });

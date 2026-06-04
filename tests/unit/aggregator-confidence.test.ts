@@ -86,10 +86,10 @@ describe("aggregate confidence demote", () => {
     expect(r.dedupedFindings[0]?.low_confidence).toBeUndefined();
   });
 
-  it("does NOT demote a CRITICAL cluster whose MEMBER (not representative) is security", () => {
-    // Two CRITICAL findings at the same line merge: the lower rule_id ("a-quality")
-    // becomes the representative, the security one a member. Low confidence on the
-    // rep must NOT demote the cluster — a security concern rides along in members.
+  it("keeps a co-located security CRITICAL blocking while the low-confidence quality finding demotes separately (N6)", () => {
+    // N6: a security concern and a co-located cosmetic one are NOT merged across the
+    // high-stakes boundary, so the security CRITICAL is its OWN finding (never
+    // confidence-demoted), while the low-confidence quality CRITICAL demotes on its own.
     const r = aggregate({
       findings: [
         f({
@@ -114,8 +114,13 @@ describe("aggregate confidence demote", () => {
       reviewersTotal: 1,
       confidenceFloor: 0.5,
     });
-    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL"); // not demoted
-    expect(r.verdict).toBe("FAIL");
+    expect(r.dedupedFindings.length).toBe(2); // not merged across the stakes boundary
+    const sec = r.dedupedFindings.find((x) => x.category === "security");
+    const qual = r.dedupedFindings.find((x) => x.category === "quality");
+    expect(sec?.severity).toBe("CRITICAL"); // security CRITICAL is never confidence-demoted
+    expect(qual?.severity).not.toBe("CRITICAL"); // the quality nit demotes on its own low confidence
+    expect(qual?.low_confidence).toBe(true);
+    expect(r.verdict).toBe("FAIL"); // the security concern still blocks
   });
 
   it("does NOT demote a cluster when a co-located MEMBER has high confidence", () => {
@@ -180,10 +185,10 @@ describe("aggregate confidence demote", () => {
     expect(r.verdict).toBe("FAIL");
   });
 
-  it("critic likely_fp does NOT demote a CRITICAL cluster whose security concern is a MEMBER", () => {
-    // The critic's CRITICAL-security exemption must also look past the
-    // representative category — else a likely_fp verdict could demote a cluster
-    // carrying a CRITICAL security member down to WARN/SOFT-PASS.
+  it("keeps a co-located correctness CRITICAL blocking when the critic flags a sibling quality finding (N6)", () => {
+    // N6: the correctness concern and the cosmetic one are NOT merged across the
+    // high-stakes boundary, so a critic likely_fp on the quality finding cannot drag
+    // the correctness CRITICAL down — the latter is its own finding, exempt from demote.
     const r = aggregate({
       findings: [
         f({
@@ -206,8 +211,9 @@ describe("aggregate confidence demote", () => {
       reviewersTotal: 2,
       critic: new Map([["q", { verdict: "likely_fp" as const }]]),
     });
-    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL"); // critic did not demote
-    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+    expect(r.dedupedFindings.length).toBe(2); // not merged across the stakes boundary
+    const corr = r.dedupedFindings.find((x) => x.category === "correctness");
+    expect(corr?.severity).toBe("CRITICAL"); // correctness CRITICAL exempt from critic demote
     expect(r.verdict).toBe("FAIL");
   });
 

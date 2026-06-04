@@ -44,6 +44,10 @@ export function computeBehaviorHash(input: {
   // reviewer prompt — invalidates the cache when that cross-iteration context changes.
   // Empty/absent → segment omitted (continuity rule).
   adjudications?: string | undefined;
+  // N5: sha256 hex of the injected imported-collaborator corpus (unchanged first-party
+  // files shown for premise verification). A collaborator's content is NOT in the diff
+  // hash, so a change to it must invalidate the cached verdict. Empty/absent → omitted.
+  collaborators?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -75,6 +79,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.adjudications) {
     out += `|adj:${input.adjudications}`;
+  }
+  if (input.collaborators) {
+    out += `|collab:${input.collaborators}`;
   }
   return out;
 }

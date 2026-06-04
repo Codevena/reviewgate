@@ -81,6 +81,14 @@ export const defaultConfig = {
       // Maintainer-authored repo facts injected as trusted reviewer context (e.g. "this repo
       // uses hex color tokens, not HSL"). Default none — set per repo in reviewgate.config.ts.
       houseRules: [] as string[],
+      // N5: imported-collaborator context — OFF by default (cost/prompt size). Enable
+      // per repo (`collaboratorContext: { enabled: true }`) so reviewers can verify a
+      // premise about an unchanged imported file instead of guessing.
+      collaboratorContext: null as null | {
+        enabled: boolean;
+        maxBytes?: number;
+        maxFiles?: number;
+      },
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

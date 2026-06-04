@@ -136,9 +136,10 @@ describe("aggregate scopeToDiff", () => {
     expect(r.dedupedFindings.length).toBe(1);
   });
 
-  it("keeps an out-of-diff cluster blocking when a MERGED member category is listed", () => {
-    // The representative is quality, but a merged security member must keep the
-    // whole cluster blocking under outOfDiffBlocking:["security"].
+  it("keeps a co-located out-of-diff SECURITY finding blocking under outOfDiffBlocking (N6: separated from the quality nit)", () => {
+    // N6: the quality nit and the security concern are NOT merged across the
+    // high-stakes boundary. The security finding stays blocking via
+    // outOfDiffBlocking:["security"]; the quality nit demotes out-of-diff on its own.
     const r = aggregate({
       findings: [
         f({ file: "other.ts", line_start: 99, category: "quality", signature: "q1" }),
@@ -155,8 +156,9 @@ describe("aggregate scopeToDiff", () => {
       scopeToDiff: true,
       outOfDiffBlocking: ["security"],
     });
-    expect(r.dedupedFindings[0]?.severity).not.toBe("INFO");
-    expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
+    const sec = r.dedupedFindings.find((x) => x.category === "security");
+    expect(sec?.severity).not.toBe("INFO"); // security stays blocking via outOfDiffBlocking
+    expect(sec?.scope_demoted).toBeUndefined();
   });
 
   it("normalizes the finding path so a ./-prefixed in-diff finding stays blocking", () => {

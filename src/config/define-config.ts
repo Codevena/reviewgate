@@ -89,6 +89,21 @@ export const ConfigSchema = z.object({
       // Optional (like the sibling review knobs); defaults.ts supplies [] so the output type
       // stays compatible with hand-built configs.
       houseRules: z.array(z.string()).optional(),
+      // N5: inject the source of FIRST-PARTY (relative-import) collaborators that a
+      // changed file depends on but which were NOT changed — so a reviewer can VERIFY
+      // a premise about an unchanged file ("Card is/ isn't a flex container") instead
+      // of guessing. Opt-in (cost/prompt size); 1-hop, byte-budgeted. null = off.
+      collaboratorContext: z
+        .object({
+          enabled: z.boolean(),
+          // Optional so a repo can opt in with just `{ enabled: true }`; the collector
+          // applies its own defaults (6000 bytes / 10 files) when these are omitted.
+          maxBytes: z.number().int().positive().optional(),
+          maxFiles: z.number().int().positive().optional(),
+        })
+        .nullable()
+        .default(null)
+        .optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
