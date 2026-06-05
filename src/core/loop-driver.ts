@@ -50,6 +50,11 @@ const MAX_CONSECUTIVE_INCOMPLETE_RUNS = 2;
 // informed) but ALLOWS the stop with a loud warning instead of blocking.
 const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<EscalationReason>([
   "reviewer-fp-streak",
+  // A persistent transient-infra outage (every reviewer down for >N turns) is a
+  // provider problem, not the agent's code — blocking would deadlock an automated
+  // loop (it can't wait out the outage). We still write ESCALATION.md + audit (the
+  // human is informed) but ALLOW the stop with a loud warning instead of block-looping.
+  "infra-unavailable",
 ]);
 
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
@@ -1450,9 +1455,16 @@ export class LoopDriver {
       };
     }
     if (firstAnnounce) {
+      // Reason-aware copy: infra-unavailable is a transient PROVIDER OUTAGE (all
+      // reviewers down for N turns), NOT an unreliable reviewer — telling the dev to
+      // "disable/replace that reviewer" would be wrong. reviewer-fp-streak IS about a
+      // reviewer that kept being wrong.
       return {
         kind: "allow_stop",
-        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the reviewer panel is being treated as UNRELIABLE here, not your code; NOT blocking your turn. Read .reviewgate/ESCALATION.md and consider disabling/replacing that reviewer in reviewgate.config.ts.${suffix}`,
+        reason:
+          reasonCode === "infra-unavailable"
+            ? `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — no reviewer could complete a review for several consecutive turns (transient provider outage, NOT your code); NOT blocking your turn. This change went UN-reviewed and the gate is now un-armed. Read .reviewgate/ESCALATION.md; once a provider recovers, re-review it by running \`reviewgate reset\` (any further edit/commit also re-arms the gate).${suffix}`
+            : `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the reviewer panel is being treated as UNRELIABLE here, not your code; NOT blocking your turn. Read .reviewgate/ESCALATION.md and consider disabling/replacing that reviewer in reviewgate.config.ts.${suffix}`,
       };
     }
     return {

@@ -169,17 +169,20 @@ export const defaultConfig = {
     // self-deadline abort never triggers it (that timeout is the gate's, not the
     // provider's). Default 5min; the 30-min re-probe window bounds the downside.
     timeoutCooldownMs: 300_000,
-    // SECURE-BY-DEFAULT (0 = fail-closed): when NO reviewer can complete a review
-    // (every attempt failed quota/timeout/error), the gate HARD-BLOCKS — a security
-    // gate must not let unreviewed changes through its Stop hook by default (codex
-    // CRITICAL, 2026-06-05). Note the COMMON transient outage is already handled
-    // separately: a pure all-quota outage defers (uncapped), and a per-reviewer
-    // timeout is cooled down + failed over (timeoutCooldownMs). This setting only
-    // governs the rarer MIXED total outage. OPT-IN to a bounded defer for automated
-    // agent loops (which can't synchronously wait out an outage) by setting N > 0: the
-    // gate then DEFERS up to N consecutive turns (allow-stop, keeps the change flagged,
-    // re-reviews next turn, never PASSes, audit-logged) before escalating to the human.
-    infraDeferMaxConsecutive: 0,
+    // When NO reviewer can complete a review on a MIXED total outage (some quota,
+    // some timeout/error — the pure all-quota case already defers uncapped, and a
+    // per-reviewer timeout is cooled + failed over), the gate DEFERS up to N
+    // consecutive turns before escalating to the human. Default 3 (was 0 = hard-block):
+    // FIELD EVIDENCE (2026-06-05) showed a hard block doesn't actually fail-closed on a
+    // total outage — an automated agent loop can't wait it out, so the Stop hook re-fires
+    // every turn until Claude Code's stop_hook_active cap force-ends the turn UNREVIEWED
+    // anyway (after ~9 blocks, no escalation surfaced). So cap-0 bought no real security,
+    // only a punishing block-loop. The bounded defer keeps the guardrails that DO matter:
+    // it never PASSes (a visibly-distinct 🟠 DEFERRED allow-stop), KEEPS the dirty flag so
+    // the change is re-reviewed next turn, does NOT advance the iteration, is audit-logged,
+    // and ESCALATES to the human (ESCALATION.md) after N — so a persistent misconfig is
+    // surfaced, not silently waved through. Set 0 to restore the old hard-block.
+    infraDeferMaxConsecutive: 3,
   },
   sandbox: {
     // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished

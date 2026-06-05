@@ -1729,7 +1729,8 @@ describe("LoopDriver", () => {
     }),
   });
 
-  // The bounded defer is OPT-IN (default 0 = fail-closed); these tests set it > 0.
+  // The bounded defer defaults to 3 now (was 0 = hard-block); these tests set N
+  // explicitly to pin behavior at a chosen cap (incl. 0 = opt-out hard-block).
   const deferConfig = (n: number) => ({
     ...defaultConfig,
     loop: { ...defaultConfig.loop, infraDeferMaxConsecutive: n },
@@ -1773,18 +1774,28 @@ describe("LoopDriver", () => {
       stopHookActive: false,
     }).run();
     expect(decision.reason).toMatch(/ESCALAT/i);
+    // infra-unavailable is an ALLOW-STOP escalation: it writes ESCALATION.md (human
+    // informed) but does NOT block — blocking would deadlock an automated loop on a
+    // provider outage it can't wait out.
+    expect(decision.kind).toBe("allow_stop");
+    // Reason-aware copy: a transient OUTAGE, not an "unreliable reviewer to replace".
+    expect(decision.reason).toMatch(/outage/i);
+    expect(decision.reason).not.toMatch(/replacing that reviewer/i);
+    // The escalation un-arms the gate (dirty flag consumed), so the copy must NOT promise
+    // automatic re-review — it tells the dev to `reviewgate reset` / re-edit once recovered.
+    expect(decision.reason).toMatch(/reset/i);
+    expect(decision.reason).not.toMatch(/resumes automatically/i);
     expect((await state.load()).escalation_reason).toBe("infra-unavailable");
   });
 
-  it("infraDeferMaxConsecutive=0 (the secure DEFAULT) hard-blocks an infra outage immediately", async () => {
+  it("infraDeferMaxConsecutive=0 (opt-out) still hard-blocks an infra outage immediately", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);
     await state.initialise("01HXINFRA0");
     writeDirty(repo);
-    // 0 is the default now; assert it explicitly via defaultConfig (no override).
     const decision = await new LoopDriver({
       repoRoot: repo,
-      config: defaultConfig,
+      config: deferConfig(0), // explicit opt-out → restore the old hard-block
       state,
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
@@ -1792,6 +1803,26 @@ describe("LoopDriver", () => {
     }).run();
     expect(decision.kind).toBe("block");
     expect(decision.reason).toMatch(/CLOSED/i);
+  });
+
+  it("the DEFAULT config DEFERS an infra outage (no longer hard-blocks → no block-loop)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXINFRADEF");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig, // no override → default infraDeferMaxConsecutive (now 3)
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: infraErrorStub(),
+      stopHookActive: false,
+    }).run();
+    expect(decision.kind).toBe("allow_stop"); // defers, does NOT block-loop
+    expect(decision.reason).toMatch(/DEFERRED/i);
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true); // re-reviewed next turn
+    expect((await state.load()).consecutive_infra_defers).toBe(1);
   });
 
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
