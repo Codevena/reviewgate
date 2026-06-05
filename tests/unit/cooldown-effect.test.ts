@@ -1,6 +1,14 @@
 // tests/unit/cooldown-effect.test.ts
 import { describe, expect, it } from "bun:test";
-import { cooldownEffectFor } from "../../src/core/orchestrator.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type CooldownEffect,
+  applyCooldownEffects,
+  cooldownEffectFor,
+} from "../../src/core/orchestrator.ts";
+import { QuotaCooldownStore } from "../../src/core/quota-cooldown.ts";
 import type { ReviewResult, ReviewStatus } from "../../src/providers/adapter-base.ts";
 
 const NOW = new Date("2026-06-02T00:00:00Z");
@@ -70,5 +78,71 @@ describe("cooldownEffectFor", () => {
 
   it("timeoutCooldownMs=0 disables the timeout cooldown (self-deadline-abort path)", () => {
     expect(cooldownEffectFor("claude-code", res("timeout"), NOW, 0)).toBeNull();
+  });
+});
+
+describe("applyCooldownEffects", () => {
+  const repo = () => mkdtempSync(join(tmpdir(), "rg-apply-"));
+  const FIVE_MIN = 5 * 60_000;
+
+  it("dedups a provider failing in N slots into ONE backoff strike (not N)", () => {
+    // claude-code can appear as its own slot + last-resort/fallback for others. Without
+    // dedup, 3 failing slots → 3 recordBackoff(now) calls → strike 1→2→3 (4h) in ONE
+    // cycle, defeating the gentle 3-step schedule.
+    const s = new QuotaCooldownStore(repo());
+    const effects: CooldownEffect[] = [
+      { provider: "claude-code", source: "default" },
+      { provider: "claude-code", source: "default" },
+      { provider: "claude-code", source: "default" },
+    ];
+    applyCooldownEffects(s, effects, NOW, false);
+    expect(s.activeUntil("claude-code", NOW)).toBe(
+      new Date(NOW.getTime() + FIVE_MIN).toISOString(),
+    );
+  });
+
+  it("suppresses default-source backoff when the run was aborted (self-deadline)", () => {
+    // The gate self-deadline SIGKILLs healthy reviewers (error/timeout, large duration).
+    // They must NOT be cooled down — that is the gate's teardown, not the provider's fault.
+    const s = new QuotaCooldownStore(repo());
+    applyCooldownEffects(s, [{ provider: "claude-code", source: "default" }], NOW, true);
+    expect(s.activeUntil("claude-code", NOW)).toBeNull();
+    expect(s.skipUntil("claude-code", NOW)).toBeNull();
+  });
+
+  it("still records a PARSED reset on an aborted run (a real quota banner ≠ the abort)", () => {
+    const s = new QuotaCooldownStore(repo());
+    const resetAt = new Date(NOW.getTime() + 3_600_000).toISOString();
+    applyCooldownEffects(s, [{ provider: "codex", resetAt, source: "parsed" }], NOW, true);
+    expect(s.activeUntil("codex", NOW)).toBe(resetAt);
+  });
+
+  it("clear wins over a same-provider default backoff (it demonstrably worked)", () => {
+    const s = new QuotaCooldownStore(repo());
+    applyCooldownEffects(
+      s,
+      [
+        { provider: "gemini", source: "default" },
+        { provider: "gemini", clear: true },
+      ],
+      NOW,
+      false,
+    );
+    expect(s.activeUntil("gemini", NOW)).toBeNull();
+  });
+
+  it("a parsed reset wins over a same-provider default backoff", () => {
+    const s = new QuotaCooldownStore(repo());
+    const resetAt = new Date(NOW.getTime() + 3_600_000).toISOString();
+    applyCooldownEffects(
+      s,
+      [
+        { provider: "gemini", source: "default" },
+        { provider: "gemini", resetAt, source: "parsed" },
+      ],
+      NOW,
+      false,
+    );
+    expect(s.activeUntil("gemini", NOW)).toBe(resetAt);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QuotaCooldownStore, parseQuotaResetAt } from "../../src/core/quota-cooldown.ts";
@@ -168,6 +168,17 @@ describe("QuotaCooldownStore.skipUntil (re-probe window)", () => {
 
   test("no entry → never skips", () => {
     expect(new QuotaCooldownStore(repo()).skipUntil("codex", NOW)).toBeNull();
+  });
+
+  test("a corrupt (unparseable) reset_at fails open — does NOT skip forever", () => {
+    const r = repo();
+    const s = new QuotaCooldownStore(r);
+    s.record("gemini", new Date(NOW.getTime() + 3_600_000).toISOString(), NOW); // creates dir+file
+    const p = join(r, ".reviewgate", "quota-cooldowns.json");
+    const c = JSON.parse(readFileSync(p, "utf8"));
+    c.providers.gemini.reset_at = "not-a-date"; // only a hand-edit could do this
+    writeFileSync(p, JSON.stringify(c));
+    expect(s.skipUntil("gemini", NOW)).toBeNull(); // NaN must not pin the provider out
   });
 
   test("does NOT early-re-probe a default-source backoff (waits the full window)", () => {
