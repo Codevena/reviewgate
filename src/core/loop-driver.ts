@@ -1051,6 +1051,16 @@ export class LoopDriver {
       return await this.handleAllQuotaLocked(state);
     }
 
+    // Broader transient infra outage: reviewers WERE attempted but every one failed
+    // (mixed quota/timeout/error — the strict all-quota test above didn't catch it).
+    // Bound-defer rather than hard-block + burn an iteration, so an automated agent
+    // loop (which can't synchronously wait) isn't deadlocked. Escalates to the human
+    // after infraDeferMaxConsecutive consecutive defers. A misconfig ERROR where
+    // NOTHING was attempted (allReviewersInfraFailed=false) still hard-blocks below.
+    if (result.verdict === "ERROR" && result.allReviewersInfraFailed) {
+      return await this.handleInfraUnavailable(state, result);
+    }
+
     // A clean PASS means this change-set converged → re-arm the budget so the
     // next batch starts fresh (and any prior escalation is cleared). A FAIL/ERROR
     // advances the counter toward the iter-cap escalation. Either way, record the
@@ -1106,6 +1116,11 @@ export class LoopDriver {
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,
+        // Any outcome that reaches the NORMAL state update (PASS/SOFT-PASS/FAIL, or a
+        // misconfig ERROR) breaks the transient-infra-outage streak — the bounded
+        // infra-defer returns early above and never gets here, so reaching this point
+        // means the outage is over. Reset so a later outage counts fresh.
+        consecutive_infra_defers: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
         last_stop_ts: new Date().toISOString(),
         // On a clean pass (re-arm), bump the cycle sequence so the next cycle's
@@ -1172,7 +1187,10 @@ export class LoopDriver {
       // escalation, so this cannot loop forever.
       decision = {
         kind: "block",
-        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail. Run \`reviewgate doctor\` if this persists.`,
+        // Surface any cooled-down providers + their reset times (quota OR the short
+        // timeout cooldown) so a stuck panel tells the dev WHICH provider and WHEN it
+        // recovers — not a bare "run reviewgate doctor" (both field reports' ask).
+        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` if this persists."}`,
       };
     } else {
       decision = {
@@ -1257,6 +1275,68 @@ export class LoopDriver {
     return {
       kind: "allow_stop",
       reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets.${note}`,
+    };
+  }
+
+  // No reviewer could complete a review (every attempt failed quota/timeout/error,
+  // but NOT the pure-all-quota case handled above). DEFER a bounded number of turns
+  // rather than hard-block: an automated agent loop can't synchronously wait out a
+  // transient provider outage, so a hard block is a near-deadlock (both 2026-06-05
+  // field reports). Guardrails that keep this fail-closed and NOT a silent bypass:
+  //   • it never emits PASS — it is a visibly-distinct 🟠 DEFERRED allow_stop;
+  //   • the dirty flag is KEPT (untouched here) → the change is re-reviewed next turn;
+  //   • the iteration is NOT advanced (no real review → no march to max-iterations);
+  //   • every defer is audit-logged;
+  //   • after infraDeferMaxConsecutive consecutive defers it ESCALATES to the human —
+  //     a persistent outage / misconfig must never silently defer forever.
+  // infraDeferMaxConsecutive=0 disables the defer entirely (hard-block — prior behavior).
+  private async handleInfraUnavailable(
+    state: ReviewgateState,
+    result: IterationResult,
+  ): Promise<LoopDecision> {
+    const cap = this.i.config.loop.infraDeferMaxConsecutive;
+    const next = state.consecutive_infra_defers + 1;
+    const breakdown = formatErrorBreakdown(result.summary);
+    await this.i.audit
+      .append({
+        event: "gate.decision",
+        run_id: state.session_id,
+        iter: state.iteration,
+        trigger: "stop-hook",
+        run_summary: result.summary,
+      })
+      .catch(() => {});
+    // Defer disabled (cap 0) → hard-block immediately, like a misconfig ERROR.
+    if (cap <= 0) {
+      return {
+        kind: "block",
+        reason: `🔴 Reviewgate · GATE CLOSED — no reviewer could complete a review (iteration ${state.iteration}): ${breakdown}. See .reviewgate/pending.md for per-reviewer status detail.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` if this persists."}`,
+      };
+    }
+    // Exhausted the bounded defer → surface to the human (reset the counter so a
+    // post-escalation recovery starts fresh).
+    if (next > cap) {
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({ ...cur, consecutive_infra_defers: 0 }),
+      );
+      const fresh = await this.i.state.load();
+      return this.escalateAndDecide(
+        fresh,
+        "infra-unavailable",
+        `No reviewer could complete a review for ${cap + 1} consecutive turns (transient infra outage, not a code problem): ${breakdown}.`,
+      );
+    }
+    // Bounded defer: count it, keep the dirty flag, do NOT advance the iteration.
+    await this.i.state.update((cur) =>
+      ReviewgateStateSchema.parse({
+        ...cur,
+        consecutive_infra_defers: next,
+        last_stop_ts: new Date().toISOString(),
+      }),
+    );
+    return {
+      kind: "allow_stop",
+      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — no reviewer could complete this turn (${breakdown}); transient infra outage, NOT your code. The change stays flagged and is re-reviewed next turn. Will escalate to the human if this persists (defer ${next}/${cap}).${this.quotaDegradationNote(new Date()) ?? ""}`,
     };
   }
 

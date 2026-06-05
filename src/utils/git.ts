@@ -166,6 +166,15 @@ export async function collectDiff(
   repoRoot: string,
   baseSha?: string | null,
   untrackedBudgetMs: number = COLLECT_DIFF_UNTRACKED_BUDGET_MS,
+  // ISO timestamp of this batch's clean→dirty transition (dirty.flag base_ts).
+  // When set, an UNTRACKED file whose mtime predates it is OUT OF SCOPE — it
+  // existed before the agent started this batch and was never touched (a stray
+  // cache file, a *.bak, a foreign migration). Such files were the #1 source of
+  // confidently-wrong CRITICALs on code the agent never authored (both field
+  // reports). Null/absent (legacy flag, or the HEAD-advanced synthesis path) →
+  // the gate is inert and ALL untracked files are included (a brand-new module
+  // must still be reviewed — no regression).
+  sinceTs?: string | null,
 ): Promise<string> {
   const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
   const diffArgs = (ref: string) => ["diff", "--no-color", ref, "--", ".", ...EXCLUDE_PATHSPEC];
@@ -202,11 +211,29 @@ export async function collectDiff(
     // untracked files, or hung `git diff --no-index` calls) can't run up N×30s
     // here, before the gate self-deadline is even active.
     const deadline = Date.now() + untrackedBudgetMs;
+    const sinceMs = sinceTs ? Date.parse(sinceTs) : Number.NaN;
     // NUL-delimited: split on \0, no per-token trim (paths are exact between
     // terminators; trimming could corrupt a filename with leading/trailing space).
     for (const file of untracked.stdout
       .split("\0")
       .filter((s) => s.length > 0 && !isExcludedFromReview(s))) {
+      // Pre-existing untracked noise (predates this batch's start) is out of scope.
+      // Skip WITHOUT marking the diff incomplete: this is a deliberate scope decision,
+      // not a file dropped due to a timeout/truncation failure. Gate on
+      // max(mtime, ctime), NOT mtime alone: mtime is settable to the PAST (`utimes`,
+      // `git checkout`, `rsync -a`), so a file genuinely created/modified THIS batch
+      // with a back-dated mtime would be wrongly excluded (a silent under-review of new
+      // content). ctime (inode change time) updates to "now" on create/metadata-change
+      // and cannot be back-dated by `utimes`, so it catches that case → fewer
+      // false-excludes. lstat is guarded — a racing unlink falls through to --no-index.
+      if (!Number.isNaN(sinceMs)) {
+        try {
+          const st = lstatSync(join(repoRoot, file));
+          if (Math.max(st.mtimeMs, st.ctimeMs) < sinceMs) continue;
+        } catch {
+          /* file vanished mid-listing — let --no-index handle it */
+        }
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         // Budget spent with untracked files still unprocessed → the diff omits

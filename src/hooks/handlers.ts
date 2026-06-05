@@ -21,6 +21,17 @@ export interface TriggerInput {
   hookStdinRaw: string;
 }
 
+// base_ts is captured at the FIRST trigger (PostToolUse), which fires AFTER the edit
+// that created/modified the file. A brand-new untracked file from that first edit
+// therefore has an mtime/ctime a few ms BEFORE the capture — without a margin the
+// diff's untracked-file mtime gate (collectDiff) would wrongly exclude the very file
+// that STARTED the batch (under-review / fail-open, codex CRITICAL 2026-06-05). We
+// back-date base_ts by a margin that comfortably exceeds the edit→trigger latency
+// (sub-second, even under load) while still excluding genuinely-stale pre-existing
+// files (foreign migrations / caches / *.bak are minutes-to-days old). Over-inclusion
+// (reviewing a file created in this window) is SAFE; under-inclusion is the bug.
+const BASE_TS_SAFETY_MARGIN_MS = 30_000;
+
 export async function handleTrigger(input: TriggerInput): Promise<void> {
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -31,18 +42,31 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
   // makes mid-batch, so the gate reviews `git diff <base>` (committed +
   // uncommitted since then), not just the now-clean working tree.
   let baseSha: string | null = null;
+  // Batch-start timestamp: captured at the clean→dirty transition (first edit) and
+  // preserved across the batch exactly like base_sha. The gate uses it to scope OUT
+  // pre-existing untracked files (those whose mtime predates the batch — the agent
+  // never touched them). Distinct from `ts` below, which is the LAST edit's time.
+  let baseTs: string | null = null;
   if (existsSync(p)) {
     try {
-      baseSha = (JSON.parse(readFileSync(p, "utf8")) as { base_sha?: string }).base_sha ?? null;
+      const prev = JSON.parse(readFileSync(p, "utf8")) as { base_sha?: string; base_ts?: string };
+      baseSha = prev.base_sha ?? null;
+      baseTs = prev.base_ts ?? null;
     } catch {
       baseSha = null;
+      baseTs = null;
     }
   }
   if (!baseSha) baseSha = await gitHeadSha(input.repoRoot);
+  const nowIso = new Date().toISOString();
+  // First capture: back-date by the safety margin so a file created by THIS triggering
+  // edit is not mistaken for pre-existing noise (see BASE_TS_SAFETY_MARGIN_MS).
+  if (!baseTs) baseTs = new Date(Date.now() - BASE_TS_SAFETY_MARGIN_MS).toISOString();
   const body = JSON.stringify({
     diff_hash: diffHash,
-    ts: new Date().toISOString(),
+    ts: nowIso,
     ...(baseSha ? { base_sha: baseSha } : {}),
+    base_ts: baseTs,
   });
   // Unique temp name (not a shared `${p}.tmp`) so parallel PostToolUse triggers
   // on the same checkout can't clobber each other's in-flight write before the

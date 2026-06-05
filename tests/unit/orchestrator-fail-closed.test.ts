@@ -84,6 +84,9 @@ describe("Orchestrator fail-closed (Finding A)", () => {
     };
     const result = await mk(erroring, repo).runIteration({ runId: "RUN", iter: 1 });
     expect(result.verdict).toBe("ERROR");
+    // A reviewer WAS attempted but failed transiently → infra-failed (lets the
+    // LoopDriver bound-defer instead of hard-blocking + burning iterations).
+    expect(result.allReviewersInfraFailed).toBe(true);
     const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
     // ERROR is written as FAIL in the report (never PASS), and the real failed
     // reviewer record is preserved (not a placeholder).
@@ -104,6 +107,28 @@ describe("Orchestrator fail-closed (Finding A)", () => {
     };
     const result = await mk(throwing, repo).runIteration({ runId: "RUN", iter: 1 });
     expect(result.verdict).toBe("ERROR");
+    // A throwing adapter is caught and counted as a synthetic error run (attempted →
+    // failed transiently) → infra-failed=true → eligible for the bounded defer.
+    expect(result.allReviewersInfraFailed).toBe(true);
+  });
+
+  it("emits ERROR with infra-failed FALSE when NO reviewer could be attempted (misconfig)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-fc-noadapter-"));
+    // A reviewer is configured (codex) but no adapter is registered for it → the
+    // panel has 0 tasks → settled.length === 0. That is a real misconfiguration, not
+    // a transient outage → must stay a hard block, NOT the bounded defer.
+    const o = new Orchestrator({
+      repoRoot: repo,
+      config: cfg(),
+      adapters: {},
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+    });
+    const result = await o.runIteration({ runId: "RUN", iter: 1 });
+    expect(result.verdict).toBe("ERROR");
+    expect(result.allReviewersInfraFailed).toBeFalsy();
   });
 
   it("REGRESSION: a successful reviewer with zero findings still PASSes", async () => {

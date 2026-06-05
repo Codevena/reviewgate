@@ -16,7 +16,7 @@ import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
-import { parseChangedRanges } from "../diff/hunks.ts";
+import { parseChangedRanges, parseDeletedPaths } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
@@ -57,6 +57,7 @@ import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
+import { validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -64,7 +65,12 @@ import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./g
 import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
-import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
+import {
+  QuotaCooldownStore,
+  SLOW_ERROR_THRESHOLD_MS,
+  TIMEOUT_COOLDOWN_MS,
+  parseQuotaResetAt,
+} from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
@@ -144,6 +150,13 @@ export interface IterationResult {
   // misconfig/crash ERROR). Lets the LoopDriver defer (allow-stop + re-review
   // next turn) instead of hard-blocking the dev during a pure quota outage.
   allReviewersQuotaLocked?: boolean;
+  // True when the panel collapsed to ZERO usable reviews but reviewers WERE attempted
+  // (every settled run failed transiently: quota/timeout/error). Distinct from a
+  // misconfig ERROR where NOTHING was attempted (settled.length === 0 → false). Lets
+  // the LoopDriver bound-defer instead of hard-blocking + burning iterations on a
+  // transient outage — then escalate to the human if it persists. "Couldn't review",
+  // not "code is bad".
+  allReviewersInfraFailed?: boolean;
   // N1: this diff's per-diff soft iteration cap (triage.maxIterationsOverride),
   // surfaced so the LoopDriver can persist it and min() it with the config cap on
   // the NEXT iteration's escalation precondition. null ⇒ no override.
@@ -231,31 +244,52 @@ const DOCS_TOTAL_TIMEOUT_MS = 30_000;
 // The cooldown bookkeeping a finished reviewer run implies. Returned by
 // cooldownEffectFor and applied once after the panel settles (one writer).
 export type CooldownEffect =
-  | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
+  // A KNOWN reset time (parsed from the provider's banner) → record an exact window.
+  | { provider: ProviderId; resetAt: string; source: "parsed" }
+  // No parseable reset (timeout / silent agy quota stall) → the store applies an
+  // ESCALATING backoff (5min → 20min → 4h) keyed on the provider's failure streak.
+  | { provider: ProviderId; source: "default" }
   | { provider: ProviderId; clear: true };
 
 // What a finished run implies for the provider's quota cooldown:
-//  - quota-exhausted → record (parsed reset time, else a default window)
+//  - quota-exhausted → record: parsed reset time if the banner carried one, else a
+//                      default-source backoff (the store escalates the window).
 //  - ok              → clear (the provider demonstrably works → quota isn't the issue)
-//  - anything else   → null = INCONCLUSIVE: timeout/error (incl. a gate self-deadline
-//                      SIGKILL surfacing as timeout/error) is NOT proof of recovery,
-//                      so neither clear nor record — any existing cooldown stands.
+//  - timeout         → default-source backoff (cooled so it isn't re-burned every turn).
+//  - SLOW error      → default-source backoff too: an exit≠0 after SLOW_ERROR_THRESHOLD_MS
+//                      (field report: claude-code error@216s on a full-quota account) is
+//                      as expensive to re-burn as a timeout, so treat it the same.
+//  - FAST error      → null = INCONCLUSIVE: a quick failure (bad config, crash) is cheap
+//                      to retry and not proof of recovery — any existing cooldown stands.
+//                      (A gate self-deadline SIGKILL surfaces as timeout/error with the
+//                      gate passing timeoutCooldownMs=0, so it is never penalized here.)
 export function cooldownEffectFor(
   provider: ProviderId,
   res: ReviewResult,
   now: Date,
+  // GATE (not a duration): when > 0, a reviewer that hit its OWN per-reviewer timeoutMs
+  // is cooled down so it is pre-spawn-skipped next iteration instead of re-burning the
+  // full wall-clock every turn (field report: claude-code 300s every iteration). The
+  // actual window is the store's escalating backoff, NOT this value. The CALLER passes 0
+  // on a gate self-deadline abort — that timeout is the gate tearing the run down, NOT
+  // the provider's fault, so it must not be penalized (preserves inconclusive-abort).
+  timeoutCooldownMs = 0,
 ): CooldownEffect | null {
   if (res.status === "quota-exhausted") {
     const parsed = parseQuotaResetAt(res.statusDetail, now);
     return parsed
       ? { provider, resetAt: parsed, source: "parsed" }
-      : {
-          provider,
-          resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
-          source: "default",
-        };
+      : { provider, source: "default" };
   }
   if (res.status === "ok") return { provider, clear: true };
+  if (res.status === "timeout" && timeoutCooldownMs > 0) {
+    return { provider, source: "default" };
+  }
+  // A SLOW error (ran a while, THEN failed) is as costly to re-burn as a timeout —
+  // back it off. A FAST error stays inconclusive (cheap one-off, immediately retryable).
+  if (res.status === "error" && timeoutCooldownMs > 0 && res.durationMs > SLOW_ERROR_THRESHOLD_MS) {
+    return { provider, source: "default" };
+  }
   return null;
 }
 
@@ -980,8 +1014,16 @@ export class Orchestrator {
           // quota isn't the problem). Applied for the primary AND every fallback
           // tried, so a quota-capped FALLBACK is also cooled down (else it would be
           // retried on every review).
+          // On a gate self-deadline abort, a `timeout` is the run being torn down
+          // (not the provider's fault) → pass 0 so it is NOT cooled down. Otherwise a
+          // reviewer that hit its OWN timeoutMs gets the configured timeout cooldown
+          // (loop.timeoutCooldownMs; 0 keeps timeouts immediately retryable). Falls
+          // back to the module constant for a config written before the field existed.
+          const timeoutCooldownMs = opts.signal?.aborted
+            ? 0
+            : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
           const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
-            cooldownEffectFor(provider, res, now);
+            cooldownEffectFor(provider, res, now, timeoutCooldownMs);
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;
@@ -1124,7 +1166,8 @@ export class Orchestrator {
     for (const t of taskResults) {
       for (const e of t.effects) {
         if ("clear" in e) cooldownStore.clear(e.provider);
-        else cooldownStore.record(e.provider, e.resetAt, now, e.source);
+        else if (e.source === "parsed") cooldownStore.record(e.provider, e.resetAt, now, "parsed");
+        else cooldownStore.recordBackoff(e.provider, now); // escalating backoff (no known reset)
       }
     }
     // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,
@@ -1200,9 +1243,15 @@ export class Orchestrator {
       // hard-blocking the dev for hours.
       const allReviewersQuotaLocked =
         settled.length > 0 && settled.every((s) => s.res.status === "quota-exhausted");
+      // settled.length > 0 ⇒ reviewers WERE attempted but every one failed (in this
+      // branch okRuns is empty, so every settled run is non-ok). That is a transient
+      // infra outage. settled.length === 0 (none enabled/available, or all threw
+      // before producing a result) is a real MISCONFIG → stays a hard block.
+      const allReviewersInfraFailed = settled.length > 0;
       return {
         verdict: "ERROR",
         allReviewersQuotaLocked,
+        allReviewersInfraFailed,
         maxIterationsOverride,
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
@@ -1228,7 +1277,18 @@ export class Orchestrator {
     const rawFindings = okRuns
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
-    const allFindings = await this.applySymbolSignatures(rawFindings);
+    const symbolFindings = await this.applySymbolSignatures(rawFindings);
+    // Deterministic fact-check BEFORE grounding: a finding whose cited file:line
+    // provably does not exist in the working tree (file empty / line out of range) is
+    // a hallucination — demote it to advisory so a singleton reviewer can't hard-FAIL
+    // the gate on a phantom (both 2026-06-05 field reports). Demote-only + fail-safe:
+    // any fs uncertainty leaves the finding blocking. Does NOT exempt security/
+    // correctness — a non-existent line is a fabrication in any category.
+    const allFindings = validateFindingFacts(
+      symbolFindings,
+      this.input.repoRoot,
+      parseDeletedPaths(this.input.diff),
+    );
     // S6 grounding corpus = exactly what the reviewer was shown (diff + full content of
     // changed files). A fabricated correctness/security CRITICAL otherwise hard-FAILs the
     // gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +

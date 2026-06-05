@@ -15,6 +15,12 @@ export const EscalationReason = z.enum([
   // otherwise be killed by the Stop-hook timeout). Surfaced to the human after
   // consecutive incomplete runs so a permanently-hanging provider can't loop.
   "review-timeout",
+  // No reviewer could complete a review (every attempt failed quota/timeout/error)
+  // for `infraDeferMaxConsecutive` consecutive turns. The gate DEFERS a bounded
+  // number of turns (re-reviewing each, keeping the change flagged) then escalates
+  // to the human so a persistent provider outage / misconfig is never silently
+  // deferred forever — distinct from a code-quality FAIL.
+  "infra-unavailable",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 
@@ -98,6 +104,13 @@ export const ReviewgateStateSchema = z.object({
   // tracked separately to escalate after repeated timeouts. Reset to 0 whenever
   // a review actually completes (any verdict).
   incomplete_runs: z.number().int().nonnegative().default(0),
+  // Consecutive turns the gate DEFERRED because no reviewer could complete a review
+  // (all quota/timeout/error). Like incomplete_runs it is NOT a review round and does
+  // not advance `iteration`; tracked separately so a bounded number of infra-defers
+  // escalates to the human (a persistent outage must not silently defer forever).
+  // Reset to 0 whenever a review actually completes (any verdict). `.default(0)` for
+  // back-compat with state.json written before this field existed.
+  consecutive_infra_defers: z.number().int().nonnegative().default(0),
   // Monotonic per-session counter, incremented on every re-arm (clean PASS /
   // commit-recovery). Feeds the reputation event-id namespace so a re-armed cycle
   // (iteration resets to 0, findings renumber from F-001) cannot collide with a
@@ -132,6 +145,7 @@ export function initialState(sessionId: string): ReviewgateState {
     escalated: false,
     escalation_reason: null,
     escalation_announced: false,
+    consecutive_infra_defers: 0,
     incomplete_runs: 0,
     reputation_cycle_seq: 0,
   };

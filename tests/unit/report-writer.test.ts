@@ -188,6 +188,21 @@ describe("ReportWriter", () => {
       expect(md).not.toContain("📉");
     });
 
+    it("fact_invalid finding renders the hallucination badge", async () => {
+      const md = await renderFinding({ fact_invalid: true });
+      expect(md).toContain("cited location not found");
+    });
+
+    it("singleton confidence is labeled uncorroborated (not presented as certainty)", async () => {
+      const md = await renderFinding({ consensus: "singleton", confidence: 1.0 });
+      expect(md).toContain("single reviewer, uncorroborated");
+    });
+
+    it("majority/unanimous confidence is NOT labeled uncorroborated", async () => {
+      const md = await renderFinding({ consensus: "majority" });
+      expect(md).not.toContain("uncorroborated");
+    });
+
     it("scope_demoted → 📍 badge", async () => {
       const md = await renderFinding({ scope_demoted: true });
       expect(md).toContain("📍 outside changed lines");
@@ -255,6 +270,37 @@ describe("ReportWriter", () => {
       expect(md).toContain("claimed fixed @ iter 3");
       expect(md).toContain("recurred (advisory");
       expect(md).not.toContain("the fix did not resolve it");
+    });
+  });
+
+  describe("single-effective-reviewer banner", () => {
+    it("warns when exactly one reviewer finished OK (consensus/FP/reputation inert)", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "rg-rep-single-"));
+      await new ReportWriter(dir).write(baseReport); // baseReport has one ok reviewer
+      const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+      expect(md).toContain("Single effective reviewer");
+    });
+
+    it("does NOT warn when two reviewers finished OK", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "rg-rep-multi-"));
+      const two = {
+        ...baseReport,
+        reviewers: [
+          ...baseReport.reviewers,
+          {
+            id: "gemini",
+            provider: "gemini",
+            model: "g",
+            persona: "quality",
+            status: "ok" as const,
+            cost_usd: 0,
+            duration_ms: 10,
+          },
+        ],
+      };
+      await new ReportWriter(dir).write(two);
+      const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+      expect(md).not.toContain("Single effective reviewer");
     });
   });
 });
