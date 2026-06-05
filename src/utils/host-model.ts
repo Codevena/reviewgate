@@ -3,6 +3,7 @@ export type HostTier = "opus" | "sonnet" | "haiku" | "unknown";
 export type ReviewerTier = "opus" | "sonnet" | "haiku" | "disabled";
 
 const MODEL_TO_TIER: Record<string, HostTier> = {
+  "claude-opus-4-8": "opus",
   "claude-opus-4-7": "opus",
   "claude-opus-4-6": "opus",
   "claude-sonnet-4-6": "sonnet",
@@ -65,7 +66,7 @@ export function reviewerTierFor(host: HostTier): ReviewerTier {
 export function modelIdForTier(tier: ReviewerTier): string | null {
   switch (tier) {
     case "opus":
-      return "claude-opus-4-7";
+      return "claude-opus-4-8";
     case "sonnet":
       return "claude-sonnet-4-6";
     case "haiku":
