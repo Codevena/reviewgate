@@ -150,6 +150,13 @@ export interface IterationResult {
   // misconfig/crash ERROR). Lets the LoopDriver defer (allow-stop + re-review
   // next turn) instead of hard-blocking the dev during a pure quota outage.
   allReviewersQuotaLocked?: boolean;
+  // True when the panel collapsed to ZERO usable reviews but reviewers WERE attempted
+  // (every settled run failed transiently: quota/timeout/error). Distinct from a
+  // misconfig ERROR where NOTHING was attempted (settled.length === 0 → false). Lets
+  // the LoopDriver bound-defer instead of hard-blocking + burning iterations on a
+  // transient outage — then escalate to the human if it persists. "Couldn't review",
+  // not "code is bad".
+  allReviewersInfraFailed?: boolean;
   // N1: this diff's per-diff soft iteration cap (triage.maxIterationsOverride),
   // surfaced so the LoopDriver can persist it and min() it with the config cap on
   // the NEXT iteration's escalation precondition. null ⇒ no override.
@@ -1224,9 +1231,15 @@ export class Orchestrator {
       // hard-blocking the dev for hours.
       const allReviewersQuotaLocked =
         settled.length > 0 && settled.every((s) => s.res.status === "quota-exhausted");
+      // settled.length > 0 ⇒ reviewers WERE attempted but every one failed (in this
+      // branch okRuns is empty, so every settled run is non-ok). That is a transient
+      // infra outage. settled.length === 0 (none enabled/available, or all threw
+      // before producing a result) is a real MISCONFIG → stays a hard block.
+      const allReviewersInfraFailed = settled.length > 0;
       return {
         verdict: "ERROR",
         allReviewersQuotaLocked,
+        allReviewersInfraFailed,
         maxIterationsOverride,
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,

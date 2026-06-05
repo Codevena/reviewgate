@@ -1709,6 +1709,85 @@ describe("LoopDriver", () => {
     expect((await state.load()).iteration).toBe(2);
   });
 
+  const infraErrorStub = () => ({
+    runIteration: async (): Promise<IterationResult> => ({
+      verdict: "ERROR" as const,
+      allReviewersInfraFailed: true,
+      costUsd: 0,
+      durationMs: 1,
+      signaturesThisIter: [],
+      summary: {
+        verdict: "ERROR",
+        source: "panel",
+        counts: { critical: 0, warn: 0, info: 0 },
+        cost_usd: 0,
+        duration_ms: 1,
+        demoted: 0,
+        signatures: [],
+        providers: [],
+      } as RunSummary,
+    }),
+  });
+
+  it("infra-failure (all reviewers failed) DEFERS: allow-stop, keeps dirty.flag, no iteration advance, counts it", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXINFRA1");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig, // infraDeferMaxConsecutive default 2
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: infraErrorStub(),
+      stopHookActive: false,
+    }).run();
+    expect(decision.kind).toBe("allow_stop");
+    expect(decision.reason).toMatch(/DEFERRED/i);
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true); // re-review next turn
+    const st = await state.load();
+    expect(st.iteration).toBe(1); // not advanced
+    expect(st.consecutive_infra_defers).toBe(1);
+  });
+
+  it("escalates to the human after infraDeferMaxConsecutive consecutive infra-defers", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXINFRA2");
+    // Already deferred twice (cap = 2) → the next infra outage must escalate.
+    await state.update((cur) => ({ ...cur, iteration: 1, consecutive_infra_defers: 2 }));
+    writeDirty(repo);
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: infraErrorStub(),
+      stopHookActive: false,
+    }).run();
+    expect(decision.reason).toMatch(/ESCALAT/i);
+    expect((await state.load()).escalation_reason).toBe("infra-unavailable");
+  });
+
+  it("infraDeferMaxConsecutive=0 hard-blocks an infra outage immediately (back-compat)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXINFRA0");
+    writeDirty(repo);
+    const cfg = { ...defaultConfig, loop: { ...defaultConfig.loop, infraDeferMaxConsecutive: 0 } };
+    const decision = await new LoopDriver({
+      repoRoot: repo,
+      config: cfg,
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: infraErrorStub(),
+      stopHookActive: false,
+    }).run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/CLOSED/i);
+  });
+
   it("increments reputation_cycle_seq on a clean-PASS re-arm", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

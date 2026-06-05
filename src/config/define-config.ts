@@ -241,6 +241,15 @@ export const ConfigSchema = z.object({
     // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
     // the hook timeout. 0 disables the deadline (legacy behavior).
     runTimeoutMs: z.number().int().nonnegative().default(720_000),
+    // Max consecutive turns the gate may DEFER when no reviewer can complete a review
+    // (all quota/timeout/error) before escalating to the human. A transient outage
+    // defers (allow-stop, keeps the change flagged, re-reviews next turn, does NOT
+    // advance the iteration) so an automated agent loop isn't deadlocked; a PERSISTENT
+    // outage / misconfig escalates rather than silently deferring forever. The defer
+    // never emits PASS, always keeps the dirty flag, and is audit-logged. 0 disables
+    // the defer (an infra outage hard-blocks immediately — exact prior behavior).
+    // Default 2.
+    infraDeferMaxConsecutive: z.number().int().nonnegative().default(2),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),
