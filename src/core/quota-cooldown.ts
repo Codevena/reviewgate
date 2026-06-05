@@ -192,7 +192,12 @@ export class QuotaCooldownStore {
   skipUntil(provider: string, now: Date): string | null {
     const e = this.read().providers[provider];
     if (!e) return null;
-    if (Date.parse(e.reset_at) <= now.getTime()) return null; // cooldown expired
+    const resetMs = Date.parse(e.reset_at);
+    // Corrupt (unparseable) reset_at → don't skip forever: NaN fails every comparison,
+    // so without this an unbounded skip would silently sideline the provider. Fail OPEN
+    // (attempt it; failover covers a still-capped one). Only reachable via a hand-edited
+    // cooldowns.json — the store itself only ever writes valid ISO.
+    if (Number.isNaN(resetMs) || resetMs <= now.getTime()) return null; // corrupt or expired
     // A PARSED reset can over-estimate (the provider often recovers before its quoted
     // time), so re-probe it once the window elapses. A DEFAULT-source backoff is the
     // opposite: it is a deliberate "this provider is down — leave it alone" decision

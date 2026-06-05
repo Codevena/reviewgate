@@ -293,6 +293,49 @@ export function cooldownEffectFor(
   return null;
 }
 
+// Apply a review cycle's cooldown effects to the store, ONCE, after the panel settles.
+// Two guards the per-effect loop must not skip:
+//  1. Dedup per provider. A provider can appear in several slots this cycle (its own
+//     slot + as fallback/last-resort for others). Applying every effect would call
+//     recordBackoff N times for N failing slots — each re-reads the entry just written
+//     with the SAME `now`, so one cycle would count as N strikes (jumping a provider to
+//     the 4h cap in a single review). We collapse to ONE effect per provider, with
+//     precedence clear > parsed > default: a provider that ran ok in ANY slot must win
+//     (it demonstrably works), and a known reset beats a guessed backoff.
+//  2. Suppress default-source backoff on a gate self-deadline abort. The deadline
+//     `ac.abort()` SIGKILLs healthy reviewers mid-run; they surface as error/timeout
+//     with a large durationMs and would be wrongly cooled down. The per-task
+//     `timeoutCooldownMs` snapshot can't catch this (it reads signal.aborted at task
+//     START, before the deadline fires), so we re-check abort state HERE. parsed resets
+//     (a real quota banner) and clears still apply — they are not the abort's doing.
+//     KNOWN TRADE-OFF (deliberate): this suppression is run-level, not per-reviewer —
+//     the effect objects don't carry each run's kill cause, so a reviewer that hit its
+//     OWN timeout BEFORE the deadline also loses its (legitimate) backoff this cycle.
+//     Bounded and self-correcting: that provider is re-attempted next turn and cooled
+//     then (if that turn isn't also aborted), and on an aborted run it ran in parallel
+//     under the same deadline so the delayed cooldown costs no wall-clock. Strictly the
+//     lesser evil vs. the alternative (over-cooling HEALTHY reviewers → hours-long
+//     panel-wide gate closure). Per-reviewer precision would need killedByAbort threaded
+//     through every adapter into ReviewResult — not worth it for this benign delay.
+export function applyCooldownEffects(
+  store: QuotaCooldownStore,
+  effects: CooldownEffect[],
+  now: Date,
+  aborted: boolean,
+): void {
+  const rank = (e: CooldownEffect): number => ("clear" in e ? 2 : e.source === "parsed" ? 1 : 0);
+  const byProvider = new Map<ProviderId, CooldownEffect>();
+  for (const e of effects) {
+    const cur = byProvider.get(e.provider);
+    if (cur === undefined || rank(e) > rank(cur)) byProvider.set(e.provider, e);
+  }
+  for (const e of byProvider.values()) {
+    if ("clear" in e) store.clear(e.provider);
+    else if (e.source === "parsed") store.record(e.provider, e.resetAt, now, "parsed");
+    else if (!aborted) store.recordBackoff(e.provider, now);
+  }
+}
+
 // Deterministic order for last-resort failover (OAuth/$0 providers first, the
 // paid API provider last). Used only after a reviewer slot's DECLARED fallback
 // chain is exhausted — to recruit any other enabled+available reviewer rather
@@ -1161,15 +1204,17 @@ export class Orchestrator {
       .map((o) => (o.status === "fulfilled" ? o.value : null))
       .filter((x): x is { run: ReviewerRun; effects: CooldownEffect[] } => x !== null);
     const settled = taskResults.map((t) => t.run);
-    // Apply quota-cooldown effects once, after the parallel panel settles (one
-    // writer). Covers the primary AND every fallback tried this run.
-    for (const t of taskResults) {
-      for (const e of t.effects) {
-        if ("clear" in e) cooldownStore.clear(e.provider);
-        else if (e.source === "parsed") cooldownStore.record(e.provider, e.resetAt, now, "parsed");
-        else cooldownStore.recordBackoff(e.provider, now); // escalating backoff (no known reset)
-      }
-    }
+    // Apply quota-cooldown effects once, after the parallel panel settles (one writer).
+    // Covers the primary AND every fallback tried this run. Deduped per provider, and
+    // default-source backoffs are suppressed if THIS run was aborted by the gate
+    // self-deadline (re-checked here, not from the per-task snapshot) — see
+    // applyCooldownEffects.
+    applyCooldownEffects(
+      cooldownStore,
+      taskResults.flatMap((t) => t.effects),
+      now,
+      opts.signal?.aborted ?? false,
+    );
     // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,
     // spawnSafely ran the reviewer UNISOLATED (it never throws — it
     // sets sandboxFellBack on its SpawnResult, which the adapter does not surface).
