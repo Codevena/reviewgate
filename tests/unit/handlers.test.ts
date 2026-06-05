@@ -33,6 +33,12 @@ describe("handleTrigger", () => {
     };
     expect(typeof first.base_ts).toBe("string");
     expect(Number.isNaN(Date.parse(first.base_ts ?? ""))).toBe(false);
+    // base_ts is back-dated by a safety margin (~30s) relative to the trigger time, so
+    // a file created by the FIRST (triggering) edit — whose mtime slightly predates the
+    // PostToolUse capture — is not wrongly excluded as pre-existing noise (codex CRIT).
+    expect(Date.parse(first.ts ?? "") - Date.parse(first.base_ts ?? "")).toBeGreaterThanOrEqual(
+      25_000,
+    );
     // A later edit in the same batch updates `ts` but must PRESERVE base_ts.
     await new Promise((r) => setTimeout(r, 5));
     await handleTrigger({ repoRoot: repo, hookStdinRaw: '{"edit":2}' });

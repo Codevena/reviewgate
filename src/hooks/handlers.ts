@@ -21,6 +21,17 @@ export interface TriggerInput {
   hookStdinRaw: string;
 }
 
+// base_ts is captured at the FIRST trigger (PostToolUse), which fires AFTER the edit
+// that created/modified the file. A brand-new untracked file from that first edit
+// therefore has an mtime/ctime a few ms BEFORE the capture — without a margin the
+// diff's untracked-file mtime gate (collectDiff) would wrongly exclude the very file
+// that STARTED the batch (under-review / fail-open, codex CRITICAL 2026-06-05). We
+// back-date base_ts by a margin that comfortably exceeds the edit→trigger latency
+// (sub-second, even under load) while still excluding genuinely-stale pre-existing
+// files (foreign migrations / caches / *.bak are minutes-to-days old). Over-inclusion
+// (reviewing a file created in this window) is SAFE; under-inclusion is the bug.
+const BASE_TS_SAFETY_MARGIN_MS = 30_000;
+
 export async function handleTrigger(input: TriggerInput): Promise<void> {
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -48,7 +59,9 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
   }
   if (!baseSha) baseSha = await gitHeadSha(input.repoRoot);
   const nowIso = new Date().toISOString();
-  if (!baseTs) baseTs = nowIso;
+  // First capture: back-date by the safety margin so a file created by THIS triggering
+  // edit is not mistaken for pre-existing noise (see BASE_TS_SAFETY_MARGIN_MS).
+  if (!baseTs) baseTs = new Date(Date.now() - BASE_TS_SAFETY_MARGIN_MS).toISOString();
   const body = JSON.stringify({
     diff_hash: diffHash,
     ts: nowIso,
