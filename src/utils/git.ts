@@ -217,14 +217,19 @@ export async function collectDiff(
     for (const file of untracked.stdout
       .split("\0")
       .filter((s) => s.length > 0 && !isExcludedFromReview(s))) {
-      // Pre-existing untracked noise (mtime predates this batch's start) is out of
-      // scope. Skip WITHOUT marking the diff incomplete: this is a deliberate scope
-      // decision, not a file dropped due to a timeout/truncation failure. lstat is
-      // guarded — a racing unlink just falls through to the --no-index call, which
-      // no-ops on a missing file.
+      // Pre-existing untracked noise (predates this batch's start) is out of scope.
+      // Skip WITHOUT marking the diff incomplete: this is a deliberate scope decision,
+      // not a file dropped due to a timeout/truncation failure. Gate on
+      // max(mtime, ctime), NOT mtime alone: mtime is settable to the PAST (`utimes`,
+      // `git checkout`, `rsync -a`), so a file genuinely created/modified THIS batch
+      // with a back-dated mtime would be wrongly excluded (a silent under-review of new
+      // content). ctime (inode change time) updates to "now" on create/metadata-change
+      // and cannot be back-dated by `utimes`, so it catches that case → fewer
+      // false-excludes. lstat is guarded — a racing unlink falls through to --no-index.
       if (!Number.isNaN(sinceMs)) {
         try {
-          if (lstatSync(join(repoRoot, file)).mtimeMs < sinceMs) continue;
+          const st = lstatSync(join(repoRoot, file));
+          if (Math.max(st.mtimeMs, st.ctimeMs) < sinceMs) continue;
         } catch {
           /* file vanished mid-listing — let --no-index handle it */
         }

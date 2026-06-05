@@ -62,17 +62,18 @@ describe("collectDiff", () => {
     expect(diff).toContain("wip.ts");
   });
 
-  it("excludes a pre-existing untracked file (mtime older than sinceTs), keeps a fresh one", async () => {
+  it("excludes a pre-existing untracked file (created before sinceTs), keeps a fresh one", async () => {
     const dir = repo();
     const base = await gitHeadSha(dir);
-    // `old.ts` is untracked but PRE-EXISTS this batch — the agent never touched it
-    // (e.g. a stray cache file, a *.bak, a foreign migration). `fresh.ts` was just
-    // created. With a sinceTs between their mtimes, only `fresh.ts` is in scope.
+    // `old.ts` PRE-EXISTS this batch — the agent never touched it (a stray cache
+    // file, a *.bak, a foreign migration). Use REAL creation-time ordering (not
+    // utimes, which can't back-date ctime): old.ts is created, THEN sinceTs is
+    // sampled, THEN fresh.ts is created — so only fresh.ts post-dates the batch start.
     writeFileSync(join(dir, "old.ts"), "export const OLD = 'preexisting';\n");
+    await new Promise((r) => setTimeout(r, 20));
+    const sinceTs = new Date().toISOString();
+    await new Promise((r) => setTimeout(r, 20));
     writeFileSync(join(dir, "fresh.ts"), "export const FRESH = 'authored';\n");
-    const past = new Date(Date.now() - 60_000); // 60s ago
-    utimesSync(join(dir, "old.ts"), past, past);
-    const sinceTs = new Date(Date.now() - 30_000).toISOString(); // 30s ago
     const diff = await collectDiff(dir, base, 60_000, sinceTs);
     expect(diff).toContain("fresh.ts");
     expect(diff).toContain("FRESH");
@@ -80,6 +81,21 @@ describe("collectDiff", () => {
     expect(diff).not.toContain("OLD");
     // Intentional scope exclusion is NOT an incompleteness failure.
     expect(diff).not.toContain("TRUNCATED or TIMED OUT");
+  });
+
+  it("includes a batch-created file even when its mtime was back-dated (ctime gate, F-007)", async () => {
+    const dir = repo();
+    const base = await gitHeadSha(dir);
+    const sinceTs = new Date().toISOString();
+    await new Promise((r) => setTimeout(r, 20));
+    // Created THIS batch, but mtime spoofed to long before the batch start. ctime
+    // stays "now" (utimes can't back-date it) → the file must still be reviewed,
+    // not silently excluded (a gate-bypass otherwise).
+    writeFileSync(join(dir, "sneaky.ts"), "export const SNEAKY = 1;\n");
+    const past = new Date(Date.now() - 600_000);
+    utimesSync(join(dir, "sneaky.ts"), past, past);
+    const diff = await collectDiff(dir, base, 60_000, sinceTs);
+    expect(diff).toContain("sneaky.ts");
   });
 
   it("includes ALL untracked files when no sinceTs is given (legacy flag → no regression)", async () => {

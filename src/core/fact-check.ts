@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { constants, closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import type { Finding } from "../schemas/finding.ts";
 
@@ -83,21 +83,33 @@ export function validateFindingFacts(
     const parentRel = relative(repoReal, parentReal);
     if (parentRel.startsWith("..") || isAbsolute(parentRel)) return f; // escapes repo
     const leaf = join(parentReal, file.slice(file.lastIndexOf("/") + 1));
-    // Absent leaf → fail-safe (don't demote; a path-format quirk could mislead us).
-    if (!existsSync(leaf)) return f;
-    let st: ReturnType<typeof lstatSync>;
+    // Open with O_NOFOLLOW so a symlink-swapped leaf fails CLOSED (ELOOP) instead of
+    // following OUT of the repo, then fstat + read THROUGH the same fd — no path
+    // re-resolution between the type check and the read, so there is no check-then-use
+    // (TOCTOU) window. Mirrors the project's O_NOFOLLOW convention for host-side reads
+    // of reviewer-influenced paths. Absent leaf (ENOENT) / symlink (ELOOP) / unreadable
+    // → fail-safe (do not demote; a path quirk or a race must never weaken a finding).
+    let fd: number;
     try {
-      st = lstatSync(leaf);
+      fd = openSync(leaf, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch {
       return f;
     }
-    // Never read through a symlink or a directory; only validate a regular file.
-    if (!st.isFile() || st.size > MAX_READ_BYTES) return f;
     let text: string;
     try {
-      text = readFileSync(leaf, "utf8");
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.size > MAX_READ_BYTES) return f; // dir/special/oversize → skip
+      const buf = Buffer.alloc(st.size);
+      if (st.size > 0) readSync(fd, buf, 0, st.size, 0);
+      text = buf.toString("utf8");
     } catch {
       return f; // unreadable (e.g. binary perms) → fail-safe
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed / invalid fd */
+      }
     }
     const lines = lineCount(text);
     if (f.line_start <= lines) return f; // cited line exists → real finding, untouched
