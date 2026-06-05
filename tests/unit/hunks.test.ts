@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { parseChangedRanges, rangeOverlapsChanged } from "../../src/diff/hunks.ts";
+import {
+  parseChangedRanges,
+  parseDeletedPaths,
+  rangeOverlapsChanged,
+} from "../../src/diff/hunks.ts";
 
 const MODIFY = [
   "diff --git a/src/lib/foo.ts b/src/lib/foo.ts",
@@ -81,6 +85,16 @@ describe("parseChangedRanges", () => {
       [10, 13],
       [50, 51],
     ]);
+  });
+});
+
+describe("parseDeletedPaths", () => {
+  it("collects a file deleted in the diff (+++ /dev/null)", () => {
+    expect([...parseDeletedPaths(DELETED)]).toEqual(["gone.ts"]);
+  });
+  it("does not flag a modified or new file as deleted", () => {
+    expect(parseDeletedPaths(MODIFY).size).toBe(0);
+    expect(parseDeletedPaths(NEWFILE).size).toBe(0);
   });
 });
 

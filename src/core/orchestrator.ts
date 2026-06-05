@@ -16,7 +16,7 @@ import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
-import { parseChangedRanges } from "../diff/hunks.ts";
+import { parseChangedRanges, parseDeletedPaths } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
@@ -57,6 +57,7 @@ import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
+import { validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -1228,7 +1229,18 @@ export class Orchestrator {
     const rawFindings = okRuns
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
-    const allFindings = await this.applySymbolSignatures(rawFindings);
+    const symbolFindings = await this.applySymbolSignatures(rawFindings);
+    // Deterministic fact-check BEFORE grounding: a finding whose cited file:line
+    // provably does not exist in the working tree (file empty / line out of range) is
+    // a hallucination — demote it to advisory so a singleton reviewer can't hard-FAIL
+    // the gate on a phantom (both 2026-06-05 field reports). Demote-only + fail-safe:
+    // any fs uncertainty leaves the finding blocking. Does NOT exempt security/
+    // correctness — a non-existent line is a fabrication in any category.
+    const allFindings = validateFindingFacts(
+      symbolFindings,
+      this.input.repoRoot,
+      parseDeletedPaths(this.input.diff),
+    );
     // S6 grounding corpus = exactly what the reviewer was shown (diff + full content of
     // changed files). A fabricated correctness/security CRITICAL otherwise hard-FAILs the
     // gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +

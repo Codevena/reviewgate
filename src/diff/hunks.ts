@@ -60,3 +60,32 @@ export function rangeOverlapsChanged(lineStart: number, lineEnd: number, ranges:
   const hi = Math.max(lineStart, lineEnd);
   return ranges.some(([s, e]) => lo < e && hi >= s);
 }
+
+// Repo-relative paths that were DELETED in the diff (`+++ /dev/null` with a real
+// `--- a/<path>` source side). The fact-check pass uses this so a finding commenting
+// on removed code isn't mistaken for a hallucination (the file is legitimately gone
+// from the working tree). Pure, no I/O.
+export function parseDeletedPaths(diff: string): Set<string> {
+  const out = new Set<string>();
+  let minusPath: string | null = null;
+  let inHunk = false;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff ")) {
+      minusPath = null;
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk && line.startsWith("--- ")) {
+      let p = line.slice(4).trim();
+      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+      minusPath = p === "/dev/null" ? null : stripPrefix(p);
+      continue;
+    }
+    if (!inHunk && line.startsWith("+++ ")) {
+      if (plusPath(line) === "/dev/null" && minusPath) out.add(minusPath);
+      continue;
+    }
+    if (line.startsWith("@@")) inHunk = true;
+  }
+  return out;
+}

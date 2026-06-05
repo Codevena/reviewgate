@@ -33,6 +33,7 @@ function consensusEmoji(c: Finding["consensus"]): string {
 // rather than having to read the JSON to discover it.
 function demoteBadges(f: Finding): string | null {
   const badges: string[] = [];
+  if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
   if (f.scope_demoted) badges.push("📍 outside changed lines");
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");

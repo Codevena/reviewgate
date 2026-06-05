@@ -58,6 +58,13 @@ export const FindingSchema = z.object({
   // it. Breaks the otherwise-unconditional security/correctness CRITICAL hard-FAIL
   // ONLY for provably-ungrounded claims; advisory-leaning, still surfaced.
   grounding_demoted: z.boolean().optional(),
+  // Deterministic fact-check: set true when the pre-grounding validator demoted this
+  // finding to INFO because its cited file:line provably does NOT exist in the working
+  // tree (file absent / empty / line out of range) — almost certainly a hallucination.
+  // Unlike grounding, this does NOT exempt security/correctness: a non-existent line is
+  // a fabrication regardless of category, and demoting (vs blocking on a phantom) is
+  // strictly safer. Fail-safe: any fs uncertainty leaves the finding untouched.
+  fact_invalid: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base
