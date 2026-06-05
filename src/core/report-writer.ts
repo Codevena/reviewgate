@@ -64,9 +64,14 @@ function fmtFinding(f: Finding): string {
   // Show a range (line_start-line_end) for multi-line findings, plain line otherwise.
   const loc = f.line_end > f.line_start ? `${f.line_start}-${f.line_end}` : `${f.line_start}`;
   const badges = demoteBadges(f);
+  // Honesty at panel size 1: a "singleton" finding is ONE model's opinion, however
+  // confidently phrased. Qualify it so the agent never reads `Confidence: 1.00` as
+  // corroborated certainty (both 2026-06-05 field reports flagged this as a
+  // trust-killer). Corroborated findings (majority/unanimous) keep the bare number.
+  const consNote = f.consensus === "singleton" ? " (single reviewer, uncorroborated)" : "";
   return [
     `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
-    `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${confirmed}`,
+    `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${consNote}${confirmed}`,
     ...(badges ? [badges] : []),
     "",
     f.message,
@@ -106,6 +111,19 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
           "",
         ]
       : [];
+  // Honesty banner: when only ONE reviewer actually finished OK, the entire
+  // self-correction design (cross-reviewer consensus, FP-ledger promotion,
+  // reputation demote) is INERT — a lone hallucination has nothing to refute it.
+  // Surface this even on a CLEAN single-reviewer run (the coverage banner above only
+  // fires when a reviewer FAILED), so the agent treats lone findings as one opinion.
+  const okReviewers = r.reviewers.filter((x) => x.status === "ok");
+  const singleReviewerBanner =
+    degraded.length === 0 && okReviewers.length === 1
+      ? [
+          `> ℹ️ **Single effective reviewer** (${okReviewers[0]?.id}): with one reviewer, consensus, FP-ledger promotion and reputation-demote are all inert. Treat any lone CRITICAL/WARN as one model's opinion — verify the cited code yourself before acting.`,
+          "",
+        ]
+      : [];
   const actions =
     mode === "one-shot"
       ? []
@@ -128,6 +146,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
     ...coverageBanner,
+    ...singleReviewerBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",
