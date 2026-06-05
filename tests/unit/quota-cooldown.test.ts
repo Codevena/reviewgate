@@ -169,4 +169,90 @@ describe("QuotaCooldownStore.skipUntil (re-probe window)", () => {
   test("no entry → never skips", () => {
     expect(new QuotaCooldownStore(repo()).skipUntil("codex", NOW)).toBeNull();
   });
+
+  test("does NOT early-re-probe a default-source backoff (waits the full window)", () => {
+    // A default-source cooldown (timeout / silent agy quota stall) is a deliberate
+    // escalating backoff — re-probing it every 30 min would re-burn the full review
+    // budget mid-window, defeating the point. Only PARSED resets (which may
+    // over-estimate) are re-probed early.
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW); // strike 1
+    s.recordBackoff("gemini", new Date(NOW.getTime() + 6 * 60_000)); // strike 2
+    const t3 = new Date(NOW.getTime() + 28 * 60_000);
+    s.recordBackoff("gemini", t3); // strike 3 → 4h window from t3
+    const resetAt = new Date(t3.getTime() + 4 * 3_600_000).toISOString();
+    const probe = new Date(t3.getTime() + 31 * 60_000); // > 30-min re-probe window
+    expect(s.skipUntil("gemini", probe)).toBe(resetAt); // STILL skipping (no early re-probe)
+  });
+
+  test("stops skipping a backoff once its window expires (attempts once)", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW); // 5-min window
+    expect(s.skipUntil("gemini", new Date(NOW.getTime() + 6 * 60_000))).toBeNull();
+  });
+});
+
+describe("QuotaCooldownStore.recordBackoff (escalating backoff)", () => {
+  const repo = () => mkdtempSync(join(tmpdir(), "rg-cd-backoff-"));
+  const FIVE_MIN = 5 * 60_000;
+  const TWENTY_MIN = 20 * 60_000;
+  const FOUR_H = 4 * 3_600_000;
+
+  test("escalates 5min → 20min → 4h → 4h on consecutive failures", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW);
+    expect(s.activeUntil("gemini", NOW)).toBe(new Date(NOW.getTime() + FIVE_MIN).toISOString());
+
+    const t2 = new Date(NOW.getTime() + FIVE_MIN + 1000); // after the 1st window
+    s.recordBackoff("gemini", t2);
+    expect(s.activeUntil("gemini", t2)).toBe(new Date(t2.getTime() + TWENTY_MIN).toISOString());
+
+    const t3 = new Date(t2.getTime() + TWENTY_MIN + 1000);
+    s.recordBackoff("gemini", t3);
+    expect(s.activeUntil("gemini", t3)).toBe(new Date(t3.getTime() + FOUR_H).toISOString());
+
+    const t4 = new Date(t3.getTime() + FOUR_H + 1000);
+    s.recordBackoff("gemini", t4);
+    expect(s.activeUntil("gemini", t4)).toBe(new Date(t4.getTime() + FOUR_H).toISOString()); // capped
+  });
+
+  test("a successful run (clear) resets the streak to strike 1", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW);
+    s.recordBackoff("gemini", new Date(NOW.getTime() + FIVE_MIN + 1000)); // strike 2
+    s.clear("gemini"); // provider recovered
+    const t = new Date(NOW.getTime() + 60 * 60_000);
+    s.recordBackoff("gemini", t); // fresh strike 1
+    expect(s.activeUntil("gemini", t)).toBe(new Date(t.getTime() + FIVE_MIN).toISOString());
+  });
+
+  test("a parsed-reset record between failures restarts the streak at strike 1", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW); // strike 1 (default)
+    const t2 = new Date(NOW.getTime() + FIVE_MIN + 1000);
+    s.record("gemini", new Date(t2.getTime() + 3_600_000).toISOString(), t2, "parsed"); // now known
+    const t3 = new Date(t2.getTime() + 2 * 3_600_000); // after the parsed window
+    s.recordBackoff("gemini", t3); // back to unknown → strike 1, not a continuation
+    expect(s.activeUntil("gemini", t3)).toBe(new Date(t3.getTime() + FIVE_MIN).toISOString());
+  });
+
+  test("a stale prior failure (long gap) restarts the streak at strike 1", () => {
+    const s = new QuotaCooldownStore(repo());
+    s.recordBackoff("gemini", NOW); // strike 1
+    const muchLater = new Date(NOW.getTime() + 48 * 3_600_000); // 2 days later
+    s.recordBackoff("gemini", muchLater);
+    expect(s.activeUntil("gemini", muchLater)).toBe(
+      new Date(muchLater.getTime() + FIVE_MIN).toISOString(),
+    );
+  });
+
+  test("persists the strike count across store instances", () => {
+    const r = repo();
+    new QuotaCooldownStore(r).recordBackoff("gemini", NOW); // strike 1
+    const t2 = new Date(NOW.getTime() + FIVE_MIN + 1000);
+    new QuotaCooldownStore(r).recordBackoff("gemini", t2); // reopened store → strike 2
+    expect(new QuotaCooldownStore(r).activeUntil("gemini", t2)).toBe(
+      new Date(t2.getTime() + TWENTY_MIN).toISOString(),
+    );
+  });
 });

@@ -18,6 +18,15 @@ export const DEFAULT_COOLDOWN_MS = 15 * 60_000;
  * quickly; the 30-min re-probe window bounds the downside either way.
  */
 export const TIMEOUT_COOLDOWN_MS = 5 * 60_000;
+/**
+ * A reviewer that ERRORS (exit≠0) after running this long is treated like a timeout for
+ * cooldown purposes — it gets the same escalating backoff. A fast error (< this) is a
+ * cheap one-off (bad config, crash) and stays inconclusive (immediately retryable). But
+ * a SLOW error is just as expensive to re-burn every iteration as a timeout (field
+ * report: claude-code exited non-zero after 216s on a full-quota account — an
+ * Anthropic-side overload/oversized-prompt failure, NOT a config error).
+ */
+export const SLOW_ERROR_THRESHOLD_MS = 60_000;
 /** Reject a parsed reset further out than this (guards against garbage dates). */
 const MAX_COOLDOWN_MS = 30 * 24 * 60 * 60_000; // 30 days
 /**
@@ -29,6 +38,24 @@ const MAX_COOLDOWN_MS = 30 * 24 * 60 * 60_000; // 30 days
  * within the window.
  */
 export const REPROBE_INTERVAL_MS = 30 * 60_000;
+/**
+ * Escalating backoff for repeated failures with NO parseable reset time (a reviewer
+ * timeout, or a silent agy quota stall whose "Resets in …" banner is TTY-only and
+ * thus invisible when piped). Without escalation a provider that is actually capped
+ * for HOURS gets re-probed every few minutes and re-burns the full review budget each
+ * time (field report: gemini/claude-code looping into the 12-min gate deadline).
+ * Indexed by consecutive-failure count (clamped): 1st → 5min, 2nd → 20min, 3rd+ → 4h.
+ * The first window is deliberately short — a one-off slow review must recover fast;
+ * only a persistently-failing provider is pushed out to the 4h cap.
+ */
+export const BACKOFF_CAP_MS = 4 * 60 * 60_000;
+export const BACKOFF_SCHEDULE_MS = [5 * 60_000, 20 * 60_000, BACKOFF_CAP_MS];
+/**
+ * A prior failure older than this no longer counts toward the consecutive streak —
+ * a long gap means a fresh problem, so the backoff restarts at the short first step
+ * instead of inheriting an old provider's escalation.
+ */
+export const BACKOFF_STREAK_STALE_MS = 24 * 60 * 60_000;
 
 /**
  * Extract the reset time from a quota/rate-limit error. Handles codex's
@@ -166,7 +193,14 @@ export class QuotaCooldownStore {
     const e = this.read().providers[provider];
     if (!e) return null;
     if (Date.parse(e.reset_at) <= now.getTime()) return null; // cooldown expired
-    if (now.getTime() - Date.parse(e.recorded_at) >= REPROBE_INTERVAL_MS) return null; // due to re-probe
+    // A PARSED reset can over-estimate (the provider often recovers before its quoted
+    // time), so re-probe it once the window elapses. A DEFAULT-source backoff is the
+    // opposite: it is a deliberate "this provider is down — leave it alone" decision
+    // with an escalating window, so we DON'T re-probe early (that would re-burn the
+    // budget mid-backoff); we wait the full window, then attempt once on expiry.
+    if (e.source === "parsed" && now.getTime() - Date.parse(e.recorded_at) >= REPROBE_INTERVAL_MS) {
+      return null; // due to re-probe
+    }
     return e.reset_at;
   }
 
@@ -178,7 +212,39 @@ export class QuotaCooldownStore {
     source: "parsed" | "default" = "parsed",
   ): void {
     const c = this.read();
+    // A known reset (parsed, or an explicit window) supersedes any in-flight backoff
+    // streak — we no longer have to guess, so the consecutive_failures counter is reset.
     c.providers[provider] = { reset_at: resetAt, recorded_at: now.toISOString(), source };
+    this.write(c);
+  }
+
+  /**
+   * Record a default-source cooldown with ESCALATING backoff for a failure that
+   * carries no parseable reset time (a reviewer timeout, or a silent agy quota stall).
+   * Each consecutive failure lengthens the window (BACKOFF_SCHEDULE_MS: 5min → 20min →
+   * 4h cap); a successful run (clear) or a parsed reset in between resets the streak, as
+   * does a stale gap (BACKOFF_STREAK_STALE_MS). This is what stops a provider that is
+   * really capped for hours from being re-probed — and re-burning the full review
+   * budget — every few minutes.
+   */
+  recordBackoff(provider: string, now: Date): void {
+    const c = this.read();
+    const prev = c.providers[provider];
+    // Continue the streak only if the prior cooldown was itself a backoff (default
+    // source) AND recent; otherwise this is a fresh problem → restart at strike 1.
+    const recent =
+      prev !== undefined && now.getTime() - Date.parse(prev.recorded_at) <= BACKOFF_STREAK_STALE_MS;
+    const prior =
+      prev && prev.source === "default" && recent ? (prev.consecutive_failures ?? 1) : 0;
+    const failures = prior + 1;
+    const cooldownMs =
+      BACKOFF_SCHEDULE_MS[Math.min(failures - 1, BACKOFF_SCHEDULE_MS.length - 1)] ?? BACKOFF_CAP_MS;
+    c.providers[provider] = {
+      reset_at: new Date(now.getTime() + cooldownMs).toISOString(),
+      recorded_at: now.toISOString(),
+      source: "default",
+      consecutive_failures: failures,
+    };
     this.write(c);
   }
 

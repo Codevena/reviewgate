@@ -66,8 +66,8 @@ import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
-  DEFAULT_COOLDOWN_MS,
   QuotaCooldownStore,
+  SLOW_ERROR_THRESHOLD_MS,
   TIMEOUT_COOLDOWN_MS,
   parseQuotaResetAt,
 } from "./quota-cooldown.ts";
@@ -244,44 +244,51 @@ const DOCS_TOTAL_TIMEOUT_MS = 30_000;
 // The cooldown bookkeeping a finished reviewer run implies. Returned by
 // cooldownEffectFor and applied once after the panel settles (one writer).
 export type CooldownEffect =
-  | { provider: ProviderId; resetAt: string; source: "parsed" | "default" }
+  // A KNOWN reset time (parsed from the provider's banner) → record an exact window.
+  | { provider: ProviderId; resetAt: string; source: "parsed" }
+  // No parseable reset (timeout / silent agy quota stall) → the store applies an
+  // ESCALATING backoff (5min → 20min → 4h) keyed on the provider's failure streak.
+  | { provider: ProviderId; source: "default" }
   | { provider: ProviderId; clear: true };
 
 // What a finished run implies for the provider's quota cooldown:
-//  - quota-exhausted → record (parsed reset time, else a default window)
+//  - quota-exhausted → record: parsed reset time if the banner carried one, else a
+//                      default-source backoff (the store escalates the window).
 //  - ok              → clear (the provider demonstrably works → quota isn't the issue)
-//  - anything else   → null = INCONCLUSIVE: timeout/error (incl. a gate self-deadline
-//                      SIGKILL surfacing as timeout/error) is NOT proof of recovery,
-//                      so neither clear nor record — any existing cooldown stands.
+//  - timeout         → default-source backoff (cooled so it isn't re-burned every turn).
+//  - SLOW error      → default-source backoff too: an exit≠0 after SLOW_ERROR_THRESHOLD_MS
+//                      (field report: claude-code error@216s on a full-quota account) is
+//                      as expensive to re-burn as a timeout, so treat it the same.
+//  - FAST error      → null = INCONCLUSIVE: a quick failure (bad config, crash) is cheap
+//                      to retry and not proof of recovery — any existing cooldown stands.
+//                      (A gate self-deadline SIGKILL surfaces as timeout/error with the
+//                      gate passing timeoutCooldownMs=0, so it is never penalized here.)
 export function cooldownEffectFor(
   provider: ProviderId,
   res: ReviewResult,
   now: Date,
-  // When > 0, a reviewer that hit its OWN per-reviewer timeoutMs gets a short,
-  // self-expiring cooldown so it is pre-spawn-skipped next iteration instead of
-  // re-burning the full wall-clock every turn (field report: claude-code 300s
-  // every iteration). The CALLER passes 0 on a gate self-deadline abort — that
-  // timeout is the gate tearing the run down, NOT the provider's fault, so it
-  // must not be penalized (preserves the inconclusive-abort semantics).
+  // GATE (not a duration): when > 0, a reviewer that hit its OWN per-reviewer timeoutMs
+  // is cooled down so it is pre-spawn-skipped next iteration instead of re-burning the
+  // full wall-clock every turn (field report: claude-code 300s every iteration). The
+  // actual window is the store's escalating backoff, NOT this value. The CALLER passes 0
+  // on a gate self-deadline abort — that timeout is the gate tearing the run down, NOT
+  // the provider's fault, so it must not be penalized (preserves inconclusive-abort).
   timeoutCooldownMs = 0,
 ): CooldownEffect | null {
   if (res.status === "quota-exhausted") {
     const parsed = parseQuotaResetAt(res.statusDetail, now);
     return parsed
       ? { provider, resetAt: parsed, source: "parsed" }
-      : {
-          provider,
-          resetAt: new Date(now.getTime() + DEFAULT_COOLDOWN_MS).toISOString(),
-          source: "default",
-        };
+      : { provider, source: "default" };
   }
   if (res.status === "ok") return { provider, clear: true };
   if (res.status === "timeout" && timeoutCooldownMs > 0) {
-    return {
-      provider,
-      resetAt: new Date(now.getTime() + timeoutCooldownMs).toISOString(),
-      source: "default",
-    };
+    return { provider, source: "default" };
+  }
+  // A SLOW error (ran a while, THEN failed) is as costly to re-burn as a timeout —
+  // back it off. A FAST error stays inconclusive (cheap one-off, immediately retryable).
+  if (res.status === "error" && timeoutCooldownMs > 0 && res.durationMs > SLOW_ERROR_THRESHOLD_MS) {
+    return { provider, source: "default" };
   }
   return null;
 }
@@ -1159,7 +1166,8 @@ export class Orchestrator {
     for (const t of taskResults) {
       for (const e of t.effects) {
         if ("clear" in e) cooldownStore.clear(e.provider);
-        else cooldownStore.record(e.provider, e.resetAt, now, e.source);
+        else if (e.source === "parsed") cooldownStore.record(e.provider, e.resetAt, now, "parsed");
+        else cooldownStore.recordBackoff(e.provider, now); // escalating backoff (no known reset)
       }
     }
     // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,
