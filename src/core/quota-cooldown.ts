@@ -10,6 +10,14 @@ import { type QuotaCooldown, QuotaCooldownSchema } from "../schemas/quota-cooldo
 
 /** Fallback cooldown when the error carries no parseable reset time. */
 export const DEFAULT_COOLDOWN_MS = 15 * 60_000;
+/**
+ * Short cooldown for a reviewer that hit its OWN per-reviewer timeoutMs (not a
+ * gate self-deadline abort). Without it, a slow/wedged reviewer is re-spawned and
+ * re-burns the full wall-clock EVERY iteration (field report: claude-code 300s
+ * every turn). Short + self-expiring so a transiently-slow reviewer recovers
+ * quickly; the 30-min re-probe window bounds the downside either way.
+ */
+export const TIMEOUT_COOLDOWN_MS = 5 * 60_000;
 /** Reject a parsed reset further out than this (guards against garbage dates). */
 const MAX_COOLDOWN_MS = 30 * 24 * 60 * 60_000; // 30 days
 /**

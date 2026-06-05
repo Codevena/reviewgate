@@ -65,7 +65,12 @@ import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./g
 import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
-import { DEFAULT_COOLDOWN_MS, QuotaCooldownStore, parseQuotaResetAt } from "./quota-cooldown.ts";
+import {
+  DEFAULT_COOLDOWN_MS,
+  QuotaCooldownStore,
+  TIMEOUT_COOLDOWN_MS,
+  parseQuotaResetAt,
+} from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
@@ -245,6 +250,13 @@ export function cooldownEffectFor(
   provider: ProviderId,
   res: ReviewResult,
   now: Date,
+  // When > 0, a reviewer that hit its OWN per-reviewer timeoutMs gets a short,
+  // self-expiring cooldown so it is pre-spawn-skipped next iteration instead of
+  // re-burning the full wall-clock every turn (field report: claude-code 300s
+  // every iteration). The CALLER passes 0 on a gate self-deadline abort — that
+  // timeout is the gate tearing the run down, NOT the provider's fault, so it
+  // must not be penalized (preserves the inconclusive-abort semantics).
+  timeoutCooldownMs = 0,
 ): CooldownEffect | null {
   if (res.status === "quota-exhausted") {
     const parsed = parseQuotaResetAt(res.statusDetail, now);
@@ -257,6 +269,13 @@ export function cooldownEffectFor(
         };
   }
   if (res.status === "ok") return { provider, clear: true };
+  if (res.status === "timeout" && timeoutCooldownMs > 0) {
+    return {
+      provider,
+      resetAt: new Date(now.getTime() + timeoutCooldownMs).toISOString(),
+      source: "default",
+    };
+  }
   return null;
 }
 
@@ -981,8 +1000,12 @@ export class Orchestrator {
           // quota isn't the problem). Applied for the primary AND every fallback
           // tried, so a quota-capped FALLBACK is also cooled down (else it would be
           // retried on every review).
+          // On a gate self-deadline abort, a `timeout` is the run being torn down
+          // (not the provider's fault) → pass 0 so it is NOT cooled down. Otherwise a
+          // reviewer that hit its OWN timeoutMs gets the short timeout cooldown.
+          const timeoutCooldownMs = opts.signal?.aborted ? 0 : TIMEOUT_COOLDOWN_MS;
           const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
-            cooldownEffectFor(provider, res, now);
+            cooldownEffectFor(provider, res, now, timeoutCooldownMs);
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;

@@ -1172,7 +1172,10 @@ export class LoopDriver {
       // escalation, so this cannot loop forever.
       decision = {
         kind: "block",
-        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail. Run \`reviewgate doctor\` if this persists.`,
+        // Surface any cooled-down providers + their reset times (quota OR the short
+        // timeout cooldown) so a stuck panel tells the dev WHICH provider and WHEN it
+        // recovers — not a bare "run reviewgate doctor" (both field reports' ask).
+        reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` if this persists."}`,
       };
     } else {
       decision = {
