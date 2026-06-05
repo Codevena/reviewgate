@@ -375,12 +375,18 @@ async function gatherReviewContext(
   const dp = dirtyFlagPath(input.repoRoot);
   const hasDirtyFlag = existsSync(dp);
   let reviewBase: string | null = null;
+  // Batch-start timestamp from dirty.flag — scopes OUT pre-existing untracked files
+  // in collectDiff. Null on the HEAD-advanced path (no dirty.flag) → all untracked
+  // reviewed there, which is correct (committed/merged work, not a dirty tree).
+  let reviewBaseTs: string | null = null;
   // Reused when the HEAD-advanced path already computed the since-base diff, so
   // the gate doesn't run collectDiff twice for the same base.
   let precomputedDiff: string | undefined;
   if (hasDirtyFlag) {
     try {
-      reviewBase = (JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string }).base_sha ?? null;
+      const flag = JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string; base_ts?: string };
+      reviewBase = flag.base_sha ?? null;
+      reviewBaseTs = flag.base_ts ?? null;
     } catch {
       reviewBase = null;
     }
@@ -432,7 +438,8 @@ async function gatherReviewContext(
     reviewBase = correctedBase;
     precomputedDiff = undefined;
   }
-  const diff = precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase));
+  const diff =
+    precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
   return { gitInfo, diff, reviewBase };
 }
 

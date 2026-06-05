@@ -31,18 +31,29 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
   // makes mid-batch, so the gate reviews `git diff <base>` (committed +
   // uncommitted since then), not just the now-clean working tree.
   let baseSha: string | null = null;
+  // Batch-start timestamp: captured at the clean→dirty transition (first edit) and
+  // preserved across the batch exactly like base_sha. The gate uses it to scope OUT
+  // pre-existing untracked files (those whose mtime predates the batch — the agent
+  // never touched them). Distinct from `ts` below, which is the LAST edit's time.
+  let baseTs: string | null = null;
   if (existsSync(p)) {
     try {
-      baseSha = (JSON.parse(readFileSync(p, "utf8")) as { base_sha?: string }).base_sha ?? null;
+      const prev = JSON.parse(readFileSync(p, "utf8")) as { base_sha?: string; base_ts?: string };
+      baseSha = prev.base_sha ?? null;
+      baseTs = prev.base_ts ?? null;
     } catch {
       baseSha = null;
+      baseTs = null;
     }
   }
   if (!baseSha) baseSha = await gitHeadSha(input.repoRoot);
+  const nowIso = new Date().toISOString();
+  if (!baseTs) baseTs = nowIso;
   const body = JSON.stringify({
     diff_hash: diffHash,
-    ts: new Date().toISOString(),
+    ts: nowIso,
     ...(baseSha ? { base_sha: baseSha } : {}),
+    base_ts: baseTs,
   });
   // Unique temp name (not a shared `${p}.tmp`) so parallel PostToolUse triggers
   // on the same checkout can't clobber each other's in-flight write before the

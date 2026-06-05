@@ -1,7 +1,7 @@
 // tests/unit/git.test.ts
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { collectDiff, collectGitInfo, gitHeadSha } from "../../src/utils/git.ts";
@@ -60,6 +60,36 @@ describe("collectDiff", () => {
     const diff = await collectDiff(dir, base);
     expect(diff).toContain("committed.ts");
     expect(diff).toContain("wip.ts");
+  });
+
+  it("excludes a pre-existing untracked file (mtime older than sinceTs), keeps a fresh one", async () => {
+    const dir = repo();
+    const base = await gitHeadSha(dir);
+    // `old.ts` is untracked but PRE-EXISTS this batch — the agent never touched it
+    // (e.g. a stray cache file, a *.bak, a foreign migration). `fresh.ts` was just
+    // created. With a sinceTs between their mtimes, only `fresh.ts` is in scope.
+    writeFileSync(join(dir, "old.ts"), "export const OLD = 'preexisting';\n");
+    writeFileSync(join(dir, "fresh.ts"), "export const FRESH = 'authored';\n");
+    const past = new Date(Date.now() - 60_000); // 60s ago
+    utimesSync(join(dir, "old.ts"), past, past);
+    const sinceTs = new Date(Date.now() - 30_000).toISOString(); // 30s ago
+    const diff = await collectDiff(dir, base, 60_000, sinceTs);
+    expect(diff).toContain("fresh.ts");
+    expect(diff).toContain("FRESH");
+    expect(diff).not.toContain("old.ts");
+    expect(diff).not.toContain("OLD");
+    // Intentional scope exclusion is NOT an incompleteness failure.
+    expect(diff).not.toContain("TRUNCATED or TIMED OUT");
+  });
+
+  it("includes ALL untracked files when no sinceTs is given (legacy flag → no regression)", async () => {
+    const dir = repo();
+    writeFileSync(join(dir, "old.ts"), "export const OLD = 'preexisting';\n");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(join(dir, "old.ts"), past, past);
+    // No sinceTs → the mtime gate is inert → a brand-new module is still reviewed.
+    const diff = await collectDiff(dir);
+    expect(diff).toContain("old.ts");
   });
 
   it("appends an INCOMPLETE marker when the diff is truncated (>16 MiB), not silently partial", async () => {
