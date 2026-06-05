@@ -248,15 +248,15 @@ export const ConfigSchema = z.object({
     // it. Default 300_000 (5min).
     timeoutCooldownMs: z.number().int().nonnegative().default(300_000),
     // Max consecutive turns the gate may DEFER when no reviewer can complete a review
-    // (all quota/timeout/error). DEFAULT 0 = fail-closed (hard-block): a security gate
-    // must not let unreviewed changes through by default (codex CRITICAL, 2026-06-05).
-    // The common transient outage is covered elsewhere (all-quota defers uncapped;
-    // per-reviewer timeout cools down + fails over), so this only governs the rarer
-    // MIXED total outage. Set N > 0 to OPT IN to a bounded defer for automated agent
-    // loops: the gate defers up to N turns (allow-stop, keeps the dirty flag, never
-    // PASSes, audit-logged) then escalates to the human (a persistent outage must not
-    // silently defer forever).
-    infraDeferMaxConsecutive: z.number().int().nonnegative().default(0),
+    // on a MIXED total outage (some quota, some timeout/error). The common transient
+    // outage is covered elsewhere (all-quota defers uncapped; per-reviewer timeout cools
+    // down + fails over), so this only governs the rarer mixed case. DEFAULT 3: the gate
+    // defers up to N turns (allow-stop, keeps the dirty flag, never PASSes, audit-logged)
+    // then escalates to the human. Was 0 (hard-block), but a hard block on a total outage
+    // just re-fires every turn until Claude Code's stop-hook cap force-ends it UNREVIEWED
+    // — no real security, only a block-loop (field evidence 2026-06-05). Set 0 to restore
+    // the old hard-block.
+    infraDeferMaxConsecutive: z.number().int().nonnegative().default(3),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),
