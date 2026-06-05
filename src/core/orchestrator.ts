@@ -1009,8 +1009,12 @@ export class Orchestrator {
           // retried on every review).
           // On a gate self-deadline abort, a `timeout` is the run being torn down
           // (not the provider's fault) → pass 0 so it is NOT cooled down. Otherwise a
-          // reviewer that hit its OWN timeoutMs gets the short timeout cooldown.
-          const timeoutCooldownMs = opts.signal?.aborted ? 0 : TIMEOUT_COOLDOWN_MS;
+          // reviewer that hit its OWN timeoutMs gets the configured timeout cooldown
+          // (loop.timeoutCooldownMs; 0 keeps timeouts immediately retryable). Falls
+          // back to the module constant for a config written before the field existed.
+          const timeoutCooldownMs = opts.signal?.aborted
+            ? 0
+            : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
           const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
             cooldownEffectFor(provider, res, now, timeoutCooldownMs);
 

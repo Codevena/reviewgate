@@ -163,17 +163,23 @@ export const defaultConfig = {
     // which can run long under index.lock contention) + post-abort settle —
     // otherwise the OS kills the gate mid-run with empty stdout = fail-open.
     runTimeoutMs: 720_000,
-    // When NO reviewer can complete a review (every attempt failed quota/timeout/
-    // error), the gate DEFERS the turn (allow-stop, keeps the change flagged,
-    // re-reviews next turn, does NOT advance the iteration) rather than hard-blocking
-    // — an automated agent loop can't synchronously wait out a transient provider
-    // outage, so a hard block is a near-deadlock (both 2026-06-05 field reports). This
-    // caps the consecutive defers: after N in a row the gate escalates to the human
-    // (a PERSISTENT outage / misconfig must not silently defer forever). It never
-    // emits PASS, always keeps the dirty flag, and audit-logs every defer, so it can't
-    // become a silent bypass. Set 0 to disable the defer (exact prior behavior: an
-    // infra outage hard-blocks immediately).
-    infraDeferMaxConsecutive: 2,
+    // Short cooldown (ms) for a reviewer that hit its OWN per-reviewer timeoutMs, so
+    // it is pre-spawn-skipped next iteration instead of re-burning the full wall-clock
+    // every turn. 0 keeps timeouts immediately retryable (no cooldown). A gate
+    // self-deadline abort never triggers it (that timeout is the gate's, not the
+    // provider's). Default 5min; the 30-min re-probe window bounds the downside.
+    timeoutCooldownMs: 300_000,
+    // SECURE-BY-DEFAULT (0 = fail-closed): when NO reviewer can complete a review
+    // (every attempt failed quota/timeout/error), the gate HARD-BLOCKS — a security
+    // gate must not let unreviewed changes through its Stop hook by default (codex
+    // CRITICAL, 2026-06-05). Note the COMMON transient outage is already handled
+    // separately: a pure all-quota outage defers (uncapped), and a per-reviewer
+    // timeout is cooled down + failed over (timeoutCooldownMs). This setting only
+    // governs the rarer MIXED total outage. OPT-IN to a bounded defer for automated
+    // agent loops (which can't synchronously wait out an outage) by setting N > 0: the
+    // gate then DEFERS up to N consecutive turns (allow-stop, keeps the change flagged,
+    // re-reviews next turn, never PASSes, audit-logged) before escalating to the human.
+    infraDeferMaxConsecutive: 0,
   },
   sandbox: {
     // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished

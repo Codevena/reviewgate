@@ -241,15 +241,22 @@ export const ConfigSchema = z.object({
     // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
     // the hook timeout. 0 disables the deadline (legacy behavior).
     runTimeoutMs: z.number().int().nonnegative().default(720_000),
+    // Short cooldown (ms) for a reviewer that hit its OWN per-reviewer timeoutMs, so it
+    // is pre-spawn-skipped next iteration instead of re-burning the full wall-clock
+    // every turn (field report: claude-code 300s every iteration). 0 disables it
+    // (timeouts stay immediately retryable). A gate self-deadline abort never triggers
+    // it. Default 300_000 (5min).
+    timeoutCooldownMs: z.number().int().nonnegative().default(300_000),
     // Max consecutive turns the gate may DEFER when no reviewer can complete a review
-    // (all quota/timeout/error) before escalating to the human. A transient outage
-    // defers (allow-stop, keeps the change flagged, re-reviews next turn, does NOT
-    // advance the iteration) so an automated agent loop isn't deadlocked; a PERSISTENT
-    // outage / misconfig escalates rather than silently deferring forever. The defer
-    // never emits PASS, always keeps the dirty flag, and is audit-logged. 0 disables
-    // the defer (an infra outage hard-blocks immediately — exact prior behavior).
-    // Default 2.
-    infraDeferMaxConsecutive: z.number().int().nonnegative().default(2),
+    // (all quota/timeout/error). DEFAULT 0 = fail-closed (hard-block): a security gate
+    // must not let unreviewed changes through by default (codex CRITICAL, 2026-06-05).
+    // The common transient outage is covered elsewhere (all-quota defers uncapped;
+    // per-reviewer timeout cools down + fails over), so this only governs the rarer
+    // MIXED total outage. Set N > 0 to OPT IN to a bounded defer for automated agent
+    // loops: the gate defers up to N turns (allow-stop, keeps the dirty flag, never
+    // PASSes, audit-logged) then escalates to the human (a persistent outage must not
+    // silently defer forever).
+    infraDeferMaxConsecutive: z.number().int().nonnegative().default(0),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

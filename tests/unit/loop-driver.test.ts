@@ -1729,7 +1729,13 @@ describe("LoopDriver", () => {
     }),
   });
 
-  it("infra-failure (all reviewers failed) DEFERS: allow-stop, keeps dirty.flag, no iteration advance, counts it", async () => {
+  // The bounded defer is OPT-IN (default 0 = fail-closed); these tests set it > 0.
+  const deferConfig = (n: number) => ({
+    ...defaultConfig,
+    loop: { ...defaultConfig.loop, infraDeferMaxConsecutive: n },
+  });
+
+  it("infra-failure (all reviewers failed) DEFERS when opted in: allow-stop, keeps dirty.flag, no iteration advance, counts it", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);
     await state.initialise("01HXINFRA1");
@@ -1737,7 +1743,7 @@ describe("LoopDriver", () => {
     writeDirty(repo);
     const decision = await new LoopDriver({
       repoRoot: repo,
-      config: defaultConfig, // infraDeferMaxConsecutive default 2
+      config: deferConfig(2), // opt in to a bounded defer
       state,
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
@@ -1760,7 +1766,7 @@ describe("LoopDriver", () => {
     writeDirty(repo);
     const decision = await new LoopDriver({
       repoRoot: repo,
-      config: defaultConfig,
+      config: deferConfig(2),
       state,
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
@@ -1770,15 +1776,15 @@ describe("LoopDriver", () => {
     expect((await state.load()).escalation_reason).toBe("infra-unavailable");
   });
 
-  it("infraDeferMaxConsecutive=0 hard-blocks an infra outage immediately (back-compat)", async () => {
+  it("infraDeferMaxConsecutive=0 (the secure DEFAULT) hard-blocks an infra outage immediately", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);
     await state.initialise("01HXINFRA0");
     writeDirty(repo);
-    const cfg = { ...defaultConfig, loop: { ...defaultConfig.loop, infraDeferMaxConsecutive: 0 } };
+    // 0 is the default now; assert it explicitly via defaultConfig (no override).
     const decision = await new LoopDriver({
       repoRoot: repo,
-      config: cfg,
+      config: defaultConfig,
       state,
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
