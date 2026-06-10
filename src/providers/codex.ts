@@ -91,12 +91,21 @@ export class CodexAdapter implements ProviderAdapter {
     // previous attempt's stale last-message (see spec "stale-output guard").
     const runOnce = async (
       attempt: 1 | 2,
-      promptText: string,
+      promptFile: string,
     ): Promise<{ result: ReviewResult; killedByAbort: boolean }> => {
       const lastMsgFile = join(run, `last.${attempt}.md`);
       const eventsFile = join(run, `events.${attempt}.jsonl`);
       const stderrFile = join(run, `stderr.${attempt}.log`);
 
+      // Prompt goes over STDIN, never argv. The prompt embeds research.md + the
+      // full review-base diff and can be multiple MB; as a single positional argv
+      // element it exceeds Linux MAX_ARG_STRLEN (128 KiB per arg) / macOS ARG_MAX
+      // (~1 MiB total) and posix_spawn fails with E2BIG before codex starts —
+      // the same shoal 2026-06-02 gate-closed bug fixed for claude/gemini (F-09).
+      // `codex exec -` reads the prompt from stdin when the positional prompt is
+      // `-`; spawnSafely pipes the file and closes the pipe (EOF) when it ends —
+      // codex would otherwise block forever on "Reading additional input from
+      // stdin...".
       const args = [
         "exec",
         "--disable",
@@ -112,7 +121,7 @@ export class CodexAdapter implements ProviderAdapter {
         input.workingDir,
         "--model",
         input.cfg.model,
-        promptText,
+        "-",
       ];
 
       const res = await spawnSafely({
@@ -120,6 +129,7 @@ export class CodexAdapter implements ProviderAdapter {
         args,
         env,
         cwd: input.workingDir,
+        stdinFile: promptFile,
         stdoutFile: eventsFile,
         stderrFile,
         timeoutMs: input.cfg.timeoutMs,
@@ -238,8 +248,7 @@ export class CodexAdapter implements ProviderAdapter {
       };
     };
 
-    const basePrompt = readFileSync(input.promptFile, "utf8");
-    const first = await runOnce(1, basePrompt);
+    const first = await runOnce(1, input.promptFile);
 
     // Retry exactly once ONLY on a generic error / unparseable outcome. Never on
     // quota (cooldown owns it), timeout/watchdog (a rerun won't help), or abort:
@@ -250,7 +259,11 @@ export class CodexAdapter implements ProviderAdapter {
       first.result.status === "error" && !first.killedByAbort && !input.signal?.aborted;
     if (!retriable) return first.result;
 
-    const second = await runOnce(2, basePrompt + RETRY_DIRECTIVE);
+    // The retry prompt (base + directive) is also delivered via stdin: write it
+    // to a per-run temp file rather than appending to argv (same E2BIG ceiling).
+    const retryPromptFile = join(run, "prompt.2.txt");
+    writeFileSync(retryPromptFile, readFileSync(input.promptFile, "utf8") + RETRY_DIRECTIVE);
+    const second = await runOnce(2, retryPromptFile);
     // Only the generic-error outcome gets the "(after retry)" marker; a terminal
     // quota/timeout status on the retry is returned unchanged so its detail stays
     // parseable by the cooldown.
@@ -270,6 +283,11 @@ export class CodexAdapter implements ProviderAdapter {
       const lastMsgFile = join(run, "last.md");
       const eventsFile = join(run, "events.jsonl");
       const stderrFile = join(run, "stderr.log");
+      // Prompt over STDIN, never argv — same E2BIG avoidance as review() (a
+      // judge/critic prompt can also exceed ARG_MAX). `codex exec -` reads the
+      // prompt from stdin; spawnSafely pipes the file and sends EOF.
+      const promptFile = join(run, "prompt.txt");
+      writeFileSync(promptFile, prompt);
       // NOTE: NO --output-schema — a judge needs a free-form completion.
       // --skip-git-repo-check: the judge runs in a fresh non-git temp dir, and
       // codex `exec` otherwise refuses ("Not inside a trusted directory").
@@ -291,7 +309,7 @@ export class CodexAdapter implements ProviderAdapter {
         run,
         "--model",
         opts.model,
-        prompt,
+        "-",
       ];
       const env = { ...process.env } as Record<string, string>;
       if (opts.auth === "apikey" && opts.apiKeyEnv) {
@@ -303,6 +321,7 @@ export class CodexAdapter implements ProviderAdapter {
         args,
         env,
         cwd: run,
+        stdinFile: promptFile,
         stdoutFile: eventsFile,
         stderrFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,

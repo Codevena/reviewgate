@@ -70,6 +70,27 @@ describe("computeRejectRate", () => {
     expect(r.wrongRejects).toBe(1);
   });
 
+  it("counts the LAST decision per finding_id — a retracted rejection is not a wrongReject (F-03)", () => {
+    // The decisions-file contract everywhere else (loop-driver's
+    // priorIterationDecisionSignatures / lastDecisionsById) is LAST-wins: a later
+    // line supersedes an earlier one. A rejected-then-accepted flip must count as
+    // accepted, not inflate the reject-rate / fp-streak escalations.
+    const repo = mkdtempSync(join(tmpdir(), "rg-rr6-"));
+    writeDecisions(repo, 1, [rejected("F-001"), accepted("F-001"), accepted("F-002")]);
+    const r = computeRejectRate(repo, 1, ["F-001", "F-002"]);
+    expect(r.total).toBe(2);
+    expect(r.wrongRejects).toBe(0);
+    expect(r.rate).toBe(0);
+  });
+
+  it("counts a rejection that supersedes an earlier accept (last line wins both ways)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rr7-"));
+    writeDecisions(repo, 1, [accepted("F-001"), rejected("F-001")]);
+    const r = computeRejectRate(repo, 1, ["F-001"]);
+    expect(r.total).toBe(1);
+    expect(r.wrongRejects).toBe(1);
+  });
+
   it("ignores decisions for ids that were NOT real findings (cannot pad with fake ids)", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr5-"));
     // One real finding rejected; three fabricated reviewer_was_wrong ids appended.

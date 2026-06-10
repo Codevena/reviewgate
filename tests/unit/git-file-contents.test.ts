@@ -74,6 +74,22 @@ describe("collectChangedFileContents", () => {
     expect(result).not.toContain("reviewgate.config.ts");
   });
 
+  it("includes a TRACKED non-ASCII path (F-18: -z, no C-quoting)", async () => {
+    // Without `-z`, core.quotePath (git default: true) C-quotes the name —
+    // `"\\343\\202\\253.ts"` — the quoted token fails lstat and the file silently
+    // loses its full-file FP-suppression context (the untracked side was already
+    // fixed; the tracked side was missed).
+    const dir = repo();
+    writeFileSync(join(dir, "カギ.ts"), "export const original = 1;\n");
+    commit(dir);
+    writeFileSync(join(dir, "カギ.ts"), "export const geändert = 2;\n");
+
+    const result = await collectChangedFileContents(dir);
+
+    expect(result).toContain("### カギ.ts");
+    expect(result).toContain("export const geändert = 2;");
+  });
+
   it("never follows a symlink (no leaking files outside the repo into prompts)", async () => {
     const dir = repo();
     writeFileSync(join(dir, "real.ts"), "export const x = 1;\n");

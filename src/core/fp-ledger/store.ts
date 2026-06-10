@@ -24,6 +24,18 @@ export interface RejectMeta {
 
 const EMPTY: FpLedgerIndex = { schema: "reviewgate.fpledger.v1", entries: [] };
 
+// Best-effort: preserve a corrupt file for forensics before recovering empty
+// (mirrors StateStore.loadOrRecover). Rename failures (e.g. a concurrent reader
+// already moved it) are swallowed — recovery must never fail on the backup.
+function backupCorrupt(p: string): void {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    renameSync(p, `${p}.corrupt.${ts}`);
+  } catch {
+    // best-effort only
+  }
+}
+
 // Highest numeric id among the CURRENT entries. Used only as a floor when the
 // persisted `seq` high-water mark is absent (legacy ledgers) — `seq` is the real
 // monotonic source of truth, so a decayed entry's id is never reused even when the
@@ -62,9 +74,27 @@ export class FpLedgerStore {
   async snapshot(): Promise<FpLedgerIndex> {
     const p = knownFpPath(this.repoRoot);
     if (!existsSync(p)) return EMPTY;
+    let raw: string;
     try {
-      return FpLedgerIndexSchema.parse(JSON.parse(readFileSync(p, "utf8")));
+      raw = readFileSync(p, "utf8");
+    } catch (err) {
+      // existsSync→read TOCTOU: deleted in between is a genuine "no file".
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return EMPTY;
+      // F-22: a transient I/O error (EACCES / EBUSY / AV lock / EIO / network FS)
+      // on an EXISTING ledger must NOT be misread as "empty" — inside mutate()
+      // that empty snapshot would be atomically persisted, silently wiping every
+      // accumulated FP reject/stage. Rethrow so the mutate fails loudly instead
+      // (the learn path .catch()es → "no learning this round", not data loss).
+      // Mirrors StateStore.loadOrRecover.
+      throw err;
+    }
+    try {
+      return FpLedgerIndexSchema.parse(JSON.parse(raw));
     } catch {
+      // Genuine content corruption only — nothing but JSON.parse (SyntaxError)
+      // and the schema parse (ZodError) can throw here. Preserve the corrupt
+      // file for forensics, then recover empty.
+      backupCorrupt(p);
       return EMPTY;
     }
   }
@@ -144,9 +174,9 @@ export class FpLedgerStore {
       // rejects alone, so once the original qualifying rejects age out of the
       // 60d/90d windows it would otherwise reset an earned `active`/`sticky`
       // back to `candidate` the instant a new lone reject arrives (F-020) —
-      // a second, much faster demotion path that contradicts the documented
-      // lifecycle. Demotion is owned SOLELY by decayPass's 180d-since-last_seen
-      // rule (and the read-time re-eval in activeSnapshot/decayPass), so an
+      // a demotion as a side effect of an INCOMING reject, which contradicts
+      // the documented lifecycle. Demotion is owned SOLELY by the window
+      // recompute in decayPass / activeSnapshot (see decayPass; F-23), so an
       // operator inspecting between events never sees a stage flip as a side
       // effect of an incoming reject. pinned_by is honoured by recompute, so
       // a pinned entry still resolves to sticky.
@@ -180,12 +210,19 @@ export class FpLedgerStore {
     });
   }
 
-  // candidate removed after 90d no new match; active→candidate after 180d.
-  // sticky is RE-EVALUATED against the current window (not blindly kept): a sticky
-  // whose qualifying rejects have all aged past STICKY_DAYS must fall back to
-  // active/candidate, else it would suppress a genuinely-real finding at the same
-  // signature forever (F-017). recompute() honours pinned_by, so a pinned sticky
-  // stays sticky regardless of age.
+  // Lifecycle decay: candidate removed after 90d with no new match; active/sticky
+  // are RE-EVALUATED against the current 60d/90d windows (not blindly kept): an
+  // entry whose qualifying rejects have all aged out of its window falls back to
+  // candidate (and is then reaped by the 90d candidate rule once stale enough),
+  // else it would suppress a genuinely-real finding at the same signature forever
+  // (F-017). Demotion is therefore OWNED by this window-recompute (and its
+  // read-time twin in activeSnapshot) — there is no separate last_seen_at-based
+  // demotion rule: recompute keeps `active` only while a qualifying reject is
+  // within 60d, and last_seen_at >= the newest reject ts by construction, so any
+  // entry old enough for such a rule has already been demoted here (F-23: the
+  // former "active→candidate after 180d" guard was unreachable dead code).
+  // recompute() honours pinned_by, so a pinned sticky stays sticky regardless of
+  // age.
   async decayPass(nowIso: string): Promise<void> {
     const nowMs = Date.parse(nowIso);
     await this.mutate((idx) => {
@@ -199,16 +236,12 @@ export class FpLedgerStore {
         e.stage === "sticky" || e.stage === "active" ? recompute(e, nowMs) : e,
       );
       const kept = recomputed.filter((e) => {
-        if (e.stage === "sticky") return true;
-        const ageDays = (nowMs - Date.parse(e.last_seen_at)) / DAY_MS;
-        if (e.stage === "candidate") return ageDays <= 90;
-        return true; // active: demote (not drop) below
+        // Post-recompute stages: a freshly-demoted entry is already 'candidate'
+        // here and subject to the 90d reaping; surviving 'active'/'sticky'
+        // entries have in-window qualifying rejects by definition and are kept.
+        if (e.stage !== "candidate") return true;
+        return (nowMs - Date.parse(e.last_seen_at)) / DAY_MS <= 90;
       });
-      for (const e of kept) {
-        if (e.stage === "active" && (nowMs - Date.parse(e.last_seen_at)) / DAY_MS > 180) {
-          e.stage = "candidate";
-        }
-      }
       return { next: { ...idx, entries: kept }, result: undefined };
     });
   }

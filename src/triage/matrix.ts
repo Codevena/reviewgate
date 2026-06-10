@@ -105,6 +105,22 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       justification: `Sensitive paths: ${facts.sensitivityTags.join(", ")}.`,
     };
   }
+  if (facts.lockfileOnly) {
+    // Regenerated lockfiles still get reviewed (supply-chain relevance: new or
+    // swapped packages, registry/integrity drift) but at the minimal tier — a
+    // full default panel on thousands of generated lines is noise. Checked
+    // AFTER sensitivity so a sensitivity-tagged path always wins.
+    return {
+      ...base,
+      riskClass: "minimal",
+      runReview: true,
+      budgetTier: "minimal",
+      loopCap: 2,
+      reviewerHint: [],
+      maxIterationsOverride: smallCap,
+      justification: "Lockfile-only diff.",
+    };
+  }
   if (facts.testsOnly) {
     return {
       ...base,

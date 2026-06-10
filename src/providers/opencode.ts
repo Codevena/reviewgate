@@ -1,5 +1,5 @@
 // src/providers/opencode.ts
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSafely } from "../utils/spawn.ts";
@@ -81,15 +81,22 @@ export class OpenCodeAdapter implements ProviderAdapter {
     if (input.cfg.model && input.cfg.model !== "default") {
       args.push("-m", input.cfg.model);
     }
-    // The prompt text is the trailing positional message argument.
-    const promptText = readFileSync(input.promptFile, "utf8");
-    args.push(promptText);
+    // Prompt goes over STDIN, never argv. The prompt embeds research.md + the
+    // full review-base diff and can be multiple MB; as a single positional
+    // message argv element it exceeds Linux MAX_ARG_STRLEN (128 KiB per arg) /
+    // macOS ARG_MAX (~1 MiB total) and posix_spawn fails with E2BIG before
+    // opencode starts — the shoal 2026-06-02 gate-closed bug class fixed for
+    // claude/gemini in PR #59 (F-10). `opencode run` with NO positional message
+    // reads the message from piped stdin (run.ts: `process.stdin.isTTY ?
+    // undefined : await Bun.stdin.text()`, used when message args are empty);
+    // spawnSafely pipes the file and sends EOF.
 
     const res = await spawnSafely({
       command: this.binPath,
       args,
       env: { ...process.env } as Record<string, string>,
       cwd: input.workingDir,
+      stdinFile: input.promptFile,
       stdoutFile,
       stderrFile,
       timeoutMs: input.cfg.timeoutMs,
@@ -128,6 +135,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
       // Exit 0 but stdout is not a parseable review (opencode/MiniMax can
       // truncate before emitting valid JSON). NOT a clean review → ERROR
       // (status !== "ok" → excluded from okRuns) rather than a silent empty PASS.
+      // If the output is actually a quota/usage-limit banner (printed on an
+      // exit-0 run), classify it quota-exhausted so cooldown+failover fires
+      // (F-043 — mirrors codex/claude/gemini; closes the F-11 gap).
+      const quota = isQuotaExhausted(errText + stdout);
       return {
         reviewerId: input.reviewerId,
         verdict: "ERROR",
@@ -136,8 +147,10 @@ export class OpenCodeAdapter implements ProviderAdapter {
         durationMs: res.durationMs,
         exitCode: res.exitCode,
         rawEventsPath: stdoutFile,
-        status: "error",
-        statusDetail: "reviewer exited 0 but produced no valid review JSON (unparseable output)",
+        status: quota ? "quota-exhausted" : "error",
+        statusDetail: quota
+          ? "reviewer exited 0 but printed a quota/usage-limit banner"
+          : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
       };
     }
     const findings = mapReviewOutputToFindings(out, {
@@ -171,12 +184,17 @@ export class OpenCodeAdapter implements ProviderAdapter {
       const stderrFile = join(run, "err.log");
       const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
       if (opts.model && opts.model !== "default") args.push("-m", opts.model);
-      args.push(prompt);
+      // Prompt over STDIN, never argv — same E2BIG avoidance as review() (a
+      // judge/curator prompt can also exceed ARG_MAX). With no positional
+      // message, `opencode run` reads the message from piped stdin.
+      const promptFile = join(run, "prompt.txt");
+      writeFileSync(promptFile, prompt);
       const res = await spawnSafely({
         command: this.binPath,
         args,
         env: { ...process.env } as Record<string, string>,
         cwd: run,
+        stdinFile: promptFile,
         stdoutFile,
         stderrFile,
         timeoutMs: opts.timeoutMs ?? COMPLETE_TIMEOUT_MS,

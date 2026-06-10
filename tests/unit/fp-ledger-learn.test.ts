@@ -252,6 +252,123 @@ describe("learnFromDecisions", () => {
     expect(entry?.rejects).toHaveLength(1);
   });
 
+  it("does NOT learn from a superseded (retracted) rejection — last decision per finding_id wins (F-19)", async () => {
+    // The append-only decisions file may carry a superseding disposition for a
+    // finding within one iteration (rejected → later accepted after a re-block).
+    // Booking the retracted rejection would march the signature toward
+    // active/sticky and eventually demote a finding the agent ACCEPTED as real.
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-supersede-"));
+    mkdirSync(dirname(pendingJsonPath(repo)), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "sig-S",
+            rule_id: "r",
+            category: "correctness",
+            file: "a.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.5,
+            consensus: "singleton",
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "rejected",
+          reason: "false positive on unchanged code xx",
+          reviewer_was_wrong: true,
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "accepted",
+          action: "fixed",
+        }),
+      ].join("\n")}\n`,
+    );
+    const store = new FpLedgerStore(repo);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-10T00:00:00Z",
+    });
+    expect((await store.snapshot()).entries).toHaveLength(0);
+  });
+
+  it("DOES learn when a rejection supersedes an earlier accept (last line wins)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-supersede2-"));
+    mkdirSync(dirname(pendingJsonPath(repo)), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "sig-T",
+            rule_id: "r",
+            category: "correctness",
+            file: "a.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.5,
+            consensus: "singleton",
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "accepted",
+          action: "fixed",
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "rejected",
+          reason: "false positive on unchanged code xx",
+          reviewer_was_wrong: true,
+        }),
+      ].join("\n")}\n`,
+    );
+    const store = new FpLedgerStore(repo);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-06-10T00:00:00Z",
+    });
+    const entry = (await store.snapshot()).entries.find((e) => e.signature === "sig-T");
+    expect(entry?.rejects).toHaveLength(1);
+  });
+
   it("is a no-op for prevIter < 1", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-fpl3-"));
     const store = new FpLedgerStore(repo);

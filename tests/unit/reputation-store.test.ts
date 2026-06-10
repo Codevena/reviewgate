@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ReputationStore } from "../../src/core/reputation/store.ts";
+import { reputationJsonPath } from "../../src/utils/paths.ts";
 
 const repo = () => mkdtempSync(join(tmpdir(), "rg-rep-"));
 const CFG = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
@@ -288,5 +289,41 @@ describe("ReputationStore", () => {
     const cfg = { enabled: true, minSamples: 8, trustFloor: 0.35, halfLifeDays: 45 };
     expect(await s.unreliableReviewers(cfg, now)).not.toContain("codex");
     expect((await s.forDoctor(cfg, now)).some((row) => row.reviewer === "codex")).toBe(false);
+  });
+
+  it("rethrows a transient read I/O error instead of wiping reputation.json inside record (F-22)", async () => {
+    // A raw fs error (EACCES, standing in for EBUSY/AV-lock/EIO) on an EXISTING
+    // reputation.json must fail record() loudly — never be misread as "empty"
+    // and then atomically persisted as an empty file (data loss).
+    const r = repo();
+    const s = new ReputationStore(r);
+    await s.record([
+      { reviewerKey: "codex:security", outcome: "wrong", eid: "e1", ts: "2026-06-10T00:00:00Z" },
+    ]);
+    const p = reputationJsonPath(r);
+    chmodSync(p, 0o000); // transient read failure: file exists but is unreadable
+    await expect(
+      s.record([
+        { reviewerKey: "codex:security", outcome: "wrong", eid: "e2", ts: "2026-06-10T01:00:00Z" },
+      ]),
+    ).rejects.toThrow();
+    chmodSync(p, 0o600);
+    const wrong = (await s.snapshot()).reviewers["codex:security"]?.wrong ?? [];
+    expect(wrong.map((e) => e.eid)).toEqual(["e1"]); // no wipe
+  });
+
+  it("recovers from genuine content corruption with a .corrupt backup (F-22)", async () => {
+    const r = repo();
+    const p = reputationJsonPath(r);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "{not json");
+    const s = new ReputationStore(r);
+    expect(Object.keys((await s.snapshot()).reviewers)).toHaveLength(0);
+    expect(readdirSync(dirname(p)).some((f) => f.includes(".corrupt."))).toBe(true);
+    // Usable again after recovery.
+    await s.record([
+      { reviewerKey: "codex:security", outcome: "wrong", eid: "e1", ts: "2026-06-10T00:00:00Z" },
+    ]);
+    expect((await s.snapshot()).reviewers["codex:security"]?.wrong).toHaveLength(1);
   });
 });

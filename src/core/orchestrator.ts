@@ -155,7 +155,10 @@ export interface IterationResult {
   // misconfig ERROR where NOTHING was attempted (settled.length === 0 → false). Lets
   // the LoopDriver bound-defer instead of hard-blocking + burning iterations on a
   // transient outage — then escalate to the human if it persists. "Couldn't review",
-  // not "code is bad".
+  // not "code is bad". ALSO set on the F-12 fail-closed path: an INCOMPLETE diff
+  // whose collected remainder triaged to "nothing to review" (a failed/timed-out
+  // `git diff` is the same transient-infra class — no review could happen, and a
+  // skip-PASS would ship the hidden change unreviewed).
   allReviewersInfraFailed?: boolean;
   // N1: this diff's per-diff soft iteration cap (triage.maxIterationsOverride),
   // surfaced so the LoopDriver can persist it and min() it with the config cap on
@@ -498,6 +501,39 @@ export class Orchestrator {
       .map(([id, text]) => `${id}:${createHash("sha256").update(text).digest("hex")}`);
 
     if (!triage.runReview && !this.input.forcePersona) {
+      // F-12 fail-closed: triage said "nothing to review" — but if the diff is
+      // known-INCOMPLETE (collection timed out / truncated / git failed), the
+      // empty-looking diff may be HIDING real changes, so a skip-PASS here would
+      // ship them unreviewed (the exact fail-open the incomplete-marker machinery
+      // exists to prevent). Surface it via the transient-infra outcome instead of
+      // a hard ERROR: the LoopDriver bounded-defers (keeps the dirty flag, does
+      // NOT advance the iteration, escalates to the human after
+      // infraDeferMaxConsecutive consecutive turns — the PR #63 posture), so a
+      // persistently failing `git diff` can never become an infinite block loop.
+      if (this.input.diffIncomplete) {
+        const note =
+          "Diff collection was INCOMPLETE (git timeout/truncation/failure) and triage found nothing reviewable in what WAS collected — refusing to PASS on a possibly-partial diff. The change stays flagged and is re-reviewed next turn.";
+        await this.writeReport(opts, start, [], [], "ERROR", undefined, undefined, note);
+        return {
+          verdict: "ERROR",
+          // "Couldn't review", not "code is bad" — same class as a total reviewer
+          // outage, so it takes the same bounded-defer path (see IterationResult).
+          allReviewersInfraFailed: true,
+          costUsd: 0,
+          durationMs: Date.now() - start,
+          signaturesThisIter: [],
+          maxIterationsOverride,
+          summary: buildRunSummary({
+            verdict: "ERROR",
+            source: "skipped",
+            counts: { critical: 0, warn: 0, info: 0 },
+            durationMs: Date.now() - start,
+            criticCostUsd: 0,
+            findings: [],
+            runs: [],
+          }),
+        };
+      }
       // Doc-only / trivial diff: pass without spawning any reviewer ($0).
       await this.writeReport(opts, start, [], [], "PASS");
       return {
@@ -1065,8 +1101,12 @@ export class Orchestrator {
           const timeoutCooldownMs = opts.signal?.aborted
             ? 0
             : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
+          // F-01: anchor each effect at a FRESH clock read (the run has just
+          // settled), not the pre-panel `now` — a parsed relative reset
+          // ("retry after N seconds") anchored at panel START would under-cool
+          // by the run's duration (minutes on a timed-out reviewer).
           const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
-            cooldownEffectFor(provider, res, now, timeoutCooldownMs);
+            cooldownEffectFor(provider, res, this.input.now?.() ?? new Date(), timeoutCooldownMs);
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;
@@ -1209,10 +1249,17 @@ export class Orchestrator {
     // default-source backoffs are suppressed if THIS run was aborted by the gate
     // self-deadline (re-checked here, not from the per-task snapshot) — see
     // applyCooldownEffects.
+    // F-01: apply with a FRESH timestamp, not the pre-panel `now` — recordBackoff
+    // computes reset_at/recorded_at from this value, and a panel can run for
+    // minutes (up to loop.runTimeoutMs). Anchored at panel start, a timed-out
+    // reviewer's first 5-min backoff window would already be expired (or nearly
+    // so) the moment it is written, re-burning the provider's full wall-clock
+    // every turn — exactly the loop the escalating backoff exists to stop. The
+    // pre-panel `now` is kept ONLY for the pre-spawn skipUntil/quarantine reads.
     applyCooldownEffects(
       cooldownStore,
       taskResults.flatMap((t) => t.effects),
-      now,
+      this.input.now?.() ?? new Date(),
       opts.signal?.aborted ?? false,
     );
     // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,

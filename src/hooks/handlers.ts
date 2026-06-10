@@ -32,6 +32,17 @@ export interface TriggerInput {
 // (reviewing a file created in this window) is SAFE; under-inclusion is the bug.
 const BASE_TS_SAFETY_MARGIN_MS = 30_000;
 
+// Epoch-0 base_ts sentinel = "no untracked scoping": collectDiff's mtime/ctime
+// gate compares against it and every untracked file passes (over-inclusion, which
+// is SAFE — under-inclusion is the bug). Written by the gate's two dirty.flag
+// SYNTHESIS paths (deferred-flag consumption + HEAD-advanced trigger, gate.ts),
+// where the batch's true clean→dirty transition time is unknown, and by
+// handleTrigger below when it inherits an old base_sha that has no base_ts: a
+// fresh "now − margin" stamp there would pair an OLD review base with a NEW
+// batch-start time, silently scoping batch-created untracked files OUT of the
+// re-review (F-015).
+export const BASE_TS_NO_SCOPING_SENTINEL = new Date(0).toISOString();
+
 export async function handleTrigger(input: TriggerInput): Promise<void> {
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -57,11 +68,27 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
       baseTs = null;
     }
   }
+  // Whether the existing flag already carried a review base: then THIS trigger is
+  // NOT the batch's clean→dirty transition, so it must never stamp a fresh
+  // batch-start time (F-015) — see below.
+  const inheritedBaseSha = baseSha !== null;
   if (!baseSha) baseSha = await gitHeadSha(input.repoRoot);
   const nowIso = new Date().toISOString();
-  // First capture: back-date by the safety margin so a file created by THIS triggering
-  // edit is not mistaken for pre-existing noise (see BASE_TS_SAFETY_MARGIN_MS).
-  if (!baseTs) baseTs = new Date(Date.now() - BASE_TS_SAFETY_MARGIN_MS).toISOString();
+  if (!baseTs) {
+    // base_ts absent. Two cases:
+    //  • Fresh capture (no prior base_sha → this IS the clean→dirty transition):
+    //    stamp now − margin so a file created by THIS triggering edit is not
+    //    mistaken for pre-existing noise (see BASE_TS_SAFETY_MARGIN_MS).
+    //  • Inherited base_sha without base_ts (a SYNTHESIZED flag — deferred/
+    //    HEAD-advanced — or a legacy pre-base_ts flag): the batch started at some
+    //    UNKNOWN earlier time, so "now − margin" would wrongly scope out untracked
+    //    files created during the batch (they were in the first review's scope —
+    //    F-015). Never pair an old base_sha with a fresh base_ts: fall back to the
+    //    no-scoping sentinel (all untracked stay in scope; over-review is safe).
+    baseTs = inheritedBaseSha
+      ? BASE_TS_NO_SCOPING_SENTINEL
+      : new Date(Date.now() - BASE_TS_SAFETY_MARGIN_MS).toISOString();
+  }
   const body = JSON.stringify({
     diff_hash: diffHash,
     ts: nowIso,

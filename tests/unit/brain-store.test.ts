@@ -1,9 +1,9 @@
 // tests/unit/brain-store.test.ts
 import { describe, expect, it } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BrainStore } from "../../src/core/brain/store.ts";
 import type { BrainEntry } from "../../src/schemas/brain.ts";
 import { brainJsonPath, brainMdPath } from "../../src/utils/paths.ts";
@@ -57,5 +57,32 @@ describe("BrainStore", () => {
     const store = new BrainStore(repo);
     await store.add(entry({ id: await store.nextId() }));
     expect(await store.nextId()).toBe("B-002");
+  });
+
+  it("rethrows a transient read I/O error instead of wiping brain.json inside mutate (F-22)", async () => {
+    // A raw fs error (EACCES, standing in for EBUSY/AV-lock/EIO) on an EXISTING
+    // brain.json must fail the mutate loudly — never be misread as "empty" and
+    // then atomically persisted as an empty index (data loss).
+    const repo = mkdtempSync(join(tmpdir(), "rg-brain-io-"));
+    const store = new BrainStore(repo);
+    await store.add(entry({ id: "B-001" }));
+    const p = brainJsonPath(repo);
+    chmodSync(p, 0o000); // transient read failure: file exists but is unreadable
+    await expect(store.add(entry({ id: "B-002" }))).rejects.toThrow();
+    chmodSync(p, 0o600);
+    expect((await store.snapshot()).entries.map((e) => e.id)).toEqual(["B-001"]); // no wipe
+  });
+
+  it("recovers from genuine content corruption with a .corrupt backup (F-22)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-brain-corrupt-"));
+    const p = brainJsonPath(repo);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "{not json");
+    const store = new BrainStore(repo);
+    expect((await store.snapshot()).entries).toHaveLength(0);
+    expect(readdirSync(dirname(p)).some((f) => f.includes(".corrupt."))).toBe(true);
+    // Usable again after recovery.
+    await store.add(entry());
+    expect((await store.snapshot()).entries).toHaveLength(1);
   });
 });

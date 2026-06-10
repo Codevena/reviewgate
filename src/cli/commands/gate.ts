@@ -8,7 +8,12 @@ import { loadEffectiveConfig } from "../../config/global.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import { StateStore } from "../../core/state-store.ts";
-import { handleReset, handleTrigger, parseHookStdin } from "../../hooks/handlers.ts";
+import {
+  BASE_TS_NO_SCOPING_SENTINEL,
+  handleReset,
+  handleTrigger,
+  parseHookStdin,
+} from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
@@ -278,6 +283,12 @@ export function consumeDeferredFlag(repoRoot: string): void {
           diff_hash: "deferred",
           ts: new Date().toISOString(),
           ...(base ? { base_sha: base } : {}),
+          // F-015: a synthesized flag has no known clean→dirty transition time.
+          // Carry the explicit no-scoping sentinel so a later handleTrigger
+          // PRESERVES it instead of back-dating only 30s from the next edit —
+          // which would silently scope batch-created untracked files OUT of the
+          // re-review while keeping the old base_sha.
+          base_ts: BASE_TS_NO_SCOPING_SENTINEL,
         }),
         { mode: 0o600 },
       );
@@ -421,6 +432,12 @@ async function gatherReviewContext(
             diff_hash: gitInfo.sha.slice(0, 16),
             ts: new Date().toISOString(),
             base_sha: last,
+            // F-015: same no-scoping sentinel as the deferred-flag synthesis —
+            // this path deliberately reviews ALL untracked files (reviewBaseTs
+            // stays null below), and the persisted flag must keep that scope on
+            // re-review instead of letting the next trigger back-date a fresh
+            // batch-start beside the old base_sha.
+            base_ts: BASE_TS_NO_SCOPING_SENTINEL,
           }),
           { mode: 0o600 },
         );

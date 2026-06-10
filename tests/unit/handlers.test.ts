@@ -1,9 +1,9 @@
 // tests/unit/handlers.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleTrigger } from "../../src/hooks/handlers.ts";
+import { BASE_TS_NO_SCOPING_SENTINEL, handleTrigger } from "../../src/hooks/handlers.ts";
 import { dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
 
 describe("handleTrigger", () => {
@@ -48,5 +48,45 @@ describe("handleTrigger", () => {
     };
     expect(second.base_ts).toBe(first.base_ts); // batch-start, unchanged
     expect(second.ts).not.toBe(first.ts); // last-edit time advanced
+  });
+
+  it("never pairs an inherited base_sha with a fresh base_ts (synthesized/legacy flag — F-015)", async () => {
+    // A SYNTHESIZED dirty.flag (deferred-flag consumption / HEAD-advanced path)
+    // carries a base_sha but no base_ts. The next trigger is NOT the batch's
+    // clean→dirty transition, so stamping `now − 30s` would scope batch-created
+    // untracked files OUT of the re-review while keeping the old (possibly
+    // hours-old) base_sha. It must fall back to the no-scoping sentinel instead.
+    const repo = mkdtempSync(join(tmpdir(), "rg-trigger-synth-"));
+    mkdirSync(reviewgateDir(repo), { recursive: true });
+    const baseSha = "a".repeat(40);
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({ diff_hash: "deferred", ts: new Date().toISOString(), base_sha: baseSha }),
+    );
+    await handleTrigger({ repoRoot: repo, hookStdinRaw: '{"edit":1}' });
+    const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as {
+      base_sha?: string;
+      base_ts?: string;
+    };
+    expect(flag.base_sha).toBe(baseSha); // review base preserved
+    expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL); // NOT now−30s
+  });
+
+  it("preserves a synthesized flag's explicit no-scoping sentinel across later edits", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-trigger-sentinel-"));
+    mkdirSync(reviewgateDir(repo), { recursive: true });
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({
+        diff_hash: "deferred",
+        ts: new Date().toISOString(),
+        base_sha: "b".repeat(40),
+        base_ts: BASE_TS_NO_SCOPING_SENTINEL,
+      }),
+    );
+    await handleTrigger({ repoRoot: repo, hookStdinRaw: '{"edit":1}' });
+    await handleTrigger({ repoRoot: repo, hookStdinRaw: '{"edit":2}' });
+    const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as { base_ts?: string };
+    expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL);
   });
 });

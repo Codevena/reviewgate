@@ -70,6 +70,52 @@ describe("aggregate", () => {
     expect(r.verdict).not.toBe("FAIL");
   });
 
+  it("singleton non-security CRITICAL on a multi-reviewer panel → SOFT-PASS, never PASS (F-06)", () => {
+    // A non-failing CRITICAL must at least feed the SOFT-PASS tier — otherwise it
+    // is strictly weaker than a lone WARN (severity inversion) and softPassPolicy
+    // never sees it.
+    const r = aggregate({
+      findings: [fin({ severity: "CRITICAL", category: "architecture" })],
+      reviewersTotal: 3,
+    });
+    expect(r.verdict).toBe("SOFT-PASS");
+    expect(r.counts).toEqual({ critical: 1, warn: 0, info: 0 });
+  });
+
+  it("multi-category masking warning survives the 2000-char details cap (F-08)", () => {
+    // Representative's details are already AT the schema cap; the merged-categories
+    // warning (and the other reviewers' wordings) must still survive — truncate the
+    // original, never the note (same invariant as the demote paths).
+    const a = fin({
+      severity: "CRITICAL",
+      category: "security",
+      file: "cap.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "hardcoded-secret",
+      message: "hardcoded secret committed in source",
+      details: "x".repeat(2000),
+      reviewer: { provider: "codex", model: "m", persona: "security" },
+    });
+    const b = fin({
+      severity: "WARN",
+      category: "quality",
+      file: "cap.ts",
+      line_start: 5,
+      line_end: 5,
+      rule_id: "exposed-credential",
+      message: "hardcoded secret in source code",
+      reviewer: { provider: "gemini", model: "m", persona: "architecture" },
+    });
+    const r = aggregate({ findings: [a, b], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1);
+    // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+    const merged = r.dedupedFindings[0]!;
+    expect(merged.details.length).toBeLessThanOrEqual(2000);
+    expect(merged.details).toContain("merges concerns categorized as");
+    expect(merged.details).toContain("Also reported by other reviewers");
+  });
+
   it("signatures dedupe and accumulate confirmed_by", () => {
     const f1 = fin({
       id: "F-1",

@@ -1,5 +1,6 @@
 // tests/unit/review-output.test.ts
 import { describe, expect, it } from "bun:test";
+import { computeSignature } from "../../src/diff/signature.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -103,6 +104,56 @@ describe("review-output", () => {
     expect(findings[0]?.reviewer.provider).toBe("gemini");
     expect(findings[0]?.signature).toMatch(/^[0-9a-f]{64}$/);
     expect(findings[0]?.consensus).toBe("singleton");
+  });
+
+  it("missing/empty rule_id never leaks severity into the signature (F-07)", () => {
+    // Signatures key cross-iteration dedup/stuck-detection/FP-ledger matching, so a
+    // severity flip on a rule_id-less finding must NOT change its identity. The
+    // signature ingredient must be the SAME normalized value persisted as rule_id
+    // ("unspecified") — keeping it in agreement with the orchestrator's
+    // applySymbolSignatures recompute from f.rule_id.
+    const ctx = { provider: "claude-code", model: "m", persona: "security", workingDir: "/repo" };
+    const base = {
+      category: "quality",
+      file: "a.ts",
+      line: 10,
+      message: "m",
+      details: "d",
+      confidence: 0.8,
+    };
+    const mk = (over: Record<string, unknown>) =>
+      mapReviewOutputToFindings(
+        { verdict: "FAIL", findings: [{ ...base, ...over } as never] },
+        ctx,
+      )[0];
+    const critNoRule = mk({ severity: "CRITICAL", rule_id: null });
+    const warnNoRule = mk({ severity: "WARN", rule_id: null });
+    const warnEmptyRule = mk({ severity: "WARN", rule_id: "" });
+    // Severity flip / null-vs-empty must not change identity.
+    expect(critNoRule?.signature).toBe(warnNoRule?.signature as string);
+    expect(warnEmptyRule?.signature).toBe(warnNoRule?.signature as string);
+    // The signature ingredient equals the persisted rule_id ("unspecified").
+    expect(critNoRule?.rule_id).toBe("unspecified");
+    expect(critNoRule?.signature).toBe(
+      computeSignature({
+        file: "a.ts",
+        ruleId: "unspecified",
+        category: "quality",
+        lineStart: 10,
+        lineEnd: 10,
+      }),
+    );
+    // Stability guard: a finding WITH a rule_id keeps its existing signature shape.
+    const withRule = mk({ severity: "WARN", rule_id: "insecure-compare" });
+    expect(withRule?.signature).toBe(
+      computeSignature({
+        file: "a.ts",
+        ruleId: "insecure-compare",
+        category: "quality",
+        lineStart: 10,
+        lineEnd: 10,
+      }),
+    );
   });
 
   it("drops findings whose severity/category fail the Finding schema", () => {

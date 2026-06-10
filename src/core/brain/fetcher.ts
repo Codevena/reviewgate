@@ -75,6 +75,29 @@ const DEFAULT_MAX_BYTES = 2_000_000;
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_MAX_REDIRECTS = 0;
 
+/**
+ * F-24: header pinnedFetch uses to carry the upstream's RAW status code on the
+ * Response it constructs. The Web `Response` constructor throws a RangeError
+ * for any status outside 101 / [200, 599], so out-of-range or missing upstream
+ * statuses (CDN 999, a custom 700, a malformed status line) are clamped to 502
+ * via `clampResponseStatus` — this header preserves the real value so the
+ * downstream `http <status>` deny message stays truthful. pinnedFetch ALWAYS
+ * sets it (overwriting any same-named upstream header), so it cannot be
+ * spoofed on the pinned path.
+ */
+export const RAW_STATUS_HEADER = "x-reviewgate-raw-status";
+
+/**
+ * Clamp a raw upstream status code to one the Web `Response` constructor
+ * accepts (101 or [200, 599]); anything else — including a missing statusCode —
+ * maps to 502 Bad Gateway. Returns the raw value as a string for
+ * RAW_STATUS_HEADER (missing → "0", matching the old `?? 0` intent). (F-24)
+ */
+export function clampResponseStatus(raw: number | undefined): { status: number; raw: string } {
+  const valid = typeof raw === "number" && (raw === 101 || (raw >= 200 && raw <= 599));
+  return { status: valid ? raw : 502, raw: String(raw ?? 0) };
+}
+
 // ---------------------------------------------------------------------------
 // IP blocking
 // ---------------------------------------------------------------------------
@@ -319,6 +342,7 @@ export function pinnedFetch(
       settled = true;
       reject(e);
     };
+    const toError = (e: unknown) => (e instanceof Error ? e : new Error(String(e)));
     const closedErr = () => new Error(init.signal.aborted ? "aborted" : "connection closed");
     const req = lib.request(
       url,
@@ -328,23 +352,44 @@ export function pinnedFetch(
         const chunks: Buffer[] = [];
         let total = 0;
         const finish = () => {
-          const headers = new Headers();
-          for (const [k, v] of Object.entries(res.headers)) {
-            if (typeof v === "string") headers.set(k, v);
-            else if (Array.isArray(v)) headers.set(k, v.join(", "));
+          // F-24: this runs inside res 'data'/'end' event-handler callbacks — a
+          // later event-loop tick, OUTSIDE the promise executor. Any throw here
+          // (the Response constructor's RangeError on a non-standard status,
+          // Headers rejecting a malformed header, …) would surface as an
+          // uncaughtException that bypasses safeFetch's try/catch and crashes
+          // the process. Convert EVERY failure to a promise rejection instead.
+          try {
+            const headers = new Headers();
+            for (const [k, v] of Object.entries(res.headers)) {
+              if (typeof v === "string") headers.set(k, v);
+              else if (Array.isArray(v)) headers.set(k, v.join(", "));
+            }
+            // `Response` only accepts 101 / [200,599]; clamp anything else to
+            // 502 and carry the truthful raw status in RAW_STATUS_HEADER for
+            // the downstream `http <status>` deny message. Always set → an
+            // upstream sending its own copy of the header cannot spoof it.
+            const { status, raw } = clampResponseStatus(res.statusCode);
+            headers.set(RAW_STATUS_HEADER, raw);
+            ok(new Response(Buffer.concat(chunks), { status, headers }));
+          } catch (err) {
+            fail(toError(err));
           }
-          ok(new Response(Buffer.concat(chunks), { status: res.statusCode ?? 0, headers }));
         };
         res.on("data", (c: Buffer) => {
           if (settled) return;
-          total += c.length;
-          chunks.push(c);
-          if (total > init.maxBytes) {
-            // Past the cap: stop buffering and resolve now with a body just over
-            // the limit (destroy() won't emit 'end', so resolve here). Downstream's
-            // byte-length check then denies "body too large".
-            res.destroy();
-            finish();
+          // Same uncaughtException class as finish(): guard the whole handler.
+          try {
+            total += c.length;
+            chunks.push(c);
+            if (total > init.maxBytes) {
+              // Past the cap: stop buffering and resolve now with a body just over
+              // the limit (destroy() won't emit 'end', so resolve here). Downstream's
+              // byte-length check then denies "body too large".
+              res.destroy();
+              finish();
+            }
+          } catch (err) {
+            fail(toError(err));
           }
         });
         res.on("end", finish);
@@ -364,7 +409,15 @@ export function pinnedFetch(
     req.on("close", () => {
       if (!responded) fail(closedErr());
     });
-    const onAbort = () => req.destroy(new Error("aborted"));
+    const onAbort = () => {
+      // Runs as an 'abort' event listener (later tick) — a throw from destroy()
+      // would also escape as uncaughtException; reject instead (F-24 class).
+      try {
+        req.destroy(new Error("aborted"));
+      } catch (err) {
+        fail(toError(err));
+      }
+    };
     if (init.signal.aborted) onAbort();
     else init.signal.addEventListener("abort", onAbort, { once: true });
     req.end();
@@ -478,7 +531,11 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
         continue; // loop re-resolves DNS + IP-checks the new host.
       }
 
-      if (!resp.ok) return deny(`http ${resp.status}`);
+      // F-24: pinnedFetch clamps out-of-range upstream statuses to 502 so the
+      // Response can be constructed at all; the truthful raw code travels in
+      // RAW_STATUS_HEADER (always overwritten by pinnedFetch — not spoofable),
+      // so the deny reason reports what the upstream actually sent.
+      if (!resp.ok) return deny(`http ${resp.headers.get(RAW_STATUS_HEADER) ?? resp.status}`);
 
       // Gate 7a — content-type allowlist.
       const ct = (resp.headers.get("content-type") ?? "").split(";")[0]?.trim() ?? "";

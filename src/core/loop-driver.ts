@@ -1,5 +1,5 @@
 // src/core/loop-driver.ts
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
 import { POST_ABORT_SETTLE_MS_DEFAULT } from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
@@ -540,6 +540,62 @@ function formatErrorBreakdown(summary: RunSummary): string {
 export class LoopDriver {
   constructor(private readonly i: LoopInput) {}
 
+  // The dirty.flag as read ONCE at run start — the batch this gate run actually
+  // reviewed. Used by unlinkDirtyFlagIfUnchanged for compare-and-delete (F-005).
+  private capturedFlag: DirtyFlag | null = null;
+
+  // Compare-and-delete for dirty.flag (F-005/F-016). The PostToolUse trigger is
+  // async and NOT serialized by the gate lock, so during the multi-minute panel a
+  // parallel session's edit (or a laggard async trigger) can atomically REWRITE
+  // the flag with a batch this review never saw. Unconditionally unlinking would
+  // silently drop that batch: the other session's next stop sees no flag + an
+  // unchanged HEAD (stopHasNothingToReview) → allow_stop → unreviewed code ships.
+  // handleTrigger stamps a fresh `ts` + `diff_hash` on every rewrite, so we only
+  // delete when the on-disk flag still matches what this run captured at start;
+  // a newer flag is restored so the next stop reviews it. The compare is done on
+  // a PRIVATE copy taken off the public path via atomic rename FIRST (the flock
+  // reclaimIfDead pattern), so there is no read→unlink window in which a newer
+  // flag could be destroyed. The residual races are both benign over-review:
+  // restoring a mid-review flag may clobber an even-newer one written during the
+  // reap (older ts/base only WIDENS the next review's scope), and a trigger that
+  // fires while the path is briefly empty re-captures a fresh base for the
+  // post-review batch. An unparseable private copy is deleted (old behavior —
+  // nothing newer to preserve).
+  private unlinkDirtyFlagIfUnchanged(): void {
+    const flagPath = dirtyFlagPath(this.i.repoRoot);
+    const reapPath = `${flagPath}.reap.${process.pid}`;
+    try {
+      renameSync(flagPath, reapPath);
+    } catch {
+      return; // no flag on the public path — nothing to delete
+    }
+    let reaped: DirtyFlag | null = null;
+    try {
+      reaped = JSON.parse(readFileSync(reapPath, "utf8")) as DirtyFlag;
+    } catch {
+      /* unparseable → treated as nothing-newer; deleted below */
+    }
+    const captured = this.capturedFlag;
+    if (
+      reaped !== null &&
+      captured !== null &&
+      (reaped.ts !== captured.ts || reaped.diff_hash !== captured.diff_hash)
+    ) {
+      // Rewritten mid-review → put it back; the next stop reviews the newer batch.
+      try {
+        renameSync(reapPath, flagPath);
+      } catch {
+        /* restore failed (path vanished?) — the private copy below is best effort */
+      }
+      return;
+    }
+    try {
+      unlinkSync(reapPath);
+    } catch {
+      /* noop */
+    }
+  }
+
   async run(): Promise<LoopDecision> {
     // NOTE: we deliberately do NOT short-circuit on stop_hook_active here. Real
     // Claude Code marks every stop inside a hook-forced continuation as
@@ -551,6 +607,7 @@ export class LoopDriver {
     // bounded below by escalating once a forced continuation leaves findings
     // unaddressed.
     const flag = readDirtyFlag(this.i.repoRoot);
+    this.capturedFlag = flag;
     let state = await this.i.state.load();
 
     // No dirty.flag since last PASS → nothing to review.
@@ -646,6 +703,20 @@ export class LoopDriver {
       new ProposalStore(this.i.repoRoot, state.session_id).clear();
       state = await this.i.state.load();
     }
+
+    // Fold the prior iteration's decisions into the learn loops (FP-ledger +
+    // reputation) BEFORE the cost-cap / max-iterations / stuck-signatures
+    // escalation preconditions below: each of them early-returns via
+    // escalateAndDecide WITHOUT reaching the iteration>0 block further down, and
+    // the loss would be permanent — the post-escalation re-arm (above, next dirty
+    // turn) resets iteration to 0 and clearDecisions() the file before any later
+    // absorb could read it. The stuck-signatures case is the most likely real hit:
+    // identical finding sets two iters in a row typically coincide with the agent
+    // having just written rejections (incl. reviewer_was_wrong) for the final
+    // round. absorbPriorDecisions is idempotent per (session, cycle, iter) and a
+    // no-op at iteration < 1, so the single hoisted call here is safe; it remains
+    // the ONLY call site (a second call later in this run would double-count).
+    await this.absorbPriorDecisions(state);
 
     // Escalation precondition: cost cap reached (apikey/openrouter mode only;
     // OAuth mode cost is 0 so this never fires there).
@@ -796,14 +867,10 @@ export class LoopDriver {
     if (state.iteration > 0) {
       const requiredIds = previousFindingIds(this.i.repoRoot);
 
-      // Fold decisions INTO the learn loops FIRST — before ANY early-return in
-      // this block (the decisions-unaddressed escalation below AND the
-      // reviewer-fp-streak escalation further down). If the agent rejected SOME
-      // findings with reviewer_was_wrong before leaving others unaddressed, that
-      // valid FP/reputation signal must be consumed even when we then escalate.
-      // absorbPriorDecisions is idempotent (FP-ledger keys run_id on the iter;
-      // reputation on its eid), so a single hoisted call is safe.
-      await this.absorbPriorDecisions(state);
+      // (absorbPriorDecisions was hoisted ABOVE the cost-cap / max-iterations /
+      // stuck-signatures preconditions — see the call before them in run(). It
+      // already consumed this iteration's decisions, so do NOT call it again
+      // here: a second call in the same run would double-count.)
 
       // Per-cycle suppression (2b) + claimed-fixed tracking (§4.3): fold the PRIOR
       // iteration's reviewer_was_wrong rejections AND accepted/action:"fixed"
@@ -885,8 +952,8 @@ export class LoopDriver {
         };
       }
 
-      // (absorbPriorDecisions was hoisted to the TOP of this block so it runs
-      // before the decisions-unaddressed early-return too — see above.)
+      // (absorbPriorDecisions runs before the escalation preconditions at the top
+      // of run(), so it covered the decisions-unaddressed early-return too.)
 
       // Confirmed-FP signal for the PRIOR iteration. computeRejectRate dedups by
       // finding_id + restricts to the real `requiredIds`, so the agent (which authors
@@ -1137,11 +1204,10 @@ export class LoopDriver {
 
     let decision: LoopDecision;
     if (passed) {
-      try {
-        unlinkSync(dirtyFlagPath(this.i.repoRoot));
-      } catch {
-        /* noop */
-      }
+      // Compare-and-delete: only consume the flag this run actually reviewed; a
+      // flag rewritten mid-panel (concurrent session / laggard async trigger)
+      // survives so the next stop reviews the newer batch (F-005/F-016).
+      this.unlinkDirtyFlagIfUnchanged();
       // Cycle closed → wipe this cycle's decisions so stale finding_ids cannot
       // satisfy the next cycle's gate (see clearDecisions). Also drop the F2
       // per-run proposal pool — the curator already saw the final state of it
@@ -1168,6 +1234,10 @@ export class LoopDriver {
       const coverageSuffix = coverage ? ` · ⚠ ${coverage}` : "";
       const isSoft = result.verdict === "SOFT-PASS";
       const warnCount = result.summary.counts.warn;
+      // A non-failing CRITICAL can reach SOFT-PASS (F-006); it must be visible in
+      // the open-gate message, not masked behind a WARN-only count.
+      const criticalCount = result.summary.counts.critical;
+      const softCounts = `${criticalCount > 0 ? `${criticalCount} CRITICAL · ` : ""}${warnCount} WARN`;
       decision =
         this.i.config.loop.acknowledgePass || forceSoftAck
           ? {
@@ -1181,7 +1251,7 @@ export class LoopDriver {
           : {
               kind: "allow_stop",
               reason: isSoft
-                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${warnCount} WARN${coverageSuffix}. Non-blocking — see .reviewgate/pending.md.`
+                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}. Non-blocking — see .reviewgate/pending.md.`
                 : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}. Clear to finish.`,
             };
     } else if (result.verdict === "ERROR") {
@@ -1274,7 +1344,15 @@ export class LoopDriver {
   // from a misconfig ERROR, which still hard-blocks on the ERROR branch above.
   private async handleAllQuotaLocked(state: ReviewgateState): Promise<LoopDecision> {
     await this.i.state.update((cur) =>
-      ReviewgateStateSchema.parse({ ...cur, last_stop_ts: new Date().toISOString() }),
+      ReviewgateStateSchema.parse({
+        ...cur,
+        // The review DID complete (verdict ERROR, all-quota) → the consecutive
+        // incomplete-run streak is broken (schema contract: "Reset to 0 whenever
+        // a review actually completes"). Without this, timeout → quota-defer →
+        // timeout would escalate "2 consecutive runs" across a completed run.
+        incomplete_runs: 0,
+        last_stop_ts: new Date().toISOString(),
+      }),
     );
     const note = this.quotaDegradationNote(new Date()) ?? "";
     return {
@@ -1336,6 +1414,11 @@ export class LoopDriver {
       ReviewgateStateSchema.parse({
         ...cur,
         consecutive_infra_defers: next,
+        // The review DID complete (verdict ERROR, all-infra-failed) → break the
+        // consecutive incomplete-run streak (schema contract; see
+        // handleAllQuotaLocked). A defer must not bridge two non-consecutive
+        // timeouts into a premature review-timeout escalation.
+        incomplete_runs: 0,
         last_stop_ts: new Date().toISOString(),
       }),
     );
@@ -1438,11 +1521,10 @@ export class LoopDriver {
       );
       await this.i.state.update((cur) => ({ ...cur, escalation_announced: true }));
     }
-    try {
-      unlinkSync(dirtyFlagPath(this.i.repoRoot));
-    } catch {
-      /* noop */
-    }
+    // Compare-and-delete (F-005): a flag rewritten mid-review carries a captured
+    // base for the NEW batch; deleting it would make a later trigger re-capture
+    // base as the CURRENT HEAD, silently dropping unreviewed mid-batch commits.
+    this.unlinkDirtyFlagIfUnchanged();
     // Some escalations mean "the REVIEWER is the problem, not the agent's code"
     // (reviewer-fp-streak: the agent kept correctly rejecting a noisy reviewer's
     // findings). Blocking there punishes correct behavior and holds the dev
