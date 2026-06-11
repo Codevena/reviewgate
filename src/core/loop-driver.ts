@@ -679,6 +679,7 @@ export class LoopDriver {
                 // Fresh cycle → drop the cross-iteration confirmed-FP accumulator.
                 cumulative_fp_rejects: 0,
                 fp_counted_through_iter: 0,
+                decisions_emitted_through_iter: 0,
                 cycle_rejected_signatures: [],
                 claimed_fixed_signatures: {},
                 // Bump the reputation cycle sequence so the new cycle's event-ids
@@ -723,6 +724,7 @@ export class LoopDriver {
           incomplete_runs: 0,
           cumulative_fp_rejects: 0,
           fp_counted_through_iter: 0,
+          decisions_emitted_through_iter: 0,
           cycle_rejected_signatures: [],
           claimed_fixed_signatures: {},
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
@@ -981,6 +983,32 @@ export class LoopDriver {
         };
       }
 
+      // Precision metric (telemetry only): emit one decision.applied audit event per
+      // finalized decision of this iteration, ONCE. Advance the per-cycle watermark
+      // in state BEFORE appending → at-most-once: a crash loses at most this iter's
+      // events, never double-counts (so stats counts events without dedup). Fully
+      // best-effort: a failure here must never change the verdict or block the gate.
+      if (state.iteration > state.decisions_emitted_through_iter) {
+        try {
+          await this.i.state.update((cur) => ({
+            ...cur,
+            decisions_emitted_through_iter: Math.max(
+              cur.decisions_emitted_through_iter,
+              state.iteration,
+            ),
+          }));
+          state = await this.i.state.load();
+          await emitDecisionOutcomes(
+            this.i.repoRoot,
+            state.iteration,
+            state.session_id,
+            this.i.audit,
+          );
+        } catch {
+          /* best-effort precision telemetry */
+        }
+      }
+
       // (absorbPriorDecisions runs before the escalation preconditions at the top
       // of run(), so it covered the decisions-unaddressed early-return too.)
 
@@ -1201,6 +1229,7 @@ export class LoopDriver {
         // (the streak builds across the cycle's iterations).
         cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
         fp_counted_through_iter: passed ? 0 : cur.fp_counted_through_iter,
+        decisions_emitted_through_iter: passed ? 0 : cur.decisions_emitted_through_iter,
         fp_rejects_history: passed ? [] : cur.fp_rejects_history,
         // N1: persist THIS diff's per-diff soft cap so the next iteration's escalation
         // precondition can min() it with the config cap. Reset on a clean pass (re-arm).
