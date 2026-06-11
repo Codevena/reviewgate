@@ -1,8 +1,8 @@
 // src/stats/load.ts
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { RunSummarySchema } from "../schemas/audit-event.ts";
-import type { RunSummary } from "../schemas/audit-event.ts";
+import { DecisionOutcomeSchema, RunSummarySchema } from "../schemas/audit-event.ts";
+import type { DecisionOutcome, RunSummary } from "../schemas/audit-event.ts";
 import { auditDir } from "../utils/paths.ts";
 
 export interface LoadedRun {
@@ -15,6 +15,7 @@ export interface LoadedRun {
 export interface AuditWindow {
   runs: LoadedRun[];
   escalationCount: number;
+  decisions: DecisionOutcome[];
 }
 
 const DAY_MS = 86_400_000;
@@ -64,11 +65,12 @@ export function loadAuditWindow(
 ): AuditWindow {
   const dir = auditDir(repoRoot);
   if (!existsSync(dir)) {
-    return { runs: [], escalationCount: 0 };
+    return { runs: [], escalationCount: 0, decisions: [] };
   }
 
   const runs: LoadedRun[] = [];
   const escalations: { ts: string }[] = [];
+  const decisions: { ts: string; outcome: DecisionOutcome }[] = [];
 
   for (const rel of collectFiles(dir, opts.since, opts.until)) {
     const fullPath = join(dir, rel);
@@ -102,6 +104,11 @@ export function loadAuditWindow(
           iter: typeof obj.iter === "number" ? obj.iter : 0,
           summary,
         });
+      } else if (obj.event === "decision.applied" && obj.decision_outcome != null) {
+        const res = DecisionOutcomeSchema.safeParse(obj.decision_outcome);
+        if (res.success) {
+          decisions.push({ ts: typeof obj.ts === "string" ? obj.ts : "", outcome: res.data });
+        }
       }
     }
   }
@@ -122,5 +129,14 @@ export function loadAuditWindow(
       ? filteredEscalations.filter((e) => e.ts >= lowerBound)
       : filteredEscalations;
 
-  return { runs: windowedRuns, escalationCount: escalationsInWindow.length };
+  let filteredDecisions = since != null ? decisions.filter((d) => d.ts >= since) : decisions;
+  if (until != null) filteredDecisions = filteredDecisions.filter((d) => d.ts < until);
+  const decisionsInWindow =
+    lowerBound != null ? filteredDecisions.filter((d) => d.ts >= lowerBound) : filteredDecisions;
+
+  return {
+    runs: windowedRuns,
+    escalationCount: escalationsInWindow.length,
+    decisions: decisionsInWindow.map((d) => d.outcome),
+  };
 }
