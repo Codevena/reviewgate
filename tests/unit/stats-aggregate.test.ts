@@ -1,5 +1,6 @@
 // tests/unit/stats-aggregate.test.ts
 import { describe, expect, it } from "bun:test";
+import type { DecisionOutcome } from "../../src/schemas/audit-event.ts";
 import { aggregate } from "../../src/stats/aggregate.ts";
 import type { BrainEntryLite, FpEntryLite } from "../../src/stats/aggregate.ts";
 import type { LoadedRun } from "../../src/stats/load.ts";
@@ -486,5 +487,47 @@ describe("aggregate", () => {
       expect(report.cost.total).toBe(0);
       expect(report.topSignatures).toEqual([]);
     });
+  });
+});
+
+describe("precision", () => {
+  const decisions: DecisionOutcome[] = [
+    { finding_id: "F-1", severity: "CRITICAL", bucket: "tp", providers: ["codex"] },
+    {
+      finding_id: "F-2",
+      severity: "CRITICAL",
+      bucket: "fp",
+      reviewer_was_wrong: true,
+      providers: ["codex", "gemini"],
+    },
+    { finding_id: "F-3", severity: "WARN", bucket: "declined", providers: ["gemini"] },
+    { finding_id: "F-4", severity: "INFO", bucket: "tp", providers: ["codex"] },
+  ];
+
+  it("computes overall precision = tp/(tp+fp), counting events (no finding_id dedup)", () => {
+    const r = aggregate(allRuns, 1, fpEntries, brainEntries, decisions);
+    expect(r.precision.overall.tp).toBe(2);
+    expect(r.precision.overall.fp).toBe(1);
+    expect(r.precision.overall.declined).toBe(1);
+    expect(r.precision.overall.precision).toBeCloseTo(2 / 3);
+  });
+
+  it("splits by severity (INFO excluded)", () => {
+    const r = aggregate(allRuns, 1, fpEntries, brainEntries, decisions);
+    expect(r.precision.bySeverity.CRITICAL).toEqual({ tp: 1, fp: 1, declined: 0, precision: 0.5 });
+    expect(r.precision.bySeverity.WARN.declined).toBe(1);
+    expect("INFO" in r.precision.bySeverity).toBe(false);
+  });
+
+  it("attributes a multi-provider fp to each provider", () => {
+    const r = aggregate(allRuns, 1, fpEntries, brainEntries, decisions);
+    expect(r.precision.byProvider.gemini?.fp).toBe(1);
+    expect(r.precision.byProvider.codex?.tp).toBe(2);
+    expect(r.precision.byProvider.codex?.fp).toBe(1);
+  });
+
+  it("returns null precision when there are no tp/fp", () => {
+    const r = aggregate(allRuns, 1, fpEntries, brainEntries, []);
+    expect(r.precision.overall.precision).toBeNull();
   });
 });

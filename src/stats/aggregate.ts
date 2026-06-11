@@ -1,4 +1,5 @@
 // src/stats/aggregate.ts
+import type { DecisionOutcome } from "../schemas/audit-event.ts";
 import type { LoadedRun } from "./load.ts";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,18 @@ export interface StatsReport {
     perProviderConfirmed: Record<string, number>;
   };
   brain: { byStatus: Record<string, number>; byType: Record<string, number> };
+  precision: {
+    overall: PrecisionCell;
+    bySeverity: { CRITICAL: PrecisionCell; WARN: PrecisionCell };
+    byProvider: Record<string, PrecisionCell>;
+  };
+}
+
+export interface PrecisionCell {
+  tp: number;
+  fp: number;
+  declined: number;
+  precision: number | null; // tp/(tp+fp); null when tp+fp === 0
 }
 
 export interface FpEntryLite {
@@ -53,6 +66,7 @@ export function aggregate(
   escalationCount: number,
   fpEntries: FpEntryLite[],
   brainEntries: BrainEntryLite[],
+  decisions: DecisionOutcome[] = [],
 ): StatsReport {
   // ------------------------------------------------------------------
   // window
@@ -190,6 +204,33 @@ export function aggregate(
   }
 
   // ------------------------------------------------------------------
+  // Precision — count events directly; NEVER dedup by finding_id (it is
+  // iteration-local and reused across cycles). Each event is one decision.
+  // ------------------------------------------------------------------
+  const newCell = (): PrecisionCell => ({ tp: 0, fp: 0, declined: 0, precision: null });
+  const finalize = (c: PrecisionCell): void => {
+    c.precision = c.tp + c.fp === 0 ? null : c.tp / (c.tp + c.fp);
+  };
+  const overall = newCell();
+  const bySeverity = { CRITICAL: newCell(), WARN: newCell() };
+  const byProvider: Record<string, PrecisionCell> = {};
+  for (const d of decisions) {
+    overall[d.bucket] += 1;
+    if (d.severity === "CRITICAL") bySeverity.CRITICAL[d.bucket] += 1;
+    else if (d.severity === "WARN") bySeverity.WARN[d.bucket] += 1;
+    // INFO is non-blocking → excluded from precision.
+    for (const p of d.providers) {
+      if (byProvider[p] === undefined) byProvider[p] = newCell();
+      // biome-ignore lint/style/noNonNullAssertion: just set above
+      byProvider[p]![d.bucket] += 1;
+    }
+  }
+  finalize(overall);
+  finalize(bySeverity.CRITICAL);
+  finalize(bySeverity.WARN);
+  for (const cell of Object.values(byProvider)) finalize(cell);
+
+  // ------------------------------------------------------------------
   // Assemble
   // ------------------------------------------------------------------
   return {
@@ -218,5 +259,6 @@ export function aggregate(
       byStatus,
       byType,
     },
+    precision: { overall, bySeverity, byProvider },
   };
 }

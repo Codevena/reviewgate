@@ -46,6 +46,14 @@ const FULL_REPORT: StatsReport = {
     byStatus: { active: 4, revoked: 1 },
     byType: { convention: 3, pattern: 2 },
   },
+  precision: {
+    overall: { tp: 0, fp: 0, declined: 0, precision: null },
+    bySeverity: {
+      CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+      WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+    },
+    byProvider: {},
+  },
 };
 
 const EMPTY_REPORT: StatsReport = {
@@ -62,6 +70,14 @@ const EMPTY_REPORT: StatsReport = {
   topSignatures: [],
   fpLedger: { active: 0, sticky: 0, candidate: 0, perProviderConfirmed: {} },
   brain: { byStatus: {}, byType: {} },
+  precision: {
+    overall: { tp: 0, fp: 0, declined: 0, precision: null },
+    bySeverity: {
+      CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+      WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+    },
+    byProvider: {},
+  },
 };
 
 // ---------------------------------------------------------------------------
