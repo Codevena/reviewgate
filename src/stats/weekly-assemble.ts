@@ -73,11 +73,23 @@ export async function assembleWeeklyReport(
     type: e.type,
   }));
 
-  const current = aggregate(curWindow.runs, curWindow.escalationCount, fpLite, brainLite);
+  const current = aggregate(
+    curWindow.runs,
+    curWindow.escalationCount,
+    fpLite,
+    brainLite,
+    curWindow.decisions,
+  );
 
   const hasPriorHistory = prevWindow.runs.length > 0 || hasPartitionBefore(repoRoot, bounds.since);
   const previous = hasPriorHistory
-    ? aggregate(prevWindow.runs, prevWindow.escalationCount, fpLite, brainLite)
+    ? aggregate(
+        prevWindow.runs,
+        prevWindow.escalationCount,
+        fpLite,
+        brainLite,
+        prevWindow.decisions,
+      )
     : null;
 
   const generatedAt = opts.now.toISOString();
