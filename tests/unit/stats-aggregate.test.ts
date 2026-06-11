@@ -504,12 +504,12 @@ describe("precision", () => {
     { finding_id: "F-4", severity: "INFO", bucket: "tp", providers: ["codex"] },
   ];
 
-  it("computes overall precision = tp/(tp+fp), counting events (no finding_id dedup)", () => {
+  it("computes overall precision = tp/(tp+fp), counting events (no finding_id dedup; INFO excluded)", () => {
     const r = aggregate(allRuns, 1, fpEntries, brainEntries, decisions);
-    expect(r.precision.overall.tp).toBe(2);
+    expect(r.precision.overall.tp).toBe(1);
     expect(r.precision.overall.fp).toBe(1);
     expect(r.precision.overall.declined).toBe(1);
-    expect(r.precision.overall.precision).toBeCloseTo(2 / 3);
+    expect(r.precision.overall.precision).toBeCloseTo(0.5);
   });
 
   it("splits by severity (INFO excluded)", () => {
@@ -519,10 +519,11 @@ describe("precision", () => {
     expect("INFO" in r.precision.bySeverity).toBe(false);
   });
 
-  it("attributes a multi-provider fp to each provider", () => {
+  it("attributes a multi-provider fp to each provider (INFO excluded from byProvider)", () => {
     const r = aggregate(allRuns, 1, fpEntries, brainEntries, decisions);
     expect(r.precision.byProvider.gemini?.fp).toBe(1);
-    expect(r.precision.byProvider.codex?.tp).toBe(2);
+    // F-4 (INFO tp, codex) is excluded; only F-1 (CRITICAL tp, codex) remains
+    expect(r.precision.byProvider.codex?.tp).toBe(1);
     expect(r.precision.byProvider.codex?.fp).toBe(1);
   });
 

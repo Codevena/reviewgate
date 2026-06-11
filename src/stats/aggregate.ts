@@ -215,10 +215,12 @@ export function aggregate(
   const bySeverity = { CRITICAL: newCell(), WARN: newCell() };
   const byProvider: Record<string, PrecisionCell> = {};
   for (const d of decisions) {
+    // Precision is about BLOCKING findings only — INFO is non-blocking and
+    // requires no decision, so it is excluded from EVERY precision tally.
+    if (d.severity === "INFO") continue;
     overall[d.bucket] += 1;
     if (d.severity === "CRITICAL") bySeverity.CRITICAL[d.bucket] += 1;
-    else if (d.severity === "WARN") bySeverity.WARN[d.bucket] += 1;
-    // INFO is non-blocking → excluded from precision.
+    else bySeverity.WARN[d.bucket] += 1;
     for (const p of d.providers) {
       if (byProvider[p] === undefined) byProvider[p] = newCell();
       // biome-ignore lint/style/noNonNullAssertion: just set above
