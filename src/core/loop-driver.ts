@@ -21,6 +21,7 @@ import {
 } from "../utils/paths.ts";
 import type { Adjudication } from "./adjudications.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
+import { buildDecisionOutcome } from "./decision-outcome.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -312,6 +313,34 @@ function lastDecisionsById(repoRoot: string, iter: number): Map<string, Decision
     out.set(res.data.finding_id, res.data); // last line for an id wins
   }
   return out;
+}
+
+// Precision telemetry: emit one durable `decision.applied` audit event per finalized
+// decision of `iter`, joining decisions/<iter>.jsonl (last-wins) against the current
+// pending.json findings for severity + providers. Decisions whose finding_id is not in
+// the current pending.json are skipped (can't attribute). Best-effort by contract: the
+// SOLE caller wraps it so a failure never affects the verdict. Exactly-once across stops
+// is the caller's responsibility (decisions_emitted_through_iter watermark).
+export async function emitDecisionOutcomes(
+  repoRoot: string,
+  iter: number,
+  sessionId: string,
+  audit: Pick<AuditLogger, "append">,
+): Promise<void> {
+  const decisions = lastDecisionsById(repoRoot, iter);
+  if (decisions.size === 0) return;
+  const findingsById = new Map(readPendingReport(repoRoot).findings.map((f) => [f.id, f]));
+  for (const [id, d] of decisions) {
+    const f = findingsById.get(id);
+    if (f === undefined) continue;
+    await audit.append({
+      event: "decision.applied",
+      run_id: sessionId,
+      iter,
+      trigger: "stop-hook",
+      decision_outcome: buildDecisionOutcome(d, f),
+    });
+  }
 }
 
 // The last iteration's findings + severity counts, read from pending.json. The
