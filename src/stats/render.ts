@@ -168,6 +168,10 @@ export function renderStats(report: StatsReport): string {
       out += row(`    ${provider}`, cellLine(cell), 20);
     }
   }
+  const decisionTotal = precision.overall.tp + precision.overall.fp + precision.overall.declined;
+  if (decisionTotal === 0) {
+    out += "  (no decisions recorded yet — precision accrues as findings are decided)\n";
+  }
   out += "  (precision = real / (real + FP), windowed by decision time — a rate, not per-run)\n";
 
   return out;

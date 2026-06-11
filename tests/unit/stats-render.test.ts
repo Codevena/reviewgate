@@ -210,5 +210,6 @@ describe("renderStats precision", () => {
       }),
     );
     expect(out).toContain("—");
+    expect(out).toContain("no decisions recorded yet");
   });
 });
