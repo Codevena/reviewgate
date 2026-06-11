@@ -86,6 +86,74 @@ rename to src/bar.ts
     expect(f.files[0]?.removed).toBe(1);
   });
 
+  it("counts removed content lines starting with '--' (SQL comments render as '--- …') — F-14", () => {
+    // Deleting a commented-out SQL block: every removed line `-- foo` renders in
+    // the diff as `--- foo`. The old header-prefix filter excluded them all →
+    // added=0/removed=0 → file filtered → empty facts → triage skip → unreviewed.
+    const f = computeDiffFacts(`diff --git a/db/cleanup.sql b/db/cleanup.sql
+--- a/db/cleanup.sql
++++ b/db/cleanup.sql
+@@ -1,3 +1,1 @@
+--- drop the old table
+--- (kept for reference)
+ SELECT 1;
+`);
+    expect(f.files.length).toBe(1);
+    expect(f.files[0]?.removed).toBe(2);
+    expect(f.sensitivityTags).toContain("sql");
+  });
+
+  it("counts added content lines starting with '++' (`++i;` renders as '+++i;') — F-14", () => {
+    const f = computeDiffFacts(`diff --git a/src/loop.c b/src/loop.c
+--- a/src/loop.c
++++ b/src/loop.c
+@@ -1,2 +1,3 @@
+ int i = 0;
++++i;
+---i;
+`);
+    expect(f.files[0]?.added).toBe(1);
+    expect(f.files[0]?.removed).toBe(1);
+  });
+
+  it("still excludes the '---'/'+++' FILE HEADERS from the counts (F-14 state tracking)", () => {
+    const f = computeDiffFacts(DIFF);
+    const ts = f.files.find((x) => x.path === "src/auth/token.ts");
+    // Header lines `--- a/…` / `+++ b/…` sit BEFORE the @@ and are never counted.
+    expect(ts?.added).toBe(2);
+    expect(ts?.removed).toBe(1);
+  });
+
+  it("flags a lockfile-only diff as lockfileOnly (F-17)", () => {
+    const f = computeDiffFacts(`diff --git a/package-lock.json b/package-lock.json
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1 @@
+-  "version": "1.0.0",
++  "version": "1.0.1",
+`);
+    expect(f.files[0]?.kind).toBe("lockfile");
+    expect(f.lockfileOnly).toBe(true);
+  });
+
+  it("does NOT flag a mixed lockfile+code diff as lockfileOnly (F-17)", () => {
+    const f = computeDiffFacts(`diff --git a/bun.lock b/bun.lock
+--- a/bun.lock
++++ b/bun.lock
+@@ -1 +1 @@
+-x
++y
+diff --git a/src/x.ts b/src/x.ts
+--- a/src/x.ts
++++ b/src/x.ts
+@@ -1 +1 @@
+-a
++b
+`);
+    expect(f.lockfileOnly).toBe(false);
+    expect(computeDiffFacts("").lockfileOnly).toBe(false); // empty diff is not lockfile-only
+  });
+
   it("classifies a markdown file under tests/ as tests, not docs", () => {
     const f = computeDiffFacts(`diff --git a/tests/fixtures/expected.md b/tests/fixtures/expected.md
 --- a/tests/fixtures/expected.md

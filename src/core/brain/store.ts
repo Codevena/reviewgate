@@ -12,6 +12,18 @@ const BrainIndexSchema = z.object({
 });
 export type BrainSnapshot = z.infer<typeof BrainIndexSchema>;
 
+// Best-effort: preserve a corrupt file for forensics before recovering empty
+// (mirrors StateStore.loadOrRecover). Rename failures (e.g. a concurrent reader
+// already moved it) are swallowed — recovery must never fail on the backup.
+function backupCorrupt(p: string): void {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    renameSync(p, `${p}.corrupt.${ts}`);
+  } catch {
+    // best-effort only
+  }
+}
+
 function renderMd(snap: BrainSnapshot): string {
   const lines = ["# Reviewgate Brain", ""];
   for (const e of snap.entries) {
@@ -37,9 +49,27 @@ export class BrainStore {
   async snapshot(): Promise<BrainSnapshot> {
     const p = brainJsonPath(this.repoRoot);
     if (!existsSync(p)) return { schema: "reviewgate.brain.v1", entries: [] };
+    let raw: string;
     try {
-      return BrainIndexSchema.parse(JSON.parse(readFileSync(p, "utf8")));
+      raw = readFileSync(p, "utf8");
+    } catch (err) {
+      // existsSync→read TOCTOU: deleted in between is a genuine "no file".
+      if ((err as NodeJS.ErrnoException).code === "ENOENT")
+        return { schema: "reviewgate.brain.v1", entries: [] };
+      // F-22: a transient I/O error (EACCES / EBUSY / AV lock / EIO / network FS)
+      // on an EXISTING brain.json must NOT be misread as "empty" — inside
+      // mutate() that empty snapshot would be atomically persisted, silently
+      // wiping every promoted brain entry. Rethrow so the mutate fails loudly
+      // (the curator path is best-effort and never blocks the verdict).
+      // Mirrors StateStore.loadOrRecover.
+      throw err;
+    }
+    try {
+      return BrainIndexSchema.parse(JSON.parse(raw));
     } catch {
+      // Genuine content corruption only (SyntaxError / ZodError). Preserve the
+      // corrupt file for forensics (best-effort), then recover empty.
+      backupCorrupt(p);
       return { schema: "reviewgate.brain.v1", entries: [] };
     }
   }

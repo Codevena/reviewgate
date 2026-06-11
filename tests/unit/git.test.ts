@@ -137,6 +137,54 @@ describe("collectDiff", () => {
     expect(full.toLowerCase()).not.toContain("incomplete");
   });
 
+  it("includes an untracked file whose name starts with '-' (F-13: `--` separator)", async () => {
+    // Without `--` before the paths, git parses `-foo.ts` as an OPTION → exit 129,
+    // empty stdout, and the file silently vanishes from the review.
+    const dir = repo();
+    writeFileSync(join(dir, "-foo.ts"), "export const DASHED = 1;\n");
+    const diff = await collectDiff(dir);
+    expect(diff).toContain("DASHED");
+    expect(diff.toLowerCase()).not.toContain("incomplete"); // captured cleanly, not just marked
+  });
+
+  it("marks the diff INCOMPLETE when an untracked file cannot be diffed (F-13: exit ≥2)", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return; // root ignores 000
+    const { chmodSync } = require("node:fs") as typeof import("node:fs");
+    const dir = repo();
+    writeFileSync(join(dir, "locked.txt"), "secret\n");
+    chmodSync(join(dir, "locked.txt"), 0o000); // `git diff --no-index` → "cannot hash", exit 128
+    const diff = await collectDiff(dir);
+    chmodSync(join(dir, "locked.txt"), 0o644); // restore for tmpdir cleanup
+    expect(diff.toLowerCase()).toContain("incomplete"); // dropped file is surfaced, not silent
+  });
+
+  it("marks the diff INCOMPLETE when the tracked diff fails with HEAD present (F-12 fail-closed)", async () => {
+    const { rmSync } = require("node:fs") as typeof import("node:fs");
+    const { execSync } = require("node:child_process") as typeof import("node:child_process");
+    const dir = repo();
+    writeFileSync(join(dir, "existing.ts"), "export const a = 2;\n"); // tracked change
+    // Corrupt the object store: remove the blob `git diff HEAD` must read to
+    // produce the tracked diff → git exits 128 with empty stdout. Without the
+    // fail-closed marker this is indistinguishable from a genuinely empty diff
+    // (→ triage-skip PASS, change ships unreviewed).
+    const blob = execSync("git rev-parse HEAD:existing.ts", { cwd: dir }).toString().trim();
+    rmSync(join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)), { force: true });
+    const diff = await collectDiff(dir);
+    expect(diff.toLowerCase()).toContain("incomplete");
+  });
+
+  it("does NOT mark a fresh repo (unborn HEAD) as incomplete (F-12 benign case)", async () => {
+    // Before the first commit `git diff HEAD` fails by design; the whole working
+    // tree is untracked and fully covered by the --no-index synthesis. Marking it
+    // incomplete would defer-loop every pre-first-commit review.
+    const dir = mkdtempSync(join(tmpdir(), "rg-git-unborn-"));
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    writeFileSync(join(dir, "first.ts"), "export const FIRST = 1;\n");
+    const diff = await collectDiff(dir);
+    expect(diff).toContain("FIRST");
+    expect(diff.toLowerCase()).not.toContain("incomplete");
+  });
+
   it("falls back to HEAD when the base SHA is invalid/stale", async () => {
     const dir = repo();
     writeFileSync(join(dir, "existing.ts"), "export const a = 9;\n"); // working-tree change

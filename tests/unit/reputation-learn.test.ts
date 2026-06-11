@@ -366,4 +366,60 @@ describe("learnReputationFromDecisions", () => {
     expect(snap.reviewers["codex:security"]?.wrong).toHaveLength(1);
     expect(snap.reviewers["codex:architecture"]?.wrong).toHaveLength(1);
   });
+
+  it("books only the FINAL disposition for a superseded decision — never both 'wrong' and 'correct' (F-20)", async () => {
+    // The append-only decisions file may carry a superseding disposition for a
+    // finding within one iteration (rejected → later accepted). The eid includes
+    // the verdict, so dedup alone does NOT collapse the contradictory pair; the
+    // learner must fold to last-wins so the agent's retracted rejection never
+    // permanently debits the reviewer it ultimately validated.
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-supersede-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "gemini", persona: "security" },
+            confirmed_by: ["gemini:security"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "rejected",
+          reason: "false positive verified by grep xx",
+          reviewer_was_wrong: true,
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-001",
+          verdict: "accepted",
+          action: "fixed",
+        }),
+      ].join("\n")}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const entry = (await store.snapshot()).reviewers["gemini:security"];
+    expect(entry?.wrong ?? []).toHaveLength(0); // retracted rejection never debits
+    expect(entry?.correct).toHaveLength(1); // only the final (accepted) disposition books
+  });
 });

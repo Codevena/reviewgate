@@ -196,6 +196,24 @@ export async function collectDiff(
     incomplete = incomplete || tracked.timedOut || tracked.truncated;
   }
   let out = tracked.status === 0 ? tracked.stdout : "";
+  // F-12 fail-closed: a tracked diff that FAILED (non-zero/null exit — corrupt
+  // index/objects, git unable to run) yields out="" above, which is otherwise
+  // indistinguishable from a genuinely empty diff — triage would skip-PASS and the
+  // change would ship unreviewed. Mark it incomplete UNLESS the failure is the one
+  // expected benign case: an unborn HEAD (fresh repo before the first commit),
+  // where the tracked side is legitimately empty and the untracked synthesis below
+  // covers the whole working tree. The unborn-HEAD probe must itself come from a
+  // HEALTHY repo (`--is-inside-work-tree` succeeds) — if git is broken outright,
+  // both probes fail and we still mark incomplete (fail closed).
+  if (tracked.status !== 0 && !incomplete) {
+    const head = await git(repoRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+    if (head.status === 0) {
+      incomplete = true; // HEAD exists → the diff failure is a real collection failure
+    } else {
+      const probe = await git(repoRoot, ["rev-parse", "--is-inside-work-tree"]);
+      if (probe.status !== 0 || probe.stdout.trim() !== "true") incomplete = true;
+    }
+  }
 
   // `-z`: NUL-terminated, UNQUOTED paths. Without it, git C-quotes any non-ASCII
   // path (core.quotePath defaults to true) — e.g. `"\351\233\242.ts"` — and the
@@ -244,12 +262,19 @@ export async function collectDiff(
       // --no-index exits 1 when differences exist (always true for a new file) —
       // that is expected, not an error; read stdout regardless. Cap each call to
       // the remaining budget so the whole loop stays within untrackedBudgetMs.
+      // `--` before the paths: an untracked filename starting with `-` (listable
+      // by ls-files) would otherwise be parsed by git as an OPTION → exit ≥2,
+      // empty stdout, file silently dropped from the review (F-13).
       const d = await git(
         repoRoot,
-        ["diff", "--no-color", "--no-index", "/dev/null", file],
+        ["diff", "--no-color", "--no-index", "--", "/dev/null", file],
         Math.min(GIT_TIMEOUT_MS, remaining),
       );
-      if (d.timedOut || d.truncated) incomplete = true;
+      // Exit 0 (identical/empty file) and 1 (differences) are the expected
+      // outcomes. ANY other status (≥2 option mis-parse, 128 EACCES/cannot-hash,
+      // null spawn failure) means this file was NOT captured — mark the diff
+      // incomplete instead of letting the file vanish silently (F-13).
+      if (d.timedOut || d.truncated || (d.status !== 0 && d.status !== 1)) incomplete = true;
       if (d.stdout) out += `${out.length > 0 && !out.endsWith("\n") ? "\n" : ""}${d.stdout}`;
     }
   }
@@ -273,17 +298,27 @@ export async function collectChangedFileContents(
   // Match collectDiff's base so committed-mid-batch files also get full-file
   // context (for undefined-symbol FP suppression), not just working-tree changes.
   const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
-  const nameArgs = (ref: string) => ["diff", "--name-only", ref, "--", ".", ...EXCLUDE_PATHSPEC];
+  // `-z`: NUL-terminated, UNQUOTED paths — same fix as the untracked side below
+  // (F-18). Without it, a tracked non-ASCII path is C-quoted (`"\351\233\242.ts"`),
+  // the quoted token fails lstat, and the file silently loses its full-file
+  // FP-suppression context while still appearing in the reviewed diff.
+  const nameArgs = (ref: string) => [
+    "diff",
+    "--name-only",
+    "-z",
+    ref,
+    "--",
+    ".",
+    ...EXCLUDE_PATHSPEC,
+  ];
   const names = new Set<string>();
   let tracked = await git(repoRoot, nameArgs(base), GIT_TIMEOUT_MS, signal);
   if (tracked.status !== 0 && base !== "HEAD")
     tracked = await git(repoRoot, nameArgs("HEAD"), GIT_TIMEOUT_MS, signal);
   if (tracked.status === 0) {
-    for (const f of tracked.stdout
-      .split("\n")
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0))
-      names.add(f);
+    // NUL-delimited: paths are exact between terminators — no per-token trim
+    // (trimming could corrupt a filename with leading/trailing whitespace).
+    for (const f of tracked.stdout.split("\0").filter((s) => s.length > 0)) names.add(f);
   }
   // `-z`: NUL-terminated, UNQUOTED paths (see collectDiff) — otherwise non-ASCII
   // untracked files are C-quoted and silently dropped from the full-file context.

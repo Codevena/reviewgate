@@ -236,18 +236,26 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       typeof cf.line_end === "number" && Number.isFinite(cf.line_end)
         ? Math.max(line, Math.trunc(cf.line_end))
         : line;
+    // Normalize rule_id ONCE and use the SAME value as the signature ingredient
+    // and the persisted field. Never derive the signature from severity: a
+    // severity flip on a rule_id-less finding must not change its identity
+    // (signatures key cross-iteration dedup, cycleRejected suppression, the §4.3
+    // claimedFixed pin, FP-ledger rematching and stuck-detection), and the
+    // orchestrator's applySymbolSignatures recomputes from f.rule_id — so both
+    // sides must hash the same ingredient (F-07).
+    const ruleId = cf.rule_id && cf.rule_id.length > 0 ? cf.rule_id : "unspecified";
     const candidate = {
       id: `F-${String(n).padStart(3, "0")}`,
       signature: computeSignature({
         file,
-        ruleId: cf.rule_id ?? cf.severity,
+        ruleId,
         category: cf.category as FindingCategory,
         lineStart: line,
         lineEnd,
       }),
       severity: cf.severity,
       category: cf.category,
-      rule_id: cf.rule_id && cf.rule_id.length > 0 ? cf.rule_id : "unspecified",
+      rule_id: ruleId,
       file,
       line_start: line,
       line_end: lineEnd,

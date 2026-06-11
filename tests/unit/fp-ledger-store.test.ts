@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { FpLedgerStore } from "../../src/core/fp-ledger/store.ts";
+import { knownFpPath } from "../../src/utils/paths.ts";
 
 const sig = "sig-1";
 const meta = { rule_id: "magic-number", category: "quality" as const, file: "a.ts", symbol: "foo" };
@@ -200,12 +201,12 @@ describe("FpLedgerStore lifecycle", () => {
 
   it("recordReject does NOT demote an active entry just because old rejects aged out of the window (F-020)", async () => {
     // F-020: recompute() recalculates stage from scratch on every recordReject
-    // using only in-window rejects. That created a SECOND, much faster
-    // active->candidate demotion path that bypassed decayPass's documented
-    // 180-day rule: as soon as old rejects age out of the 60d window, a fresh
-    // lone reject would flip the entry back to candidate. recordReject must
-    // never DEMOTE an already-earned stage — demotion belongs solely to
-    // decayPass's 180d-since-last_seen rule. (Promotion is still allowed.)
+    // using only in-window rejects. That created a demotion path triggered as a
+    // side effect of an INCOMING reject: as soon as old rejects age out of the
+    // 60d window, a fresh lone reject would flip the entry back to candidate.
+    // recordReject must never DEMOTE an already-earned stage — demotion belongs
+    // solely to the window recompute in decayPass/activeSnapshot (F-23).
+    // (Promotion is still allowed.)
     const s = new FpLedgerStore(repo());
     // Earn 'active': 3 rejects, 2 providers, within 60d.
     await s.recordReject(
@@ -229,7 +230,7 @@ describe("FpLedgerStore lifecycle", () => {
     expect((await s.snapshot()).entries[0]?.stage).toBe("active");
     // 61d later only 1 of those rejects is still in the 60d window; a NEW lone
     // reject from one provider arrives. Naive recompute would see win60.length < 3
-    // and reset to candidate — but decayPass (180d rule) has NOT run.
+    // and reset to candidate — but decayPass has NOT run.
     await s.recordReject(
       sig,
       meta,
@@ -274,5 +275,65 @@ describe("FpLedgerStore lifecycle", () => {
     // decayPass must recompute it back to candidate (no longer meets the 60d floor).
     await s.decayPass("2026-03-12T00:00:00Z");
     expect((await s.snapshot()).entries[0]?.stage).toBe("candidate");
+  });
+});
+
+describe("FpLedgerStore read robustness (F-22)", () => {
+  it("rethrows a transient read I/O error instead of wiping the ledger inside mutate", async () => {
+    // A raw fs error (EACCES here, standing in for EBUSY/AV-lock/EIO/network FS)
+    // on an EXISTING ledger must fail the mutate loudly — never be misread as
+    // "empty" and then atomically persisted as a near-empty index (data loss).
+    const r = repo();
+    const s = new FpLedgerStore(r);
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2026-06-10T00:00:00Z",
+    );
+    const p = knownFpPath(r);
+    chmodSync(p, 0o000); // transient read failure: file exists but is unreadable
+    await expect(
+      s.recordReject(
+        sig,
+        meta,
+        { run_id: "r2", provider: "gemini", reason: "x" },
+        "2026-06-10T01:00:00Z",
+      ),
+    ).rejects.toThrow();
+    // The accumulated ledger survives untouched (no wipe persisted, no .corrupt rename).
+    chmodSync(p, 0o600);
+    const snap = await s.snapshot();
+    expect(snap.entries).toHaveLength(1);
+    expect(snap.entries[0]?.rejects).toHaveLength(1);
+  });
+
+  it("recovers from genuine content corruption with a .corrupt backup", async () => {
+    const r = repo();
+    const p = knownFpPath(r);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, "{not json"); // SyntaxError → corruption, recoverable
+    const s = new FpLedgerStore(r);
+    expect((await s.snapshot()).entries).toHaveLength(0);
+    const backups = readdirSync(dirname(p)).filter((f) => f.includes(".corrupt."));
+    expect(backups.length).toBe(1);
+    // The store is usable again after recovery.
+    await s.recordReject(
+      sig,
+      meta,
+      { run_id: "r1", provider: "codex", reason: "x" },
+      "2026-06-10T00:00:00Z",
+    );
+    expect((await s.snapshot()).entries).toHaveLength(1);
+  });
+
+  it("treats a schema mismatch (ZodError) as corruption, not as an I/O failure", async () => {
+    const r = repo();
+    const p = knownFpPath(r);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({ schema: "wrong.schema", entries: "nope" }));
+    const s = new FpLedgerStore(r);
+    expect((await s.snapshot()).entries).toHaveLength(0);
+    expect(readdirSync(dirname(p)).some((f) => f.includes(".corrupt."))).toBe(true);
   });
 });

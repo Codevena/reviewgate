@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { DecisionEntrySchema } from "../../schemas/decision.ts";
 import type { Finding } from "../../schemas/finding.ts";
 import { decisionsPath, pendingJsonPath } from "../../utils/paths.ts";
+import { foldLastDecisions } from "./decision-fold.ts";
 import type { FpLedgerStore } from "./store.ts";
 
 export async function learnFromDecisions(input: {
@@ -34,17 +34,12 @@ export async function learnFromDecisions(input: {
   }
   const byId = new Map(findings.map((f) => [f.id, f]));
 
-  for (const line of readFileSync(dp, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (!res.success) continue;
-    const d = res.data;
+  // F-19: fold to the LAST valid decision per finding_id first. The append-only
+  // file may carry a superseding disposition (rejected → later accepted within
+  // the same iteration); learning from the retracted rejection would march the
+  // signature toward active/sticky and eventually demote a finding the agent's
+  // FINAL intent accepted as real.
+  for (const d of foldLastDecisions(readFileSync(dp, "utf8")).values()) {
     if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
     const f = byId.get(d.finding_id);
     if (!f) continue;

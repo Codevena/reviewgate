@@ -319,16 +319,24 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const consensus = computeConsensus(reviewers.length, input.reviewersTotal);
     // Preserve every reviewer's wording so nothing is lost when findings merge.
     const others = messages.filter((m) => m !== sample.message);
-    let details =
+    let suffix =
       others.length > 0
-        ? `${sample.details}\n\nAlso reported by other reviewers:\n${others.map((m) => `- ${m}`).join("\n")}`
-        : sample.details;
+        ? `\n\nAlso reported by other reviewers:\n${others.map((m) => `- ${m}`).join("\n")}`
+        : "";
     // Masking guard: when a region merge spans MULTIPLE categories, this single
     // finding (one decision) covers more than one concern — surface that so the
     // agent's accept/reject addresses all of them, not just the representative.
     if (categories.size > 1) {
-      details += `\n\n⚠ This finding merges concerns categorized as: ${[...categories].sort().join(", ")}. Your decision dispositions ALL of them — make sure each is addressed before accepting/rejecting.`;
+      suffix += `\n\n⚠ This finding merges concerns categorized as: ${[...categories].sort().join(", ")}. Your decision dispositions ALL of them — make sure each is addressed before accepting/rejecting.`;
     }
+    // Keep details within FindingSchema's 2000-char cap by truncating the
+    // ORIGINAL, never the appended notes (the demote() invariant) — appending
+    // before slicing dropped the masking warning exactly on long-detail
+    // findings (F-08). A pathological over-cap suffix keeps its TAIL so the
+    // masking warning (appended last) always survives.
+    const details = suffix
+      ? `${sample.details.slice(0, Math.max(0, 2000 - suffix.length))}${suffix.slice(-2000)}`
+      : sample.details;
     deduped.push({
       ...sample,
       details: details.slice(0, 2000),
@@ -626,7 +634,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
 
   let verdict: Verdict;
   if (fail || warnFail) verdict = "FAIL";
-  else if (warn > 0) verdict = "SOFT-PASS";
+  // Keep the ladder monotone in severity: a CRITICAL that did not trip a `fail`
+  // branch above (singleton non-security/correctness on a multi-reviewer panel)
+  // must at least SOFT-PASS — never rank weaker than a lone WARN. Otherwise it
+  // bypasses softPassPolicy entirely and the gate opens silently (F-06).
+  else if (warn > 0 || critical > 0) verdict = "SOFT-PASS";
   else verdict = "PASS";
 
   // Reassign unique sequential ids across the merged panel. Each reviewer

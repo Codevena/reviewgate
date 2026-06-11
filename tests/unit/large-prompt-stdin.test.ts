@@ -12,7 +12,9 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeAdapter } from "../../src/providers/claude.ts";
+import { CodexAdapter } from "../../src/providers/codex.ts";
 import { GeminiAdapter } from "../../src/providers/gemini.ts";
+import { OpenCodeAdapter } from "../../src/providers/opencode.ts";
 
 /** Write a temp executable bash script and return its path. */
 function makeFakeBin(dir: string, name: string, script: string): string {
@@ -169,6 +171,209 @@ describe("GeminiAdapter (agy) — large prompt delivery (E2BIG regression)", () 
 
     const text = await adapter.complete(`${MARKER}\n${"x".repeat(HUGE)}`, {
       model: "gemini",
+      auth: "oauth",
+    });
+
+    expect(text).toContain("COMPLETE_OK");
+    expect(readFileSync(stdinCapture, "utf8")).toContain(MARKER);
+    expect(readFileSync(argvFile, "utf8")).not.toContain(MARKER);
+  });
+});
+
+// A fake `codex exec` that records argv + stdin, writes a valid review JSON to
+// the --output-last-message file, and emits a turn.completed usage event —
+// mirroring the real CLI being driven with `codex exec -` (positional `-` means
+// "read the prompt from stdin").
+function makeStdinCodexBin(
+  dir: string,
+  argvFile: string,
+  stdinFile: string,
+  lastMsg: string,
+): string {
+  return makeFakeBin(
+    dir,
+    "fake-codex-stdin.sh",
+    `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat > "${stdinFile}"
+[ -n "$LAST_MSG" ] && printf '%s' '${lastMsg}' > "$LAST_MSG"
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"cached_input_tokens":0}}'
+exit 0
+`,
+  );
+}
+
+describe("CodexAdapter — large prompt delivery (E2BIG regression, F-09)", () => {
+  it("review() delivers a prompt larger than ARG_MAX via stdin (`codex exec -`), not argv", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-cdx-big-"));
+    const argvFile = join(dir, "argv.txt");
+    const stdinCapture = join(dir, "stdin.txt");
+    const bin = makeStdinCodexBin(dir, argvFile, stdinCapture, '{"verdict":"PASS","findings":[]}');
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, `${MARKER}\n${"x".repeat(HUGE)}`);
+    const adapter = new CodexAdapter({ binPath: bin });
+
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 60_000 },
+      reviewerId: "codex-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+
+    expect(res.status).toBe("ok");
+    // The prompt arrived via stdin...
+    expect(readFileSync(stdinCapture, "utf8")).toContain(MARKER);
+    // ...and argv carries only the `-` stdin sentinel, never the prompt body.
+    const argv = readFileSync(argvFile, "utf8");
+    expect(argv).not.toContain(MARKER);
+    expect(argv.split("\n").filter(Boolean).pop()).toBe("-");
+  });
+
+  it("complete() (judge/critic) delivers a >ARG_MAX prompt via stdin too", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-cdx-cbig-"));
+    const argvFile = join(dir, "argv.txt");
+    const stdinCapture = join(dir, "stdin.txt");
+    const bin = makeStdinCodexBin(dir, argvFile, stdinCapture, "COMPLETE_OK");
+    const adapter = new CodexAdapter({ binPath: bin });
+
+    const text = await adapter.complete(`${MARKER}\n${"x".repeat(HUGE)}`, {
+      model: "gpt-5.5",
+      auth: "oauth",
+    });
+
+    expect(text).toContain("COMPLETE_OK");
+    expect(readFileSync(stdinCapture, "utf8")).toContain(MARKER);
+    const argv = readFileSync(argvFile, "utf8");
+    expect(argv).not.toContain(MARKER);
+    expect(argv.split("\n").filter(Boolean).pop()).toBe("-");
+  });
+
+  it("review() retry attempt re-delivers the (augmented) prompt via stdin, not argv", async () => {
+    // Attempt 1 exits 0 with an unparseable last-message → retriable error;
+    // attempt 2 must carry prompt + retry directive over stdin as well.
+    const dir = mkdtempSync(join(tmpdir(), "rg-cdx-retry-big-"));
+    const argvFile = join(dir, "argv.txt");
+    const stdinCapture = join(dir, "stdin.txt");
+    const bin = makeFakeBin(
+      dir,
+      "fake-codex-retry-stdin.sh",
+      `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+LAST_MSG=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --output-last-message) LAST_MSG="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cat > "${stdinCapture}"
+case "$LAST_MSG" in
+  *last.2.md) [ -n "$LAST_MSG" ] && printf '%s' '{"verdict":"PASS","findings":[]}' > "$LAST_MSG" ;;
+  *) [ -n "$LAST_MSG" ] && printf '%s' 'not json {{{' > "$LAST_MSG" ;;
+esac
+printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1,"cached_input_tokens":0}}'
+exit 0
+`,
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, `${MARKER}\n${"x".repeat(HUGE)}`);
+    const adapter = new CodexAdapter({ binPath: bin });
+
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 60_000 },
+      reviewerId: "codex-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+
+    expect(res.status).toBe("ok");
+    // Last (= retry) invocation: prompt + retry directive over stdin, argv clean.
+    const stdinText = readFileSync(stdinCapture, "utf8");
+    expect(stdinText).toContain(MARKER);
+    expect(stdinText).toContain("Output ONLY the single JSON object");
+    expect(readFileSync(argvFile, "utf8")).not.toContain(MARKER);
+  });
+});
+
+// A fake `opencode run` that records argv + stdin then prints a bare review JSON
+// to stdout — mirroring the real CLI reading the message from stdin when no
+// positional message argument is given (live-verified, opencode 1.17.0).
+function makeStdinOpencodeBin(
+  dir: string,
+  argvFile: string,
+  stdinFile: string,
+  stdout: string,
+): string {
+  return makeFakeBin(
+    dir,
+    "fake-opencode-stdin.sh",
+    `#!/usr/bin/env bash
+set -u
+: > "${argvFile}"
+for a in "$@"; do printf '%s\\n' "$a" >> "${argvFile}"; done
+cat > "${stdinFile}"
+printf '%s\\n' '${stdout}'
+exit 0
+`,
+  );
+}
+
+describe("OpenCodeAdapter — large prompt delivery (E2BIG regression, F-10)", () => {
+  it("review() delivers a prompt larger than ARG_MAX via stdin, not argv", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-big-"));
+    const argvFile = join(dir, "argv.txt");
+    const stdinCapture = join(dir, "stdin.txt");
+    const bin = makeStdinOpencodeBin(
+      dir,
+      argvFile,
+      stdinCapture,
+      '{"verdict":"PASS","findings":[]}',
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, `${MARKER}\n${"x".repeat(HUGE)}`);
+    const adapter = new OpenCodeAdapter({ binPath: bin });
+
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "default", timeoutMs: 60_000 },
+      reviewerId: "opencode-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+
+    expect(res.status).toBe("ok");
+    expect(readFileSync(stdinCapture, "utf8")).toContain(MARKER);
+    expect(readFileSync(argvFile, "utf8")).not.toContain(MARKER);
+  });
+
+  it("complete() delivers a >ARG_MAX prompt via stdin too", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-cbig-"));
+    const argvFile = join(dir, "argv.txt");
+    const stdinCapture = join(dir, "stdin.txt");
+    const bin = makeStdinOpencodeBin(dir, argvFile, stdinCapture, "COMPLETE_OK");
+    const adapter = new OpenCodeAdapter({ binPath: bin });
+
+    const text = await adapter.complete(`${MARKER}\n${"x".repeat(HUGE)}`, {
+      model: "default",
       auth: "oauth",
     });
 

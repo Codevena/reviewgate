@@ -28,6 +28,18 @@ export interface ReputationConfig {
 const PRUNE_HALF_LIVES = 6;
 const DEFAULT_HALF_LIFE_DAYS = 45; // mirrors the phases.reputation schema default
 
+// Best-effort: preserve a corrupt file for forensics before recovering empty
+// (mirrors StateStore.loadOrRecover). Rename failures (e.g. a concurrent reader
+// already moved it) are swallowed — recovery must never fail on the backup.
+function backupCorrupt(p: string): void {
+  try {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    renameSync(p, `${p}.corrupt.${ts}`);
+  } catch {
+    // best-effort only
+  }
+}
+
 function pruneBucket(
   events: { ts: string; eid: string }[],
   now: Date,
@@ -49,9 +61,26 @@ export class ReputationStore {
   async snapshot(): Promise<Reputation> {
     const p = reputationJsonPath(this.repoRoot);
     if (!existsSync(p)) return emptyReputation();
+    let raw: string;
     try {
-      return ReputationSchema.parse(JSON.parse(readFileSync(p, "utf8")));
+      raw = readFileSync(p, "utf8");
+    } catch (err) {
+      // existsSync→read TOCTOU: deleted in between is a genuine "no file".
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyReputation();
+      // F-22: a transient I/O error (EACCES / EBUSY / AV lock / EIO / network FS)
+      // on an EXISTING reputation.json must NOT be misread as "empty" — inside
+      // record() that empty snapshot would be atomically persisted, silently
+      // wiping every reviewer's accumulated trust history. Rethrow so the caller
+      // fails loudly (learn/read paths .catch() → "no learning/demote this
+      // round", not data loss). Mirrors StateStore.loadOrRecover.
+      throw err;
+    }
+    try {
+      return ReputationSchema.parse(JSON.parse(raw));
     } catch {
+      // Genuine content corruption only (SyntaxError / ZodError). Preserve the
+      // corrupt file for forensics (best-effort), then recover empty.
+      backupCorrupt(p);
       return emptyReputation();
     }
   }

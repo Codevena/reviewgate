@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { DecisionEntrySchema } from "../../schemas/decision.ts";
 import type { Finding } from "../../schemas/finding.ts";
 import { decisionsPath, pendingJsonPath } from "../../utils/paths.ts";
+import { foldLastDecisions } from "../fp-ledger/decision-fold.ts";
 import type { RecordInput, ReputationStore } from "./store.ts";
 
 export async function learnReputationFromDecisions(input: {
@@ -27,17 +27,15 @@ export async function learnReputationFromDecisions(input: {
   }
   const byId = new Map(findings.map((f) => [f.id, f]));
   const events: RecordInput[] = [];
-  for (const line of readFileSync(dp, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (!res.success) continue;
-    const d = res.data;
+  // F-20: fold to the LAST valid decision per finding_id first. A superseded
+  // rejected→accepted pair would otherwise book BOTH a 'wrong' and a 'correct'
+  // event for the same reviewer (the eid includes the verdict, so the eid dedup
+  // never collapses the contradictory pair) — permanently debiting trust for a
+  // rejection the agent retracted. Last-wins emits exactly one outcome per
+  // (finding, reviewerKey, iter): the agent's final intent. The verdict stays in
+  // the eid for re-stop idempotency; with last-wins only one verdict per finding
+  // per iter is ever emitted within a single absorb.
+  for (const d of foldLastDecisions(readFileSync(dp, "utf8")).values()) {
     const f = byId.get(d.finding_id);
     if (!f) continue;
     let outcome: "correct" | "wrong" | null = null;

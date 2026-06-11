@@ -3,7 +3,9 @@ import { describe, expect, it } from "bun:test";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
+  RAW_STATUS_HEADER,
   type SafeFetchOpts,
+  clampResponseStatus,
   isBlockedIp,
   pinnedFetch,
   pinnedLookup,
@@ -145,6 +147,131 @@ describe("safeFetch — Gate 5: connection is pinned to the checked IP (F-026)",
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F-24: out-of-range / missing upstream status must NOT crash the process.
+// The Web `Response` constructor throws RangeError for any status outside
+// 101/[200,599]; before the fix that throw happened inside res.on("data"/"end")
+// event-handler callbacks — a later event-loop tick — surfacing as an
+// uncaughtException that escaped safeFetch's try/catch entirely (the promise
+// never settled). pinnedFetch must instead clamp the status to 502 and carry
+// the raw value in RAW_STATUS_HEADER so deny messages stay truthful.
+// ---------------------------------------------------------------------------
+describe("pinnedFetch — F-24: non-standard upstream status codes", () => {
+  it("settles (no uncaughtException) on a live server returning status 700, clamped to 502 with the raw status preserved", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(700, { "content-type": "text/plain" });
+      res.end("weird upstream");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      // Before the fix this promise NEVER settled and the RangeError crashed
+      // the process; the test run itself would die or time out.
+      const resp = await pinnedFetch(new URL(`http://127.0.0.1:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: new AbortController().signal,
+        maxBytes: 1000,
+      });
+      expect(resp.status).toBe(502); // constructible clamp
+      expect(resp.ok).toBe(false); // still flows into the deny path
+      expect(resp.headers.get(RAW_STATUS_HEADER)).toBe("700"); // truthful raw status
+      expect(await resp.text()).toBe("weird upstream");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("keeps in-range statuses untouched and still records the raw status header", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("nope");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const resp = await pinnedFetch(new URL(`http://127.0.0.1:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: new AbortController().signal,
+        maxBytes: 1000,
+      });
+      expect(resp.status).toBe(404);
+      expect(resp.headers.get(RAW_STATUS_HEADER)).toBe("404");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("an upstream cannot spoof the raw-status header (pinnedFetch always overwrites it)", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(700, {
+        "content-type": "text/plain",
+        [RAW_STATUS_HEADER]: "200", // lying upstream
+      });
+      res.end("spoof attempt");
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const resp = await pinnedFetch(new URL(`http://127.0.0.1:${port}/`), "127.0.0.1", {
+        headers: {},
+        signal: new AbortController().signal,
+        maxBytes: 1000,
+      });
+      expect(resp.headers.get(RAW_STATUS_HEADER)).toBe("700");
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});
+
+describe("clampResponseStatus — F-24 status clamp (incl. the missing-statusCode edge)", () => {
+  it("clamps out-of-range statuses to 502, preserving the raw value", () => {
+    expect(clampResponseStatus(700)).toEqual({ status: 502, raw: "700" });
+    expect(clampResponseStatus(999)).toEqual({ status: 502, raw: "999" });
+    expect(clampResponseStatus(600)).toEqual({ status: 502, raw: "600" });
+    expect(clampResponseStatus(199)).toEqual({ status: 502, raw: "199" });
+    expect(clampResponseStatus(100)).toEqual({ status: 502, raw: "100" });
+    expect(clampResponseStatus(0)).toEqual({ status: 502, raw: "0" });
+  });
+
+  it("maps a missing statusCode (the old `?? 0` crash) to 502 / raw '0'", () => {
+    expect(clampResponseStatus(undefined)).toEqual({ status: 502, raw: "0" });
+  });
+
+  it("passes constructible statuses through unchanged", () => {
+    expect(clampResponseStatus(101)).toEqual({ status: 101, raw: "101" });
+    expect(clampResponseStatus(200)).toEqual({ status: 200, raw: "200" });
+    expect(clampResponseStatus(302)).toEqual({ status: 302, raw: "302" });
+    expect(clampResponseStatus(404)).toEqual({ status: 404, raw: "404" });
+    expect(clampResponseStatus(599)).toEqual({ status: 599, raw: "599" });
+  });
+});
+
+describe("safeFetch — F-24: deny message reports the truthful raw status", () => {
+  it("uses RAW_STATUS_HEADER for the `http <status>` deny reason when present", async () => {
+    // Mirrors what the real pinnedFetch now produces for an upstream 700.
+    const clamped = (async () =>
+      new Response("weird", {
+        status: 502,
+        headers: { "content-type": "text/plain", [RAW_STATUS_HEADER]: "700" },
+      })) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", opts({ fetchImpl: clamped }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("http 700");
+  });
+
+  it("falls back to resp.status when the raw-status header is absent", async () => {
+    const plain404 = (async () =>
+      new Response("nope", {
+        status: 404,
+        headers: { "content-type": "text/plain" },
+      })) as unknown as typeof fetch;
+    const r = await safeFetch("https://docs.example.com/x", opts({ fetchImpl: plain404 }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("http 404");
   });
 });
 

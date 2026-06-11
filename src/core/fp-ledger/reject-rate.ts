@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
-import { DecisionEntrySchema } from "../../schemas/decision.ts";
 import { decisionsPath } from "../../utils/paths.ts";
+import { foldLastDecisions } from "./decision-fold.ts";
 
 export interface RejectRate {
   total: number;
@@ -38,24 +38,19 @@ export function computeRejectRate(
   const p = decisionsPath(repoRoot, iter);
   if (allowed.size === 0 || !existsSync(p)) return EMPTY;
 
-  const seen = new Set<string>();
+  // F-03: fold to the LAST valid decision per finding_id (the decisions-file
+  // contract everywhere else — see loop-driver's lastDecisionsById), then count
+  // each real finding once from its FINAL disposition. The anti-padding
+  // guarantees are unchanged: still at most one count per real (allowed) id, and
+  // the agent gains nothing from line order it could not get from a single line.
+  // A retracted rejection (rejected → later accepted) must NOT inflate the
+  // reject-rate-high / reviewer-fp-streak escalation counters.
   let total = 0;
   let wrongRejects = 0;
-  for (const line of readFileSync(p, "utf8").split("\n")) {
-    if (!line.trim()) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const res = DecisionEntrySchema.safeParse(parsed);
-    if (!res.success) continue;
-    const id = res.data.finding_id;
-    if (!allowed.has(id) || seen.has(id)) continue; // real findings only, once each
-    seen.add(id);
+  for (const [id, d] of foldLastDecisions(readFileSync(p, "utf8"))) {
+    if (!allowed.has(id)) continue; // real findings only, once each (Map = unique ids)
     total++;
-    if (res.data.verdict === "rejected" && res.data.reviewer_was_wrong === true) wrongRejects++;
+    if (d.verdict === "rejected" && d.reviewer_was_wrong === true) wrongRejects++;
   }
   return { total, wrongRejects, rate: total === 0 ? 0 : wrongRejects / total };
 }

@@ -170,7 +170,10 @@ exit 0
     const di = argv.indexOf("--disable");
     expect(di).toBeGreaterThanOrEqual(0);
     expect(argv[di + 1]).toBe("shell_tool");
-    expect(argv.filter((x) => x.length > 0).pop()).toBe("judge this");
+    // F-09: the prompt is delivered via stdin (`codex exec -`), never argv —
+    // the trailing positional is the `-` stdin sentinel, not the prompt text.
+    expect(argv.filter((x) => x.length > 0).pop()).toBe("-");
+    expect(argv).not.toContain("judge this");
   });
 
   it("forwards a sandbox profile into the spawn (argv begins with sandbox-exec on macOS)", async () => {
