@@ -1,5 +1,6 @@
 // src/schemas/audit-event.ts
 import { z } from "zod";
+import { Severity } from "./finding.ts";
 
 export const EventType = z.enum([
   "session.start",
@@ -99,6 +100,17 @@ export const RunSummarySchema = z.object({
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type ProviderStat = z.infer<typeof ProviderStatSchema>;
 
+export const DecisionOutcomeSchema = z
+  .object({
+    finding_id: z.string(), // iteration-local, for debugging — NOT a count/dedup key
+    severity: Severity, // uppercase CRITICAL | WARN | INFO
+    bucket: z.enum(["tp", "fp", "declined"]),
+    reviewer_was_wrong: z.boolean().optional(),
+    providers: z.array(z.string()), // normalized, de-duped base provider ids
+  })
+  .strict();
+export type DecisionOutcome = z.infer<typeof DecisionOutcomeSchema>;
+
 export const AuditEventSchema = z.object({
   schema: z.literal("reviewgate.audit.v1"),
   ts: z.string(),
@@ -111,6 +123,7 @@ export const AuditEventSchema = z.object({
   gen_ai: GenAi.optional(),
   egress: Egress.optional(),
   run_summary: RunSummarySchema.optional(),
+  decision_outcome: DecisionOutcomeSchema.optional(),
   prompt_sha256: z.string().optional(),
   response_sha256: z.string().optional(),
   prompt_ref: z.string().optional(),

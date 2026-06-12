@@ -41,6 +41,12 @@ export async function runStats(input: RunStatsInput): Promise<string> {
     rejects: e.rejects.map((r) => ({ provider: r.provider })),
   }));
   const brainEntries = brainSnap.entries.map((e) => ({ status: e.status, type: e.type }));
-  const report = aggregate(window.runs, window.escalationCount, fpEntries, brainEntries);
+  const report = aggregate(
+    window.runs,
+    window.escalationCount,
+    fpEntries,
+    brainEntries,
+    window.decisions,
+  );
   return input.json === true ? JSON.stringify(report, null, 2) : renderStats(report);
 }

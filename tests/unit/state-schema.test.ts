@@ -1,6 +1,19 @@
 import { describe, expect, it } from "bun:test";
 import { ReviewgateStateSchema, initialState } from "../../src/schemas/state.ts";
 
+describe("decisions_emitted_through_iter", () => {
+  it("defaults to 0 for back-compat state.json", () => {
+    const base = initialState("sess");
+    const { decisions_emitted_through_iter, ...withoutField } = base;
+    const parsed = ReviewgateStateSchema.parse(withoutField);
+    expect(parsed.decisions_emitted_through_iter).toBe(0);
+  });
+
+  it("is present in initialState", () => {
+    expect(initialState("sess").decisions_emitted_through_iter).toBe(0);
+  });
+});
+
 describe("ReviewgateStateSchema back-compat", () => {
   it("defaults fp_rejects_history to [] for state written before the field existed", () => {
     // a minimal pre-existing state object WITHOUT fp_rejects_history

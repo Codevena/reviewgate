@@ -5,6 +5,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStats } from "../../src/cli/commands/stats.ts";
 
+function seedRepoWithRun(): string {
+  const root = mkdtempSync(join(tmpdir(), "rg-stats-cmd-e2e-"));
+  const now = new Date().toISOString();
+  const d = new Date(now);
+  const y = String(d.getUTCFullYear());
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const dir = join(root, ".reviewgate", "audit", y, m, day);
+  mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({
+    schema: "reviewgate.audit.v1",
+    event: "run.complete",
+    ts: now,
+    run_id: "s1",
+    iter: 1,
+    trigger: "stop-hook",
+    run_summary: {
+      verdict: "PASS",
+      source: "panel",
+      counts: { critical: 0, warn: 0, info: 0 },
+      cost_usd: 0.01,
+      duration_ms: 50,
+      demoted: 0,
+      signatures: [],
+      providers: [],
+    },
+  });
+  writeFileSync(join(dir, "120000.jsonl"), `${line}\n`, { flag: "a" });
+  return root;
+}
+
 function seedRepo(): string {
   return mkdtempSync(join(tmpdir(), "rg-stats-cmd-"));
 }
@@ -73,4 +104,28 @@ describe("runStats --since input handling", () => {
     const out = await runStats({ repoRoot: root, since: sinceIso });
     expect(out).not.toMatch(/no review history yet/i);
   });
+});
+
+it("surfaces precision from decision.applied events end-to-end", async () => {
+  const root = seedRepoWithRun();
+  // write a decision.applied event into the same day partition
+  const ts = new Date().toISOString();
+  const d = new Date(ts);
+  const dir = join(
+    root,
+    ".reviewgate",
+    "audit",
+    String(d.getUTCFullYear()),
+    String(d.getUTCMonth() + 1).padStart(2, "0"),
+    String(d.getUTCDate()).padStart(2, "0"),
+  );
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "120600.jsonl"),
+    `${JSON.stringify({ schema: "reviewgate.audit.v1", event: "decision.applied", ts, run_id: "s1", iter: 1, trigger: "stop-hook", decision_outcome: { finding_id: "F-1", severity: "CRITICAL", bucket: "tp", providers: ["codex"] } })}\n`,
+  );
+  const out = await runStats({ repoRoot: root });
+  expect(out).toContain("Precision");
+  // precision section should show 1 real / 0 FP (overall tp=1, precision=100%)
+  expect(out).toContain("1 real");
 });

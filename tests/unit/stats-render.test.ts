@@ -1,6 +1,6 @@
 // tests/unit/stats-render.test.ts
 import { describe, expect, it } from "bun:test";
-import type { StatsReport } from "../../src/stats/aggregate.ts";
+import type { PrecisionCell, StatsReport } from "../../src/stats/aggregate.ts";
 import { renderStats } from "../../src/stats/render.ts";
 
 // ---------------------------------------------------------------------------
@@ -46,6 +46,14 @@ const FULL_REPORT: StatsReport = {
     byStatus: { active: 4, revoked: 1 },
     byType: { convention: 3, pattern: 2 },
   },
+  precision: {
+    overall: { tp: 0, fp: 0, declined: 0, precision: null },
+    bySeverity: {
+      CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+      WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+    },
+    byProvider: {},
+  },
 };
 
 const EMPTY_REPORT: StatsReport = {
@@ -62,6 +70,14 @@ const EMPTY_REPORT: StatsReport = {
   topSignatures: [],
   fpLedger: { active: 0, sticky: 0, candidate: 0, perProviderConfirmed: {} },
   brain: { byStatus: {}, byType: {} },
+  precision: {
+    overall: { tp: 0, fp: 0, declined: 0, precision: null },
+    bySeverity: {
+      CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+      WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+    },
+    byProvider: {},
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -143,5 +159,57 @@ describe("renderStats", () => {
       expect(out).not.toContain("Verdicts");
       expect(out).not.toContain("Reviewers");
     });
+  });
+});
+
+function reportWith(precision: StatsReport["precision"]): StatsReport {
+  return {
+    window: {
+      runCount: 1,
+      firstTs: "2026-06-01T00:00:00Z",
+      lastTs: "2026-06-01T00:00:00Z",
+      bySource: { panel: 1, cache: 0, skipped: 0 },
+    },
+    verdicts: { PASS: 1, "SOFT-PASS": 0, FAIL: 0, ERROR: 0 },
+    escalationRate: 0,
+    cost: { total: 0, avgPerRun: 0, perProvider: {} },
+    providers: [],
+    topSignatures: [],
+    fpLedger: { active: 0, sticky: 0, candidate: 0, perProviderConfirmed: {} },
+    brain: { byStatus: {}, byType: {} },
+    precision,
+  };
+}
+
+describe("renderStats precision", () => {
+  it("renders a percentage when tp+fp > 0", () => {
+    const out = renderStats(
+      reportWith({
+        overall: { tp: 2, fp: 1, declined: 1, precision: 2 / 3 },
+        bySeverity: {
+          CRITICAL: { tp: 1, fp: 1, declined: 0, precision: 0.5 },
+          WARN: { tp: 1, fp: 0, declined: 1, precision: 1 },
+        },
+        byProvider: { codex: { tp: 2, fp: 1, declined: 0, precision: 2 / 3 } },
+      }),
+    );
+    expect(out).toContain("Precision");
+    expect(out).toContain("66.7%");
+    expect(out).toContain("codex");
+  });
+
+  it("renders an em dash when precision is null", () => {
+    const out = renderStats(
+      reportWith({
+        overall: { tp: 0, fp: 0, declined: 0, precision: null },
+        bySeverity: {
+          CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+          WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+        },
+        byProvider: {},
+      }),
+    );
+    expect(out).toContain("—");
+    expect(out).toContain("no decisions recorded yet");
   });
 });

@@ -1,6 +1,64 @@
 // tests/unit/audit-event.test.ts
 import { describe, expect, it } from "bun:test";
-import { type AuditEvent, AuditEventSchema } from "../../src/schemas/audit-event.ts";
+import {
+  type AuditEvent,
+  AuditEventSchema,
+  DecisionOutcomeSchema,
+} from "../../src/schemas/audit-event.ts";
+
+describe("decision_outcome payload", () => {
+  it("accepts a valid decision_outcome", () => {
+    const res = DecisionOutcomeSchema.safeParse({
+      finding_id: "F-001",
+      severity: "CRITICAL",
+      bucket: "tp",
+      providers: ["codex", "gemini"],
+    });
+    expect(res.success).toBe(true);
+  });
+
+  it("rejects a lowercase severity", () => {
+    const res = DecisionOutcomeSchema.safeParse({
+      finding_id: "F-001",
+      severity: "critical",
+      bucket: "tp",
+      providers: [],
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it("is strict — rejects unknown keys", () => {
+    const res = DecisionOutcomeSchema.safeParse({
+      finding_id: "F-001",
+      severity: "WARN",
+      bucket: "fp",
+      reviewer_was_wrong: true,
+      providers: ["codex"],
+      bogus: 1,
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it("rides on a decision.applied AuditEvent", () => {
+    const res = AuditEventSchema.safeParse({
+      schema: "reviewgate.audit.v1",
+      ts: "2026-06-11T00:00:00.000Z",
+      run_id: "s1",
+      iter: 2,
+      event: "decision.applied",
+      trigger: "stop-hook",
+      decision_outcome: {
+        finding_id: "F-002",
+        severity: "WARN",
+        bucket: "declined",
+        providers: ["codex"],
+      },
+      prev_event_hash: "",
+      this_event_hash: "x",
+    });
+    expect(res.success).toBe(true);
+  });
+});
 
 describe("AuditEventSchema", () => {
   it("accepts a reviewer.complete event with full gen_ai block", () => {

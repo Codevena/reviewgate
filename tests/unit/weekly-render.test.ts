@@ -28,6 +28,14 @@ function baseReport(overrides: Partial<WeeklyReport> = {}): WeeklyReport {
     topSignatures: [],
     fpLedger: { active: 1, sticky: 0, candidate: 0, perProviderConfirmed: {} },
     brain: { byStatus: {}, byType: {} },
+    precision: {
+      overall: { tp: 0, fp: 0, declined: 0, precision: null },
+      bySeverity: {
+        CRITICAL: { tp: 0, fp: 0, declined: 0, precision: null },
+        WARN: { tp: 0, fp: 0, declined: 0, precision: null },
+      },
+      byProvider: {},
+    },
   };
   return {
     meta: {

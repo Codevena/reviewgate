@@ -204,6 +204,56 @@ describe("loadAuditWindow", () => {
   });
 });
 
+function writeDecision(root: string, ts: string, outcome: Record<string, unknown>): void {
+  const d = new Date(ts);
+  const dir = join(
+    root,
+    ".reviewgate",
+    "audit",
+    String(d.getUTCFullYear()),
+    String(d.getUTCMonth() + 1).padStart(2, "0"),
+    String(d.getUTCDate()).padStart(2, "0"),
+  );
+  mkdirSync(dir, { recursive: true });
+  const line = JSON.stringify({
+    schema: "reviewgate.audit.v1",
+    event: "decision.applied",
+    ts,
+    run_id: "s1",
+    iter: 1,
+    trigger: "stop-hook",
+    decision_outcome: outcome,
+  });
+  writeFileSync(join(dir, "120500.jsonl"), `${line}\n`, { flag: "a" });
+}
+
+describe("loadAuditWindow decisions", () => {
+  it("collects decision.applied events and windows them by ts via --since", () => {
+    const root = seedRepo();
+    writeDecision(root, "2026-06-01T12:00:00.000Z", {
+      finding_id: "F-1",
+      severity: "CRITICAL",
+      bucket: "tp",
+      providers: ["codex"],
+    });
+    writeDecision(root, "2026-06-05T12:00:00.000Z", {
+      finding_id: "F-2",
+      severity: "WARN",
+      bucket: "fp",
+      reviewer_was_wrong: true,
+      providers: ["gemini"],
+    });
+    const win = loadAuditWindow(root, { since: "2026-06-03T00:00:00.000Z" });
+    expect(win.decisions).toHaveLength(1);
+    expect(win.decisions[0]?.finding_id).toBe("F-2");
+  });
+
+  it("returns an empty decisions array when there is no audit dir", () => {
+    const root = seedRepo();
+    expect(loadAuditWindow(root, {}).decisions).toEqual([]);
+  });
+});
+
 describe("loadAuditWindow until + partition scope", () => {
   it("until excludes runs and escalations at or after the bound", () => {
     const root = seedRepo();

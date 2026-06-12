@@ -9,6 +9,19 @@ function pct(n: number): string {
   return `${(n * 100).toFixed(1)}%`;
 }
 
+function pctOrDash(n: number | null): string {
+  return n === null ? "—" : pct(n);
+}
+
+function cellLine(c: {
+  tp: number;
+  fp: number;
+  declined: number;
+  precision: number | null;
+}): string {
+  return `${pctOrDash(c.precision)}  (${c.tp} real / ${c.fp} FP · ${c.declined} declined)`;
+}
+
 function usd(n: number): string {
   return `$${n.toFixed(4)}`;
 }
@@ -35,8 +48,17 @@ export function renderStats(report: StatsReport): string {
     return "Reviewgate stats: no review history yet — run a review first.\n";
   }
 
-  const { window, verdicts, escalationRate, cost, providers, topSignatures, fpLedger, brain } =
-    report;
+  const {
+    window,
+    verdicts,
+    escalationRate,
+    cost,
+    providers,
+    topSignatures,
+    fpLedger,
+    brain,
+    precision,
+  } = report;
 
   let out = "";
 
@@ -133,6 +155,24 @@ export function renderStats(report: StatsReport): string {
       }
     }
   }
+
+  // ── Precision ───────────────────────────────────────────────────────────────
+  out += section("Precision");
+  out += row("overall", cellLine(precision.overall));
+  out += row("CRITICAL", cellLine(precision.bySeverity.CRITICAL));
+  out += row("WARN", cellLine(precision.bySeverity.WARN));
+  const provEntries = Object.entries(precision.byProvider).sort(([a], [b]) => (a < b ? -1 : 1));
+  if (provEntries.length > 0) {
+    out += "  by reviewer:\n";
+    for (const [provider, cell] of provEntries) {
+      out += row(`    ${provider}`, cellLine(cell), 20);
+    }
+  }
+  const decisionTotal = precision.overall.tp + precision.overall.fp + precision.overall.declined;
+  if (decisionTotal === 0) {
+    out += "  (no decisions recorded yet — precision accrues as findings are decided)\n";
+  }
+  out += "  (precision = real / (real + FP), windowed by decision time — a rate, not per-run)\n";
 
   return out;
 }
