@@ -35,6 +35,42 @@ hosted model by name.
 
 ---
 
+## Why: Reviewgate is the verification loop
+
+The current meta in agentic coding is **"write loops, not code"** ([Boris
+Cherny](https://medium.com/@fahey_james/i-dont-prompt-claude-anymore-i-write-loops-that-prompt-claude-57e48a4f28d7),
+[Simon Willison](https://simonwillison.net/2025/Sep/30/designing-agentic-loops/),
+[Addy Osmani](https://addyosmani.com/blog/loop-engineering/)). The unit of work
+moved from the keystroke → to the prompt → to the **loop**: you stop writing
+lines and start designing the system that prompts the agent and lets it iterate
+until a goal is met.
+
+Every agentic loop has two halves — a **generator** that produces code and a
+**checker** that verifies it and decides when to stop. The loop-engineering
+crowd is near-unanimous on the part that actually makes a loop trustworthy:
+*split the one who writes from the one who checks*, and give the loop a
+**testable termination condition** so it can't grade its own homework or run
+forever.
+
+**Reviewgate is that checker, packaged as reusable infrastructure.** It is not a
+code-generating orchestrator (that's the host — Claude Code's `Workflow`,
+parallel agents, cron). It is the verification loop you drop *into* such a loop
+so it can't merge unreviewed work "while you sleep":
+
+| Loop-engineering principle | Reviewgate |
+| --- | --- |
+| Writer ≠ checker (no self-grading) | A **heterogeneous reviewer panel** (Codex · Gemini · Claude · OpenRouter) — independent models inspect the diff |
+| "Are you done?" check each turn | A **`Stop` hook** blocks the turn's end until every finding is fixed or rejected-with-reason |
+| Testable termination condition | `decisions/<iter>.jsonl` must address every finding id in `pending.json` before the gate allows the stop |
+| Adversarial verification | A demote-only **critic** + severity-weighted veto + cross-reviewer consensus |
+| Explicit failure exits (no infinite loop) | `LoopDriver` caps iterations and emits `ESCALATION.md` on max-iter / stuck-signatures / cost-cap / high-reject-rate |
+| Feedback as an observable signal | Findings are written to **files** the agent reads with its normal Read tool — no chat-stream scraping |
+
+In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
+verifier that runs at the end of each turn.
+
+---
+
 ## How it works
 
 ```
