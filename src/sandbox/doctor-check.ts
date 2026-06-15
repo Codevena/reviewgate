@@ -96,7 +96,7 @@ export async function checkSandboxHealth(): Promise<SandboxHealthReport> {
   return {
     platform: plat,
     available: false,
-    detail: `Platform ${plat} not supported by sandbox-runtime in M1.`,
+    detail: `Platform ${plat} has no supported OS sandbox (macOS sandbox-exec / Linux bwrap).`,
     remediation: 'Use WSL2 on Windows, or set sandbox.mode="off" explicitly.',
   };
 }

@@ -3,25 +3,41 @@
 Reviewgate is **experimental alpha** software (`0.1.0-alpha`). Read this before
 running it on any code you care about.
 
-## ⚠️ Trusted local development only
+## Security posture
 
-Reviewgate works by spawning external provider CLIs (Codex, Gemini, Claude,
-OpenRouter) as subprocesses and feeding them your working-tree diff. **Native
-sandbox isolation is not yet available** — it depends on
-`@anthropic-ai/sandbox-runtime`, which is unpublished. The honest default is
-`sandbox.mode: "off"`, which runs reviewers **unisolated**. The `"strict"` and
-`"permissive"` modes deliberately **fail closed** (refuse to review) rather than
-pretend to isolate.
+Reviewgate spawns external provider CLIs (Codex, Gemini, Claude, OpenRouter) as
+subprocesses and feeds them your working-tree diff.
 
-**Therefore:**
+**Filesystem isolation ships and is opt-in.** With `sandbox.mode: "strict"` or
+`"permissive"`, reviewer subprocesses run under OS-level filesystem isolation —
+macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap`): the reviewer can
+read its working directory, tmp, and its own credentials, but secret paths
+(`~/.ssh`, `~/.aws`, `.env`, `~/.netrc`, `~/.git-credentials`, foreign provider
+creds) are denied, and writes are restricted to findings + tmp + its own cred dir.
+`"strict"` **fails closed** (refuses to review) when the OS sandbox is unavailable;
+`"permissive"` runs unisolated with a warning. The **default is `"off"`**.
 
-- ✅ Use Reviewgate on **your own code** in **trusted local repositories**.
-- ❌ Do **not** use it to review untrusted, attacker-controlled, or unknown
-  repositories/diffs. A malicious diff could attempt prompt-injection against
-  the reviewer LLMs, and the reviewer subprocess has the same filesystem and
-  network access you do.
+**The remaining caveats (why we still say "prefer trusted repos"):**
 
-This restriction is lifted once native isolation ships.
+- **Network egress is NOT isolated** on either platform — API reviewers need it, so
+  neither Seatbelt nor bwrap host-allowlists network. Once the filesystem is locked
+  down this is the material exfiltration vector. Only enable providers you trust
+  with your source.
+- **Linux does not enforce glob secret-denies** (`*.pem`, `*.key`, `.env*`): the
+  bind-mount model can't pattern-match files, so a repo-local `.env`/`*.pem` is
+  visible to a Linux reviewer though denied on macOS. (Secret *paths* like `~/.ssh`
+  are masked on both.)
+- macOS `sandbox-exec` is Apple-deprecated (still functional); Windows is
+  unsupported (use `"off"` or WSL2).
+
+**Recommendation:**
+
+- ✅ Use Reviewgate on **your own code**; set `sandbox.mode: "strict"` to isolate the
+  reviewer's filesystem access.
+- ⚠️ Reviewing **untrusted / attacker-controlled** diffs is higher-risk: a malicious
+  diff can attempt prompt-injection (blunted by the sanitiser, not eliminated), and
+  network egress is not contained. Do so only with providers and a threat model you
+  trust.
 
 ## Threat model
 
@@ -38,12 +54,15 @@ What Reviewgate already defends against:
 - **Silent failure** — a reviewer that crashes or times out yields `ERROR`
   (block / fail-closed), never a silent pass.
 
-What it does **not** yet defend against:
+What it does **not** defend against:
 
-- Filesystem/network isolation of the reviewer subprocess (see above).
-- A reviewer CLI or its model exfiltrating diff contents to its own provider —
-  by design the diff is sent to whichever providers you enable. Only enable
-  providers you trust with your source.
+- **Network egress** from the reviewer subprocess — not isolated on either platform
+  (by design: API reviewers need network). A reviewer CLI or its model can send the
+  diff to its own provider; only enable providers you trust with your source.
+- **Linux glob secret-denies** (`*.pem`, `.env*`) — not enforced on Linux (the
+  bind-mount model can't pattern-match files), so a repo-local `.env` is readable by
+  a Linux reviewer (denied on macOS). Filesystem isolation otherwise ships — see
+  *Security posture* above.
 
 ## Secrets
 
