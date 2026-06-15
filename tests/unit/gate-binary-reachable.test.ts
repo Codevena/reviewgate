@@ -10,7 +10,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gateBinaryReachableCheck } from "../../src/cli/commands/doctor.ts";
-import { runInit } from "../../src/cli/commands/init.ts";
+import { runInit, shSingleQuote } from "../../src/cli/commands/init.ts";
 
 function tmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "rg-gatebin-"));
@@ -28,7 +28,7 @@ describe("init generates a PATH-resilient, fail-closed gate shim", () => {
     // Under `bun test` process.execPath is the bun runtime (not a `reviewgate`
     // binary), so nothing is baked and the shim relies on PATH.
     expect(res.bakedBin).toBe("");
-    expect(shim).toContain('RG_BIN=""');
+    expect(shim).toContain("RG_BIN=''");
   });
 
   it("trigger/reset shims are best-effort (exit 0 on unresolved, never block)", async () => {
@@ -40,6 +40,22 @@ describe("init generates a PATH-resilient, fail-closed gate shim", () => {
       expect(s).toContain("exit 0"); // best-effort, never blocks
       expect(s).not.toContain('"decision":"block"');
     }
+  });
+});
+
+describe("shSingleQuote (baked-path shell-injection safety)", () => {
+  it("leaves a normal path unchanged", () => {
+    expect(shSingleQuote("/usr/local/bin/reviewgate")).toBe("/usr/local/bin/reviewgate");
+  });
+
+  it("passes shell metacharacters through literally (single-quote context disables expansion)", () => {
+    // No single quote → unchanged; wrapped in RG_BIN='…' these stay literal, so a
+    // path like `/tmp/a";$(touch pwned)/reviewgate` cannot execute at hook time.
+    expect(shSingleQuote('a";$(touch pwned)`id`')).toBe('a";$(touch pwned)`id`');
+  });
+
+  it("escapes an embedded single quote so the value can't break out of RG_BIN='…'", () => {
+    expect(shSingleQuote("x';rm -rf ~")).toBe("x'\\'';rm -rf ~");
   });
 });
 

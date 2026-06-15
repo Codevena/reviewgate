@@ -406,7 +406,8 @@ export function gateBinaryReachableCheck(
   const shimPath = join(repoRoot, ".reviewgate", "bin", "gate");
   const shimSrc = existsSync(shimPath) ? readFileSync(shimPath, "utf8") : "";
   const resilient = shimSrc.includes("RG_BIN=");
-  const bakedVal = shimSrc.match(/RG_BIN="([^"]*)"/)?.[1] ?? "";
+  // Single-quoted in the shim (RG_BIN='…') so the baked path can't be shell-evaluated.
+  const bakedVal = shimSrc.match(/RG_BIN='((?:[^'\\]|\\.)*)'/)?.[1] ?? "";
   const baked = bakedVal && bakedVal !== "__REVIEWGATE_BIN__" ? bakedVal : "";
 
   const bakedOk = baked !== "" && existsSync(baked) && runs(baked);

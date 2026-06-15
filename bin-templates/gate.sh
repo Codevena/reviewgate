@@ -7,7 +7,7 @@ set -u
 # that ran init), else PATH. If NEITHER resolves, FAIL CLOSED — emit a block
 # decision rather than exiting 127 with empty stdout, which Claude Code reads as
 # "allow stop", silently turning the Stop gate into a no-op on every turn.
-RG_BIN="__REVIEWGATE_BIN__"
+RG_BIN='__REVIEWGATE_BIN__'
 if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
 fi

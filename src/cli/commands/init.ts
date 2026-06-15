@@ -1,5 +1,15 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+
+// POSIX single-quote escaping for the binary path interpolated into the shim's
+// `RG_BIN='<here>'`. The path comes from process.execPath, which can sit at an
+// install/checkout location containing shell metacharacters (`"`, backtick,
+// `$(…)`); a raw substitution into a quoted assignment would let that path
+// EXECUTE at hook time. Single-quoting disables all shell expansion — the only
+// character needing escaping is the single quote itself (' -> '\'').
+export function shSingleQuote(value: string): string {
+  return value.replace(/'/g, "'\\''");
+}
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
@@ -131,7 +141,8 @@ export async function runInit(input: InitInput): Promise<{ bakedBin: string }> {
     const src = join(tplDir, `${name}.sh`);
     const dst = join(binDir, name);
     const tpl = readFileSync(src, "utf8");
-    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(bakedBin));
+    // Shell-escape: the shim assigns RG_BIN='<this>' — see shSingleQuote.
+    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(shSingleQuote(bakedBin)));
     chmodSync(dst, 0o755);
   }
 
