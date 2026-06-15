@@ -48,13 +48,46 @@ finding that is a false positive by construction must never enter a cluster, con
 consensus, or pollute reputation/FP-ledger accounting.
 
 **Subject rule** (the approved "only when REDACTED is the subject" semantics): drop a finding
-when `<REDACTED:` appears in **`message`** OR **`suggested_fix`**.
+when **all** of the following hold:
 
-- These two fields *assert what is wrong* (the ≤200-char headline) and *propose the fix*. A
-  synthetic placeholder in either means the finding is definitionally **about** the placeholder.
-- Deliberately **NOT** `diff_hunk` or `details`: the sanitizer legitimately writes
-  `<REDACTED:…>` into the diff, so a *good* finding can quote a redacted line there as
-  surrounding **context**. Triggering on those fields would false-drop real findings.
+1. `<REDACTED:` appears in **`message`** OR **`suggested_fix`**, AND
+2. `category !== "security"`, AND
+3. `message` contains **no secret-leak lead word** (case-insensitive). The set is a **superset**
+   of the lead words the sanitizer uses in `HEX_SECRET_WITH_CONTEXT` — `api[_-]?key | secret |
+   token | passwo?r?d | pwd | auth | bearer | access[_-]?key | private[_-]?key |
+   client[_-]?secret` — **plus** `credential | hardcoded` (the latter two are not in the
+   sanitizer regex; adding them only KEEPS more findings, which is the safe direction).
+
+**Why two independent gates (the fail-open fix).** `redactHighEntropy()` emits the SAME
+`<REDACTED:HIGH_ENTROPY>` placeholder for a *benign* high-entropy token (a CUID used as a real
+identifier — the field-report FP) **and for a genuinely committed secret**
+(`HEX_SECRET_WITH_CONTEXT`: `api_key=deadbeef…`). A redaction therefore means *a secret was in
+the diff*, so a reviewer flagging "hardcoded API key `<REDACTED:…>` committed" is a **true
+positive** that MUST be kept. Dropping every REDACTED-mention (the first draft) fails open
+exactly that secret-leak class.
+
+The category gate (2) alone is **not** sufficient, because `category` is **reviewer-supplied**
+(only zod-enum-validated in `finding.ts`, no trusted classifier): a real secret leak
+*miscategorized* as `correctness` would still be dropped. Gate (3) is the **trusted,
+content-based backstop** — it does not rely on the untrusted label. The two gates are both
+"absence" conditions that must BOTH hold to drop, so a destructive suppression never rests on
+the untrusted category alone:
+- "Hardcoded api_key `<REDACTED:…>` committed" mislabeled `correctness` → gate (3) trips on
+  `api_key`/`hardcoded` → **kept** (fail-open closed).
+- "undefined variable `<REDACTED:…>`" / "invalid CUID `<REDACTED:…>`" `correctness` → no lead
+  word → **dropped** (the field-report `correctness` CRITICAL @1.00 FP is killed).
+
+Using untrusted message text to KEEP (gate 3 is fail-safe: its presence *blocks* a drop) is
+safe; only its absence — together with a non-security label — permits the drop.
+
+- **Subject fields, not context.** `message` (the ≤200-char headline) and `suggested_fix`
+  *assert what is wrong* / *propose the fix*; a synthetic placeholder there means the finding
+  is **about** the placeholder. Deliberately **NOT** `diff_hunk`/`details`: the sanitizer
+  writes `<REDACTED:…>` into the diff itself, so a *good* finding legitimately quotes a redacted
+  line there as surrounding **context** — triggering on those would false-drop real findings.
+- **`suggested_fix` is currently dead weight (kept defensively).** `mapReviewOutputToFindings()`
+  does not populate `suggested_fix` for panel findings, so today the rule is effectively
+  `message`-only. We still check `suggested_fix` for non-panel/future sources at no cost.
 
 **Detection:** match the literal prefix `<REDACTED:` (case-sensitive — the sanitizer always
 emits uppercase `<REDACTED:HIGH_ENTROPY>`). A substring check on the two fields; no regex
@@ -75,6 +108,9 @@ hallucinations about real code) — i.e. they do not flow into the FP-ledger or
 **Default:** always on, no config toggle. A pure correctness filter with no downside.
 
 **Edge cases:**
+- `category:"security"` finding mentioning `<REDACTED:` → **kept** (gate 2; possible real leak).
+- Non-security finding whose `message` names a secret (`api_key`/`hardcoded`/…) → **kept**
+  (gate 3 backstop; covers a real secret leak miscategorized as non-security).
 - A finding whose `suggested_fix` is `null`/absent → only `message` is checked.
 - Multiple findings in the input each independently evaluated; the drop is per-finding.
 
@@ -100,9 +136,26 @@ idempotent).
 **Scope discipline:**
 - **Only `category === "security"`.** `correctness`/`quality`/other categories on a test file
   stay at full severity — a real bug in test logic is still a bug worth blocking on.
-- Keyed on the finding's **representative** `f.file` via the existing `classify()` from
-  `src/research/diff-facts.ts` (regex: `/\.(test|spec)\.[a-z]+$|(^|\/)tests?\//`). Reuse it;
-  do not duplicate the pattern.
+- Keyed on the finding's **representative** `f.file`. Reuse the existing `classify()` from
+  `src/research/diff-facts.ts` (regex: `/\.(test|spec)\.[a-z]+$|(^|\/)tests?\//`) — **export it**
+  (currently module-private) rather than duplicating the pattern or reaching around the module.
+
+**Cluster safety (WARN from spec review).** Clustering is **per-file** (`anchorFile`), so every
+member of a cluster shares the representative's file — there is no cross-file demote risk. The
+remaining edge is a *wording-merge across categories*: a `security` member can merge under a
+non-`security` representative in a test file. We **keep the representative-keyed rule** and
+accept the resulting **under-demote** (the finding simply stays at full severity — the SAFE
+direction; we never suppress). We deliberately do **NOT** do a member-aware whole-cluster
+demote: that would wrongly lower the `correctness`/other concerns the masking-warning
+(`categories.size > 1`) already surfaces for the agent's combined decision.
+
+**Residual & visibility (WARN from spec review).** `classify()`'s `(^|\/)tests?\//` is broad: a
+repo that ships production-reachable code under a `tests/` path would see a real security
+CRITICAL demoted. Two things bound this: (1) the demote moves the finding to the **advisory
+section — still visible in `pending.md`, just non-blocking — it is NOT deleted**; (2) it is
+config-gated. Such repos set `demoteTestSecurity:false`. We accept this documented residual
+rather than adding reachability/import analysis (out of scope, over-engineered for the target
+case: `*.test.*` / fixture secrets).
 
 **Config:** `phases.review.demoteTestSecurity: boolean`, default `true` (lives beside
 `scopeToDiff`/`confidenceFloor`). Wired into `AggregateInput` as `demoteTestSecurity?: boolean`
@@ -117,7 +170,7 @@ the most-conservative outcome already wins elsewhere, and INFO is the floor.
 
 ## Slice 3 — Diff-size early warning (#6)
 
-**Files:** `src/core/orchestrator.ts`, `src/core/report-writer.ts`,
+**Files:** `src/cli/commands/gate.ts`, `src/core/orchestrator.ts`, `src/core/report-writer.ts`,
 `src/config/defaults.ts`, `src/config/define-config.ts`.
 
 **Config (new, under `loop`, beside `runTimeoutMs`):**
@@ -125,15 +178,20 @@ the most-conservative outcome already wins elsewhere, and INFO is the floor.
 - `loop.diffWarnFiles: number` — default `80`.
 - Either threshold `0`/absent → that check disabled.
 
-**Where:** in the orchestrator, immediately after `collectDiff`, **before** the reviewer panel
-runs. Compute `diff.length` (bytes) and the changed-file count (reuse `computeDiffFacts(diff).files.length`,
-already computed for triage). If either threshold is exceeded:
+**Where (corrected by spec review).** `collectDiff` runs in `src/cli/commands/gate.ts`,
+**before** the `Orchestrator` is constructed and **outside** the loop self-deadline. The
+warning must be computed and `console.warn`'d **there**, right after `collectDiff` — so it
+reaches the gate's stderr/log even when the subsequent review hits the self-deadline and fails
+closed without writing `pending.md`. Putting it in `runIteration()` would be later AND under the
+deadline (preemptable). Steps:
 
-1. **`console.warn`** a one-line message immediately. This is the critical part: on a
-   self-deadline abort the gate fails closed and may write no `pending.md`, so the warning must
-   reach the gate's stderr/log **before** the panel can time out.
-2. Set a flag/string passed to the report-writer so, *if* a report is written, a **banner**
-   appears at the top of `pending.md`.
+1. In `gate.ts` after `collectDiff`: compute `bytes = diff.length` and
+   `files = ` count of raw `diff --git ` headers (NOT `computeDiffFacts().files.length`, which
+   filters pure renames/binary/mode-only changes and would **undercount** operational diff
+   size). If `(diffWarnBytes>0 && bytes>diffWarnBytes) || (diffWarnFiles>0 && files>diffWarnFiles)`
+   → `console.warn` a one-line message and pass the counts into the Orchestrator input.
+2. The Orchestrator carries the over-limit info to the report-writer so, *if* a report is
+   written, a **banner** appears at the top of `pending.md`.
 
 **Banner / warning text** names the measured size and the remediation, explicitly both knobs:
 
@@ -148,15 +206,15 @@ documented `gate-timeout-failopen` failure mode; budgets.ts invariant
 `SETUP + runTimeoutMs + SETTLE < OS timeout`). "Configurable cap" = the existing `runTimeoutMs`
 stays the single knob; we only *warn*.
 
-**Plumbing (definite):** the orchestrator computes `{ files: number, bytes: number }` for the
-diff and a boolean `overLimit` (either threshold exceeded). It passes a single optional
-`largeDiff?: { files: number; bytes: number }` value to the report-writer (present only when
-`overLimit`). The **report-writer** owns the banner *formatting* (so presentation stays in one
-place, beside `diffIncomplete`/`panel_note`). The orchestrator's `console.warn` uses its own
-short inline string (`Large diff: N files / X KB — see pending.md`) — it does NOT need to match
-the banner verbatim, which avoids duplicating the formatted text. If the counts must persist
-for a written report, the pending-report schema gains an optional `large_diff` field (mirror
-`panel_note`); otherwise it is render-only.
+**Plumbing (definite):** `gate.ts` computes `{ files, bytes }` and `overLimit`, does the
+`console.warn` (short inline string `Large diff: N files / X KB — raise loop.runTimeoutMs AND
+the Stop-hook timeout if the review times out`), and passes a single optional
+`largeDiff?: { files: number; bytes: number }` into the `Orchestrator` input (present only when
+`overLimit`). The orchestrator forwards it to the **report-writer**, which owns the banner
+*formatting* (presentation stays in one place, beside `diffIncomplete`/`panel_note`). The
+console.warn text need not match the banner verbatim. If the counts must persist for a written
+report, the pending-report schema gains an optional `large_diff` field (mirror `panel_note`);
+otherwise it is render-only.
 
 ---
 
@@ -165,9 +223,13 @@ for a written report, the pending-report schema gains an optional `large_diff` f
 `bun test`, in-process, no provider subprocesses.
 
 **Slice 1 (`tests/unit/aggregator-redaction-drop.test.ts`):**
-- A finding with `<REDACTED:HIGH_ENTROPY>` in `message` → dropped, present in
+- A **non-security** finding with `<REDACTED:HIGH_ENTROPY>` in `message` → dropped, present in
   `redactionDropped`, absent from `findings`.
-- `<REDACTED:` in `suggested_fix` → dropped.
+- Non-security `<REDACTED:` in `suggested_fix` → dropped.
+- **`category:"security"`** finding with `<REDACTED:` in `message` → **kept** (gate 2 fail-open
+  guard: could be a real committed secret).
+- **`category:"correctness"`** finding `message:"Hardcoded api_key <REDACTED:…> committed"` →
+  **kept** (gate 3 lead-word backstop: a real secret leak miscategorized as non-security).
 - `<REDACTED:` only in `details` → **kept** (subject rule).
 - `<REDACTED:` only in `diff_hunk` (context) → **kept**.
 - A clean finding co-located with a dropped one is unaffected (drop is pre-cluster, per-finding).
@@ -180,10 +242,14 @@ for a written report, the pending-report schema gains an optional `large_diff` f
 - `demoteTestSecurity:false` → no-op even for security-on-test.
 
 **Slice 3 (`tests/unit/diff-size-warning.test.ts`):**
-- Diff over `diffWarnBytes` → warning condition true, banner string rendered, counts correct.
-- Diff over `diffWarnFiles` (but under bytes) → warning true.
+- Diff over `diffWarnBytes` → `overLimit` true; report-writer renders the banner with correct
+  counts (test the pure `overLimit` predicate + the report-writer rendering — both unit-level,
+  no need to drive the whole gate).
+- Diff over `diffWarnFiles` (but under bytes), file count via raw `diff --git ` headers → true.
+- A diff with renames/binary-only entries does not over-count files (raw-header count, but the
+  predicate still reflects real `diff --git` headers).
 - Diff under both → no banner.
-- Threshold `0` → check disabled.
+- Either threshold `0` → that check disabled.
 
 ## Definition of Done
 
