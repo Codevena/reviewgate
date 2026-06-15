@@ -130,6 +130,7 @@ Everything lives under `.reviewgate/` as plain files:
 See [`SECURITY.md`](../SECURITY.md) for the full threat model. In short: diffs
 are sanitised against prompt-injection before reaching reviewers, the host
 session never reviews its own work, every run is recorded in a tamper-evident
-audit log, and the gate fails closed. The open gap is **native sandbox
-isolation** of the reviewer subprocess (pending `@anthropic-ai/sandbox-runtime`),
-which is why the current release is for trusted local development only.
+audit log, and the gate fails closed. Reviewer **filesystem isolation ships**
+(macOS Seatbelt / Linux bubblewrap, opt-in via `sandbox.mode`, default `off`); the
+remaining gaps are **network egress** (not isolated on either platform) and Linux
+glob secret-denies — so prefer trusted repos.

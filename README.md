@@ -17,10 +17,11 @@ quotas (OAuth-first). OpenRouter reviewers use an API key and can target any
 hosted model by name.
 
 > [!WARNING]
-> **Alpha — trusted local development only.** Reviewgate runs provider CLIs on
-> your working-tree diff *without sandbox isolation* (native isolation is pending
-> an unpublished dependency). Use it on your own code, **not** on untrusted
-> repositories or diffs. See [Security](#security).
+> **Alpha.** Reviewgate runs provider CLIs on your working-tree diff. Reviewer
+> **filesystem isolation ships** (macOS Seatbelt, Linux bubblewrap) but is
+> **opt-in** (`sandbox.mode`, default `off`), and **network egress is not
+> isolated** on either platform. Prefer your own code / trusted repos. See
+> [Security](#security).
 
 <p align="center">
   <img src="docs/assets/demo.gif" alt="Reviewgate in action: Claude edits code, tries to finish, Reviewgate blocks on a CRITICAL finding, Claude fixes it, re-review passes." width="820">
@@ -30,8 +31,9 @@ hosted model by name.
 > (Codex + Gemini + Claude + OpenRouter) · parallel execution · adversarial critic ·
 > adaptive triage · tree-sitter symbol graph · research context · review cache ·
 > quota auto-failover · per-repo learning brain + curator · false-positive ledger ·
-> stats & weekly reports · interactive `setup` wizard. The one piece **not** done
-> yet: native sandbox isolation. See [Scope & limitations](#scope--limitations).
+> stats & weekly reports · interactive `setup` wizard · opt-in reviewer filesystem
+> isolation (macOS Seatbelt / Linux bubblewrap). Remaining caveat: network egress is
+> not isolated. See [Scope & limitations](#scope--limitations).
 
 ---
 
@@ -98,11 +100,11 @@ verifier that runs at the end of each turn.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-\* Sandbox isolation requires `@anthropic-ai/sandbox-runtime`, which is not yet
-published at v1. Reviewgate currently runs the reviewer **unisolated** under the
-honest default `sandbox.mode: "off"`; setting `"strict"`/`"permissive"` fails
-closed (refuses to review) rather than silently running unisolated. See
-[Security](#security).
+\* Reviewer **filesystem isolation ships** via OS sandboxing — macOS Seatbelt
+(`sandbox-exec`) and Linux bubblewrap (`bwrap`) — enabled with `sandbox.mode:
+"strict"` (fails closed if the OS sandbox is unavailable) or `"permissive"` (runs
+unisolated with a warning). The default is `"off"`. Network egress is **not**
+isolated on either platform. See [Security](#security).
 
 > 📐 For the full control flow, module map and pipeline stages, see
 > [`docs/architecture.md`](docs/architecture.md).
@@ -365,12 +367,14 @@ repeated stop-hooks instantaneous after a trivially clean re-run.
   prompt-injection planted in code.
 - **Tamper-evident audit log.** Every run appends a sha256 hash-chained JSONL
   event log; `reviewgate audit verify` detects any modification.
-- **Sandbox (not yet isolated).** Full filesystem/network isolation needs
-  `@anthropic-ai/sandbox-runtime` (unpublished at v1). Until then Reviewgate runs
-  the reviewer unisolated under the explicit `sandbox.mode: "off"`; the
-  `"strict"`/`"permissive"` modes fail closed. **Treat the current release as
-  suitable for trusted local development only — not for reviewing untrusted
-  repositories or diffs.**
+- **Sandbox (filesystem isolation ships; opt-in).** With `sandbox.mode: "strict"`
+  or `"permissive"`, reviewer subprocesses run under OS filesystem isolation —
+  macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap`): the reviewer reads
+  its working dir / tmp / own creds but **not** your secrets (`~/.ssh`, `~/.aws`,
+  `.env`, …). `"strict"` fails closed if the OS sandbox is unavailable; the default
+  is `"off"`. **Caveats:** network egress is **not** isolated on either platform
+  (API reviewers need it), and on Linux glob secret-denies (`*.pem`, `.env*`) aren't
+  enforced — prefer trusted repos until you've reviewed the threat model.
 
 See [`SECURITY.md`](SECURITY.md) for the full threat model and how to report a
 vulnerability.
@@ -437,9 +441,9 @@ Reviewgate blocks your turn (read `pending.md`, fix or reject each finding, writ
   against `costCapUsd`.
 - Hash-chained audit log · cassette record/replay for deterministic provider testing.
 
-**Not yet:** native sandbox isolation (pending `@anthropic-ai/sandbox-runtime` v1) —
-this is why the gate is positioned for trusted local development only. See
-[Security](#security).
+**Caveats:** reviewer filesystem isolation ships (macOS Seatbelt / Linux bubblewrap)
+but is opt-in (`sandbox.mode`, default `off`); **network egress is not isolated** on
+either platform, and Linux does not enforce glob secret-denies. See [Security](#security).
 
 ---
 

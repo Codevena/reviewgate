@@ -1,13 +1,5 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
@@ -104,7 +96,7 @@ export function hooksInstalled(repoRoot: string): boolean {
   }
 }
 
-export async function runInit(input: InitInput): Promise<void> {
+export async function runInit(input: InitInput): Promise<{ bakedBin: string }> {
   if (input.mode !== "agent-loop") {
     throw new Error(`invalid --mode "${input.mode}": the only supported value is "agent-loop"`);
   }
@@ -127,10 +119,19 @@ export async function runInit(input: InitInput): Promise<void> {
   const tplDir = candidates.find((c) => existsSync(c));
   if (!tplDir) throw new Error(`bin-templates not found in: ${candidates.join(", ")}`);
 
+  // Bake the absolute path of the binary that ran `init` into each shim, so the
+  // hooks work even when `reviewgate` is NOT on the (non-login) PATH the Claude
+  // Code hook process inherits — the previous bare `exec reviewgate …` exited 127
+  // with empty stdout, which Claude Code reads as "allow stop" (a silent no-op
+  // gate). Only bake a real reviewgate binary: under `bun run dev` execPath is the
+  // bun runtime, not a usable `reviewgate`, so leave it empty and let the shim
+  // fall back to PATH (and, for the gate, FAIL CLOSED if nothing resolves).
+  const bakedBin = /reviewgate/i.test(basename(process.execPath)) ? process.execPath : "";
   for (const name of ["trigger", "gate", "reset"]) {
     const src = join(tplDir, `${name}.sh`);
     const dst = join(binDir, name);
-    copyFileSync(src, dst);
+    const tpl = readFileSync(src, "utf8");
+    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(bakedBin));
     chmodSync(dst, 0o755);
   }
 
@@ -257,4 +258,6 @@ export async function runInit(input: InitInput): Promise<void> {
     ].join("\n");
     writeFileSync(cfgPath, starter);
   }
+
+  return { bakedBin };
 }

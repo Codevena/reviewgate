@@ -185,11 +185,12 @@ export const defaultConfig = {
     infraDeferMaxConsecutive: 3,
   },
   sandbox: {
-    // M1 default is 'off' because @anthropic-ai/sandbox-runtime is unpublished
-    // at v1 and M1 cannot actually isolate the reviewer subprocess. 'off' is
-    // honest: it runs the reviewer unisolated (acceptable for trusted local
-    // dev). Setting 'strict'/'permissive' fails closed (Orchestrator refuses to
-    // review) until sandbox-runtime support lands — never silently unisolated.
+    // Default 'off' = opt-in isolation. 'strict'/'permissive' DO isolate the
+    // reviewer subprocess's filesystem via OS sandboxing (macOS sandbox-exec /
+    // Linux bwrap, wired in spawnSafely); 'strict' fails closed when the OS sandbox
+    // is unavailable, 'permissive' runs unisolated with a warning. Default stays
+    // 'off' because network egress is NOT isolated on either platform and isolation
+    // is opt-in — but strict is never silently unisolated.
     mode: "off" as const,
     writablePaths: [".reviewgate/"],
     // NOTE: `~/.config` is deliberately NOT denied here — each provider's own

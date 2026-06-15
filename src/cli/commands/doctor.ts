@@ -367,6 +367,84 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
   };
 }
 
+// The single dependency the hooks rely on but that nothing else checked: can the
+// gate shim actually RESOLVE a runnable `reviewgate` binary? The shim runs under
+// the (often non-login) PATH the Claude Code hook process inherits; a bare
+// `exec reviewgate` that isn't on that PATH exits 127 with empty stdout, which
+// Claude Code reads as "allow stop" — a SILENT no-op gate. `init` now bakes an
+// absolute path into the shim and the shim fails closed; this verifies what the
+// installed shim will actually invoke. Returns null when the Stop hook isn't
+// wired. `runs` is injected for testability (prod probes the real binary).
+export function gateBinaryReachableCheck(
+  repoRoot: string,
+  runs: (bin: string) => boolean = (bin) => {
+    try {
+      return spawnSync(bin, ["--version"], { timeout: 5000, stdio: "ignore" }).status === 0;
+    } catch {
+      return false;
+    }
+  },
+): Check | null {
+  const name = "gate binary reachable";
+  const settingsPath = join(repoRoot, ".claude", "settings.json");
+  if (!existsSync(settingsPath)) return null;
+  let installed = false;
+  try {
+    const s = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    };
+    installed = Object.values(s.hooks ?? {}).some((g) =>
+      (g ?? []).some((e) =>
+        (e.hooks ?? []).some((h) => h.command?.includes(".reviewgate/bin/gate")),
+      ),
+    );
+  } catch {
+    return null;
+  }
+  if (!installed) return null;
+
+  const shimPath = join(repoRoot, ".reviewgate", "bin", "gate");
+  const shimSrc = existsSync(shimPath) ? readFileSync(shimPath, "utf8") : "";
+  const resilient = shimSrc.includes("RG_BIN=");
+  const bakedVal = shimSrc.match(/RG_BIN="([^"]*)"/)?.[1] ?? "";
+  const baked = bakedVal && bakedVal !== "__REVIEWGATE_BIN__" ? bakedVal : "";
+
+  const bakedOk = baked !== "" && existsSync(baked) && runs(baked);
+  const pathOk = runs("reviewgate");
+
+  if (!bakedOk && !pathOk) {
+    return {
+      name,
+      status: "fail",
+      detail:
+        "the gate hook cannot resolve a runnable `reviewgate` binary (no baked path, none on PATH) → the Stop gate fails closed and BLOCKS every turn (an old shim would instead silently ALLOW it — a no-op gate)",
+      hint: "Put the reviewgate binary on PATH (e.g. symlink dist/reviewgate into ~/.local/bin) or re-run `reviewgate init` with the binary installed, then re-run doctor.",
+    };
+  }
+  if (!resilient) {
+    return {
+      name,
+      status: "warn",
+      detail:
+        "an OLD hook shim is installed (bare `exec reviewgate`): if `reviewgate` ever leaves the hook's PATH it exits 127 with empty stdout, which Claude Code reads as allow-stop (silent no-op gate)",
+      hint: "Re-run `reviewgate init` to install the PATH-resilient, fail-closed shim (baked binary path + block-on-unresolved).",
+    };
+  }
+  if (baked && !bakedOk && pathOk) {
+    return {
+      name,
+      status: "warn",
+      detail: `baked path '${baked}' is missing/unrunnable; the shim falls back to 'reviewgate' on PATH`,
+      hint: "Re-run `reviewgate init` to re-bake the current binary path into the hooks.",
+    };
+  }
+  return {
+    name,
+    status: "ok",
+    detail: bakedOk ? `baked path runs: ${baked}` : "'reviewgate' resolves on PATH (no baked path)",
+  };
+}
+
 // doctor cannot detect quota exhaustion proactively (a --version probe never
 // makes a billed call), so it surfaces it RETROSPECTIVELY: if the last review
 // recorded a `quota-exhausted` reviewer, warn that the provider was recently
@@ -499,6 +577,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (fb) checks.push(fb);
     const ht = hookTimeoutCheck(input.repoRoot, cfg);
     if (ht) checks.push(ht);
+    const gb = gateBinaryReachableCheck(input.repoRoot);
+    if (gb) checks.push(gb);
     const sbMode = cfg.sandbox.mode;
     if (sbMode !== "off") {
       const ok = await sandboxRuntimeAvailable();

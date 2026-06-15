@@ -34,8 +34,27 @@ const init = defineCommand({
   meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
   args: { mode: { type: "string", default: "agent-loop" } },
   async run({ args }) {
-    await runInit({ repoRoot: process.cwd(), mode: args.mode as "agent-loop" });
+    const { bakedBin } = await runInit({
+      repoRoot: process.cwd(),
+      mode: args.mode as "agent-loop",
+    });
     process.stdout.write("Reviewgate installed.\n");
+    // The #1 first-run failure is the gate hook not finding the `reviewgate`
+    // binary (silent no-op gate). Surface exactly what was wired + next steps.
+    if (bakedBin) {
+      process.stdout.write(`Hooks pinned to: ${bakedBin}\n`);
+    } else {
+      process.stdout.write(
+        "⚠ Could not pin an absolute binary path — the hooks rely on `reviewgate` being on PATH.\n" +
+          "  Ensure it is (e.g. symlink dist/reviewgate into ~/.local/bin), or re-run `init` via the installed binary.\n",
+      );
+    }
+    process.stdout.write(
+      "\nNext steps:\n" +
+        "  1. Log into a reviewer CLI (e.g. `codex login`) — reviewers are $0 within your subscription.\n" +
+        "  2. Run `reviewgate doctor` to verify the binary, hooks, and providers.\n" +
+        "  3. Edit a file in Claude Code and end your turn — the gate reviews the diff.\n",
+    );
     const tip = setupTip(Boolean(process.stdout.isTTY));
     if (tip) process.stdout.write(`${tip}\n`);
   },
