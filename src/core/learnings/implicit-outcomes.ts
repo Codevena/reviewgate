@@ -13,8 +13,18 @@ import { implicitOutcomesLockPath, implicitOutcomesPath, learningsDir } from "..
 // if it carries no demote tag (so it is not an "outcome" worth recording).
 function reasonOf(f: Finding): DemoteReason | null {
   if (f.critic_verdict === "likely_fp") return "critic_likely_fp";
+  // fact_invalid (cited line provably absent) and grounding_demoted (fabricated
+  // code token) are the STRONGEST hallucination signals — rank them ahead of the
+  // softer scope/fp/reputation/confidence demotes so the recorded outcome
+  // reflects the most diagnostic reason. Previously omitted entirely, so these
+  // demoted survivors produced no learning signal at all.
+  if (f.fact_invalid) return "fact_invalid";
+  if (f.grounding_demoted) return "grounding_demoted";
   if (f.scope_demoted) return "scope_demoted";
   if (f.fp_ledger_match) return "fp_ledger_match";
+  // fp_cluster_match is the multi-rule_id sibling of fp_ledger_match (a DERIVED
+  // active/sticky FP cluster); same FP-ledger provenance, so it sits next to it.
+  if (f.fp_cluster_match) return "fp_cluster_match";
   if (f.reputation_demoted) return "reputation_demoted";
   if (f.low_confidence) return "low_confidence";
   return null;

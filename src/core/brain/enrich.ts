@@ -77,12 +77,22 @@ export async function enrichProposal(
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, res.sha256), res.body, { mode: 0o600 });
 
-    // Rewrite to a schema-valid web-fetch evidence item.
+    // Rewrite to a schema-valid web-fetch evidence item. Preserve the
+    // quorum-bearing provenance fields from the original citation:
+    //   - `from_diff`   — drops would silently relax the diff-derived quorum bar
+    //                     (a diff-derived group is held to the STRICTER ≥3-provider
+    //                     rule; losing the tag would let it pass on the looser ≥1).
+    //   - `reviewer_id` / `run_id` — identify the provider that contributed this
+    //                     item; dropping them removes a provider from the
+    //                     cross-provider distinct-count quorumOk relies on.
     evidence.push({
       kind: "web-fetch" as const,
       source_url: res.finalUrl,
       body_sha256: res.sha256,
       fetched_at: new Date().toISOString(),
+      ...(item.from_diff != null ? { from_diff: item.from_diff } : {}),
+      ...(item.reviewer_id != null ? { reviewer_id: item.reviewer_id } : {}),
+      ...(item.run_id != null ? { run_id: item.run_id } : {}),
       ...(item.snippet != null ? { snippet: item.snippet } : {}),
     });
   }

@@ -145,6 +145,9 @@ function isBlockedIpv4(ip: string): boolean {
  *   - IPv4-mapped, dotted:   ::ffff:127.0.0.1
  *   - IPv4-mapped, hex:      ::ffff:7f00:1   /  0:0:0:0:0:ffff:7f00:0001
  *   - IPv4-compatible (dep.) ::127.0.0.1     /  ::7f00:1
+ *   - NAT64 well-known:      64:ff9b::c0a8:1 /  64:ff9b::169.254.169.254
+ *     (the 64:ff9b::/96 prefix — RFC 6052 — embeds the v4 in the last 32 bits;
+ *      without this an attacker smuggles a private/metadata v4 past the v6 path)
  *
  * The two trailing 16-bit groups (each up to 4 hex digits) decode to the four
  * octets a.b.c.d:  group1 = (a<<8)|b,  group2 = (c<<8)|d.
@@ -195,8 +198,12 @@ function extractEmbeddedIpv4(lowerIp: string): string | null {
   // IPv4-compatible (deprecated): 0:0:0:0:0:0:HHHH:HHHH (but not :: / ::1).
   const isCompat =
     g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0 && (hi !== 0 || lo > 1);
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): 0064:ff9b:0:0:0:0:HHHH:HHHH.
+  // The embedded v4 lives in the final 32 bits, exactly like the mapped/compat
+  // forms, so it decodes identically once we recognize the prefix.
+  const isNat64 = g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0;
 
-  if (isMapped || isCompat) {
+  if (isMapped || isCompat || isNat64) {
     const a = (hi >> 8) & 0xff;
     const b = hi & 0xff;
     const c = (lo >> 8) & 0xff;
@@ -246,6 +253,31 @@ export function isBlockedIp(ip: string): boolean {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Race a promise against an AbortSignal so a non-abortable async operation
+ * (e.g. a DNS lookup that ignores the signal) still respects the overall
+ * timeout. Rejects with an "aborted" Error if the signal fires first; the
+ * underlying promise's eventual settle is then ignored. The signal listener is
+ * always removed so it can't leak across hops.
+ */
+function raceAbort<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
 
 /**
  * Validate URL shape + allowlist + length, returning a canonicalized URL
@@ -469,11 +501,16 @@ export async function safeFetch(rawUrl: string, opts: SafeFetchOpts): Promise<Sa
   try {
     // Re-validate URL + DNS for each hop (the initial hop and any redirect).
     while (true) {
-      // Gate 5 — DNS resolve-then-pin + IP block.
+      // Gate 5 — DNS resolve-then-pin + IP block. The resolve() call is NOT
+      // inherently abortable (node's dns.lookup ignores AbortSignal, and an
+      // injected resolver need not honor one), so a stalled resolver would hang
+      // past timeoutMs. Race it against the shared timeout signal so the TOTAL
+      // time (resolve + fetch) respects timeoutMs / abort.
       let ips: string[];
       try {
-        ips = await resolve(currentUrl.hostname);
+        ips = await raceAbort(resolve(currentUrl.hostname), controller.signal);
       } catch {
+        if (controller.signal.aborted) return deny("timeout");
         return deny("dns failure");
       }
       if (ips.length === 0 || ips.some(isBlockedIp)) return deny("resolves to blocked ip");

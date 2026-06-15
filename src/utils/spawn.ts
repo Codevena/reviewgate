@@ -18,6 +18,11 @@ import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import type { SandboxProfile, WriteTarget } from "../sandbox/profile-builder.ts";
 import { buildMacosSbpl, resolveForSandbox } from "../sandbox/sbpl.ts";
 
+// Default stdout capture cap (32 MiB). Far larger than any real reviewer JSON, so
+// normal output is never clipped, but bounded enough that a runaway dump can't OOM
+// the gate when the adapter readFileSyncs the capture file.
+const DEFAULT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
+
 // Bring each write target into existence with the right kind BEFORE bwrap builds its
 // read-only-root namespace (the reviewer can't create them inside). Never touches an
 // existing path (so an existing file passed as a dir target won't crash mkdir, and
@@ -45,6 +50,13 @@ export interface SpawnInput {
   stderrFile: string;
   timeoutMs: number;
   zeroByteWatchdogMs?: number;
+  // Hard cap on the bytes captured to `stdoutFile`. A pathological reviewer (or a
+  // runaway CLI dumping its whole context) can emit gigabytes; the adapter then
+  // `readFileSync`s the capture file and can OOM the gate. Once the cap is hit we
+  // stop writing stdout (so the file stays bounded) and SIGKILL the tree (the
+  // useful prefix — a reviewer's JSON is at the start — is already captured).
+  // `result.outputTruncated` reports whether the cap fired. Default: 32 MiB.
+  maxOutputBytes?: number;
   // When this fires, the child's whole process group is SIGKILLed at once. Used
   // by the gate's self-deadline to abort in-flight reviewers when a run exceeds
   // loop.runTimeoutMs (so they can't keep running orphaned or write late).
@@ -61,6 +73,9 @@ export interface SpawnResult {
   killedByAbort: boolean;
   sandboxApplied: boolean;
   sandboxFellBack: boolean;
+  // True when stdout exceeded `maxOutputBytes` and the capture file was truncated
+  // (the child was SIGKILLed). The captured prefix is still readable.
+  outputTruncated: boolean;
 }
 
 export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
@@ -127,6 +142,8 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
   let killedByWatchdog = false;
   let killedByTimeout = false;
   let killedByAbort = false;
+  let outputTruncated = false;
+  const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
   return new Promise<SpawnResult>((resolve, reject) => {
     const stdinStream = input.stdinFile ? createReadStream(input.stdinFile) : undefined;
@@ -190,9 +207,25 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
     out.on("error", () => {});
     err.on("error", () => {});
     let lastOutputAt = Date.now();
+    let stdoutBytes = 0;
     child.stdout.on("data", (d: Buffer) => {
       lastOutputAt = Date.now();
-      out.write(d);
+      if (outputTruncated) return; // cap already hit — drop the rest
+      const remaining = maxOutputBytes - stdoutBytes;
+      if (d.length <= remaining) {
+        stdoutBytes += d.length;
+        out.write(d);
+        return;
+      }
+      // Write the final allowed slice, then stop capturing and kill the tree so a
+      // runaway producer can't keep the gate alive or fill the disk. The captured
+      // prefix (containing the reviewer's JSON, which comes first) is preserved.
+      if (remaining > 0) {
+        out.write(d.subarray(0, remaining));
+        stdoutBytes += remaining;
+      }
+      outputTruncated = true;
+      killTree("SIGKILL");
     });
     child.stderr.on("data", (d: Buffer) => {
       lastOutputAt = Date.now();
@@ -259,6 +292,7 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
             killedByAbort,
             sandboxApplied,
             sandboxFellBack,
+            outputTruncated,
           });
         }
       };

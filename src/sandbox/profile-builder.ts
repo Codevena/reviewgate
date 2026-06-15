@@ -1,4 +1,17 @@
+import { isAbsolute, join } from "node:path";
+
 export type ProviderId = "codex" | "claude-code" | "gemini" | "opencode";
+
+const stripTrailingSlash = (p: string): string => (p.endsWith("/") ? p.slice(0, -1) : p);
+
+// Path-containment test (mirrors bwrap.ts / sbpl.ts): true when `child` is `parent`
+// or nested beneath it. Tolerant of a trailing slash on either side (writablePaths
+// default ".reviewgate/" and cred dirs may or may not carry one).
+const isUnder = (child: string, parent: string): boolean => {
+  const c = stripTrailingSlash(child);
+  const p = stripTrailingSlash(parent);
+  return c === p || c.startsWith(`${p}/`);
+};
 
 const CREDENTIAL_PATHS: Record<ProviderId, string[]> = {
   codex: ["~/.codex", "~/.config/codex", "~/.openai"],
@@ -111,17 +124,35 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
   const cfgGlobs = cfgDenies.filter(isGlobPattern);
   const cfgPaths = cfgDenies.filter((d) => !isGlobPattern(d));
 
+  // Relative writablePaths (default ".reviewgate/") are repo-relative — resolve them
+  // against the repo root (input.workingDir), NOT $HOME. Leaving them relative made
+  // resolveForSandbox() in spawn.ts join them onto $HOME → a wrong write-allow target
+  // plus a stray ~/.reviewgate dir. Absolute/~-prefixed entries pass through untouched
+  // (resolveForSandbox still expands ~).
+  const cfgWritablePaths = (input.writablePaths ?? []).map((p) =>
+    isAbsolute(p) || p.startsWith("~") ? p : join(input.workingDir, p),
+  );
+
   // readDeny = specific secret DIRS + OTHER providers' cred dirs + user path denies.
   // NO broad roots (would block the repo/workdir). readDenyGlobs = basename/ext globs.
-  const readDeny = [...SECRET_DIRS, ...others, ...cfgPaths];
+  let readDeny = [...SECRET_DIRS, ...others, ...cfgPaths];
   const readDenyGlobs = [...SECRET_GLOBS, ...cfgGlobs];
   const readAllow = [input.workingDir, input.tmpDir, ...own];
-  const writeAllow = [input.findingsPath, input.tmpDir, ...own, ...(input.writablePaths ?? [])];
+  const writeAllow = [input.findingsPath, input.tmpDir, ...own, ...cfgWritablePaths];
+
+  // Drop any readDeny entry that is an ancestor of (or equal to) one of THIS
+  // provider's OWN cred dirs — those are write-allowed for OAuth refresh, so a
+  // nesting deny (e.g. a user "~/.config" deny over "~/.config/codex") would trip the
+  // bidirectional overlap guard and ERROR every reviewer (dead-on-arrival sandbox).
+  // FOREIGN-provider cred masking (in `others`) stays intact — those never nest an
+  // own-cred write-allow.
+  readDeny = readDeny.filter((d) => !own.some((w) => isUnder(w, d) || isUnder(d, w)));
+
   const writeTargets: WriteTarget[] = [
     { path: input.findingsPath, kind: "file", createIfMissing: true },
     { path: input.tmpDir, kind: "dir", createIfMissing: true },
     ...own.map((p) => ({ path: p, kind: "dir" as const, createIfMissing: false })),
-    ...(input.writablePaths ?? []).map((p) => ({
+    ...cfgWritablePaths.map((p) => ({
       path: p,
       kind: "dir" as const,
       createIfMissing: true,

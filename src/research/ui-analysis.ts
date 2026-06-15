@@ -8,11 +8,16 @@
 // injects them as a trusted reference block, so reviewers read facts instead of guessing.
 // No browser, no dev server, no images (CLI reviewers are text-only). Deterministic.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
+import { safeReadContained } from "../utils/safe-read.ts";
 
 const UI_EXT = /\.(tsx|jsx|css|scss|less|vue|svelte)$/;
+
+// Changed UI files are untrusted and read as reviewer context: cap size and refuse
+// symlinks that escape the repo (an agent-under-review could symlink a changed file
+// to a secret to leak it into the prompt). 512KB comfortably covers real UI sources.
+const UI_FILE_CAP = 512 * 1024;
 
 // Tailwind default spacing scale → CSS length. Used by every spacing/size utility.
 const SPACING: Record<string, string> = {
@@ -84,8 +89,13 @@ const SPACING_PROPS: Record<string, string> = {
   bottom: "bottom",
   left: "left",
   inset: "inset",
-  "space-x": "column-gap",
-  "space-y": "row-gap",
+  // space-x-*/space-y-* are NOT gap: Tailwind emits a MARGIN on every child except
+  // the first (`> :not([hidden]) ~ :not([hidden])`), so the spacing only appears
+  // BETWEEN siblings, never as outer padding/gap. Describe it as margin-based child
+  // spacing — mapping it to column-gap/row-gap is factually wrong CSS and would feed
+  // reviewers an incorrect layout fact (the whole point of this module is correctness).
+  "space-x": "margin-left on children after the first (between-siblings spacing)",
+  "space-y": "margin-top on children after the first (between-siblings spacing)",
 };
 const SPACING_PREFIXES = Object.keys(SPACING_PROPS).sort((a, b) => b.length - a.length);
 
@@ -234,14 +244,17 @@ const MAX_FACTS = 60;
 export function analyzeUiFiles(repoRoot: string, changedFiles: string[]): string {
   const tw = new Map<string, string>(); // token → resolved (deduped, insertion order)
   const vars = new Map<string, string>(); // name → value
+  // Pre-resolve the repo realpath ONCE for the per-file containment checks below.
+  let repoReal: string | undefined;
+  try {
+    repoReal = realpathSync(repoRoot);
+  } catch {
+    repoReal = undefined;
+  }
   for (const rel of changedFiles) {
     if (!UI_EXT.test(rel)) continue;
-    let src: string;
-    try {
-      src = readFileSync(join(repoRoot, rel), "utf8");
-    } catch {
-      continue;
-    }
+    const src = safeReadContained(repoRoot, rel, UI_FILE_CAP, repoReal);
+    if (src === null) continue;
     for (const token of extractClassTokens(src)) {
       if (tw.has(token)) continue;
       const resolved = resolveTailwindToken(token);

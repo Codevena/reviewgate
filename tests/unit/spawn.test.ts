@@ -142,4 +142,42 @@ describe("spawnSafely", () => {
     // Returned because of the abort, NOT the 30s sleep/timeout.
     expect(elapsed).toBeLessThan(3_000);
   });
+
+  it("caps the captured stdout at maxOutputBytes and flags truncation (F-4, no OOM)", async () => {
+    // A runaway reviewer dumping megabytes would, uncapped, produce a capture file
+    // the adapter readFileSyncs into memory → OOM. The cap bounds the file; the
+    // useful prefix (a reviewer's JSON comes first) is preserved.
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawn-cap-"));
+    const outFile = join(dir, "out");
+    const res = await spawnSafely({
+      command: "bash",
+      // ~2 MiB of output, capped at 64 KiB.
+      args: ["-c", "yes ABCDEFGHIJKLMNOPQRSTUVWXYZ0123 | head -c 2097152"],
+      stdoutFile: outFile,
+      stderrFile: join(dir, "err"),
+      timeoutMs: 30_000,
+      maxOutputBytes: 64 * 1024,
+    });
+    expect(res.outputTruncated).toBe(true);
+    const out = readFileSync(outFile, "utf8");
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("does NOT truncate normal-size output (cap leaves real reviews intact)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawn-cap-ok-"));
+    const outFile = join(dir, "out");
+    const res = await spawnSafely({
+      command: "bash",
+      args: ["-c", 'for i in $(seq 1 1000); do echo "line-$i"; done'],
+      stdoutFile: outFile,
+      stderrFile: join(dir, "err"),
+      timeoutMs: 30_000,
+      maxOutputBytes: 1024 * 1024,
+    });
+    expect(res.outputTruncated).toBe(false);
+    expect(res.exitCode).toBe(0);
+    const out = readFileSync(outFile, "utf8");
+    expect(out).toContain("line-1\n");
+    expect(out).toContain("line-1000\n");
+  });
 });

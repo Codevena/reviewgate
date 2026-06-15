@@ -7,6 +7,14 @@ export const DEMOTE_REASONS = [
   "reputation_demoted",
   "critic_likely_fp",
   "critic_dropped",
+  // Strong hallucination signals that previously produced NO learning outcome
+  // because reasonOf() omitted them:
+  //   - fp_cluster_match : matched a DERIVED active/sticky FP cluster
+  //   - fact_invalid     : cited file:line provably absent from the working tree
+  //   - grounding_demoted: cited a code token wholly absent from the corpus
+  "fp_cluster_match",
+  "fact_invalid",
+  "grounding_demoted",
 ] as const;
 
 export const ImplicitOutcomeSchema = z.object({

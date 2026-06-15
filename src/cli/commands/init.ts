@@ -4,10 +4,12 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
 const HOOKS_TEMPLATE = {
   PostToolUse: [
@@ -140,8 +142,23 @@ export async function runInit(input: InitInput): Promise<void> {
   if (existsSync(settingsPath)) {
     try {
       settings = JSON.parse(readFileSync(settingsPath, "utf8")) as typeof settings;
-    } catch {
-      settings = {};
+    } catch (err) {
+      // The file exists but is not valid JSON (a JSONC comment, a trailing comma,
+      // a half-saved file). Re-using `settings = {}` here and then writing it back
+      // would SILENTLY DESTROY the user's permissions/env/model/foreign hooks — we
+      // only know the 3 Reviewgate hooks, not the rest. Never overwrite: back the
+      // unparseable file up so it isn't lost, then ABORT with an actionable message
+      // telling the user to fix or remove settings.json and re-run init.
+      const backupPath = `${settingsPath}.bak`;
+      try {
+        renameSync(settingsPath, backupPath);
+      } catch {
+        /* best-effort: even if the backup move fails we still must not overwrite */
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Reviewgate init aborted: ${settingsPath} exists but is not valid JSON (${msg}). It has been backed up to ${backupPath} so nothing is lost. Fix or remove ${settingsPath} (restore from the .bak after correcting it), then re-run \`reviewgate init\`. Reviewgate refuses to overwrite it because doing so would destroy your other hooks/permissions/env.`,
+      );
     }
   }
   settings.hooks = settings.hooks ?? {};
@@ -158,7 +175,9 @@ export async function runInit(input: InitInput): Promise<void> {
     });
     settings.hooks[event] = [...filtered, ...desired];
   }
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  // Atomic (tmp+rename): an interrupted write can't truncate/corrupt settings.json
+  // (which would silently disarm every hook in the project, including foreign ones).
+  writeFileAtomic(settingsPath, JSON.stringify(settings, null, 2));
 
   // 3. Append .gitignore (idempotent: skip lines that already exist verbatim)
   const giPath = join(input.repoRoot, ".gitignore");

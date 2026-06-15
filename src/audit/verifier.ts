@@ -24,7 +24,19 @@ export async function verifyChain(path: string): Promise<VerifyResult> {
   const lines = raw.split("\n").filter((l) => l.length > 0);
   let prev = "";
   for (let i = 0; i < lines.length; i++) {
-    const obj = JSON.parse(lines[i] as string) as Record<string, unknown>;
+    // A tampered / truncated / half-flushed line is not valid JSON — treat it as a
+    // BROKEN CHAIN at that line rather than letting JSON.parse throw an uncaught
+    // SyntaxError (which would surface to the user as a raw stack trace from
+    // `audit verify`). A truncated trailing line therefore also reports corruption,
+    // which is the best a forward-only chain can do for tail-truncation: the dropped
+    // tail itself is undetectable, but a mid-write truncation that leaves a partial
+    // final line IS caught here.
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(lines[i] as string) as Record<string, unknown>;
+    } catch {
+      return { ok: false, brokenAtLine: i + 1, totalLines: lines.length };
+    }
     if (obj.prev_event_hash !== prev) {
       return { ok: false, brokenAtLine: i + 1, totalLines: lines.length };
     }

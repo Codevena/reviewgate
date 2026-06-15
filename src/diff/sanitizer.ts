@@ -79,14 +79,43 @@ function shannonEntropy(s: string): number {
 // Match base64-like / hex-like tokens of length >= 24 with high entropy.
 const HIGH_ENTROPY_TOKEN = /[A-Za-z0-9+/=_-]{24,}/g;
 
-function redactHighEntropy(text: string): { out: string; count: number } {
+// Canonical UUID (8-4-4-4-12 hex, any version). UUIDs are common secret/session/
+// API-key identifiers whose per-segment entropy sits BELOW the 4.0 whole-token
+// threshold (the four hyphens flatten it), so they slip past HIGH_ENTROPY_TOKEN.
+// Their fixed shape is unambiguous, so we redact them outright — and crucially a
+// 40-/64-char bare git SHA (no hyphens) does NOT match this, so benign commit
+// hashes in a diff stay intact. \b anchors avoid clipping a longer hex run.
+const UUID = /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g;
+
+// Long hex token (≥32 hex chars) preceded by a secret-ish key within a short
+// window — e.g. `api_key=deadbeef…`, `token: ab12…`, `secret = ff00…`. We
+// DELIBERATELY do NOT redact bare long-hex tokens: a 40-char git SHA is a
+// legitimate, ubiquitous, benign value in diffs, and the cassette-secret-guard
+// even whitelists 64-char sha256. Gating on a secret-ish lead word catches the
+// dangerous case (a hex secret assigned to a key) without mangling SHAs.
+const HEX_SECRET_WITH_CONTEXT =
+  /\b(?:api[_-]?key|secret|token|passwo?r?d|pwd|auth|bearer|access[_-]?key|private[_-]?key|client[_-]?secret)\b["'\s:=]{1,4}([0-9a-fA-F]{32,})/gi;
+
+export function redactHighEntropy(text: string): { out: string; count: number } {
   let count = 0;
-  const out = text.replace(HIGH_ENTROPY_TOKEN, (m) => {
+  let out = text.replace(HIGH_ENTROPY_TOKEN, (m) => {
     if (shannonEntropy(m) >= 4.0) {
       count++;
       return "<REDACTED:HIGH_ENTROPY>";
     }
     return m;
+  });
+  // Defense-in-depth: catch UUIDs (below the entropy threshold) and hex secrets
+  // that appear in an explicit secret-key context. These run AFTER the entropy
+  // pass; anything already redacted no longer matches.
+  out = out.replace(UUID, () => {
+    count++;
+    return "<REDACTED:HIGH_ENTROPY>";
+  });
+  out = out.replace(HEX_SECRET_WITH_CONTEXT, (full, hex: string) => {
+    count++;
+    // Keep the key/separator prefix, redact only the secret hex value.
+    return `${full.slice(0, full.length - hex.length)}<REDACTED:HIGH_ENTROPY>`;
   });
   return { out, count };
 }

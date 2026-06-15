@@ -37,6 +37,31 @@ describe("triageFromFacts (deterministic)", () => {
     expect(d.runReview).toBe(true);
   });
 
+  it("a SENSITIVE doc-only path still escalates (docOnly must not suppress sensitivity) (F-7)", () => {
+    // `migrations/notes.md` is docs-kind (docOnly=true) AND sensitivity-tagged
+    // ("migrations"). The sensitivity escalation must win — previously docOnly
+    // precedence skipped the review entirely, discarding the escalation.
+    const f = facts(
+      "diff --git a/migrations/notes.md b/migrations/notes.md\n--- a/migrations/notes.md\n+++ b/migrations/notes.md\n@@ -1 +1 @@\n-a\n+b\n",
+    );
+    expect(f.docOnly).toBe(true);
+    expect(f.sensitivityTags).toContain("migrations");
+    const d = triageFromFacts(f);
+    expect(d.riskClass).toBe("sensitive");
+    expect(d.runReview).toBe(true);
+    expect(d.budgetTier).toBe("expanded");
+  });
+
+  it("a non-sensitive doc-only path is still skipped (no over-escalation)", () => {
+    const d = triageFromFacts(
+      facts(
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n",
+      ),
+    );
+    expect(d.riskClass).toBe("trivial");
+    expect(d.runReview).toBe(false);
+  });
+
   const docDiff =
     "diff --git a/docs/superpowers/specs/x.md b/docs/superpowers/specs/x.md\n--- a/docs/superpowers/specs/x.md\n+++ b/docs/superpowers/specs/x.md\n@@ -1 +1 @@\n-a\n+b\n";
 

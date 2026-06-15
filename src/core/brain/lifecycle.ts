@@ -34,6 +34,15 @@ export async function decayPass(
       const last = Date.parse(e.last_referenced_at ?? e.created_at);
       const ageDays = (now - last) / DAY;
       let next = promoteIfReferenced(e);
+      // Revive a stale entry that reviewers keep re-confirming. When the curator
+      // merges a duplicate it bumps last_referenced_at to "now", so a recently
+      // re-referenced (young-aged) stale entry should rejoin the live set rather
+      // than march on to archive — otherwise a still-relevant convention can
+      // NEVER come back once it goes stale. Demote-vs-revive uses the same 90d
+      // freshness boundary the staling rule uses, so it's exactly reversible.
+      if (next.status === "stale" && ageDays <= 90) {
+        next = { ...next, status: "active" };
+      }
       if ((next.status === "active" || next.status === "candidate") && ageDays > 90)
         next = { ...next, status: "stale" };
       if (next.status === "stale" && ageDays > 270) {

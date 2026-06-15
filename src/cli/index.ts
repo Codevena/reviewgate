@@ -52,7 +52,7 @@ const gate = defineCommand({
     // emit a block instead (fail CLOSED — strictly better than dying silently).
     // Only for `stop`; trigger/reset are not the review and must not block.
     if (hook === "stop") {
-      process.on("uncaughtException", (err) => {
+      const failClosed = (err: unknown): never => {
         const msg = err instanceof Error ? err.message : String(err);
         const reason = `🔴 Reviewgate · GATE CLOSED — internal error: ${msg}. Run \`reviewgate doctor\`; end your turn again to retry.`;
         try {
@@ -61,7 +61,13 @@ const gate = defineCommand({
           /* stdout gone — nothing more we can do */
         }
         process.exit(0);
-      });
+      };
+      process.on("uncaughtException", failClosed);
+      // Mirror the uncaughtException backstop for a rejected fire-and-forget promise
+      // (no .catch()). Without this, an unhandled rejection terminates the process
+      // with EMPTY stdout → Claude Code reads the Stop hook as "allow" → the turn
+      // ends UN-reviewed = fail-OPEN, exactly what this gate prevents. Fail CLOSED.
+      process.on("unhandledRejection", failClosed);
     }
     // runGateSafe wraps the WHOLE pipeline (incl. readHookStdin) in a
     // fail-closed catch so no awaited throw can escape to citty. Never block on

@@ -36,7 +36,17 @@ const isUnder = (child: string, parent: string): boolean =>
 // any "…/.env") without matching a literal "*"/segment substring. Used for the
 // readDenyGlobs path; a glob has no single location so it can't be a subpath.
 export function globToSbplRegex(glob: string): string {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+  // The output is a Seatbelt RAW regex literal `#"…"` (backslashes pass verbatim to
+  // the regex engine — see the design spec's `#"…\.env$"`, single-backslash form —
+  // so this is NOT a string-escape context and we must NOT double `\`). The one
+  // injection vector is a character that can break out of the `#"…"` literal: a
+  // double-quote terminates it early (and could neutralize trailing deny rules),
+  // and a control char (newline/CR/NUL) can corrupt the lexer. A real secret-file
+  // glob never contains these, so strip them from config-supplied input before
+  // embedding — fail-safe (the deny still binds to the sanitized pattern; it can no
+  // longer escape the literal).
+  const sanitized = glob.replace(/["\n\r\0]/g, "");
+  const escaped = sanitized.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
   // (^|/) — start of string or a path separator — then the pattern, then end.
   const body = `(^|/)${escaped}$`;
   return `#"${body}"`;

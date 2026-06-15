@@ -41,4 +41,23 @@ describe("notifyDesktop", () => {
     };
     expect(() => notifyDesktop("Reviewgate", "done", throwingSpawn)).not.toThrow();
   });
+
+  it("passes a bounded spawn timeout so a hung notifier can't block the gate (F-2)", () => {
+    // The notification fires AFTER the verdict; a hung osascript/notify-send with no
+    // timeout would block the Stop hook from returning and DROP the block decision
+    // (fail-open). spawnSync must receive a finite `timeout`.
+    let opts: { timeout?: number | undefined } | undefined;
+    const spy = (_cmd: string, _args: string[], o?: { timeout?: number | undefined }) => {
+      opts = o;
+      return {};
+    };
+    notifyDesktop("Reviewgate", "done", spy);
+    // On a supported platform the spawn ran with a finite timeout; on an unsupported
+    // platform it no-ops (opts stays undefined). When it spawned, the timeout is set.
+    if (opts !== undefined) {
+      expect(typeof opts.timeout).toBe("number");
+      expect(opts.timeout).toBeGreaterThan(0);
+      expect(opts.timeout).toBeLessThanOrEqual(10_000);
+    }
+  });
 });

@@ -56,7 +56,10 @@ export class ReplayAdapter implements ProviderAdapter {
     }
     if (hasComplete) {
       this.complete = async (prompt: string) => {
-        const entry = this.pop(completeKey(this.id), "complete");
+        // Content-addressed by prompt hash — must match RecordingAdapter, which keys
+        // complete() entries as completeKey(id, sha256(prompt)) so distinct judge
+        // phases don't share one FIFO and pop each other's responses.
+        const entry = this.pop(completeKey(this.id, sha256(prompt)), "complete");
         this.checkDrift(entry, sha256(prompt));
         return (entry.result as { text: string }).text;
       };

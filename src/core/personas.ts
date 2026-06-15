@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
+import { neutralizeInjectionMarkers, redactHighEntropy } from "../diff/sanitizer.ts";
 import { personaFilePath } from "../utils/paths.ts";
+import { safeReadContained } from "../utils/safe-read.ts";
 
 export const PERSONA_FILE_CAP = 8_000;
 
@@ -24,14 +24,17 @@ export const DEFAULT_REAFFIRM =
   "You are a meticulous senior code reviewer. Assume the author was overconfident. Find real bugs, correctness issues, and risks.";
 
 function readPersonaFile(repoRoot: string, id: string): string | null {
-  const p = personaFilePath(repoRoot, id);
-  try {
-    if (!existsSync(p) || statSync(p).size > PERSONA_FILE_CAP) return null;
-    const text = neutralizeInjectionMarkers(readFileSync(p, "utf8").trim());
-    return text.length > 0 ? text : null;
-  } catch {
-    return null;
-  }
+  // Symlink-safe, realpath-contained, size-capped read: an agent-under-review can
+  // plant `.reviewgate/personas/<id>.md` as a symlink to `~/.ssh/id_rsa` / `.env`,
+  // and `security` is the DEFAULT persona so this path IS consulted. safeReadContained
+  // refuses any final/intermediate symlink that escapes the repo and any file > cap.
+  const raw = safeReadContained(repoRoot, personaFilePath(repoRoot, id), PERSONA_FILE_CAP);
+  if (raw === null) return null;
+  // Defence in depth: even a contained-but-sensitive file gets injection markers
+  // neutralised AND high-entropy tokens (keys/tokens) redacted before it reaches the
+  // network-bound reviewer prompt.
+  const text = neutralizeInjectionMarkers(redactHighEntropy(raw.trim()).out);
+  return text.length > 0 ? text : null;
 }
 
 export function resolvePersonas(

@@ -51,6 +51,10 @@ interface ReviewContext {
   gitInfo: Awaited<ReturnType<typeof collectGitInfo>>;
   diff: string;
   reviewBase: string | null;
+  // True when the captured review scope was lost (corrupt dirty.flag) and the diff
+  // was recovered against a wider fallback base — surfaced to reviewers so the diff
+  // isn't trusted as a complete picture even when collectDiff didn't itself truncate.
+  diffIncomplete: boolean;
 }
 
 // Everything produced by the pre-loop setup phase, bundled so it can be computed
@@ -198,11 +202,40 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     setupDeadlineAt !== null
       ? await withTimeout(loadConfigP, Math.max(1, setupDeadlineAt - Date.now()), "config-load")
       : await loadConfigP;
-  const audit = new AuditLogger(auditDir(input.repoRoot));
+  // Enforce config's audit.retentionDays (previously never applied → unbounded
+  // growth): the logger prunes day-partitions older than the cutoff on its first
+  // append.
+  const audit = new AuditLogger(auditDir(input.repoRoot), cfg.audit.retentionDays);
 
   if (input.hook === "reset") {
-    await handleReset({ repoRoot: input.repoRoot });
-    return { exitCode: 0, stdout: "", stderr: "" };
+    // Take the SAME gate lock the stop path uses before deleting state/decisions/
+    // pending: SessionStart reset can race a stop-gate still in flight on the same
+    // checkout (parallel session, or a slow prior turn) and rmSync state.json /
+    // decisions / pending out from under it → torn reads + a corrupted review. Hold
+    // the lock for the (fast, local) reset, then release. On contention we fall back
+    // to an UNLOCKED reset (the pre-lock behaviour — never worse) rather than
+    // deadlock session start, but bound the wait so a hung holder can't stall it.
+    const resetLockMs =
+      setupDeadlineAt !== null
+        ? Math.min(
+            input.lockTimeoutMs ?? GATE_LOCK_ACQUIRE_TIMEOUT_MS,
+            Math.max(1, setupDeadlineAt - Date.now()),
+          )
+        : (input.lockTimeoutMs ?? GATE_LOCK_ACQUIRE_TIMEOUT_MS);
+    let resetLock: { release: () => Promise<void> } | null = null;
+    let stderr = "";
+    try {
+      resetLock = await flock(gateLockPath(input.repoRoot), resetLockMs);
+    } catch {
+      stderr =
+        "🟠 Reviewgate · reset ran WITHOUT the gate lock (a review is in flight on this checkout); state may be briefly inconsistent until the in-flight review finishes.";
+    }
+    try {
+      await handleReset({ repoRoot: input.repoRoot });
+    } finally {
+      if (resetLock) await resetLock.release();
+    }
+    return { exitCode: 0, stdout: "", stderr };
   }
 
   if (input.hook === "trigger") {
@@ -393,13 +426,33 @@ async function gatherReviewContext(
   // Reused when the HEAD-advanced path already computed the since-base diff, so
   // the gate doesn't run collectDiff twice for the same base.
   let precomputedDiff: string | undefined;
+  // Set when the dirty.flag could not be parsed (truncated / half-written / hand-
+  // edited). Forces diffIncomplete downstream so reviewers don't trust the diff as
+  // a complete picture (we recovered the widest base we could, but the captured
+  // batch scope is lost).
+  let dirtyFlagUnparsed = false;
   if (hasDirtyFlag) {
     try {
       const flag = JSON.parse(readFileSync(dp, "utf8")) as { base_sha?: string; base_ts?: string };
       reviewBase = flag.base_sha ?? null;
       reviewBaseTs = flag.base_ts ?? null;
     } catch {
-      reviewBase = null;
+      // A corrupt dirty.flag must NOT silently narrow the review to the working
+      // tree only — that would DROP any commit-per-task work landed mid-batch
+      // (fail-open: unreviewed committed code ships). Fail toward MORE coverage:
+      // fall back to the last reviewed sha as the base (covers committed +
+      // uncommitted since the last review), reviewing ALL untracked files
+      // (reviewBaseTs stays null → no mtime scoping). With no prior review, base
+      // stays null (working-tree) — but we still flag the diff incomplete so the
+      // narrowing is surfaced to reviewers rather than trusted as complete.
+      dirtyFlagUnparsed = true;
+      reviewBaseTs = null;
+      try {
+        const st = await state.load();
+        reviewBase = st.last_reviewed_head_sha ?? null;
+      } catch {
+        reviewBase = null;
+      }
     }
   } else {
     // HEAD-advanced trigger: committed/merged work can arrive WITHOUT an Edit/Write
@@ -457,7 +510,7 @@ async function gatherReviewContext(
   }
   const diff =
     precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
-  return { gitInfo, diff, reviewBase };
+  return { gitInfo, diff, reviewBase, diffIncomplete: dirtyFlagUnparsed };
 }
 
 // The stop-hook review pipeline, run under the gate lock by runGate. Split out so
@@ -507,6 +560,9 @@ async function runStopGate(
   }
   const { host, adapters, ctx } = setup;
   const { gitInfo, diff, reviewBase } = ctx;
+  // A corrupt dirty.flag (ctx.diffIncomplete) OR a collectDiff-truncation trailer
+  // both mean the diff isn't a trustworthy complete picture.
+  const diffIncomplete = ctx.diffIncomplete || diffMarkedIncomplete(diff);
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,
@@ -521,8 +577,9 @@ async function runStopGate(
     reasonOnFailEnabled: true,
     reviewBaseSha: reviewBase,
     // Partial-diff guard: surfaced to reviewers as trusted context (not buried in
-    // the untrusted fence) so a truncated/timed-out diff isn't trusted as complete.
-    diffIncomplete: diffMarkedIncomplete(diff),
+    // the untrusted fence) so a truncated/timed-out diff — or one recovered after a
+    // corrupt dirty.flag — isn't trusted as complete.
+    diffIncomplete,
   });
 
   const driver = new LoopDriver({

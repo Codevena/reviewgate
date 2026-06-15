@@ -1,22 +1,25 @@
 // src/research/conventions.ts
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { safeReadContained } from "../utils/safe-read.ts";
 
 export interface Conventions {
   summary: string;
 }
 
+// These project files are read as trusted reviewer context, so use the symlink-safe,
+// realpath-contained, size-capped read: an agent-under-review can plant CLAUDE.md /
+// README.md / package.json as symlinks pointing outside the repo to leak their bytes.
+const CONVENTIONS_FILE_CAP = 64 * 1024;
+
 export function loadConventions(repoRoot: string): Conventions {
   const parts: string[] = [];
   for (const f of ["CLAUDE.md", "README.md"]) {
-    const p = join(repoRoot, f);
-    if (existsSync(p))
-      parts.push(`${f}: ${readFileSync(p, "utf8").slice(0, 600).replace(/\n+/g, " ")}`);
+    const raw = safeReadContained(repoRoot, f, CONVENTIONS_FILE_CAP);
+    if (raw !== null) parts.push(`${f}: ${raw.slice(0, 600).replace(/\n+/g, " ")}`);
   }
-  const pkg = join(repoRoot, "package.json");
-  if (existsSync(pkg)) {
+  const pkgRaw = safeReadContained(repoRoot, "package.json", CONVENTIONS_FILE_CAP);
+  if (pkgRaw !== null) {
     try {
-      const j = JSON.parse(readFileSync(pkg, "utf8")) as { scripts?: Record<string, string> };
+      const j = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
       if (j.scripts) parts.push(`scripts: ${Object.keys(j.scripts).join(", ")}`);
     } catch {
       // ignore

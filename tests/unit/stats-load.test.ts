@@ -178,6 +178,38 @@ describe("loadAuditWindow", () => {
     expect(windowed.escalationCount).toBe(0);
   });
 
+  it("last: 0 → empty window for runs AND escalations (no zero-run miscount) (F-8)", () => {
+    const repo = tmp();
+    const auditPath = join(repo, ".reviewgate", "audit", "2026", "05", "20");
+    mkdirSync(auditPath, { recursive: true });
+    const lines = [
+      JSON.stringify(runCompleteEvent("2026-05-20T10:00:00.000Z", "r1", 1)),
+      JSON.stringify(runCompleteEvent("2026-05-20T12:00:00.000Z", "r2", 2)),
+      JSON.stringify({ ts: "2026-05-20T11:00:00.000Z", run_id: "e", iter: 1, event: "escalation" }),
+    ].join("\n");
+    writeFileSync(join(auditPath, "x.jsonl"), `${lines}\n`);
+    // Previously `slice(length - 0)` gave 0 runs but ALL escalations fell through.
+    const w = loadAuditWindow(repo, { last: 0 });
+    expect(w.runs.length).toBe(0);
+    expect(w.escalationCount).toBe(0);
+    expect(w.decisions).toEqual([]);
+  });
+
+  it("last: negative → rejected as an empty window (not a wrap-around miscount)", () => {
+    const repo = tmp();
+    const auditPath = join(repo, ".reviewgate", "audit", "2026", "05", "20");
+    mkdirSync(auditPath, { recursive: true });
+    const lines = [
+      JSON.stringify(runCompleteEvent("2026-05-20T10:00:00.000Z", "r1", 1)),
+      JSON.stringify({ ts: "2026-05-20T11:00:00.000Z", run_id: "e", iter: 1, event: "escalation" }),
+    ].join("\n");
+    writeFileSync(join(auditPath, "x.jsonl"), `${lines}\n`);
+    const w = loadAuditWindow(repo, { last: -3 });
+    expect(w.runs.length).toBe(0);
+    expect(w.escalationCount).toBe(0);
+    expect(w.decisions).toEqual([]);
+  });
+
   it("since: date filters out older runs and escalations", () => {
     const repo = tmp();
     const auditPath = join(repo, ".reviewgate", "audit", "2026", "05", "20");

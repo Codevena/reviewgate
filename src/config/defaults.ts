@@ -192,7 +192,12 @@ export const defaultConfig = {
     // review) until sandbox-runtime support lands — never silently unisolated.
     mode: "off" as const,
     writablePaths: [".reviewgate/"],
-    deniedReads: ["~/.ssh", "~/.aws", "~/.config", ".env*", "*.pem", "*.key"],
+    // NOTE: `~/.config` is deliberately NOT denied here — each provider's own
+    // credential dir lives under it (e.g. ~/.config/codex) and is added to
+    // writeAllow for OAuth-token refresh; a `~/.config` read-deny would nest
+    // over those write-allows and make the overlap guard throw (dead-on-arrival
+    // sandbox). Foreign-provider cred dirs under ~/.config are masked individually.
+    deniedReads: ["~/.ssh", "~/.aws", ".env*", "*.pem", "*.key"],
   },
   audit: {
     retentionDays: 180,

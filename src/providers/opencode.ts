@@ -13,8 +13,9 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
+import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
-import { isQuotaExhausted } from "./quota-signals.ts";
+import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 export interface OpenCodeAdapterOptions {
@@ -68,7 +69,24 @@ export class OpenCodeAdapter implements ProviderAdapter {
   async review(
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
+    // Removed in finally so we don't leak a /tmp dir holding the reviewer output
+    // every iteration (F-1).
     const run = mkdtempSync(join(tmpdir(), "rg-oc-run-"));
+    try {
+      return await this.reviewInRun(run, input);
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
+    }
+  }
+
+  private async reviewInRun(
+    run: string,
+    input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
+  ): Promise<ReviewResult> {
     const stdoutFile = join(run, "out.txt");
     const stderrFile = join(run, "err.log");
 
@@ -94,7 +112,9 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const res = await spawnSafely({
       command: this.binPath,
       args,
-      env: { ...process.env } as Record<string, string>,
+      // opencode authenticates via its own credential store (no env key to keep),
+      // so scrub drops every foreign provider secret without breaking auth (F-2).
+      env: scrubReviewerEnv(process.env),
       cwd: input.workingDir,
       stdinFile: input.promptFile,
       stdoutFile,
@@ -108,12 +128,15 @@ export class OpenCodeAdapter implements ProviderAdapter {
     });
 
     const errText = readFileSafe(stderrFile);
+    // Scan stderr freely (the CLI's own channel); scan stdout (the model's review
+    // text) only for a SHORT banner line (isQuotaBanner) so a quota phrase planted
+    // in the diff and echoed back can neither suppress the reviewer nor false-
+    // trigger a cooldown (F-6b).
+    const quotaHit = isQuotaExhausted(errText) || isQuotaBanner(readFileSafe(stdoutFile));
     const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
     const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(stdoutFile))
-        ? "quota-exhausted"
-        : baseStatus;
+      baseStatus === "error" && quotaHit ? "quota-exhausted" : baseStatus;
 
     if (status !== "ok") {
       return {
@@ -138,7 +161,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       // If the output is actually a quota/usage-limit banner (printed on an
       // exit-0 run), classify it quota-exhausted so cooldown+failover fires
       // (F-043 — mirrors codex/claude/gemini; closes the F-11 gap).
-      const quota = isQuotaExhausted(errText + stdout);
+      const quota = isQuotaExhausted(errText) || isQuotaBanner(stdout);
       return {
         reviewerId: input.reviewerId,
         verdict: "ERROR",
@@ -192,7 +215,7 @@ export class OpenCodeAdapter implements ProviderAdapter {
       const res = await spawnSafely({
         command: this.binPath,
         args,
-        env: { ...process.env } as Record<string, string>,
+        env: scrubReviewerEnv(process.env),
         cwd: run,
         stdinFile: promptFile,
         stdoutFile,

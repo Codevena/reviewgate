@@ -1,6 +1,7 @@
 // src/utils/git.ts
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { safeReadContained } from "./safe-read.ts";
 import { spawnCapture } from "./spawn-capture.ts";
 
 export interface GitInfo {
@@ -33,6 +34,15 @@ async function git(
 // N×30s. This caps the whole loop: once spent, remaining untracked files are
 // skipped (best-effort — reviewing most of the diff beats hanging the turn).
 const COLLECT_DIFF_UNTRACKED_BUDGET_MS = 60_000;
+
+// Aggregate BYTE cap on collectDiff's accumulated untracked synthesis. Each
+// `git diff --no-index` is individually capped (spawnCapture maxBytes), but
+// nothing bounded the SUM across many untracked files — a repo with thousands of
+// new files (or a few large ones) could grow `out` without limit and OOM the
+// gate. Once the accumulated diff exceeds this, the remaining untracked files are
+// dropped and the diff is marked incomplete (fail closed — same as a timeout):
+// reviewers must not treat a clean verdict on a size-capped diff as conclusive.
+const COLLECT_DIFF_UNTRACKED_BYTE_CAP = 16 * 1024 * 1024;
 
 // Appended to a diff that was truncated/timed-out/budget-capped during collection.
 // Exported so callers (the gate) can detect incompleteness and surface it as
@@ -175,9 +185,28 @@ export async function collectDiff(
   // the gate is inert and ALL untracked files are included (a brand-new module
   // must still be reviewed — no regression).
   sinceTs?: string | null,
+  // Aggregate byte cap for the accumulated untracked synthesis (param so tests
+  // can drive the cap without writing 16 MiB; defaults to the production cap).
+  untrackedByteCap: number = COLLECT_DIFF_UNTRACKED_BYTE_CAP,
 ): Promise<string> {
   const base = baseSha && /^[0-9a-f]{7,40}$/i.test(baseSha) ? baseSha : "HEAD";
-  const diffArgs = (ref: string) => ["diff", "--no-color", ref, "--", ".", ...EXCLUDE_PATHSPEC];
+  // `-c core.quotePath=false`: emit RAW UTF-8 paths in the `diff --git`/`+++ `
+  // headers. With git's default quotePath=true a non-ASCII/space/control path is
+  // C-quoted (`diff --git "a/\351\233\242.ts" "b/…"`); the header regex in
+  // diff-facts.ts/hunks.ts then fails to match → the file is dropped from triage
+  // facts (and if it's the only change, files:[] → triage skip-PASSes UNREVIEWED
+  // code, fail-open) and its hunks lose range attribution (findings demoted to
+  // INFO). The untracked `ls-files -z` side is already quote-safe via `-z`.
+  const diffArgs = (ref: string) => [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--no-color",
+    ref,
+    "--",
+    ".",
+    ...EXCLUDE_PATHSPEC,
+  ];
   let tracked = await git(repoRoot, diffArgs(base));
   // Track partial output: a timed-out OR truncated (>maxBytes) diff must not be
   // fed to reviewers as if it were the WHOLE change — a clean verdict on a
@@ -252,6 +281,16 @@ export async function collectDiff(
           /* file vanished mid-listing — let --no-index handle it */
         }
       }
+      // Aggregate byte cap: stop accumulating once the synthesized diff is too
+      // large (a repo with thousands of untracked files, or a few huge ones).
+      // Checked BEFORE spawning the next --no-index so memory stays bounded by
+      // ~cap + one file's stdout. Remaining files are dropped → mark incomplete
+      // (fail closed, same as a timeout): a clean verdict on a size-capped diff
+      // is not conclusive.
+      if (out.length >= untrackedByteCap) {
+        incomplete = true;
+        break;
+      }
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         // Budget spent with untracked files still unprocessed → the diff omits
@@ -267,7 +306,12 @@ export async function collectDiff(
       // empty stdout, file silently dropped from the review (F-13).
       const d = await git(
         repoRoot,
-        ["diff", "--no-color", "--no-index", "--", "/dev/null", file],
+        // `-c core.quotePath=false`: keep the synthesized header path RAW (UTF-8),
+        // same as the tracked diff above — `--no-index` honors it too. Otherwise a
+        // non-ASCII untracked file's `diff --git`/`+++ ` header is C-quoted
+        // (`"a/\351…"`) and diff-facts.ts/hunks.ts drop it from triage facts /
+        // range attribution even though `-z` made `ls-files` find it.
+        ["-c", "core.quotePath=false", "diff", "--no-color", "--no-index", "--", "/dev/null", file],
         Math.min(GIT_TIMEOUT_MS, remaining),
       );
       // Exit 0 (identical/empty file) and 1 (differences) are the expected
@@ -340,28 +384,42 @@ export async function collectChangedFileContents(
     used += note.length;
     return used >= maxBytes;
   };
+  // Resolve the repo realpath ONCE for the loop's contained reads (avoids
+  // re-resolving per file). Unresolvable repo root → every read refuses (null).
+  let repoReal: string | undefined;
+  try {
+    repoReal = realpathSync(repoRoot);
+  } catch {
+    repoReal = undefined;
+  }
   for (const f of [...names].sort()) {
     if (used >= maxBytes) break;
     if (isExcludedFromReview(f)) continue;
     const abs = join(repoRoot, f);
-    let content: string;
+    // Pre-read size probe ONLY to decide oversize-omit vs read (the omit marker
+    // must still fire for a too-big regular file). lstat never FOLLOWs a symlink,
+    // so a symlink/dir/special is skipped here; the ACTUAL read below goes through
+    // safeReadContained (O_NOFOLLOW + fstat + read on one fd), which closes the
+    // lstat→read TOCTOU — a symlink swapped in after this probe fails the open
+    // instead of leaking an out-of-repo target (e.g. ~/.ssh/id_rsa). The size
+    // budget is re-enforced inside safeReadContained too (defence in depth).
+    const remaining = maxBytes - used;
     try {
-      // lstat (not stat): never FOLLOW a symlink. A changed/untracked symlink
-      // could point outside the repo (e.g. ~/.ssh/id_rsa); reading its target
-      // would leak that file's content into the reviewer prompt. Only ever read
-      // regular files; skip symlinks/dirs/special files.
       const st = lstatSync(abs);
-      if (!st.isFile()) continue;
-      // Size-guard BEFORE reading: never load a file that can't fit the remaining
-      // budget into memory just to omit its block later (avoids a huge-file stall).
-      if (st.size > maxBytes - used) {
+      if (!st.isFile()) continue; // symlink/dir/special → skip
+      if (st.size > remaining) {
+        // Too big for the remaining budget: emit the omit marker (don't load it).
         if (omit(f)) break;
         continue;
       }
-      content = readFileSync(abs, "utf8");
     } catch {
-      continue; // deleted or binary
+      continue; // deleted/vanished mid-listing
     }
+    // Symlink-safe, realpath-contained read on a single fd. null = skip (a
+    // swapped-in symlink, a binary/NUL file, a containment violation, or now-
+    // oversize/gone) — fall through to the next file, same as the old catch.
+    const content = safeReadContained(repoRoot, f, remaining, repoReal);
+    if (content === null) continue;
     const block = `### ${f}\n\`\`\`\n${content}\n\`\`\`\n`;
     if (used + block.length > maxBytes) {
       if (omit(f)) break;

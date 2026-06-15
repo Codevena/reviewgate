@@ -102,7 +102,7 @@ const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 
 // being adjacent, while 1 vs 5 share one) — a sliding window honors the documented
 // guarantee at every line (F-009).
 const REGION_WINDOW = 5;
-function sameRegion(a: Finding, b: Finding): boolean {
+function sameRegion(a: { file: string; line_start: number }, b: Finding): boolean {
   return a.file === b.file && Math.abs(a.line_start - b.line_start) <= REGION_WINDOW;
 }
 
@@ -142,6 +142,16 @@ const WORDING_MERGE_MAX_LINE_DISTANCE = 25;
 
 interface Cluster {
   sample: Finding;
+  // Immutable membership anchor: the file + line_start of the cluster SEED (the
+  // first finding that opened the cluster). `sample` is re-pointed to the highest
+  // severity member as the cluster grows, so testing region/wording-distance
+  // membership against `sample.line_start` would let the merge window DRIFT with
+  // each merge (a later finding could merge only because an earlier higher-severity
+  // member pulled the representative closer). Anchoring to the stable seed span
+  // keeps membership order-independent (F-009/F-010 mirror the tokens-not-mutated
+  // invariant).
+  anchorFile: string;
+  anchorLine: number;
   reviewers: string[];
   messages: string[];
   tokens: Set<string>;
@@ -273,11 +283,15 @@ export function aggregate(input: AggregateInput): AggregateResult {
     // highly similar.
     let target: Cluster | undefined;
     for (const c of clusters) {
-      if (c.sample.file !== f.file) continue;
+      if (c.anchorFile !== f.file) continue;
+      // Test membership against the IMMUTABLE seed anchor (anchorFile/anchorLine),
+      // NOT the mutated representative `c.sample` — otherwise a higher-severity
+      // member re-pointing `sample` would shift the region/wording window and make
+      // clustering order-dependent. Mirrors the `tokens`-not-mutated invariant.
       const wordingMerge =
         jaccard(c.tokens, fTokens) >= SIM_THRESHOLD &&
-        Math.abs(c.sample.line_start - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
-      if (sameRegion(c.sample, f) || wordingMerge) {
+        Math.abs(c.anchorLine - f.line_start) <= WORDING_MERGE_MAX_LINE_DISTANCE;
+      if (sameRegion({ file: c.anchorFile, line_start: c.anchorLine }, f) || wordingMerge) {
         // N6: a REGION-only merge (co-located but differently-worded) that crosses the
         // high-stakes boundary bundles a real bug with a cosmetic nit under one
         // decision and inflates the nit's severity — block it, keep them separate. A
@@ -305,6 +319,8 @@ export function aggregate(input: AggregateInput): AggregateResult {
     } else {
       clusters.push({
         sample: f,
+        anchorFile: f.file,
+        anchorLine: f.line_start,
         reviewers: [reviewerKey],
         messages: [f.message],
         tokens: fTokens,

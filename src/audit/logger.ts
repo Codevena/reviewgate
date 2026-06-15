@@ -1,6 +1,6 @@
 // src/audit/logger.ts
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditEvent, EventType, Trigger } from "../schemas/audit-event.ts";
 import { AuditEventSchema } from "../schemas/audit-event.ts";
@@ -27,12 +27,59 @@ export type AuditEventInput = {
 export class AuditLogger {
   private lastHash = "";
   private filePath: string | null = null;
+  private pruned = false;
 
-  constructor(private readonly auditDir: string) {}
+  // `retentionDays` enforces config's `audit.retentionDays` (previously declared
+  // but NEVER applied → the log grew forever): day-partitions older than the cutoff
+  // are deleted once per logger lifetime, on the first append. null/<=0 disables
+  // pruning (back-compat: the bare `new AuditLogger(dir)` callers are unaffected).
+  constructor(
+    private readonly auditDir: string,
+    private readonly retentionDays: number | null = null,
+  ) {}
 
   currentFilePath(): string {
     if (!this.filePath) this.filePath = this.computePath();
     return this.filePath;
+  }
+
+  // Prune whole day-partition directories (audit/YYYY/MM/DD) whose date is older
+  // than `retentionDays` before today (UTC). Day-granularity matches the on-disk
+  // layout written by computePath() and avoids rewriting hash-chained files (which
+  // would invalidate the chain). Best-effort + idempotent: runs at most once per
+  // logger instance and swallows fs errors so a prune hiccup never blocks an append.
+  private pruneOldEntries(): void {
+    if (this.pruned) return;
+    this.pruned = true;
+    const days = this.retentionDays;
+    if (days === null || !Number.isFinite(days) || days <= 0) return;
+    if (!existsSync(this.auditDir)) return;
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    try {
+      for (const yEnt of readdirSync(this.auditDir, { withFileTypes: true })) {
+        if (!yEnt.isDirectory() || !/^\d{4}$/.test(yEnt.name)) continue;
+        const yDir = join(this.auditDir, yEnt.name);
+        for (const mEnt of readdirSync(yDir, { withFileTypes: true })) {
+          if (!mEnt.isDirectory() || !/^\d{2}$/.test(mEnt.name)) continue;
+          const mDir = join(yDir, mEnt.name);
+          for (const dEnt of readdirSync(mDir, { withFileTypes: true })) {
+            if (!dEnt.isDirectory() || !/^\d{2}$/.test(dEnt.name)) continue;
+            // The directory date is the LAST moment of that UTC day (end-of-day):
+            // only prune once the whole day is older than the cutoff.
+            const dayEnd = Date.UTC(
+              Number(yEnt.name),
+              Number(mEnt.name) - 1,
+              Number(dEnt.name) + 1,
+            );
+            if (dayEnd < cutoff) {
+              rmSync(join(mDir, dEnt.name), { recursive: true, force: true });
+            }
+          }
+        }
+      }
+    } catch {
+      /* best-effort: never let pruning block an append */
+    }
   }
 
   private computePath(): string {
@@ -47,6 +94,10 @@ export class AuditLogger {
   }
 
   async append(input: AuditEventInput): Promise<AuditEvent> {
+    // Enforce retention before writing (once per logger lifetime). Pruning happens
+    // ON write so the log can't grow forever between sessions without ever being
+    // trimmed; today's partition is never a prune target.
+    this.pruneOldEntries();
     const base = {
       schema: "reviewgate.audit.v1" as const,
       ts: new Date().toISOString(),

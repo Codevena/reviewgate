@@ -6,7 +6,7 @@
 // (eventual-review guarantee), and is consumed once the lock is acquired.
 import { describe, expect, it } from "bun:test";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -100,10 +100,13 @@ describe("gate defer-on-contention", () => {
   it("keeps the deferred.flag when dirty-flag synthesis fails (never drops a review — codex CRITICAL)", () => {
     const repo = gitRepo("rg-defer-failsafe-");
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
-    // Force writeFileAtomic(dirtyFlagPath) to throw: pre-create a DIRECTORY at the
-    // tmp path it writes to (`${dirtyFlagPath}.tmp`), so writeFileSync → EISDIR.
-    mkdirSync(`${dirtyFlagPath(repo)}.tmp`, { recursive: true });
+    // Force writeFileAtomic(dirtyFlagPath) to throw: make .reviewgate read-only so the
+    // per-write-unique temp file can't be created (EACCES). (writeFileAtomic now uses a
+    // per-write-unique `.tmp` name, so obstructing a fixed `${path}.tmp` no longer works;
+    // a dir AT dirtyFlagPath would break the not-exists assertion below. Requires non-root.)
+    chmodSync(reviewgateDir(repo), 0o555);
     consumeDeferredFlag(repo);
+    chmodSync(reviewgateDir(repo), 0o755);
     // Synthesis failed → the marker MUST be preserved so the next stop retries;
     // it must NOT be consumed with no dirty.flag (that would drop the review).
     expect(existsSync(deferredFlagPath(repo))).toBe(true);
@@ -140,8 +143,10 @@ describe("lockContentionDecision — only genuine contention defers (F-002)", ()
 
   it("FAILS CLOSED on contention when the deferred marker cannot be durably written", () => {
     const repo = gitRepo("rg-lcd-nomark-");
-    // Force writeFileAtomic(deferredFlagPath) to throw (dir at its .tmp path).
-    mkdirSync(`${deferredFlagPath(repo)}.tmp`, { recursive: true });
+    // Force writeFileAtomic(deferredFlagPath) to throw: a DIRECTORY at the target path
+    // makes the final renameSync(tmp, path) fail (EISDIR). (Per-write-unique temp names
+    // mean obstructing a fixed `${path}.tmp` no longer works.)
+    mkdirSync(deferredFlagPath(repo), { recursive: true });
     const out = lockContentionDecision(repo, new FlockTimeoutError("timed out"));
     const parsed = JSON.parse(out.stdout || "{}") as { decision?: string };
     expect(parsed.decision).toBe("block");

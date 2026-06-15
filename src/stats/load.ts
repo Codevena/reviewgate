@@ -116,6 +116,15 @@ export function loadAuditWindow(
   runs.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
 
   const { since, until, last } = opts;
+  // Guard `last <= 0`: `slice(length - 0)` (and `slice(length + |neg|)`) yields an
+  // EMPTY run window, but `lowerBound` then stays undefined and escalations/
+  // decisions fall through to the UNWINDOWED set — i.e. 0 runs but ALL
+  // escalations/decisions counted (a miscount). "the N most-recent runs" with
+  // N ≤ 0 is an empty window across the board: no runs, no escalations, no
+  // decisions. A negative count is meaningless → treated identically.
+  if (last != null && last <= 0) {
+    return { runs: [], escalationCount: 0, decisions: [] };
+  }
   let filteredRuns = since != null ? runs.filter((r) => r.ts >= since) : runs;
   if (until != null) filteredRuns = filteredRuns.filter((r) => r.ts < until);
   let filteredEscalations = since != null ? escalations.filter((e) => e.ts >= since) : escalations;

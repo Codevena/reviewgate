@@ -16,6 +16,29 @@ describe("validateSince", () => {
     // names a concrete expected format rather than dumping a stack trace
     expect(msg).toMatch(/ISO|\d{4}-\d{2}-\d{2}/);
   });
+
+  it("accepts a valid ISO date-time with a non-UTC offset (must not be rejected)", () => {
+    expect(validateSince("2026-05-01T23:00:00-05:00")).toBeNull();
+    expect(validateSince("2026-05-01T12:00:00.500Z")).toBeNull();
+  });
+
+  it("rejects ambiguous, locale-dependent date strings (wrong-window risk)", () => {
+    // "05/01/2026" is May 1st or Jan 5th depending on locale — new Date() would
+    // silently parse it into the WRONG window. Must be rejected.
+    expect(validateSince("05/01/2026")).not.toBeNull();
+    expect(validateSince("May 1, 2026")).not.toBeNull();
+    expect(validateSince("2026/05/01")).not.toBeNull();
+    expect(validateSince("1714521600")).not.toBeNull(); // bare epoch
+  });
+
+  it("rejects calendar overflows that new Date() silently rolls over", () => {
+    // new Date('2026-02-30') => Mar 2; 2026-04-31 => May 1. Both must be rejected
+    // rather than silently accepted as a different (real) day.
+    expect(validateSince("2026-02-30")).not.toBeNull();
+    expect(validateSince("2026-04-31")).not.toBeNull();
+    expect(validateSince("2026-13-01")).not.toBeNull();
+    expect(validateSince("2026-00-10")).not.toBeNull();
+  });
 });
 
 describe("validateWeek", () => {
