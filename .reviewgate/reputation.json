@@ -1,0 +1,135 @@
+{
+  "schema": "reviewgate.reputation.v1",
+  "reviewers": {
+    "codex:security": {
+      "correct": [
+        {
+          "ts": "2026-06-03T10:10:24.083Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:1:2:F-001:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-03T10:10:24.083Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:1:2:F-002:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-03T10:10:24.083Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:1:2:F-003:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-03T15:30:31.729Z",
+          "eid": "01KT6WHHG7M9FB6CNH8XCRG8P7:3:1:F-002:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-03T15:30:31.729Z",
+          "eid": "01KT6WHHG7M9FB6CNH8XCRG8P7:3:1:F-001:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-03T15:36:26.328Z",
+          "eid": "01KT6WHHG7M9FB6CNH8XCRG8P7:3:2:F-001:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-05T15:37:32.317Z",
+          "eid": "01KTC6EJS4N39EYFNTHPNV6VYX:0:1:F-001:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-05T15:37:32.317Z",
+          "eid": "01KTC6EJS4N39EYFNTHPNV6VYX:0:1:F-002:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-05T15:41:57.722Z",
+          "eid": "01KTC6EJS4N39EYFNTHPNV6VYX:0:2:F-001:accepted:codex:security"
+        },
+        {
+          "ts": "2026-06-15T16:15:08.544Z",
+          "eid": "01KV5QZPDYHBFRMBF17AG2AVY2:0:1:F-001:codex:security"
+        }
+      ],
+      "wrong": [
+        {
+          "ts": "2026-06-03T09:54:53.698Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:1:1:F-001:rejected:codex:security"
+        },
+        {
+          "ts": "2026-06-03T09:54:53.698Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:1:1:F-002:rejected:codex:security"
+        }
+      ]
+    },
+    "gemini:security": {
+      "correct": [
+        {
+          "ts": "2026-06-03T11:02:21.020Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:3:1:F-002:accepted:gemini:security"
+        },
+        {
+          "ts": "2026-06-03T11:02:21.020Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:3:1:F-003:accepted:gemini:security"
+        },
+        {
+          "ts": "2026-06-03T11:02:21.020Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:3:1:F-004:accepted:gemini:security"
+        }
+      ],
+      "wrong": [
+        {
+          "ts": "2026-06-03T11:02:21.020Z",
+          "eid": "01KT69MX4JHA7SF6CC67H55PZK:3:1:F-001:rejected:gemini:security"
+        }
+      ]
+    },
+    "openrouter:security": {
+      "correct": [
+        {
+          "ts": "2026-06-05T12:28:43.310Z",
+          "eid": "01KTBVD1KWSY63ABGJGGKB6M5M:0:1:F-001:accepted:openrouter:security"
+        },
+        {
+          "ts": "2026-06-10T12:04:55.692Z",
+          "eid": "01KTR7B1GVCSN8XXBR47NH3RA4:5:1:F-001:accepted:openrouter:security"
+        }
+      ],
+      "wrong": [
+        {
+          "ts": "2026-06-05T12:38:36.626Z",
+          "eid": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2:F-003:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-05T12:38:36.626Z",
+          "eid": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2:F-004:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-05T12:38:36.626Z",
+          "eid": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2:F-005:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-05T12:38:36.626Z",
+          "eid": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2:F-002:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-001:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-010:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-011:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-013:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-004:rejected:openrouter:security"
+        },
+        {
+          "ts": "2026-06-15T13:34:01.349Z",
+          "eid": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1:F-005:rejected:openrouter:security"
+        }
+      ]
+    }
+  }
+}

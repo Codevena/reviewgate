@@ -241,7 +241,7 @@ otherwise it is render-only.
 
 `bun test`, in-process, no provider subprocesses.
 
-**Slice 1 (`tests/unit/aggregator-redaction-drop.test.ts`):**
+**Slice 1 (`tests/unit/aggregator-redaction-demote.test.ts`):**
 - A **non-security** finding with `<REDACTED:HIGH_ENTROPY>` in `message` → **demoted to INFO**,
   `redaction_demoted:true`, kept in `dedupedFindings`, verdict not FAIL.
 - Non-security `<REDACTED:` in `suggested_fix` → demoted to INFO.

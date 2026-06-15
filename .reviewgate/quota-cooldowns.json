@@ -1,0 +1,17 @@
+{
+  "schema": "reviewgate.quota-cooldown.v1",
+  "providers": {
+    "claude-code": {
+      "reset_at": "2026-06-15T13:34:49.747Z",
+      "recorded_at": "2026-06-15T13:29:49.747Z",
+      "source": "default",
+      "consecutive_failures": 1
+    },
+    "gemini": {
+      "reset_at": "2026-06-15T13:34:49.747Z",
+      "recorded_at": "2026-06-15T13:29:49.747Z",
+      "source": "default",
+      "consecutive_failures": 1
+    }
+  }
+}

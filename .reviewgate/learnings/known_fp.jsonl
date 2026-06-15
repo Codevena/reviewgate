@@ -1,0 +1,312 @@
+{
+  "schema": "reviewgate.fpledger.v1",
+  "entries": [
+    {
+      "id": "FP-001",
+      "signature": "e6b2087054a252f0c640c8361693551f1c221b965f33be973d316880cc698d42",
+      "rule_id": "committed-repo-hook-exec",
+      "category": "security",
+      "file": ".claude/settings.json",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KT69MX4JHA7SF6CC67H55PZK:1:1",
+          "provider": "codex",
+          "ts": "2026-06-03T09:54:53.698Z",
+          "reason": "Self-machinery false positive: .claude/settings.json is Reviewgate's OWN hook installation (the repo-local-hooks = code-execution pattern is the opted-into Reviewgate design, not a vuln in the reviewed change). It is a local uncommitted artifact, not introduced by this diff. Already fixed in source by commit a7b33ab (M-B5c, I-17), which excludes .claude/ via isExcludedFromReview + EXCLUDE_PATHSPEC; the running gate binary is a stale pre-rebuild dist, so the orchestrator drop-filter has not picked it up yet."
+        },
+        {
+          "run_id": "01KT69MX4JHA7SF6CC67H55PZK:3:1",
+          "provider": "gemini",
+          "ts": "2026-06-03T11:02:21.020Z",
+          "reason": "Self-machinery false positive (I-17): .claude/settings.json is Reviewgate's OWN hook installation. In THIS repo it is UNTRACKED-LOCAL (kept uncommitted), so the 'committing → RCE on clone' premise is false — `git log -- .claude/settings.json` shows nothing. Committed repo-local hooks are Reviewgate's INTENTIONAL opt-in (the gate runs for contributors by design), not a vuln to block on. The M-B5c diff-aware exclusion demotes OFF-diff .claude findings; an untracked-local file lands IN the working-tree diff, so it is now gitignored (.claude/settings.json + .local) to keep the gate's own machinery out of self-review."
+        }
+      ],
+      "distinct_providers": [
+        "codex",
+        "gemini"
+      ],
+      "first_seen_at": "2026-06-03T09:54:53.698Z",
+      "last_seen_at": "2026-06-03T11:02:21.020Z",
+      "created_at": "2026-06-03T09:54:53.698Z"
+    },
+    {
+      "id": "FP-002",
+      "signature": "f1d22dfe6deedd040d9a528e8c3aba3af5d66f568f347aee0147e19100fb7b32",
+      "rule_id": "fail-open-on-lock-contention",
+      "category": "security",
+      "file": "src/cli/commands/gate.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KT69MX4JHA7SF6CC67H55PZK:1:1",
+          "provider": "codex",
+          "ts": "2026-06-03T09:54:53.698Z",
+          "reason": "By design (D-1 fail-safe-degrade, docs/dev/2026-06-03-multi-agent-feedback-remediation.md §3, user-approved): on lock CONTENTION the gate defers (allow_stop + deferred.flag) instead of blocking. The prior block-on-contention WAS the reported bug — it busy-looped and starved every parallel session. Eventual review is guaranteed: deferred.flag forces the next stop to take the lock (stopHasNothingToReview returns false while it exists) and the dirty.flag persists. Crucially only lock CONTENTION defers — every real review FAILURE (crash, timeout, error, quota, uncaught exception via runGateSafe) still FAILS CLOSED. Re-blocking would undo the approved decision and re-introduce the starvation."
+        }
+      ],
+      "distinct_providers": [
+        "codex"
+      ],
+      "first_seen_at": "2026-06-03T09:54:53.698Z",
+      "last_seen_at": "2026-06-03T09:54:53.698Z",
+      "created_at": "2026-06-03T09:54:53.698Z"
+    },
+    {
+      "id": "FP-003",
+      "signature": "f8ff7e4f2399c7c8bddfc42126055b6f4da85fd62bc41274a1d164bd448381d5",
+      "rule_id": "toctou-fact-check-validate",
+      "category": "security",
+      "file": "src/core/fact-check.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2",
+          "provider": "openrouter",
+          "ts": "2026-06-05T12:38:36.626Z",
+          "reason": "O_NOFOLLOW already rejects a symlinked leaf (the realistic vector). A regular-file/hardlink swap needs pre-existing repo write access PLUS a protected_hardlinks bypass (kernel default-on, root-owned target); the read bytes are NEVER surfaced (only lineCount() is computed then discarded); and the worst case, skipping demotion, leaves the finding BLOCKING. Fail-safe, no content leak, no fail-open."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-05T12:38:36.626Z",
+      "last_seen_at": "2026-06-05T12:38:36.626Z",
+      "created_at": "2026-06-05T12:38:36.626Z"
+    },
+    {
+      "id": "FP-004",
+      "signature": "6826428d174efdd9661b6c7a7752836ecda1a50965013663e04df9e5a9bef78b",
+      "rule_id": "bypass-factcheck-via-deleted-path",
+      "category": "security",
+      "file": "src/core/fact-check.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2",
+          "provider": "openrouter",
+          "ts": "2026-06-05T12:38:36.626Z",
+          "reason": "validateFindingFacts is a DEMOTE-ONLY safety net. A deleted file's line count is unverifiable because the file is gone from the working tree, so skipping it leaves the finding at its reviewer severity for the other layers (consensus/critic/grounding/reputation/singleton-failsafe) exactly as before P2 existed. That is fail-safe (the finding stays blocking), not blind trust, and never causes a fail-open."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-05T12:38:36.626Z",
+      "last_seen_at": "2026-06-05T12:38:36.626Z",
+      "created_at": "2026-06-05T12:38:36.626Z"
+    },
+    {
+      "id": "FP-005",
+      "signature": "b1e270693fe49c76fc4b3ad69d5ea01931da6dc6b579a490681e4f6727bfb2db",
+      "rule_id": "path-traversal-deleted-set-join",
+      "category": "security",
+      "file": "src/core/fact-check.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2",
+          "provider": "openrouter",
+          "ts": "2026-06-05T12:38:36.626Z",
+          "reason": "validateFindingFacts is a DEMOTE-ONLY safety net. A deleted file's line count is unverifiable because the file is gone from the working tree, so skipping it leaves the finding at its reviewer severity for the other layers (consensus/critic/grounding/reputation/singleton-failsafe) exactly as before P2 existed. That is fail-safe (the finding stays blocking), not blind trust, and never causes a fail-open."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-05T12:38:36.626Z",
+      "last_seen_at": "2026-06-05T12:38:36.626Z",
+      "created_at": "2026-06-05T12:38:36.626Z"
+    },
+    {
+      "id": "FP-006",
+      "signature": "58762419fc7b10ef1db9530577a24fed2a5e316ef02f414a2eca97353b231832",
+      "rule_id": "path-injection-parse-deleted-paths",
+      "category": "security",
+      "file": "src/diff/hunks.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2",
+          "provider": "openrouter",
+          "ts": "2026-06-05T12:38:36.626Z",
+          "reason": "git rejects '..'-traversal components in tree/index entries and ls-files enumerates only in-repo paths, so collectDiff cannot emit '../../etc/...' in a diff header. And the deletedPaths branch performs ZERO filesystem access (it only short-circuits a finding to unchanged), so there is nothing to traverse; worst case the finding stays CRITICAL (fail-safe)."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-05T12:38:36.626Z",
+      "last_seen_at": "2026-06-05T12:38:36.626Z",
+      "created_at": "2026-06-05T12:38:36.626Z"
+    },
+    {
+      "id": "FP-007",
+      "signature": "a6f1134c730e5381115a704bc4aee0011e49b4f2ba11847f3302c07bdf39a49f",
+      "rule_id": "untrusted-diff-content-in-gate",
+      "category": "security",
+      "file": "src/cli/commands/gate.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KTBVD1KWSY63ABGJGGKB6M5M:0:2",
+          "provider": "openrouter",
+          "ts": "2026-06-05T12:38:36.626Z",
+          "reason": "Same incoherent premise as F-005: git will not produce '..'-traversal paths in a diff header, and deletedPaths is used only to SKIP a finding (no filesystem access). The fact-check is demote-only, so a path it cannot validate leaves the finding blocking (fail-safe), never a bypass."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-05T12:38:36.626Z",
+      "last_seen_at": "2026-06-05T12:38:36.626Z",
+      "created_at": "2026-06-05T12:38:36.626Z"
+    },
+    {
+      "id": "FP-008",
+      "signature": "0140b0bbfdbb83939268e698db85bec566ab3bfa784690a852214d8141486a88",
+      "rule_id": "auditlogger-retention-directory-traversal",
+      "category": "security",
+      "file": "src/audit/logger.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "prune already skips symlinks: readdirSync withFileTypes Dirent.isDirectory() is false for a symlink (lstat semantics), so a planted YYYY symlink is ignored; auditDir is trusted config and rmSync only targets real date-dirs inside auditDir — no traversal outside it."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    },
+    {
+      "id": "FP-009",
+      "signature": "11339f2cc09009f44008310f2ec772d2139682c76e7ad4193d770ddea97ef20f",
+      "rule_id": "redacthigh-entropy-regex-env-key-context",
+      "category": "security",
+      "file": "src/diff/sanitizer.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "Intended defense-in-depth: redacting a hex value assigned to a secret-named key before it reaches an external reviewer is correct even for test fixtures; bare 40/64-char git SHAs are deliberately preserved (documented). The reviewer itself classifies this as a false-positive risk, not a security vulnerability."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    },
+    {
+      "id": "FP-010",
+      "signature": "00fb5982bac9acaac445ea2cb1ec480daca565604b81df82d6c7bf5b1fa28318",
+      "rule_id": "scrubreviewerenv-broad-secret-patterns",
+      "category": "security",
+      "file": "src/providers/availability.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "Strip-by-default is the intended security posture with a keepKeys allowlist escape hatch; the cited examples API_VERSION and *_API_URL do NOT match /API[_-]?KEY/. CLI reviewers authenticate via OAuth credential files, not env vars, so dropping foreign secret-shaped env vars cannot break them."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    },
+    {
+      "id": "FP-011",
+      "signature": "236f61a2557312b8301f1e8c1b52df9e58c8803ce5c45f5141845a5c0c5a8400",
+      "rule_id": "spawnsafely-outputtruncated-race",
+      "category": "security",
+      "file": "src/utils/spawn.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "No race: Node stream data handlers run serialized on the single-threaded event loop, so each runs to completion and sets outputTruncated before the next fires. The cap is honored exactly — only the remaining bytes are written before the flag and kill. No privilege boundary exists."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    },
+    {
+      "id": "FP-012",
+      "signature": "2cbf7efb902d90d3bfaeaefb42204c3c193972432c461ca9908ddd9041c55701",
+      "rule_id": "canonical-path-loop-fixed",
+      "category": "security",
+      "file": "src/cassette/recording-adapter.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "cwd and tmpdir always exist and realpath on the first loop iteration, so the FS-root fallback is unreachable for the containment roots; resolve() normalizes every .. so no parent-escape survives, and realpathSync of the nearest existing ancestor resolves all intermediate symlinks (a non-existent tail has no symlinks). Dev-only REVIEWGATE_CASSETTE feature."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    },
+    {
+      "id": "FP-013",
+      "signature": "fc3a4e3f4d0570d4904032990df4086b6355715afd44c7c47e9e680806e40623",
+      "rule_id": "cassette-redactstrings-entry-mutation",
+      "category": "security",
+      "file": "src/cassette/recording-adapter.ts",
+      "symbol": "",
+      "stage": "candidate",
+      "rejects": [
+        {
+          "run_id": "01KV5AGGWWK42SZGGW8Z6EFPRY:1:1",
+          "provider": "openrouter",
+          "ts": "2026-06-15T13:34:01.349Z",
+          "reason": "redactStrings is pure: for objects it builds a new Record, for arrays it maps to a new array, for strings it returns a new string — it never mutates partial.result. The orchestrator receives the original unredacted object; only the on-disk cassette copy is redacted. The grounding judge already confirmed this."
+        }
+      ],
+      "distinct_providers": [
+        "openrouter"
+      ],
+      "first_seen_at": "2026-06-15T13:34:01.349Z",
+      "last_seen_at": "2026-06-15T13:34:01.349Z",
+      "created_at": "2026-06-15T13:34:01.349Z"
+    }
+  ],
+  "seq": 13
+}

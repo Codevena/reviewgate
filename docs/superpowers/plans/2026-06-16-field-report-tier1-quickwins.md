@@ -20,7 +20,7 @@
 - `src/core/report-writer.ts` — Slice 2 badge in `findingBadges()`; Slice 3 large-diff banner in `renderMd()`.
 - `src/core/orchestrator.ts` — Slice 2 wire `demoteTestSecurity` into `AggregateInput`; Slice 3 `OrchestratorInput.largeDiff` + thread into `writeReport`.
 - `src/cli/commands/gate.ts` — Slice 3 `computeLargeDiff()` helper + `console.warn` + pass `largeDiff` to `Orchestrator`.
-- Tests: `tests/unit/aggregator-redaction-drop.test.ts`, `tests/unit/aggregator-test-severity.test.ts`, `tests/unit/diff-size-warning.test.ts`.
+- Tests: `tests/unit/aggregator-redaction-demote.test.ts`, `tests/unit/aggregator-test-severity.test.ts`, `tests/unit/diff-size-warning.test.ts`.
 
 A reusable test Finding factory is shown once in Task 1 Step 1 and reused (copy it into each test file).
 
@@ -37,11 +37,11 @@ A reusable test Finding factory is shown once in Task 1 Step 1 and reused (copy 
 
 **Files:**
 - Modify: `src/core/aggregator.ts` (AggregateResult interface ~65-74; top of `aggregate()` ~262-264; return ~669-675)
-- Test: `tests/unit/aggregator-redaction-drop.test.ts`
+- Test: `tests/unit/aggregator-redaction-demote.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/aggregator-redaction-drop.test.ts`:
+Create `tests/unit/aggregator-redaction-demote.test.ts`:
 
 ```ts
 import { describe, expect, test } from "bun:test";
@@ -128,7 +128,7 @@ describe("Slice 1: redaction-artifact drop", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `bun test tests/unit/aggregator-redaction-drop.test.ts`
+Run: `bun test tests/unit/aggregator-redaction-demote.test.ts`
 Expected: FAIL — `r.redactionDropped` is `undefined` (property does not exist yet) and findings are not dropped.
 
 - [ ] **Step 3: Add the `redactionDropped` fields to `AggregateResult`**
@@ -206,7 +206,7 @@ In `src/core/aggregator.ts`, in the final `return { ... }` of `aggregate()` (~66
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `bun test tests/unit/aggregator-redaction-drop.test.ts`
+Run: `bun test tests/unit/aggregator-redaction-demote.test.ts`
 Expected: PASS (7 tests).
 
 - [ ] **Step 7: Typecheck + lint**
@@ -217,7 +217,7 @@ Expected: clean (no errors).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/core/aggregator.ts tests/unit/aggregator-redaction-drop.test.ts
+git add src/core/aggregator.ts tests/unit/aggregator-redaction-demote.test.ts
 git commit -m "feat(aggregator): drop redaction-artifact findings (field report #1)
 
 Two-gate fail-safe: drop a finding whose message/suggested_fix is the
@@ -740,7 +740,7 @@ Expected: builds `dist/reviewgate` without error.
 
 - [ ] **Step 3: Reviewgate self-gate (dogfood)**
 
-End the turn so the Stop hook runs Reviewgate on this branch's own diff. Address every finding (fix or reject-with-reason ≥20 chars) per the decisions protocol until the gate PASSes. The redaction-drop and test-severity slices should themselves reduce noise on this very diff.
+End the turn so the Stop hook runs Reviewgate on this branch's own diff. Address every finding (fix or reject-with-reason ≥20 chars) per the decisions protocol until the gate PASSes. The redaction-demote and test-severity slices should themselves reduce noise on this very diff.
 
 - [ ] **Step 4: Report completion**
 
