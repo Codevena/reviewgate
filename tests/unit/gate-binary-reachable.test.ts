@@ -6,7 +6,7 @@
 // gate. Fix: init bakes an absolute path + the shim falls back to PATH and FAILS
 // CLOSED (emits a block decision) when nothing resolves; doctor verifies it.
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gateBinaryReachableCheck } from "../../src/cli/commands/doctor.ts";
@@ -29,6 +29,15 @@ describe("init generates a PATH-resilient, fail-closed gate shim", () => {
     // binary), so nothing is baked and the shim relies on PATH.
     expect(res.bakedBin).toBe("");
     expect(shim).toContain("RG_BIN=''");
+  });
+
+  it("the gate shim also fails closed if exec itself fails (post-exec block)", async () => {
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const shim = readFileSync(join(repo, ".reviewgate", "bin", "gate"), "utf8");
+    expect(shim).toContain("could not exec it"); // post-exec fail-closed fallback
+    // two block decisions: (1) nothing resolved, (2) resolved but exec failed
+    expect(shim.match(/"decision":"block"/g)?.length).toBe(2);
   });
 
   it("trigger/reset shims are best-effort (exit 0 on unresolved, never block)", async () => {
@@ -77,6 +86,27 @@ describe("gateBinaryReachableCheck (doctor)", () => {
     const c = gateBinaryReachableCheck(repo, () => false);
     expect(c?.status).toBe("fail");
     expect(c?.detail).toContain("fails closed");
+  });
+
+  it("decodes a single-quote-escaped baked path (no truncation at the quote)", async () => {
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    // A real executable at a path containing a single quote.
+    const qbin = join(repo, "a'b-reviewgate");
+    writeFileSync(qbin, "#!/bin/sh\n");
+    chmodSync(qbin, 0o755);
+    // Simulate init baking that quoted path (RG_BIN='…' with ' escaped as '\'').
+    writeFileSync(
+      join(repo, ".reviewgate", "bin", "gate"),
+      `#!/usr/bin/env bash\nset -u\nRG_BIN='${shSingleQuote(qbin)}'\nexec "$RG_BIN" gate --hook stop\n`,
+    );
+    const seen: string[] = [];
+    const c = gateBinaryReachableCheck(repo, (bin) => {
+      seen.push(bin);
+      return bin === qbin;
+    });
+    expect(c?.status).toBe("ok"); // decode → existsSync(qbin) → runs(qbin) → ok
+    expect(seen).toContain(qbin); // probed the FULL decoded path, not a truncation
   });
 
   it("warns on an OLD bare-exec shim (silent no-op risk) even if PATH resolves", async () => {

@@ -406,9 +406,15 @@ export function gateBinaryReachableCheck(
   const shimPath = join(repoRoot, ".reviewgate", "bin", "gate");
   const shimSrc = existsSync(shimPath) ? readFileSync(shimPath, "utf8") : "";
   const resilient = shimSrc.includes("RG_BIN=");
-  // Single-quoted in the shim (RG_BIN='…') so the baked path can't be shell-evaluated.
-  const bakedVal = shimSrc.match(/RG_BIN='((?:[^'\\]|\\.)*)'/)?.[1] ?? "";
-  const baked = bakedVal && bakedVal !== "__REVIEWGATE_BIN__" ? bakedVal : "";
+  // The shim assigns RG_BIN='<path>' (single-quoted, with any embedded ' escaped as
+  // '\''). Decode that exact shell form rather than a naive regex, which would
+  // truncate a path containing a single quote at the first quote boundary.
+  const rhs = shimSrc.match(/^RG_BIN=(.*)$/m)?.[1] ?? "";
+  const decoded =
+    rhs.length >= 2 && rhs.startsWith("'") && rhs.endsWith("'")
+      ? rhs.slice(1, -1).split("'\\''").join("'")
+      : "";
+  const baked = decoded && decoded !== "__REVIEWGATE_BIN__" ? decoded : "";
 
   const bakedOk = baked !== "" && existsSync(baked) && runs(baked);
   const pathOk = runs("reviewgate");

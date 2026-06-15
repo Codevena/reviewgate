@@ -16,3 +16,8 @@ if [ -z "$RG_BIN" ]; then
   exit 0
 fi
 exec "$RG_BIN" gate --hook stop
+# Reached ONLY if exec failed (RG_BIN resolved but isn't a runnable binary on this
+# host — stale path, wrong arch, bad interpreter). Fail CLOSED rather than let bash
+# exit non-zero with empty stdout, which Claude Code reads as "allow stop".
+printf '%s\n' '{"decision":"block","reason":"Reviewgate resolved a binary but could not exec it (not runnable on this host). Failing closed; run `reviewgate doctor`."}'
+exit 0
