@@ -38,6 +38,7 @@
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate && mkdir -p dist/grammars dist/bin-templates && cp node_modules/web-tree-sitter/web-tree-sitter.wasm node_modules/tree-sitter-typescript/*.wasm node_modules/tree-sitter-python/*.wasm dist/grammars/ && { cp bin-templates/*.sh dist/bin-templates/ 2>/dev/null || true; } && { cp -r src/personas dist/personas 2>/dev/null || true; }",
+    "prepublishOnly": "bun run build && bun run scripts/verify-publish.ts",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
