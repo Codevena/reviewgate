@@ -14,10 +14,52 @@ import { join } from "node:path";
 import { consumeDeferredFlag, runGate } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { BASE_TS_NO_SCOPING_SENTINEL } from "../../src/hooks/handlers.ts";
-import { CodexAdapter } from "../../src/providers/codex.ts";
+import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
+import type { Finding } from "../../src/schemas/finding.ts";
 import { deferredFlagPath, dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
 
-const FAKE_CODEX = join(process.cwd(), "tests/fixtures/fake-codex.sh");
+// In-process reviewer stub returning a CRITICAL in-diff finding (mirroring
+// tests/fixtures/fake-codex.sh: CRITICAL security on foo.ts:1). The gate then
+// deterministically FAILs/blocks, so the synthesized dirty.flag persists for
+// inspection — WITHOUT spawning a subprocess, which made this test flaky under CI
+// load (the subprocess spawn/IO timing, not the synthesis logic). Codex JSON
+// parsing is covered by the codex adapter tests; here we only assert the F-15
+// synthesized base_ts, so the reviewer just needs to produce a blocking verdict.
+function stubReviewer(): ProviderAdapter {
+  return {
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "stub", authMode: "oauth", error: null };
+    },
+    async review(input): Promise<ReviewResult> {
+      const finding: Finding = {
+        id: "F-001",
+        signature: "fake-sig",
+        severity: "CRITICAL",
+        category: "security",
+        rule_id: "fake-rule",
+        file: "foo.ts",
+        line_start: 1,
+        line_end: 1,
+        message: "fake finding",
+        details: "fake details",
+        reviewer: { provider: "codex", model: "stub", persona: "security" },
+        confidence: 0.9,
+        consensus: "singleton",
+      };
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "FAIL",
+        findings: [finding],
+        usage: { inputTokens: 100, outputTokens: 20, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 0,
+        rawEventsPath: "",
+        status: "ok",
+      };
+    },
+  };
+}
 
 function gitRepo(prefix: string): string {
   const repo = mkdtempSync(join(tmpdir(), prefix));
@@ -85,12 +127,12 @@ describe("synthesized dirty.flag carries an explicit base_ts (F-15)", () => {
       repoRoot: repo,
       hook: "stop",
       hookStdinRaw: "{}",
-      providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+      providerOverrides: { codex: stubReviewer() },
       sandboxModeOverride: "off",
     });
     expect(out.exitCode).toBe(0);
-    // fake-codex emits a finding → the iteration FAILs/blocks, so the synthesized
-    // flag persists on disk for inspection.
+    // the stub reviewer returns a CRITICAL finding → the iteration FAILs/blocks, so
+    // the synthesized flag persists on disk for inspection.
     expect(existsSync(dirtyFlagPath(repo))).toBe(true);
     const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as {
       base_sha?: string;
