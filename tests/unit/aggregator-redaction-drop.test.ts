@@ -69,6 +69,13 @@ describe("Slice 1: redaction-artifact drop", () => {
     expect(r.redactionDroppedCount).toBe(0);
   });
 
+  test("KEEPS a lowercase <redacted:…> (gate is case-sensitive; sanitizer only emits uppercase)", () => {
+    const f = mkFinding({ message: "foo <redacted:HIGH_ENTROPY> bar" });
+    const r = aggregate({ findings: [f], reviewersTotal: 1 });
+    expect(r.dedupedFindings).toHaveLength(1);
+    expect(r.redactionDroppedCount).toBe(0);
+  });
+
   test("a clean co-located finding is unaffected by a dropped one", () => {
     const dropped = mkFinding({ id: "F-001", message: "undefined <REDACTED:HIGH_ENTROPY>" });
     const clean = mkFinding({

@@ -707,6 +707,9 @@ export function aggregate(input: AggregateInput): AggregateResult {
     counts: { critical, warn, info },
     criticDropped,
     criticDroppedCount: criticDropped.length,
+    // NOT fed to implicit-outcomes/FP-ledger (unlike criticDropped, which orchestrator
+    // wires into deriveImplicitOutcomes): a redaction artifact is FP-by-construction, not a
+    // reviewer FP that needs a learning signal. Exposed for visibility/metrics only.
     redactionDropped,
     redactionDroppedCount: redactionDropped.length,
   };
