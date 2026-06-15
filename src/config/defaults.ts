@@ -108,6 +108,11 @@ export const defaultConfig = {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
       model?: string;
     },
+    checks: null as null | {
+      commands: Array<{ name: string; run: string; timeoutMs?: number }>;
+      defaultTimeoutMs?: number;
+      outputCapBytes?: number;
+    },
     brain: null as null | {
       enabled: boolean;
       maxPromptTokens: number;

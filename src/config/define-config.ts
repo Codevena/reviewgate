@@ -197,6 +197,26 @@ export const ConfigSchema = z.object({
         demoteCorrectness: true,
         quarantine: { enabled: false, floor: 0.15 },
       }),
+    // Deterministic checker tier: commands run fail-fast BEFORE the LLM panel.
+    // First non-zero exit (or timeout/error) blocks the turn and skips the panel.
+    // Default off (null). See docs/superpowers/specs/2026-06-15-deterministic-checker-tier-design.md
+    checks: z
+      .object({
+        commands: z
+          .array(
+            z.object({
+              name: z.string().min(1),
+              run: z.string().min(1),
+              timeoutMs: z.number().int().positive().optional(),
+            }),
+          )
+          .min(1),
+        defaultTimeoutMs: z.number().int().positive().optional(),
+        outputCapBytes: z.number().int().positive().optional(),
+      })
+      .nullable()
+      .default(null)
+      .optional(),
     // M6: Context7 library-docs injection into the research phase. Opt-in.
     contextDocs: z
       .object({
