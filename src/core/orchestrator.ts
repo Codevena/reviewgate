@@ -569,6 +569,7 @@ export class Orchestrator {
           name: c.name,
           run: c.run,
           ...(c.timeoutMs !== undefined ? { timeoutMs: c.timeoutMs } : {}),
+          ...(c.category !== undefined ? { category: c.category } : {}),
         })),
         ...(checksCfg.defaultTimeoutMs !== undefined
           ? { defaultTimeoutMs: checksCfg.defaultTimeoutMs }

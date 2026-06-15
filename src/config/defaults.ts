@@ -109,7 +109,12 @@ export const defaultConfig = {
       model?: string;
     },
     checks: null as null | {
-      commands: Array<{ name: string; run: string; timeoutMs?: number }>;
+      commands: Array<{
+        name: string;
+        run: string;
+        timeoutMs?: number;
+        category?: import("../schemas/finding.ts").FindingCategory;
+      }>;
       defaultTimeoutMs?: number;
       outputCapBytes?: number;
     },

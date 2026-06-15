@@ -208,6 +208,7 @@ export const ConfigSchema = z.object({
               name: z.string().min(1),
               run: z.string().min(1),
               timeoutMs: z.number().int().positive().optional(),
+              category: FindingCategory.optional(),
             }),
           )
           .min(1),

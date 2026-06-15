@@ -29,11 +29,13 @@ function consensusEmoji(c: Finding["consensus"]): string {
   return "⚪"; // singleton or minority
 }
 
-// System-side demote/suppression badges. Builds a blockquote line ONLY when at
+// Building finding badges: the hard-block 🔒 deterministic badge (for findings
+// from the deterministic checker tier) AND the demote/suppression badges (scope,
+// FP-ledger, critic, reputation, …). Builds a blockquote line ONLY when at
 // least one flag applies — so clean findings render no extra noise. Lets the
-// agent see at a glance "the system already flagged this as lower-confidence"
-// rather than having to read the JSON to discover it.
-export function demoteBadges(f: Finding): string | null {
+// agent see at a glance whether a finding is a non-rejectable hard-block or
+// was flagged as lower-confidence by the system.
+export function findingBadges(f: Finding): string | null {
   const badges: string[] = [];
   if (f.deterministic)
     badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
@@ -68,7 +70,7 @@ function fmtFinding(f: Finding): string {
       : "";
   // Show a range (line_start-line_end) for multi-line findings, plain line otherwise.
   const loc = f.line_end > f.line_start ? `${f.line_start}-${f.line_end}` : `${f.line_start}`;
-  const badges = demoteBadges(f);
+  const badges = findingBadges(f);
   // Honesty at panel size 1: a "singleton" finding is ONE model's opinion, however
   // confidently phrased. Qualify it so the agent never reads `Confidence: 1.00` as
   // corroborated certainty (both 2026-06-05 field reports flagged this as a

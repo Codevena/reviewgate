@@ -64,4 +64,29 @@ describe("runChecks", () => {
     });
     expect(r.ok).toBe(false);
   });
+
+  it("flags truncation when stderr exceeds the cap", async () => {
+    const r = await runChecks({
+      repoRoot: mkdtempSync(`${tmpdir()}/rg-checks-`),
+      commands: [{ name: "stderr-noisy", run: "yes X | head -c 200 >&2; exit 1" }],
+      outputCapBytes: 50,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.finding.details.toLowerCase()).toContain("truncated");
+  });
+
+  it("uses a per-command category when provided, else correctness", async () => {
+    const a = await runChecks({
+      repoRoot: mkdtempSync(`${tmpdir()}/rg-checks-`),
+      commands: [{ name: "t", run: "false", category: "testing" }],
+    });
+    expect(a.ok).toBe(false);
+    if (!a.ok) expect(a.finding.category).toBe("testing");
+    const b = await runChecks({
+      repoRoot: mkdtempSync(`${tmpdir()}/rg-checks-`),
+      commands: [{ name: "t", run: "false" }],
+    });
+    expect(b.ok).toBe(false);
+    if (!b.ok) expect(b.finding.category).toBe("correctness");
+  });
 });

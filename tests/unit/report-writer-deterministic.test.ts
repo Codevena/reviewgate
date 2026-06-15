@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { demoteBadges } from "../../src/core/report-writer.ts";
+import { findingBadges } from "../../src/core/report-writer.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 const finding = (extra: Partial<Finding>): Finding => ({
@@ -21,12 +21,12 @@ const finding = (extra: Partial<Finding>): Finding => ({
 
 describe("report-writer deterministic badge", () => {
   it("renders a non-rejectable badge for a deterministic finding", () => {
-    const badges = demoteBadges(finding({ deterministic: true }));
+    const badges = findingBadges(finding({ deterministic: true }));
     expect(badges).not.toBeNull();
     expect(badges?.toLowerCase()).toContain("deterministic check");
   });
   it("renders no such badge for a normal finding", () => {
-    const badges = demoteBadges(finding({}));
+    const badges = findingBadges(finding({}));
     expect(badges === null || !badges.toLowerCase().includes("deterministic check")).toBe(true);
   });
 });

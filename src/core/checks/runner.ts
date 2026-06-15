@@ -13,6 +13,7 @@ export interface CheckCommand {
   name: string;
   run: string;
   timeoutMs?: number;
+  category?: Finding["category"];
 }
 
 export interface RunChecksOptions {
@@ -31,13 +32,19 @@ export type CheckResult = { ok: true } | { ok: false; finding: Finding };
 const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_OUTPUT_CAP = 16_384;
 
-function checkFinding(name: string, run: string, status: string, output: string): Finding {
+function checkFinding(
+  name: string,
+  run: string,
+  status: string,
+  output: string,
+  category: Finding["category"] = "correctness",
+): Finding {
   const body = output.trim().length > 0 ? output : "(no output)";
   return {
     id: `check-${name}`,
     signature: `check:${name}`,
     severity: "CRITICAL",
-    category: "correctness",
+    category,
     rule_id: `deterministic-check/${name}`,
     file: `(deterministic check: ${name})`,
     line_start: 1,
@@ -73,8 +80,9 @@ export async function runChecks(opts: RunChecksOptions): Promise<CheckResult> {
             : `exited ${res.status}`;
       const parts = [res.stdout, res.stderr].filter((s) => s.trim().length > 0);
       const combined = parts.join("\n--- stderr ---\n");
-      const output = res.truncated ? `${combined}\n…(output truncated)` : combined;
-      return { ok: false, finding: checkFinding(cmd.name, cmd.run, status, output) };
+      const outputTruncated = res.truncated || res.stderr.length >= cap;
+      const output = outputTruncated ? `${combined}\n…(output truncated)` : combined;
+      return { ok: false, finding: checkFinding(cmd.name, cmd.run, status, output, cmd.category) };
     }
   }
   return { ok: true };
