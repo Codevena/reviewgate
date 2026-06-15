@@ -174,6 +174,10 @@ export const defaultConfig = {
     // which can run long under index.lock contention) + post-abort settle —
     // otherwise the OS kills the gate mid-run with empty stdout = fail-open.
     runTimeoutMs: 720_000,
+    // Slice 3 (field report #6): warn when the diff is this large (bytes / file count).
+    // WARN-only — see schema. 0 disables a check.
+    diffWarnBytes: 600_000,
+    diffWarnFiles: 80,
     // Short cooldown (ms) for a reviewer that hit its OWN per-reviewer timeoutMs, so
     // it is pre-spawn-skipped next iteration instead of re-burning the full wall-clock
     // every turn. 0 keeps timeouts immediately retryable (no cooldown). A gate

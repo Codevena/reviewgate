@@ -110,6 +110,22 @@ export function diffMarkedIncomplete(diff: string): boolean {
   return diff.trimEnd().endsWith(DIFF_INCOMPLETE_MARKER);
 }
 
+// Slice 3 (field report #6): pure predicate for the large-diff warning. Counts FILES via
+// raw `diff --git ` headers — NOT computeDiffFacts (which filters renames/binary/mode-only
+// and would undercount operational diff size). Bytes via UTF-8 length. A threshold of 0
+// disables that check. Returns the counts when over either limit, else undefined.
+export function computeLargeDiff(
+  diff: string,
+  diffWarnBytes: number,
+  diffWarnFiles: number,
+): { files: number; bytes: number } | undefined {
+  const bytes = Buffer.byteLength(diff, "utf8");
+  const files = (diff.match(/^diff --git /gm) ?? []).length;
+  const over =
+    (diffWarnBytes > 0 && bytes > diffWarnBytes) || (diffWarnFiles > 0 && files > diffWarnFiles);
+  return over ? { files, bytes } : undefined;
+}
+
 // M-A3: a short " (PID N, running ~Xs)" note about the gate-lock holder for the
 // DEFERRED message, so a hung holder (0% CPU for minutes) is identifiable and a
 // human can kill it. Empty string when the holder can't be determined.
@@ -560,6 +576,18 @@ async function runStopGate(
   }
   const { host, adapters, ctx } = setup;
   const { gitInfo, diff, reviewBase } = ctx;
+  // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
+  // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
+  // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never
+  // auto-scales the timeout (could exceed the OS Stop-hook timeout → fail-open).
+  const largeDiff = computeLargeDiff(diff, cfg.loop.diffWarnBytes, cfg.loop.diffWarnFiles);
+  if (largeDiff) {
+    console.warn(
+      `🟡 Reviewgate · Large diff: ${largeDiff.files} files / ${Math.round(
+        largeDiff.bytes / 1000,
+      )} KB — if the review times out, raise loop.runTimeoutMs AND the Stop-hook timeout (both).`,
+    );
+  }
   // A corrupt dirty.flag (ctx.diffIncomplete) OR a collectDiff-truncation trailer
   // both mean the diff isn't a trustworthy complete picture.
   const diffIncomplete = ctx.diffIncomplete || diffMarkedIncomplete(diff);
@@ -580,6 +608,7 @@ async function runStopGate(
     // the untrusted fence) so a truncated/timed-out diff — or one recovered after a
     // corrupt dirty.flag — isn't trusted as complete.
     diffIncomplete,
+    ...(largeDiff ? { largeDiff } : {}),
   });
 
   const driver = new LoopDriver({

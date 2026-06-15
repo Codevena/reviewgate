@@ -138,6 +138,10 @@ export interface OrchestratorInput {
   // budget-capped). Surfaced to reviewers as TRUSTED context so a partial diff
   // never earns a conclusive clean verdict. Set by the gate from the diff marker.
   diffIncomplete?: boolean;
+  // Slice 3 (field report #6): set by the gate when the reviewed diff exceeded the
+  // size-warning thresholds. Surfaced as a banner in pending.md (the stderr warning is
+  // emitted in gate.ts, outside the loop self-deadline). Absent → no banner.
+  largeDiff?: { files: number; bytes: number };
 }
 
 export interface IterationResult {
@@ -2052,6 +2056,7 @@ export class Orchestrator {
         findings,
         ...(critic ? { critic } : {}),
         ...(panelNote ? { panel_note: panelNote } : {}),
+        ...(this.input.largeDiff ? { large_diff: this.input.largeDiff } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

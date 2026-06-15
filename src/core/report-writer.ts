@@ -151,6 +151,17 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
           "",
         ]
       : [];
+  // Slice 3 (field report #6): large-diff warning. The matching stderr warning is emitted
+  // in gate.ts (outside the loop self-deadline, so it survives a timeout-abort that writes
+  // no report); this banner is the in-report copy with the remediation.
+  const largeDiffBanner = r.large_diff
+    ? [
+        `> ⚠ **Large diff:** ${r.large_diff.files} files / ${Math.round(
+          r.large_diff.bytes / 1000,
+        )} KB. If the review times out, raise \`loop.runTimeoutMs\` in \`reviewgate.config.ts\` AND the Stop-hook \`timeout\` in \`.claude/settings.json\` — both, or the OS kills the hook before Reviewgate's deadline and the turn ends un-reviewed (fail-open).`,
+        "",
+      ]
+    : [];
   const actions =
     mode === "one-shot"
       ? []
@@ -174,6 +185,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     "",
     ...coverageBanner,
     ...singleReviewerBanner,
+    ...largeDiffBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",

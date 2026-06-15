@@ -266,6 +266,11 @@ export const ConfigSchema = z.object({
     // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
     // the hook timeout. 0 disables the deadline (legacy behavior).
     runTimeoutMs: z.number().int().nonnegative().default(720_000),
+    // Slice 3 (field report #6): warn (stderr + pending.md banner) when the reviewed diff
+    // is large enough to risk a self-deadline timeout. WARN-ONLY — never auto-raises
+    // runTimeoutMs (that could exceed the OS Stop-hook timeout → fail-open). 0 disables a check.
+    diffWarnBytes: z.number().int().nonnegative().default(600_000),
+    diffWarnFiles: z.number().int().nonnegative().default(80),
     // Short cooldown (ms) for a reviewer that hit its OWN per-reviewer timeoutMs, so it
     // is pre-spawn-skipped next iteration instead of re-burning the full wall-clock
     // every turn (field report: claude-code 300s every iteration). 0 disables it
