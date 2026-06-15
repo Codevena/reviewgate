@@ -15,8 +15,9 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
+import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
-import { isQuotaExhausted } from "./quota-signals.ts";
+import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
@@ -94,8 +95,24 @@ export class ClaudeAdapter implements ProviderAdapter {
   ): Promise<ReviewResult> {
     // Hook-free temp CWD: the reviewer's own Stop hook can never recurse into
     // Reviewgate. The diff is supplied via the prompt, so the reviewer does not
-    // need the real repo tree.
+    // need the real repo tree. Removed in finally so we don't leak a /tmp dir
+    // holding the reviewer output every iteration (F-1).
     const run = mkdtempSync(join(tmpdir(), "rg-cl-run-"));
+    try {
+      return await this.reviewInRun(run, input);
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
+    }
+  }
+
+  private async reviewInRun(
+    run: string,
+    input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
+  ): Promise<ReviewResult> {
     const outFile = join(run, "out.json");
     const errFile = join(run, "err.log");
 
@@ -118,7 +135,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       "--no-session-persistence",
       ...HERMETIC_ARGS,
     ];
-    const env = { ...process.env } as Record<string, string>;
+    const env = scrubReviewerEnv(process.env);
     if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
       const key = process.env[input.cfg.apiKeyEnv];
       if (key) env.ANTHROPIC_API_KEY = key;
@@ -143,12 +160,15 @@ export class ClaudeAdapter implements ProviderAdapter {
       ...(input.sandbox ? { sandbox: input.sandbox } : {}),
     });
     const errText = readFileSafe(errFile);
+    // Scan stderr freely (the CLI's own channel); scan the JSON output envelope
+    // only for a SHORT banner line (isQuotaBanner), since its `result` field holds
+    // the model review, which can quote a quota phrase planted in the diff — an
+    // injected echo must not suppress the reviewer or false-trigger a cooldown (F-6b).
+    const quotaHit = isQuotaExhausted(errText) || isQuotaBanner(readFileSafe(outFile));
     const baseStatus: ReviewStatus =
       res.killedByTimeout || res.killedByWatchdog ? "timeout" : res.exitCode === 0 ? "ok" : "error";
     const status: ReviewStatus =
-      baseStatus === "error" && isQuotaExhausted(errText + readFileSafe(outFile))
-        ? "quota-exhausted"
-        : baseStatus;
+      baseStatus === "error" && quotaHit ? "quota-exhausted" : baseStatus;
     if (status !== "ok") {
       return {
         reviewerId: input.reviewerId,
@@ -175,7 +195,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       // a silent empty PASS, matching codex/opencode's fail-closed behavior. If the
       // output is actually a quota/usage-limit banner (printed on an exit-0 run),
       // classify it quota-exhausted so cooldown+failover fires (F-043).
-      const quota = isQuotaExhausted(errText + readFileSafe(outFile));
+      const quota = isQuotaExhausted(errText) || isQuotaBanner(readFileSafe(outFile));
       return {
         reviewerId: input.reviewerId,
         verdict: "ERROR",
@@ -225,7 +245,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         "--no-session-persistence",
         ...HERMETIC_ARGS,
       ];
-      const env = { ...process.env } as Record<string, string>;
+      const env = scrubReviewerEnv(process.env);
       if (opts.auth === "apikey" && opts.apiKeyEnv) {
         const key = process.env[opts.apiKeyEnv];
         if (key) env.ANTHROPIC_API_KEY = key;

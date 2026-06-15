@@ -1,4 +1,5 @@
 // src/core/critic.ts
+import { neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { CompleteOptions, ProviderAdapter } from "../providers/adapter-base.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { safeJsonParse } from "../utils/safe-json.ts";
@@ -15,10 +16,15 @@ export interface CriticRunResult {
 
 export function buildCriticPrompt(findings: Finding[]): string {
   const list = findings
-    .map(
-      (f) =>
-        `- signature=${f.signature} [${f.severity}/${f.category}] ${f.file}:${f.line_start} ${f.message}`,
-    )
+    .map((f) => {
+      // f.file (reviewer-controlled path) and f.message (untrusted reviewer-LLM
+      // output) are embedded into this TRUSTED critic prompt. Neutralize the
+      // injection markers and strip newlines so a hallucinated finding can't forge
+      // extra prompt lines and trick the critic into demoting a legitimate one.
+      const file = neutralizeInjectionMarkers(f.file).replace(/[\r\n]+/g, " ");
+      const message = neutralizeInjectionMarkers(f.message).replace(/[\r\n]+/g, " ");
+      return `- signature=${f.signature} [${f.severity}/${f.category}] ${file}:${f.line_start} ${message}`;
+    })
     .join("\n");
   return [
     "You are an adversarial false-positive filter. For each finding below decide",

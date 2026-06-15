@@ -79,6 +79,11 @@ export const BrainEntrySchema = z.object({
   referencing_reviewers: z.array(z.string()).default([]),
   confidence: z.number().min(0).max(1),
   embedding: z.array(z.number()).nullable().default(null),
+  // The embedding model that produced `embedding`. Optional/back-compatible:
+  // entries written before this field (or with no embedding) load fine without
+  // it. Cosine similarity is only meaningful WITHIN one model's vector space, so
+  // dedup compares embeddings only when their `embedding_model` matches.
+  embedding_model: z.string().optional(),
   evidence: z.array(EvidenceItemSchema),
   provenance: z.enum(["diff-derived"]).optional(),
   created_at: z.string(),

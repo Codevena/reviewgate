@@ -29,12 +29,17 @@ export async function learnReputationFromDecisions(input: {
   const events: RecordInput[] = [];
   // F-20: fold to the LAST valid decision per finding_id first. A superseded
   // rejected→accepted pair would otherwise book BOTH a 'wrong' and a 'correct'
-  // event for the same reviewer (the eid includes the verdict, so the eid dedup
-  // never collapses the contradictory pair) — permanently debiting trust for a
-  // rejection the agent retracted. Last-wins emits exactly one outcome per
-  // (finding, reviewerKey, iter): the agent's final intent. The verdict stays in
-  // the eid for re-stop idempotency; with last-wins only one verdict per finding
-  // per iter is ever emitted within a single absorb.
+  // event for the same reviewer — permanently debiting trust for a rejection the
+  // agent retracted. Last-wins emits exactly one outcome per (finding,
+  // reviewerKey, iter) within a single absorb: the agent's final intent.
+  //
+  // Re-stops within the SAME iteration are separate absorbs reading the same
+  // (growing) decisions file. Absorb #1 might book 'wrong'; absorb #2, after the
+  // agent retracts to 'accepted', would book 'correct'. The eid therefore OMITS
+  // the verdict — its identity is (session, cycle, iter, finding, reviewerKey).
+  // The store reconciles by eid across BOTH buckets: a later opposite-outcome
+  // event for the same eid supersedes the earlier one, so a single iteration can
+  // never end up holding both a 'wrong' AND a 'correct' for one reviewer.
   for (const d of foldLastDecisions(readFileSync(dp, "utf8")).values()) {
     const f = byId.get(d.finding_id);
     if (!f) continue;
@@ -66,7 +71,7 @@ export async function learnReputationFromDecisions(input: {
       events.push({
         reviewerKey,
         outcome,
-        eid: `${sessionId}:${cycleSeq}:${iter}:${d.finding_id}:${d.verdict}:${reviewerKey}`,
+        eid: `${sessionId}:${cycleSeq}:${iter}:${d.finding_id}:${reviewerKey}`,
         ts: nowIso,
       });
     }

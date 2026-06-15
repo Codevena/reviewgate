@@ -151,19 +151,32 @@ export interface ReviewOutput {
 // schema marks source_url/snippet/from_diff as nullable, so a reviewer may send
 // explicit nulls; we drop them so RawProposal stays optional-not-nullable.
 function normalizeProposals(proposals: RawProposal[]): RawProposal[] {
-  return proposals.map((p) => ({
-    ...p,
-    evidence: Array.isArray(p.evidence)
-      ? p.evidence.map((e) => {
-          const cleaned: RawProposal["evidence"][number] = { kind: e.kind };
-          if (e.source_url != null) cleaned.source_url = e.source_url;
-          if (e.snippet != null) cleaned.snippet = e.snippet;
-          if (e.reviewer_id != null) cleaned.reviewer_id = e.reviewer_id;
-          if (e.from_diff != null) cleaned.from_diff = e.from_diff;
-          return cleaned;
-        })
-      : [],
-  }));
+  return (
+    proposals
+      // A reviewer can emit a non-object proposal element (e.g. `[null]`); dotting
+      // into it (`p.evidence`) would throw a TypeError in this fail-closed module,
+      // so drop non-objects before normalizing. (F-4a)
+      .filter((p): p is RawProposal => p != null && typeof p === "object")
+      .map((p) => ({
+        ...p,
+        evidence: Array.isArray(p.evidence)
+          ? p.evidence
+              // Likewise an evidence element may be null/non-object — skip it
+              // rather than dereference `e.kind` and crash. (F-4a)
+              .filter(
+                (e): e is RawProposal["evidence"][number] => e != null && typeof e === "object",
+              )
+              .map((e) => {
+                const cleaned: RawProposal["evidence"][number] = { kind: e.kind };
+                if (e.source_url != null) cleaned.source_url = e.source_url;
+                if (e.snippet != null) cleaned.snippet = e.snippet;
+                if (e.reviewer_id != null) cleaned.reviewer_id = e.reviewer_id;
+                if (e.from_diff != null) cleaned.from_diff = e.from_diff;
+                return cleaned;
+              })
+          : [],
+      }))
+  );
 }
 
 export function parseReviewOutput(text: string): ReviewOutput | null {
@@ -260,7 +273,12 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       line_start: line,
       line_end: lineEnd,
       message: cf.message.slice(0, 200),
-      details: (cf.details ?? cf.message).slice(0, 2000),
+      // `??` only falls back on null/undefined, so a present-but-non-string
+      // `details` (number/object/array from a malformed reviewer payload) would
+      // reach `.slice` and throw a TypeError in this fail-closed module. Require a
+      // real string before using it; otherwise fall back to the (already string-
+      // guarded) message. (F-4b)
+      details: (typeof cf.details === "string" ? cf.details : cf.message).slice(0, 2000),
       reviewer: { provider: ctx.provider, model: ctx.model, persona: ctx.persona },
       confidence: typeof cf.confidence === "number" ? Math.min(1, Math.max(0, cf.confidence)) : 0.7,
       consensus: "singleton" as const,

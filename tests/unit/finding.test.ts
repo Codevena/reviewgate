@@ -21,12 +21,15 @@ describe("FindingSchema", () => {
     expect(FindingSchema.parse(ok)).toEqual(ok);
   });
 
-  it("rejects severity outside enum", () => {
+  it("rejects severity outside enum (after synonym coercion)", () => {
+    // F-7: severity now tolerates case + common synonyms (e.g. "high"→CRITICAL,
+    // "warning"→WARN). A value that is neither canonical nor a known synonym is
+    // still rejected — "QQQ" has no mapping and uppercases to a non-enum token.
     expect(() =>
       FindingSchema.parse({
         id: "F-001",
         signature: "x",
-        severity: "HIGH",
+        severity: "QQQ",
         category: "security",
         rule_id: "x",
         file: "x",

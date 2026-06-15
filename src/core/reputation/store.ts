@@ -48,9 +48,14 @@ function pruneBucket(
   const horizonMs = PRUNE_HALF_LIVES * halfLifeDays * 24 * 60 * 60 * 1000;
   return events.filter((e) => {
     const ageMs = now.getTime() - Date.parse(e.ts);
-    // Keep unparseable (NaN) and future/negative-age events — mirrors decayedCount,
-    // which treats a non-finite/negative age as "fresh" (weight 1); they never age out.
-    if (!Number.isFinite(ageMs) || ageMs < 0) return true;
+    // DROP unparseable (NaN) and future-dated (negative-age) events as invalid.
+    // The previous "keep them forever" behavior (mirroring decayedCount's
+    // weight-1 treatment) defeated the bounded-file guarantee: a clock-skewed or
+    // corrupt timestamp could never age out, so a stream of such events would
+    // grow reputation.json without bound. Treating them as prunable trades a
+    // negligible scoring effect (these are anomalies, not legitimate history)
+    // for the storage bound the prune exists to enforce.
+    if (!Number.isFinite(ageMs) || ageMs < 0) return false;
     return ageMs <= horizonMs;
   });
 }
@@ -99,6 +104,15 @@ export class ReputationStore {
           rep.reviewers[ev.reviewerKey] = entry;
         }
         const bucket = ev.outcome === "correct" ? entry.correct : entry.wrong;
+        const otherBucket = ev.outcome === "correct" ? entry.wrong : entry.correct;
+        // Per-eid idempotency ACROSS both buckets: the eid is verdict-free
+        // (session:cycle:iter:finding:reviewerKey), so a re-stop within the same
+        // iteration that flips the verdict re-books the same eid with the OPPOSITE
+        // outcome. Supersede the stale opposite-bucket entry so a single iteration
+        // can never hold both a 'wrong' AND a 'correct' for one reviewer (F-20
+        // hardening: the in-absorb last-wins fold can't see prior absorbs).
+        const otherIdx = otherBucket.findIndex((e) => e.eid === ev.eid);
+        if (otherIdx >= 0) otherBucket.splice(otherIdx, 1);
         if (bucket.some((e) => e.eid === ev.eid)) continue;
         bucket.push({ ts: ev.ts, eid: ev.eid });
       }

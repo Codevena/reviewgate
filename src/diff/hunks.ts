@@ -12,10 +12,68 @@ function stripPrefix(path: string): string {
   return path.replace(/^[ab]\//, "");
 }
 
-// Parse the `+++ ` header path, tolerating quotes and the b/ prefix.
+// C-unquote a git-quoted header path. With core.quotePath on (git's default) a
+// path with non-ASCII/space/control bytes is wrapped in double quotes and
+// C-escaped (octal `\351`, plus `\t \n \" \\` …) in `+++ `/`--- ` headers.
+// collectDiff now passes `-c core.quotePath=false` so the live path is raw, but
+// this stays defensively: a quoted header from any other diff source must still
+// resolve to the REAL repo path, else the hunk loses range attribution and the
+// finding is wrongly demoted to INFO. Bytes decode as UTF-8 (git quotes the raw
+// UTF-8 octets). Returns the input unchanged if it isn't a quoted token.
+function gitUnquotePath(token: string): string {
+  if (!(token.length >= 2 && token.startsWith('"') && token.endsWith('"'))) return token;
+  const body = token.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== "\\") {
+      bytes.push(body.charCodeAt(i));
+      continue;
+    }
+    const n = body[i + 1];
+    if (n === undefined) {
+      bytes.push(0x5c);
+      break;
+    }
+    if (n >= "0" && n <= "7") {
+      let oct = n;
+      let j = i + 2;
+      while (oct.length < 3) {
+        const d = body[j];
+        if (d === undefined || d < "0" || d > "7") break;
+        oct += d;
+        j++;
+      }
+      bytes.push(Number.parseInt(oct, 8) & 0xff);
+      i = j - 1;
+      continue;
+    }
+    const simple: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      '"': 0x22,
+      "\\": 0x5c,
+    };
+    bytes.push(simple[n] ?? n.charCodeAt(0));
+    i++;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(Uint8Array.from(bytes));
+  } catch {
+    return token;
+  }
+}
+
+// Parse the `+++ ` header path, tolerating quotes (C-unescaping them) and the
+// b/ prefix.
 function plusPath(line: string): string {
   let p = line.slice(4).trim(); // after "+++ "
-  if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+  if (p.startsWith('"') && p.endsWith('"')) p = gitUnquotePath(p);
   return stripPrefix(p);
 }
 
@@ -77,7 +135,7 @@ export function parseDeletedPaths(diff: string): Set<string> {
     }
     if (!inHunk && line.startsWith("--- ")) {
       let p = line.slice(4).trim();
-      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+      if (p.startsWith('"') && p.endsWith('"')) p = gitUnquotePath(p);
       minusPath = p === "/dev/null" ? null : stripPrefix(p);
       continue;
     }

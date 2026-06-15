@@ -36,4 +36,21 @@ describe("readHookStdin", () => {
     });
     expect(out).toBe("");
   });
+
+  it("is BOUNDED by a timeout: a pipe that never sends EOF resolves to '' (gate proceeds)", async () => {
+    // Bug: a connected-but-never-closing stdin pipe (a wedged parent / kept-open fd)
+    // would hang readHookStdin forever BEFORE any review budget, until the OS Stop-
+    // hook timeout kills the process with empty stdout = fail-OPEN. The diff comes
+    // from dirty.flag on disk, so on timeout we return "" and let the gate run.
+    const start = Date.now();
+    const out = await readHookStdin({
+      isTTY: false,
+      // Never resolves — models a pipe with no EOF.
+      read: () => new Promise<string>(() => {}),
+      timeoutMs: 50,
+    });
+    expect(out).toBe("");
+    // Must have returned via the timeout (fast), not hung.
+    expect(Date.now() - start).toBeLessThan(2_000);
+  });
 });

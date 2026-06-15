@@ -32,6 +32,63 @@ const SENSITIVE: Array<[RegExp, string]> = [
   [/\.env(\.|$)/, "env"],
 ];
 
+// C-unquote a git-quoted path. With core.quotePath=true (git's default) a path
+// with non-ASCII/space/control bytes is wrapped in double quotes and C-escaped
+// (octal `\351`, plus `\t \n \" \\` …) in `diff --git`/`+++ ` headers. collectDiff
+// now passes `-c core.quotePath=false` so the live path is raw, but this stays
+// defensively so a quoted header from any OTHER diff source isn't dropped (which
+// would skip-PASS unreviewed code). Bytes are decoded as UTF-8 (git quotes the
+// raw UTF-8 octets). Returns the input unchanged if it isn't a quoted token.
+function gitUnquotePath(token: string): string {
+  if (!(token.length >= 2 && token.startsWith('"') && token.endsWith('"'))) return token;
+  const body = token.slice(1, -1);
+  const bytes: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c !== "\\") {
+      bytes.push(body.charCodeAt(i));
+      continue;
+    }
+    const n = body[i + 1];
+    if (n === undefined) {
+      bytes.push(0x5c);
+      break;
+    }
+    if (n >= "0" && n <= "7") {
+      // Octal escape: up to 3 octal digits (\351).
+      let oct = n;
+      let j = i + 2;
+      while (oct.length < 3) {
+        const d = body[j];
+        if (d === undefined || d < "0" || d > "7") break;
+        oct += d;
+        j++;
+      }
+      bytes.push(Number.parseInt(oct, 8) & 0xff);
+      i = j - 1;
+      continue;
+    }
+    const simple: Record<string, number> = {
+      a: 0x07,
+      b: 0x08,
+      t: 0x09,
+      n: 0x0a,
+      v: 0x0b,
+      f: 0x0c,
+      r: 0x0d,
+      '"': 0x22,
+      "\\": 0x5c,
+    };
+    bytes.push(simple[n] ?? n.charCodeAt(0));
+    i++;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(Uint8Array.from(bytes));
+  } catch {
+    return token;
+  }
+}
+
 function classify(path: string): FileKind {
   // "lockfile" feeds DiffFacts.lockfileOnly (the triage-side signal) and the
   // research.md per-file kind display (research-writer.ts). Without this branch
@@ -67,12 +124,21 @@ export function computeDiffFacts(diff: string): DiffFacts {
     // a/↔b/ boundary regardless of " b/" inside the name. Fall back to a greedy
     // split only for renames/copies (a/old b/new), where the sides differ.
     let path: string | undefined;
-    const sym = line.match(/^diff --git a\/(.+) b\/\1$/);
-    if (sym) {
-      path = sym[1];
+    // Quoted header (a diff source that left core.quotePath on): both sides are
+    // double-quoted C-escaped tokens — `diff --git "a/<X>" "b/<X>"`. Unquote the
+    // b-side. Matched BEFORE the unquoted forms so the quotes/escapes don't leak
+    // into the path (which would mis-classify and drop range attribution).
+    const q = line.match(/^diff --git "a\/(.+)" "b\/(.+)"$/);
+    if (q) {
+      path = gitUnquotePath(`"${q[2] ?? q[1]}"`);
     } else {
-      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-      if (m) path = m[2] ?? m[1];
+      const sym = line.match(/^diff --git a\/(.+) b\/\1$/);
+      if (sym) {
+        path = sym[1];
+      } else {
+        const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+        if (m) path = m[2] ?? m[1];
+      }
     }
     if (path !== undefined && path !== "") {
       current = { path, added: 0, removed: 0, kind: classify(path) };

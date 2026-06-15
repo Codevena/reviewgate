@@ -122,26 +122,42 @@ export async function writeResearch(input: ResearchInput): Promise<string> {
     "## Changed files",
     ...input.facts.files.map((f) => {
       const hist = fileHistory.get(f.path) ?? "";
-      return `- ${f.path} (${f.kind}, +${f.added}/-${f.removed})${hist ? ` — recent: ${hist}` : ""}`;
+      // The file path is diff-derived (attacker-controllable) and lands in this
+      // TRUSTED section BEFORE the untrusted-diff fence — neutralize markers + strip
+      // newlines (gitLog already neutralizes the history it returns). Mirrors the
+      // Context7/collaborator-path handling.
+      const path = neutralizeInjectionMarkers(f.path).replace(/[\r\n]+/g, " ");
+      return `- ${path} (${f.kind}, +${f.added}/-${f.removed})${hist ? ` — recent: ${hist}` : ""}`;
     }),
     "",
     `**Sensitivity tags:** ${input.facts.sensitivityTags.join(", ") || "none"}`,
     "",
     "## Symbol graph (1-hop)",
     ...(input.symbolGraph.symbols.length
-      ? input.symbolGraph.symbols.map(
-          (s) =>
-            `- ${s.name} (L${s.startLine}-${s.endLine}) calls: ${s.callees.join(", ") || "—"}; callers: ${
-              (input.symbolGraph.callers[s.name] ?? [])
-                .map((c) => `${c.file}:${c.line}`)
-                .slice(0, 5)
-                .join(", ") || "—"
-            }`,
-        )
+      ? input.symbolGraph.symbols.map((s) => {
+          // Symbol names + caller file paths come from tree-sitter parsing the
+          // attacker-controlled diff source — neutralize markers + strip newlines so
+          // they stay inert data in this trusted section.
+          const name = neutralizeInjectionMarkers(s.name).replace(/[\r\n]+/g, " ");
+          const callees =
+            s.callees
+              .map((c) => neutralizeInjectionMarkers(c).replace(/[\r\n]+/g, " "))
+              .join(", ") || "—";
+          const callers =
+            (input.symbolGraph.callers[s.name] ?? [])
+              .map(
+                (c) => `${neutralizeInjectionMarkers(c.file).replace(/[\r\n]+/g, " ")}:${c.line}`,
+              )
+              .slice(0, 5)
+              .join(", ") || "—";
+          return `- ${name} (L${s.startLine}-${s.endLine}) calls: ${callees}; callers: ${callers}`;
+        })
       : ["_No symbol graph (unsupported language or grammar unavailable)._"]),
     "",
     "## Project conventions",
-    input.conventions.summary,
+    // conventions.summary is derived from repo source files (untrusted) — neutralize
+    // markers and collapse code fences so it cannot break out of this trusted section.
+    neutralizeFences(neutralizeInjectionMarkers(input.conventions.summary)),
     "",
   ];
   if (input.contextDocs) {

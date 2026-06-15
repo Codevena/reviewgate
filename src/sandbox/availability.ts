@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import { platform } from "node:os";
 
+// Bound every availability probe: a hung `sandbox-exec`/`bwrap` would otherwise
+// hang the probe (and `reviewgate doctor`) forever. On timeout we kill the probe
+// and treat the runtime as UNAVAILABLE (probe failed → fail-closed for strict).
+const PROBE_TIMEOUT_MS = 5_000;
+
 let cached: boolean | null = null;
 
 export function sandboxExecAvailable(): Promise<boolean> {
@@ -13,14 +18,25 @@ export function sandboxExecAvailable(): Promise<boolean> {
     const child = spawn("sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], {
       stdio: ["ignore", "ignore", "ignore"],
     });
-    child.on("exit", (code) => {
-      cached = code === 0;
-      resolve(cached);
-    });
-    child.on("error", () => {
-      cached = false;
-      resolve(false);
-    });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cached = ok;
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      finish(false);
+    }, PROBE_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    child.on("exit", (code) => finish(code === 0));
+    child.on("error", () => finish(false));
   });
 }
 
@@ -59,14 +75,25 @@ export function bwrapAvailable(): Promise<boolean> {
       ],
       { stdio: ["ignore", "ignore", "ignore"] },
     );
-    child.on("exit", (code) => {
-      bwrapCached = code === 0;
-      resolve(bwrapCached);
-    });
-    child.on("error", () => {
-      bwrapCached = false;
-      resolve(false);
-    });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      bwrapCached = ok;
+      resolve(ok);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      finish(false);
+    }, PROBE_TIMEOUT_MS);
+    if (typeof timer.unref === "function") timer.unref();
+    child.on("exit", (code) => finish(code === 0));
+    child.on("error", () => finish(false));
   });
 }
 

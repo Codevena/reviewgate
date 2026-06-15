@@ -1,9 +1,11 @@
 // src/core/report-writer.ts
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { Finding } from "../schemas/finding.ts";
 import type { PendingReport } from "../schemas/pending-report.ts";
 import type { EscalationReason } from "../schemas/state.ts";
+import { writeFileAtomic } from "../utils/atomic-write.ts";
 import {
   escalationMdPath,
   pendingJsonPath,
@@ -34,6 +36,7 @@ function consensusEmoji(c: Finding["consensus"]): string {
 function demoteBadges(f: Finding): string | null {
   const badges: string[] = [];
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
+  if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
   if (f.scope_demoted) badges.push("📍 outside changed lines");
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
@@ -69,15 +72,25 @@ function fmtFinding(f: Finding): string {
   // corroborated certainty (both 2026-06-05 field reports flagged this as a
   // trust-killer). Corroborated findings (majority/unanimous) keep the bare number.
   const consNote = f.consensus === "singleton" ? " (single reviewer, uncorroborated)" : "";
+  // The reviewer-supplied free text (message/details/suggested_fix) is untrusted
+  // LLM output rendered into pending.md, which the AGENT then reads with its Read
+  // tool — defang injection markers (zero-width space keeps it human-readable, does
+  // NOT destroy meaning) so a hallucinated finding can't smuggle directives into the
+  // agent's context. suggested_fix is wrapped in a ``` fence → also collapse fences.
+  const message = neutralizeInjectionMarkers(f.message);
+  const details = neutralizeInjectionMarkers(f.details);
+  const suggestedFix = f.suggested_fix
+    ? neutralizeFences(neutralizeInjectionMarkers(f.suggested_fix))
+    : undefined;
   return [
     `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${consNote}${confirmed}`,
     ...(badges ? [badges] : []),
     "",
-    f.message,
+    message,
     "",
-    f.details,
-    f.suggested_fix ? `\n**Suggested fix:**\n\`\`\`\n${f.suggested_fix}\n\`\`\`` : "",
+    details,
+    suggestedFix ? `\n**Suggested fix:**\n\`\`\`\n${suggestedFix}\n\`\`\`` : "",
     "",
   ].join("\n");
 }
@@ -98,7 +111,12 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
       ?.split("\n")
       .find((l) => l.trim().length > 0)
       ?.trim();
-    return reason ? `${x.id}: ${x.status} — ${reason.slice(0, 160)}` : `${x.id}: ${x.status}`;
+    // status_detail is captured reviewer stderr (untrusted) rendered into pending.md
+    // for the agent to read — defang injection markers so a crafted error line can't
+    // smuggle directives into the agent's context.
+    return reason
+      ? `${x.id}: ${x.status} — ${neutralizeInjectionMarkers(reason.slice(0, 160))}`
+      : `${x.id}: ${x.status}`;
   };
   const coverageBanner =
     degraded.length > 0
@@ -246,8 +264,10 @@ export class ReportWriter {
     const json =
       mode === "one-shot" ? planReviewJsonPath(this.repoRoot) : pendingJsonPath(this.repoRoot);
     ensureDir(md);
-    writeFileSync(md, renderMd(report, mode), { mode: 0o600 });
-    writeFileSync(json, JSON.stringify(report, null, 2), { mode: 0o600 });
+    // Atomic tmp+rename: pending.{md,json} are read cross-process by the Stop-hook
+    // decisions loop — a non-atomic writeFileSync could expose a half-written file.
+    writeFileAtomic(md, renderMd(report, mode), { mode: 0o600 });
+    writeFileAtomic(json, JSON.stringify(report, null, 2), { mode: 0o600 });
   }
 
   async writeEscalation(input: EscalationInput): Promise<void> {
@@ -300,6 +320,7 @@ export class ReportWriter {
       "- To make a finding a sticky known-false-positive: find its id with `reviewgate fp list`, then `reviewgate fp pin --id <FP-id>`.",
       "- If the panel diverges from your intent systematically, edit `reviewgate.config.ts` (e.g. adjust reviewers/personas) and run `reviewgate doctor` to validate.",
     ].join("\n");
-    writeFileSync(p, out, { mode: 0o600 });
+    // Atomic tmp+rename: ESCALATION.md may be read cross-process while written.
+    writeFileAtomic(p, out, { mode: 0o600 });
   }
 }

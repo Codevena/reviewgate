@@ -26,13 +26,21 @@ export function notifyCommand(
   return null;
 }
 
+// Hard wall on the notifier subprocess. A desktop notification fires AFTER the
+// gate's verdict, so a hung osascript/notify-send (e.g. a stuck Notification
+// Center, a wedged D-Bus) would block the Stop hook from returning and DROP the
+// block decision → fail-open. Notifications are best-effort, so we kill the
+// notifier well before that matters. spawnSync `timeout` SIGTERMs the child and
+// returns; we ignore the (killed) result.
+const NOTIFY_TIMEOUT_MS = 3_000;
+
 // Fire a desktop notification. Best-effort: never throws, swallows any failure
 // (e.g. osascript/notify-send missing). spawnImpl is injectable for tests.
 export function notifyDesktop(title: string, body: string, spawnImpl: SpawnLike = spawnSync): void {
   const c = notifyCommand(title, body);
   if (!c) return;
   try {
-    spawnImpl(c.cmd, c.args, { stdio: "ignore" });
+    spawnImpl(c.cmd, c.args, { stdio: "ignore", timeout: NOTIFY_TIMEOUT_MS });
   } catch {
     // notifications are advisory — never let one break the gate
   }

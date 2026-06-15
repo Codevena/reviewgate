@@ -1,6 +1,6 @@
 // tests/unit/cassette-replay-adapter.test.ts
 import { describe, expect, it } from "bun:test";
-import { embedKey, sha256 } from "../../src/cassette/matching.ts";
+import { completeKey, embedKey, sha256 } from "../../src/cassette/matching.ts";
 import { ReplayAdapter } from "../../src/cassette/replay-adapter.ts";
 import type { CassetteEntry } from "../../src/schemas/cassette.ts";
 
@@ -86,9 +86,12 @@ describe("ReplayAdapter", () => {
     const completeEntry: CassetteEntry = {
       schema: "reviewgate.cassette.entry.v1",
       provider: "openrouter",
-      key: "openrouter:complete",
+      // complete() is content-addressed by prompt hash (RecordingAdapter keys it as
+      // completeKey(id, sha256(prompt)); replay pops the same), so the entry key and
+      // its promptSha256 must match the prompt the test plays back.
+      key: completeKey("openrouter", sha256("judge prompt")),
       method: "complete",
-      promptSha256: "f".repeat(64),
+      promptSha256: sha256("judge prompt"),
       result: { text: '{"accept":true}' },
     };
     const withComplete = new ReplayAdapter([completeEntry], "openrouter");

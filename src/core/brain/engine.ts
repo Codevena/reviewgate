@@ -1,4 +1,5 @@
 // src/core/brain/engine.ts
+import { neutralizeFences, neutralizeInjectionMarkers } from "../../diff/sanitizer.ts";
 import { selectBrainEntries } from "./select.ts";
 import type { BrainSnapshot, BrainStore } from "./store.ts";
 
@@ -28,8 +29,19 @@ export class BrainEngine {
     const entries = this.snapshotEntries();
     const sel = selectBrainEntries(entries, { ...ctx, maxTokens: this.opts.maxTokens });
     if (sel.length === 0) return "";
+    // Brain title/body/scope originate from reviewer `memory_proposals` (authored
+    // while reading the attacker-controlled diff) and web-fetched bodies, but this
+    // string is pushed into the TRUSTED prompt block BEFORE the untrusted-diff fence
+    // — unlike the diff (sanitizeDiff) and Context7 docs (neutralizeInjectionMarkers).
+    // Neutralize injection markers in all three; strip newlines from title/scope so a
+    // single entry can't forge extra prompt lines, and collapse code fences in the body.
     return sel
-      .map((e) => `- ${e.title}: ${e.body}  [Source: ${e.id} · ${e.type} · ${e.scope}]`)
+      .map((e) => {
+        const title = neutralizeInjectionMarkers(e.title).replace(/[\r\n]+/g, " ");
+        const scope = neutralizeInjectionMarkers(e.scope).replace(/[\r\n]+/g, " ");
+        const body = neutralizeFences(neutralizeInjectionMarkers(e.body));
+        return `- ${title}: ${body}  [Source: ${e.id} · ${e.type} · ${scope}]`;
+      })
       .join("\n");
   }
 }

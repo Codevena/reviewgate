@@ -3,6 +3,42 @@ import { z } from "zod";
 export const Severity = z.enum(["CRITICAL", "WARN", "INFO"]);
 export type Severity = z.infer<typeof Severity>;
 
+// Reviewers don't always emit the canonical CRITICAL/WARN/INFO tokens — a model
+// will write "warning", "Critical", "high", "note", etc. Without tolerance the
+// whole finding is silently dropped at FindingSchema.safeParse (a real bug:
+// genuine issues vanish). Map common synonyms + case to the canonical token; an
+// unknown value is passed through UNCHANGED so the enum still rejects true
+// garbage (e.g. "BOGUS"). Output type stays the canonical `Severity` enum. (F-7)
+const SEVERITY_SYNONYMS: Record<string, Severity> = {
+  critical: "CRITICAL",
+  crit: "CRITICAL",
+  blocker: "CRITICAL",
+  high: "CRITICAL",
+  severe: "CRITICAL",
+  error: "CRITICAL",
+  warn: "WARN",
+  warning: "WARN",
+  medium: "WARN",
+  moderate: "WARN",
+  major: "WARN",
+  minor: "WARN",
+  low: "WARN",
+  info: "INFO",
+  informational: "INFO",
+  note: "INFO",
+  notice: "INFO",
+  nit: "INFO",
+  suggestion: "INFO",
+  trivial: "INFO",
+};
+
+/** Severity that tolerates case + common reviewer synonyms; canonical output. */
+export const SeverityCoerced = z.preprocess((v) => {
+  if (typeof v !== "string") return v;
+  const key = v.trim().toLowerCase();
+  return SEVERITY_SYNONYMS[key] ?? v.trim().toUpperCase();
+}, Severity);
+
 export const FindingCategory = z.enum([
   "security",
   "correctness",
@@ -20,7 +56,7 @@ export type Consensus = z.infer<typeof Consensus>;
 export const FindingSchema = z.object({
   id: z.string(),
   signature: z.string(),
-  severity: Severity,
+  severity: SeverityCoerced,
   category: FindingCategory,
   rule_id: z.string(),
   file: z.string(),

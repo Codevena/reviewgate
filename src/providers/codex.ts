@@ -15,8 +15,9 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
+import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
-import { extractQuotaMessage, isQuotaExhausted } from "./quota-signals.ts";
+import { extractQuotaMessage, isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
 import {
   REVIEW_OUTPUT_SCHEMA,
   mapReviewOutputToFindings,
@@ -70,8 +71,25 @@ export class CodexAdapter implements ProviderAdapter {
   async review(
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
+    // Per-run temp dir holds the schema, per-attempt event/last-message/stderr
+    // files AND the untrusted prompt — all removed in finally so we don't leak a
+    // /tmp dir containing the diff + reviewer output every iteration (F-1).
     const run = mkdtempSync(join(tmpdir(), "rg-codex-run-"));
+    try {
+      return await this.reviewInRun(run, input);
+    } finally {
+      try {
+        rmSync(run, { recursive: true, force: true });
+      } catch {
+        // best-effort temp cleanup
+      }
+    }
+  }
 
+  private async reviewInRun(
+    run: string,
+    input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
+  ): Promise<ReviewResult> {
     // Always constrain codex to our review schema so the response shape is
     // predictable. Caller may override with their own schema file.
     let schemaPath = input.schemaPath;
@@ -80,7 +98,7 @@ export class CodexAdapter implements ProviderAdapter {
       writeFileSync(schemaPath, JSON.stringify(REVIEW_OUTPUT_SCHEMA));
     }
 
-    const env = { ...process.env } as Record<string, string>;
+    const env = scrubReviewerEnv(process.env);
     if (input.cfg.auth === "apikey" && input.cfg.apiKeyEnv) {
       const key = process.env[input.cfg.apiKeyEnv];
       if (key) env.OPENAI_API_KEY = key;
@@ -138,9 +156,18 @@ export class CodexAdapter implements ProviderAdapter {
       });
 
       const stderrText = readFileSafe(stderrFile);
-      // codex's usage-limit banner lands on STDOUT (the --json event stream),
-      // not stderr — so scan BOTH before classifying a quota hit.
-      const quotaText = `${stderrText}\n${readFileSafe(eventsFile)}`;
+      const eventsText = readFileSafe(eventsFile);
+      // codex's usage-limit banner lands on STDOUT (the --json event stream), not
+      // stderr — so scan BOTH. But the event stream also carries the model's own
+      // reasoning/agent text, which can quote a quota phrase planted in the diff;
+      // scan stderr freely (the CLI's own channel) yet scan the events stream only
+      // for a SHORT banner-shaped line via isQuotaBanner, so an injected phrase
+      // buried in a long echoed line can neither suppress the reviewer (DoS) nor
+      // false-trigger a cooldown (F-6b).
+      const quotaHit = isQuotaExhausted(stderrText) || isQuotaBanner(eventsText);
+      // For statusDetail (reset-time recovery) the banner snippet is extracted
+      // from whichever channel signalled it.
+      const quotaText = `${stderrText}\n${eventsText}`;
       const baseStatus: ReviewStatus =
         res.killedByTimeout || res.killedByWatchdog
           ? "timeout"
@@ -148,7 +175,7 @@ export class CodexAdapter implements ProviderAdapter {
             ? "ok"
             : "error";
       const status: ReviewStatus =
-        baseStatus === "error" && isQuotaExhausted(quotaText) ? "quota-exhausted" : baseStatus;
+        baseStatus === "error" && quotaHit ? "quota-exhausted" : baseStatus;
 
       if (status !== "ok") {
         // A deadline-abort (spawnSafely SIGKILL via opts.signal) surfaces as a
@@ -190,7 +217,7 @@ export class CodexAdapter implements ProviderAdapter {
         // banner (which lands on exit 0 here, not the exit!=0 path above), classify
         // it as quota-exhausted so the cooldown handles it and we don't retry into
         // the cap. Otherwise it's a genuine unparseable run (retry candidate).
-        if (isQuotaExhausted(quotaText)) {
+        if (quotaHit) {
           return {
             result: {
               reviewerId: input.reviewerId,
@@ -311,7 +338,7 @@ export class CodexAdapter implements ProviderAdapter {
         opts.model,
         "-",
       ];
-      const env = { ...process.env } as Record<string, string>;
+      const env = scrubReviewerEnv(process.env);
       if (opts.auth === "apikey" && opts.apiKeyEnv) {
         const key = process.env[opts.apiKeyEnv];
         if (key) env.OPENAI_API_KEY = key;

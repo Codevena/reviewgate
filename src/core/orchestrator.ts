@@ -710,12 +710,13 @@ export class Orchestrator {
         )
       : "";
 
-    // M5 Part B2a: brain + FP identities flow through ONE structured behavior-hash
-    // (not an ad-hoc append). FP is keyed on {signature, stage} (the behavior-
-    // affecting fields; pattern_id is cosmetic). With no FP entries the result is
-    // byte-identical to the legacy brain-only `id:status` hash, so existing cache
-    // keys are preserved when fpLedger is off or has no active entries. M6: the
-    // docs corpus identity is folded in too (only when non-empty → continuity).
+    // Project conventions (CLAUDE.md / README.md / package.json scripts) are
+    // injected as TRUSTED reviewer context via research.md, but are NOT covered by
+    // the diff hash — so a conventions change would otherwise serve a STALE cached
+    // verdict. Load them once HERE (before the behavior-hash, mirroring N5/N7) and
+    // reuse the SAME object for writeResearch below, so the hash and the injected
+    // context can never drift. `summary` is the only field that reaches a reviewer.
+    const conventions = loadConventions(repo);
     const behaviorHash = computeBehaviorHash({
       brain: brainEngine
         ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
@@ -745,13 +746,29 @@ export class Orchestrator {
     // record mode would write an empty cassette, replay mode would ignore the
     // cassette's recorded verdict/findings. The cassette IS the source of truth.
     const cacheEnabled = this.input.config.cache.enabled && cassetteFromEnv() === null;
+    // The claude-code reviewer's effective model is the host-tier override
+    // (reviewerTierFor(hostTier)), NOT a configured value — so it is NOT covered by
+    // configHash. A host-model change (e.g. Opus→Sonnet session, or the tier going
+    // "disabled") changes which reviewer/model actually runs, so it MUST invalidate
+    // the cache; fold the tier in here. Plain segment append (continuity preserved
+    // when neither this nor the conventions changes).
+    const hostTierSegment = `|host:${this.input.hostTier}`;
+    // Project conventions content (CLAUDE.md/README.md/package.json scripts) is
+    // injected as reviewer context but not in the diff hash — fold its sha256 in so
+    // an edit to those files re-runs the panel instead of serving a stale verdict.
+    const conventionsSegment = `|conv:${createHash("sha256")
+      .update(conventions.summary)
+      .digest("hex")}`;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
       // M3: provider versions not queried; cache invalidates on config/version/
       // schema change. M4+M5: the combined brain+FP behavior-hash is folded in
       // here so any brain OR active-ledger change re-runs the panel deterministically.
-      providerVersions: behaviorHash,
+      // The host-model tier and project-conventions content are appended too: both
+      // affect the review (which reviewer model runs / what context is injected) but
+      // are not captured by configHash or the diff hash.
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}`,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -763,15 +780,19 @@ export class Orchestrator {
         this.input.config.cache.reviewTtlDays * 24 * 60 * 60 * 1000,
       );
       // A cached SOFT-PASS stores only counts, not findings, so serving it writes
-      // pending.json with no findings. Under softPassPolicy="block" the
-      // decisions-gate needs the WARN findings to require decisions on — so don't
-      // serve a cached SOFT-PASS then; fall through to a real panel run that
-      // repopulates pending.json. PASS (no findings) and allow/ask-once SOFT-PASS
-      // (no decisions required) are still served from cache.
-      const softPassBlocksCache = this.input.config.loop.softPassPolicy === "block";
+      // pending.json with no findings. Two policies need the real WARN findings:
+      //   - "block" — the decisions-gate requires a decision per WARN finding.
+      //   - "ask-once" — the one-time acknowledge block tells the agent to "review
+      //     them in .reviewgate/pending.md", but an empty findings list makes that
+      //     prompt point at warnings that aren't there.
+      // For BOTH, fall through to a real panel run that repopulates pending.json.
+      // Only "allow" (silent pass, no acknowledge block) is safe to serve empty.
+      const softPassNeedsFindings =
+        this.input.config.loop.softPassPolicy === "block" ||
+        this.input.config.loop.softPassPolicy === "ask-once";
       if (
         cached &&
-        (cached.verdict === "PASS" || (cached.verdict === "SOFT-PASS" && !softPassBlocksCache))
+        (cached.verdict === "PASS" || (cached.verdict === "SOFT-PASS" && !softPassNeedsFindings))
       ) {
         await this.writeReport(opts, start, [], [], cached.verdict, cached.counts);
         return {
@@ -822,7 +843,7 @@ export class Orchestrator {
       facts,
       triage,
       symbolGraph,
-      conventions: loadConventions(repo),
+      conventions,
       contextDocs,
       contextDocsBudgetBytes: docsCfg?.budgetBytes,
       signal: opts.signal,
@@ -1081,7 +1102,11 @@ export class Orchestrator {
               sanitisedCollab,
             );
           writeFileSync(promptFile, promptParts.join("\n"));
-          writeFileSync(diffPath, this.input.diff);
+          // Write the SANITIZED diff (redacted + injection-neutralized) — NOT the
+          // raw diff. The reviewer-readable tmp file must carry the same scrubbed
+          // bytes as the prompt; writing the raw diff here would re-expose the
+          // secrets/injection that sanitizeDiff stripped for the prompt.
+          writeFileSync(diffPath, sanitised.text);
 
           // Quota cooldown skip: if the primary is still capped (reset not reached
           // AND within the re-probe window) AND this slot has a fallback, don't waste
@@ -1638,7 +1663,16 @@ export class Orchestrator {
     // cached PASS reflects a genuinely completed review. If the deadline fired
     // during this bounded post-verdict work, LoopDriver awaits the run, sees it
     // resolve, and honors the verdict — the cache then makes the (rare) re-run cheap.
-    if (cacheEnabled && (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")) {
+    // Fail-CLOSED on an INCOMPLETE diff: when collection truncated/timed-out, some
+    // changed code was NOT shown to the panel, so a clean PASS/SOFT-PASS is NOT
+    // authoritative over the hidden portion. Caching it would let a later identical
+    // (still-partial) key serve that partial pass as a full one. Never persist a
+    // pass earned on a partial diff — the next turn must re-review from scratch.
+    if (
+      cacheEnabled &&
+      !this.input.diffIncomplete &&
+      (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")
+    ) {
       await putCachedReview(repo, cacheKey, { verdict: agg.verdict, counts: agg.counts }).catch(
         () => undefined,
       );

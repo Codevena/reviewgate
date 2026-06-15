@@ -16,12 +16,17 @@
  * (version `null`).
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { Language, Node } from "web-tree-sitter";
 import { Parser, Query } from "web-tree-sitter";
+import { safeReadContained } from "../utils/safe-read.ts";
 import { grammarForFile } from "./grammars.ts";
 import { getLanguage } from "./symbol-graph.ts";
+
+// Project files are read here as trusted reviewer context AND fed to the synchronous
+// regex/JSONC fallbacks on the review hot path. safeReadContained refuses symlinks
+// escaping the repo and caps size — the cap also bounds the input the (linear,
+// non-backtracking) fallback regexes scan, so a huge/minified file can't burn CPU.
+const IMPORTS_FILE_CAP = 1024 * 1024;
 
 export interface ImportedLib {
   name: string;
@@ -170,15 +175,10 @@ function specToPackage(spec: string): string | null {
 // specifiers this module's specToPackage() discards). Returns EVERY module
 // specifier (relative, external, builtin) in a JS/TS file; [] for other languages.
 export async function specifiersFromFile(repoRoot: string, file: string): Promise<string[]> {
-  const abs = join(repoRoot, file);
-  const grammar = grammarForFile(abs);
+  const grammar = grammarForFile(file);
   if (!grammar || !JS_TS_LANGS.has(grammar.lang)) return []; // JS/TS only for M6
-  let code: string;
-  try {
-    code = readFileSync(abs, "utf8");
-  } catch {
-    return [];
-  }
+  const code = safeReadContained(repoRoot, file, IMPORTS_FILE_CAP);
+  if (code === null) return [];
   try {
     const lang = await getLanguage(grammar.wasmFile);
     if (!lang) return regexSpecifiers(code); // grammar wasm unavailable → fallback
@@ -207,8 +207,10 @@ interface PackageJson {
 }
 
 function readPackageJson(repoRoot: string): PackageJson | null {
+  const raw = safeReadContained(repoRoot, "package.json", IMPORTS_FILE_CAP);
+  if (raw === null) return null;
   try {
-    return JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as PackageJson;
+    return JSON.parse(raw) as PackageJson;
   } catch {
     return null;
   }
@@ -216,12 +218,10 @@ function readPackageJson(repoRoot: string): PackageJson | null {
 
 /** Parse bun.lock (JSONC — tolerant of trailing commas) → { name → exact version }. */
 function readBunLockVersions(repoRoot: string): Record<string, string> {
-  let raw: string;
-  try {
-    raw = readFileSync(join(repoRoot, "bun.lock"), "utf8");
-  } catch {
-    return {};
-  }
+  // bun.lock can be large; cap generously but bound it so the JSONC fallback scan
+  // never runs over an unbounded (or symlinked-out-of-repo) file.
+  const raw = safeReadContained(repoRoot, "bun.lock", 8 * 1024 * 1024);
+  if (raw === null) return {};
   let parsed: { packages?: Record<string, unknown> };
   try {
     parsed = JSON.parse(raw);
@@ -301,12 +301,10 @@ function stripJsonc(raw: string): string {
  * only — the common case; bare `@/` is still caught by specToPackage regardless).
  */
 function readTsconfigAliasMatchers(repoRoot: string): ((spec: string) => boolean)[] {
-  let raw: string;
-  try {
-    raw = readFileSync(join(repoRoot, "tsconfig.json"), "utf8");
-  } catch {
-    return [];
-  }
+  // The raw tsconfig text is fed to the synchronous, char-by-char stripJsonc scanner;
+  // cap + symlink-contain it so that scan never runs over an unbounded/escaped file.
+  const raw = safeReadContained(repoRoot, "tsconfig.json", IMPORTS_FILE_CAP);
+  if (raw === null) return [];
   let parsed: { compilerOptions?: { paths?: Record<string, unknown> } };
   try {
     parsed = JSON.parse(stripJsonc(raw));

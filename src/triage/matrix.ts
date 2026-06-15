@@ -63,6 +63,23 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       justification: "No reviewable changes in the diff.",
     };
   }
+  // Sensitivity wins over docOnly: a doc that lives on a sensitive path (e.g.
+  // `auth/THREAT_MODEL.md`, a `.env` example, a SQL/migration note) still carries
+  // real risk, so it must keep its sensitive escalation rather than being silently
+  // doc-skipped. Checked BEFORE the docOnly branch so the escalation is never
+  // discarded by docOnly precedence. (Sensitive paths are never small-gated.)
+  if (facts.sensitivityTags.length > 0) {
+    return {
+      ...base,
+      riskClass: "sensitive",
+      runReview: true,
+      budgetTier: "expanded",
+      loopCap: 5,
+      reviewerHint: [],
+      maxIterationsOverride: null, // sensitive paths are never small-gated
+      justification: `Sensitive paths: ${facts.sensitivityTags.join(", ")}.`,
+    };
+  }
   if (facts.docOnly) {
     if (
       docReview?.enabled &&
@@ -91,18 +108,6 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       reviewerHint: [],
       maxIterationsOverride: null,
       justification: "Doc-only diff; review skipped.",
-    };
-  }
-  if (facts.sensitivityTags.length > 0) {
-    return {
-      ...base,
-      riskClass: "sensitive",
-      runReview: true,
-      budgetTier: "expanded",
-      loopCap: 5,
-      reviewerHint: [],
-      maxIterationsOverride: null, // sensitive paths are never small-gated
-      justification: `Sensitive paths: ${facts.sensitivityTags.join(", ")}.`,
     };
   }
   if (facts.lockfileOnly) {

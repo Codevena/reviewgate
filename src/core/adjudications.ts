@@ -19,9 +19,13 @@ export interface Adjudication {
 const REASON_MAX = 200;
 
 function loc(a: Adjudication): string {
+  // The file path is reviewer-controlled and rendered into a TRUSTED prompt
+  // section, so strip newlines + neutralize injection markers (same treatment as
+  // the agent's reason below) so it can't forge extra prompt lines.
+  const file = neutralizeInjectionMarkers(a.file).replace(/[\r\n]+/g, " ");
   return a.lineStart === a.lineEnd
-    ? `${a.file}:${a.lineStart}`
-    : `${a.file}:${a.lineStart}-${a.lineEnd}`;
+    ? `${file}:${a.lineStart}`
+    : `${file}:${a.lineStart}-${a.lineEnd}`;
 }
 
 // Renders prior-iteration adjudications as a TRUSTED prompt section. The agent's reason is

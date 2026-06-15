@@ -61,7 +61,11 @@ describe("ReputationStore", () => {
     expect(eids).not.toContain("old");
   });
 
-  it("keeps future-dated and unparseable ts events (treated as fresh)", async () => {
+  it("DROPS future-dated and unparseable ts events on prune (bounded-file guarantee)", async () => {
+    // Audit Finding 7: keeping future-dated / unparseable-timestamp events forever
+    // defeated the bounded-file guarantee — a clock-skewed or corrupt timestamp
+    // could never age out, so a stream of such events would grow reputation.json
+    // without bound. They are now treated as invalid/prunable and dropped.
     const r = repo();
     const s = new ReputationStore(r);
     const now = new Date("2026-05-25T00:00:00Z");
@@ -76,8 +80,9 @@ describe("ReputationStore", () => {
     const eids = ((await s.snapshot()).reviewers["codex:security"]?.correct ?? []).map(
       (e) => e.eid,
     );
-    expect(eids).toContain("future");
-    expect(eids).toContain("bad");
+    expect(eids).not.toContain("future");
+    expect(eids).not.toContain("bad");
+    expect(eids).toHaveLength(0);
   });
 
   it("pruning on a write does not drop another reviewer's recent events", async () => {

@@ -1,6 +1,8 @@
 // src/research/symbol-graph.ts
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { Language, Parser, Query } from "web-tree-sitter";
+import { safeReadContained } from "../utils/safe-read.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
 import {
   RUNTIME_WASM,
@@ -8,6 +10,11 @@ import {
   resolveGrammarWasm,
   resolveRuntimeWasm,
 } from "./grammars.ts";
+
+// Per-file size cap before tree-sitter parse: a single large/minified changed file
+// would otherwise load + build a parse tree of unbounded size (Emscripten heap that
+// never shrinks). 2MB covers real hand-written sources with headroom.
+const PARSE_FILE_CAP = 2 * 1024 * 1024;
 
 export interface SymbolInfo {
   name: string;
@@ -70,25 +77,31 @@ const CALL_QUERY =
 // times. Files don't change mid-run, so caching by path is safe.
 const parseCache = new Map<string, { symbols: SymbolInfo[] } | null>();
 
-async function parseFile(file: string): Promise<{ symbols: SymbolInfo[] } | null> {
+async function parseFile(
+  file: string,
+  repoRoot?: string,
+): Promise<{ symbols: SymbolInfo[] } | null> {
   const cached = parseCache.get(file);
   if (cached !== undefined) return cached;
-  const result = await parseFileUncached(file);
+  const result = await parseFileUncached(file, repoRoot);
   parseCache.set(file, result);
   return result;
 }
 
-async function parseFileUncached(file: string): Promise<{ symbols: SymbolInfo[] } | null> {
+async function parseFileUncached(
+  file: string,
+  repoRoot?: string,
+): Promise<{ symbols: SymbolInfo[] } | null> {
   const g = grammarForFile(file);
   if (!g) return null;
   const lang = await getLanguage(g.wasmFile);
   if (!lang) return null;
-  let code: string;
-  try {
-    code = readFileSync(file, "utf8");
-  } catch {
-    return null;
-  }
+  // Symlink-safe, size-capped read BEFORE parsing: refuses a file that escapes the
+  // containment root via symlink and never loads a >cap (large/minified) file into the
+  // tree-sitter heap. `file` is absolute; contain it under repoRoot when the caller
+  // supplied one, else under its own directory (still enforces the size + NUL guards).
+  const code = safeReadContained(repoRoot ?? dirname(file), file, PARSE_FILE_CAP);
+  if (code === null) return null;
   const p = new Parser();
   p.setLanguage(lang);
   const tree = p.parse(code);
@@ -131,10 +144,18 @@ async function parseFileUncached(file: string): Promise<{ symbols: SymbolInfo[] 
 export async function enclosingSymbol(
   file: string,
   line: number,
+  repoRoot?: string,
 ): Promise<{ name: string; startLine: number } | null> {
-  const parsed = await parseFile(file).catch(() => null);
+  const parsed = await parseFile(file, repoRoot).catch(() => null);
   if (!parsed) return null;
-  const hit = parsed.symbols.find((s) => line >= s.startLine && line <= s.endLine);
+  // The INNERMOST enclosing symbol: for a line inside a nested function, several
+  // symbols' [startLine,endLine] spans contain it; pick the one with the SMALLEST
+  // span (tightest fit) so a nested helper isn't mis-attributed to its outer fn.
+  let hit: SymbolInfo | null = null;
+  for (const s of parsed.symbols) {
+    if (line < s.startLine || line > s.endLine) continue;
+    if (!hit || s.endLine - s.startLine < hit.endLine - hit.startLine) hit = s;
+  }
   return hit ? { name: hit.name, startLine: hit.startLine } : null;
 }
 
@@ -225,7 +246,7 @@ export async function buildSymbolGraph(input: {
     // CPU-bound per file, so a large change set shouldn't be fully parsed after
     // the deadline has already fired.
     if (input.signal?.aborted) break;
-    const parsed = await parseFile(f).catch(() => null);
+    const parsed = await parseFile(f, input.repoRoot).catch(() => null);
     if (parsed) symbols.push(...parsed.symbols);
   }
   const callers: Record<string, CallerRef[]> = {};

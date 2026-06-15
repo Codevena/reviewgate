@@ -19,8 +19,9 @@ import type {
   ReviewStatus,
 } from "./adapter-base.ts";
 import { verdictFromFindings } from "./adapter-base.ts";
+import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
-import { isQuotaExhausted } from "./quota-signals.ts";
+import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
 export interface GeminiAdapterOptions {
@@ -79,10 +80,12 @@ export function classifyAgyOutcome(input: {
   // re-running it and burning the full timeout every iteration.
   if (isAgyPrintTimeout(input.outText)) return { status: "quota-exhausted", silentStall: false };
   const baseStatus: ReviewStatus = killed ? "timeout" : input.exitCode === 0 ? "ok" : "error";
-  const status: ReviewStatus =
-    baseStatus === "error" && isQuotaExhausted(input.errText + input.outText)
-      ? "quota-exhausted"
-      : baseStatus;
+  // Scan stderr freely (agy's own channel); scan stdout (the model response) only
+  // for a SHORT banner line (isQuotaBanner), since a quota phrase planted in the
+  // diff can be echoed there — an injected echo must not suppress the reviewer nor
+  // false-trigger a cooldown (F-6b).
+  const quotaHit = isQuotaExhausted(input.errText) || isQuotaBanner(input.outText);
+  const status: ReviewStatus = baseStatus === "error" && quotaHit ? "quota-exhausted" : baseStatus;
   return { status, silentStall: false };
 }
 
@@ -149,7 +152,9 @@ export class GeminiAdapter implements ProviderAdapter {
       const res = await spawnSafely({
         command: this.binPath,
         args,
-        env: { ...process.env } as Record<string, string>,
+        // agy authenticates via its own Google OAuth session (no env key), so scrub
+        // drops every foreign provider secret without breaking auth (F-2).
+        env: scrubReviewerEnv(process.env),
         cwd: input.workingDir,
         stdinFile: input.promptFile,
         stdoutFile: outFile,
@@ -207,7 +212,7 @@ export class GeminiAdapter implements ProviderAdapter {
         // is actually a quota/usage-limit banner (agy can print one and still exit
         // 0), classify it as quota-exhausted so the orchestrator's cooldown+failover
         // fires instead of treating the capped provider as a generic error (F-043).
-        const quota = isQuotaExhausted(outText + errText);
+        const quota = isQuotaExhausted(errText) || isQuotaBanner(outText);
         return {
           reviewerId: input.reviewerId,
           verdict: "ERROR",
@@ -255,7 +260,7 @@ export class GeminiAdapter implements ProviderAdapter {
       const res = await spawnSafely({
         command: this.binPath,
         args,
-        env: { ...process.env } as Record<string, string>,
+        env: scrubReviewerEnv(process.env),
         cwd: run,
         stdinFile: promptFile,
         stdoutFile: outFile,

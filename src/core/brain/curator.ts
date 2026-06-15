@@ -461,10 +461,18 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
     }
 
     // Rule 4: dedup vs EXISTING brain entries (cosine ≥ 0.85 → merge/bump).
+    // Cosine is only meaningful within ONE model's vector space, so compare only
+    // against entries embedded with the SAME model. Entries with no recorded
+    // embedding_model (legacy / pre-field) are treated as same-model so existing
+    // data still dedups (back-compatible); a cross-model entry is skipped rather
+    // than compared, keeping it separate instead of falsely merging.
     let dup: BrainEntry | undefined;
     try {
       dup = snap.entries.find(
-        (e) => e.embedding && cosineSimilarity(e.embedding, vec) >= DEDUP_THRESHOLD,
+        (e) =>
+          e.embedding &&
+          (e.embedding_model == null || e.embedding_model === cfg.model) &&
+          cosineSimilarity(e.embedding, vec) >= DEDUP_THRESHOLD,
       );
     } catch {
       dup = undefined;
@@ -523,6 +531,9 @@ export async function runCurator(input: CuratorInput): Promise<CuratorResult> {
         referencing_reviewers: [...providersIn(mergedEvidence)],
         confidence: groupConfidence,
         embedding: vec ?? null,
+        // Record the embedding model so future dedup only compares within the
+        // same vector space (cross-model cosine is meaningless).
+        embedding_model: cfg.model,
         evidence: mergedEvidence,
         created_at: input.nowIso,
         source_run_id: input.runId,
