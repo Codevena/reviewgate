@@ -79,6 +79,12 @@ export const FindingSchema = z.object({
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),
+  // Slice 1 (field report #1): set true when the aggregator demoted this finding to INFO
+  // because its subject (message/suggested_fix) targets Reviewgate's own <REDACTED:…>
+  // placeholder — almost always the reviewer mistaking a stripped secret for broken code.
+  // Demoted (not dropped) so a mis-worded REAL leak stays visible; security/secret-lead-word
+  // findings are exempt (stay blocking). Advisory, non-blocking.
+  redaction_demoted: z.boolean().optional(),
   // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).

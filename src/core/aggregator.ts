@@ -71,11 +71,6 @@ export interface AggregateResult {
   criticDropped: Finding[];
   /** Convenience count (== criticDropped.length); kept for existing callers. */
   criticDroppedCount: number;
-  /** Slice 1: findings dropped pre-cluster as redaction artifacts (FP-by-construction —
-   *  the reviewer mistook the sanitizer's <REDACTED:…> placeholder for code). Exposed for
-   *  parity with criticDropped; pre-cluster, so they never reach pending.json/metrics. */
-  redactionDropped: Finding[];
-  redactionDroppedCount: number;
 }
 
 const DEMOTE: Record<Finding["severity"], Finding["severity"] | "drop"> = {
@@ -259,44 +254,59 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
 }
 
 // Slice 1 (field report #1): a finding whose SUBJECT (message/suggested_fix) is
-// Reviewgate's own <REDACTED:…> placeholder is a false positive by construction —
-// the reviewer mistook the sanitizer's redaction for broken code. But the SAME
-// placeholder also masks a genuinely committed secret (sanitizer HEX_SECRET_WITH_CONTEXT),
-// so dropping blindly would fail-open a real leak. Two independent gates protect that:
-// (2) keep anything categorized security; (3) keep anything whose subject names a secret
-// (lead-word backstop — a superset of the sanitizer's own HEX_SECRET_WITH_CONTEXT lead
-// words). Gate (3) scans the SAME fields gate (1) triggers on, so the backstop can never
-// be narrower than the drop trigger. `category` alone is untrusted (reviewer-supplied);
-// gate (3) is the trusted content backstop.
+// Reviewgate's own <REDACTED:…> placeholder is (almost always) a false positive by
+// construction — the reviewer mistook the sanitizer's redaction for broken code. We
+// DEMOTE such findings to advisory INFO rather than DROP them, because the SAME
+// placeholder also masks a genuinely committed secret (sanitizer HEX_SECRET_WITH_CONTEXT):
+// a reviewer might report a real leak as a non-security finding with bland wording that
+// misses every secret lead word, and DROPPING that would silently fail-open the leak
+// (codex/opus/gate all flagged this). Demoting keeps it VISIBLE in the advisory section
+// (fail-VISIBLE, not fail-open) while removing the blocking weight that was the
+// field-report trust-killer (a CRITICAL@1.00 on a placeholder). Two gates keep a LIKELY-REAL
+// leak BLOCKING (un-demoted): (2) anything categorized security; (3) anything whose subject
+// names a secret (lead-word backstop — a superset of the sanitizer's own
+// HEX_SECRET_WITH_CONTEXT lead words). Gate (3) scans the SAME fields gate (1) triggers on,
+// so the backstop can never be narrower than the trigger. `category` alone is untrusted
+// (reviewer-supplied); gate (3) is the trusted content backstop.
 const SECRET_LEAD_WORD =
   /api[_-]?key|secret|token|passwo?r?d|pwd|auth|bearer|access[_-]?key|private[_-]?key|client[_-]?secret|credential|hardcoded/i;
 
 function isRedactionArtifact(f: Finding): boolean {
   const fields = [f.message, f.suggested_fix ?? ""];
   if (!fields.some((s) => s.includes("<REDACTED:"))) return false; // gate 1: subject only
-  if (f.category === "security") return false; // gate 2: possible real leak
+  if (f.category === "security") return false; // gate 2: keep a possible real leak blocking
   if (fields.some((s) => SECRET_LEAD_WORD.test(s))) return false; // gate 3: trusted backstop
   return true;
 }
 
 export function aggregate(input: AggregateInput): AggregateResult {
-  // Slice 1: drop redaction-artifact findings BEFORE clustering so they never pollute
-  // consensus / FP-ledger / reputation accounting. Pre-cluster + never surfaced =
-  // invisible to pending.json and every metric.
-  const redactionDropped: Finding[] = [];
-  const kept = input.findings.filter((f) => {
-    if (isRedactionArtifact(f)) {
-      redactionDropped.push(f);
-      return false;
-    }
-    return true;
-  });
+  // Slice 1: DEMOTE redaction-artifact findings to INFO (advisory) BEFORE clustering.
+  // Pre-cluster so a demoted artifact (now INFO, the lowest severity) can never become a
+  // cluster REPRESENTATIVE that masks a real co-located finding — a real CRITICAL/WARN seeds
+  // the cluster instead, and the artifact rides as an INFO member. Demote, NOT drop: see
+  // isRedactionArtifact — a mis-worded real secret leak must stay VISIBLE, not vanish.
+  const demoteRedaction = (f: Finding): Finding => {
+    if (!isRedactionArtifact(f)) return f;
+    if (f.severity === "INFO") return { ...f, redaction_demoted: true };
+    const note =
+      "\n\n↓ targets Reviewgate's own <REDACTED:…> placeholder (a stripped secret, not real code) — advisory only.";
+    return {
+      ...f,
+      severity: "INFO" as const,
+      redaction_demoted: true,
+      details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+    };
+  };
   // Canonicalize every finding's path up front so clustering/dedup, the emitted
   // representative path, AND the diff-scope lookup all agree — otherwise "./x.ts"
   // and "x.ts" from two reviewers would never merge and would scope inconsistently.
   // (Built-in reviewers already normalize in review-output, but aggregate() is
-  // exported and must be robust to raw paths.)
-  const findings = kept.map((f) => (f.file ? { ...f, file: normalizeRepoPath(f.file) } : f));
+  // exported and must be robust to raw paths.) Redaction-demote folds in here so a
+  // demoted finding's INFO severity is set before the severity-ordered clustering sort.
+  const findings = input.findings.map((f) => {
+    const d = demoteRedaction(f);
+    return d.file ? { ...d, file: normalizeRepoPath(d.file) } : d;
+  });
   // Sort into a fully deterministic order BEFORE greedy clustering — reviewers
   // return findings in an unstable order, and the cluster a finding lands in must
   // not depend on that order. Highest severity first within a file+line so the
@@ -707,10 +717,5 @@ export function aggregate(input: AggregateInput): AggregateResult {
     counts: { critical, warn, info },
     criticDropped,
     criticDroppedCount: criticDropped.length,
-    // NOT fed to implicit-outcomes/FP-ledger (unlike criticDropped, which orchestrator
-    // wires into deriveImplicitOutcomes): a redaction artifact is FP-by-construction, not a
-    // reviewer FP that needs a learning signal. Exposed for visibility/metrics only.
-    redactionDropped,
-    redactionDroppedCount: redactionDropped.length,
   };
 }

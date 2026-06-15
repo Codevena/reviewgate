@@ -26,7 +26,14 @@ A reusable test Finding factory is shown once in Task 1 Step 1 and reused (copy 
 
 ---
 
-## Task 1: Slice 1 — Redaction-artifact drop
+## Task 1: Slice 1 — Redaction-artifact demote
+
+> **Implemented as DEMOTE-to-INFO, not DROP** (changed during the iteration-1 dogfood gate
+> review — see the spec's Slice 1 UPDATE note). The pre-cluster step `map`s a matching finding to
+> `severity:"INFO"` + `redaction_demoted:true` (instead of filtering it out), so a mis-worded real
+> secret leak stays visible (fail-visible). No `redactionDropped` field on `AggregateResult`; a
+> `redaction_demoted?: boolean` flag on `FindingSchema` + a `findingBadges()` entry instead. The
+> steps below show the original drop wording for history; the committed code reflects the demote.
 
 **Files:**
 - Modify: `src/core/aggregator.ts` (AggregateResult interface ~65-74; top of `aggregate()` ~262-264; return ~669-675)

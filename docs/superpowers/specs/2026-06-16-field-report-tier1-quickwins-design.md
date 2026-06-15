@@ -39,16 +39,29 @@ these three are genuine gaps that need no architecture change:
 
 ---
 
-## Slice 1 — Deterministic REDACTED-artifact drop (#1)
+## Slice 1 — Deterministic REDACTED-artifact demote (#1)
 
-**File:** `src/core/aggregator.ts` (+ `AggregateResult` shape)
+> **UPDATE (driven by the dogfood gate's own codex review, iteration 1).** This slice originally
+> **dropped** matching findings pre-cluster. Codex (gate) — echoing the spec-review concern from
+> codex-r2 and opus — flagged that a *destructive drop* remains a fail-open for a REAL secret
+> leak that a reviewer reports with bland, lead-word-free wording (e.g. `correctness`: "exposed
+> value `<REDACTED:…>`"): such a finding would be deleted before it ever reached `pending.md`.
+> The gates bound this but cannot fully prove a finding is benign (category + wording are
+> reviewer-supplied). The fix, per codex's own remediation ("demote rather than drop"): **DEMOTE
+> to advisory INFO instead of dropping.** A mis-worded real leak then stays **visible** in the
+> advisory section (fail-VISIBLE, not fail-open) while losing the blocking weight that was the
+> field-report trust-killer. The two gates are unchanged — they now decide what stays *blocking*
+> vs. what is *demoted*, not what is *kept* vs. *deleted*.
 
-**Where:** at the very top of `aggregate()`, **before** path normalization and clustering. A
-finding that is a false positive by construction must never enter a cluster, contribute to
-consensus, or pollute reputation/FP-ledger accounting.
+**File:** `src/core/aggregator.ts` (+ `FindingSchema` flag, `findingBadges()`)
 
-**Subject rule** (the approved "only when REDACTED is the subject" semantics): drop a finding
-when **all** of the following hold:
+**Where:** a pre-cluster `map` at the very top of `aggregate()`, **before** path normalization
+and clustering. Pre-cluster matters: a demoted artifact is now **INFO** (the lowest severity),
+so it can never become a cluster **representative** that masks a real co-located finding — a real
+CRITICAL/WARN seeds the cluster and the artifact rides as an INFO member.
+
+**Subject rule** (the approved "only when REDACTED is the subject" semantics): **demote a finding
+to INFO** (`redaction_demoted: true`) when **all** of the following hold:
 
 1. `<REDACTED:` appears in **`message`** OR **`suggested_fix`**, AND
 2. `category !== "security"`, AND
@@ -56,84 +69,64 @@ when **all** of the following hold:
    (case-insensitive). The set is a **superset** of the lead words the sanitizer uses in
    `HEX_SECRET_WITH_CONTEXT` — `api[_-]?key | secret | token | passwo?r?d | pwd | auth | bearer |
    access[_-]?key | private[_-]?key | client[_-]?secret` — **plus** `credential | hardcoded`
-   (the latter two are not in the sanitizer regex; adding them only KEEPS more findings).
+   (the latter two are not in the sanitizer regex; adding them only KEEPS more findings blocking).
 
-**Gate (3) MUST scan the SAME field set as gate (1)** (`message` ∪ `suggested_fix`). If the drop
+When any gate fails, the finding is left **blocking** (un-demoted).
+
+**Gate (3) MUST scan the SAME field set as gate (1)** (`message` ∪ `suggested_fix`). If the demote
 *triggers* on a field the backstop does not *scan*, a real secret leak whose lead language lives
 only in `suggested_fix` (message "remove this committed value" / suggested_fix "delete the
 hardcoded `api_key` `<REDACTED:…>`") would trip gate 1, pass gate 2 if mislabeled non-security,
-and slip gate 3 → destructively dropped. The backstop is **co-extensive with the drop trigger**
-so the two can never diverge.
+and slip gate 3 → wrongly demoted. The backstop is **co-extensive with the trigger** so the two
+can never diverge.
 
-**Why two independent gates (the fail-open fix).** `redactHighEntropy()` emits the SAME
+**Why two gates + DEMOTE (defense in depth).** `redactHighEntropy()` emits the SAME
 `<REDACTED:HIGH_ENTROPY>` placeholder for a *benign* high-entropy token (a CUID used as a real
 identifier — the field-report FP) **and for a genuinely committed secret**
-(`HEX_SECRET_WITH_CONTEXT`: `api_key=deadbeef…`). A redaction therefore means *a secret was in
-the diff*, so a reviewer flagging "hardcoded API key `<REDACTED:…>` committed" is a **true
-positive** that MUST be kept. Dropping every REDACTED-mention (the first draft) fails open
-exactly that secret-leak class.
-
-The category gate (2) alone is **not** sufficient, because `category` is **reviewer-supplied**
-(only zod-enum-validated in `finding.ts`, no trusted classifier): a real secret leak
-*miscategorized* as `correctness` would still be dropped. Gate (3) is the **trusted,
-content-based backstop** — it does not rely on the untrusted label. The two gates are both
-"absence" conditions that must BOTH hold to drop, so a destructive suppression never rests on
-the untrusted category alone:
-- "Hardcoded api_key `<REDACTED:…>` committed" mislabeled `correctness` → gate (3) trips on
-  `api_key`/`hardcoded` → **kept** (fail-open closed).
-- "undefined variable `<REDACTED:…>`" / "invalid CUID `<REDACTED:…>`" `correctness` → no lead
-  word → **dropped** (the field-report `correctness` CRITICAL @1.00 FP is killed).
-
-Using untrusted text to KEEP (gate 3 is fail-safe: a lead word's *presence* in either field
-*blocks* a drop) is safe; only its absence from BOTH fields — together with a non-security
-label — permits the drop.
+(`HEX_SECRET_WITH_CONTEXT`: `api_key=deadbeef…`). A redaction therefore means *a secret was in the
+diff*. Three layers protect a real leak: gate (2) keeps `security` findings blocking; gate (3) —
+the **trusted, content-based backstop** (independent of the reviewer-supplied `category`) — keeps
+any finding that *names* a secret blocking; and DEMOTE-not-drop means even a leak that slips both
+gates (non-security, bland wording) is still **surfaced as advisory**, never silently deleted.
+- "Hardcoded api_key `<REDACTED:…>` committed" mislabeled `correctness` → gate (3) trips →
+  **stays blocking**.
+- "exposed value `<REDACTED:…>`" `correctness` (no lead word) → **demoted to advisory INFO**,
+  still visible — a human/agent can act on it (the gate-flagged residual, now fail-visible).
+- "undefined variable `<REDACTED:…>`" `correctness` → **demoted to advisory** (the field-report
+  CRITICAL @1.00 FP no longer blocks).
 
 - **Subject fields, not context.** `message` (the ≤200-char headline) and `suggested_fix`
   *assert what is wrong* / *propose the fix*; a synthetic placeholder there means the finding
   is **about** the placeholder. Deliberately **NOT** `diff_hunk`/`details`: the sanitizer
   writes `<REDACTED:…>` into the diff itself, so a *good* finding legitimately quotes a redacted
-  line there as surrounding **context** — triggering on those would false-drop real findings.
+  line there as surrounding **context** — triggering on those would wrongly demote real findings.
 - **`suggested_fix` is currently dead weight (kept defensively).** `mapReviewOutputToFindings()`
   does not populate `suggested_fix` for panel findings, so today the rule is effectively
   `message`-only. We still check `suggested_fix` for non-panel/future sources at no cost.
 
 **Detection:** match the literal prefix `<REDACTED:` (case-sensitive — the sanitizer always
-emits uppercase `<REDACTED:HIGH_ENTROPY>`). A substring check on the two fields; no regex
-needed.
+emits uppercase `<REDACTED:HIGH_ENTROPY>`). A substring check on the two fields; no regex needed.
+
+**Visibility:** a new `redaction_demoted?: boolean` on `FindingSchema` (pattern of
+`scope_demoted`) + a `findingBadges()` entry (🙈 "targets a `<REDACTED:…>` placeholder …
+advisory") so the demoted finding is clearly labelled in the advisory section. No new audit
+EventType / `AggregateResult` field — the finding stays in `dedupedFindings` as INFO (countable
+via the flag), consistent with every other demote-only suppressor.
 
 **Residual (documented trade-off):** a reviewer that mentions the token *only* in `details`
-prose slips past this filter. That case stays covered by the existing prompt instruction
-(`7fe9ea3`). We accept this to avoid false-dropping genuine findings whose `details` quote a
-redacted context line.
+prose is unaffected (kept at full severity) — that case stays covered by the existing prompt
+instruction (`7fe9ea3`). Demote (not drop) also makes any residual strictly *fail-visible*.
 
-**Audit / accounting (parity with `criticDropped`).** Dropped findings are returned via a new
-`redactionDropped: Finding[]` (+ `redactionDroppedCount`) on `AggregateResult`, mirroring
-`criticDropped`/`criticDroppedCount` exactly. We do **NOT** invent a new audit EventType: no
-sibling suppressor (scope/fp/critic/reputation) emits a per-finding audit event, and
-`src/schemas/audit-event.ts` has no `finding.suppressed` type / `reason` field. Reusing the
-existing count-on-result channel keeps parity and avoids schema churn. Because the drop is
-**pre-cluster**, these findings never reach `pending.json`, never become an agent decision, and
-therefore never flow into the FP-ledger, reputation samples, or the precision metric — verified
-clean (the metric reads `decision.applied` events, which a never-surfaced finding cannot
-produce).
-
-**Why DROP (not demote-to-advisory).** Every other suppressor in `aggregate()` (scope / fp /
-critic / reputation / confidence) is **demote-only and stays visible** — because each suppresses
-a *possibly-real* finding, so visibility preserves a learning signal and a human escape hatch.
-This class is different: after gates (1)–(3) the finding is *provably about a synthetic
-placeholder* (`<REDACTED:` in a subject field, non-security, no secret lead word in either field)
-— it carries **zero signal about real code** and re-surfacing it as advisory is the very
-"tool yelling at its own redaction" noise the field report flags. So DROP is the deliberate,
-bounded exception to the demote-only norm; the two-gate proof is what licenses it.
-
-**Default:** always on, no config toggle. A pure correctness filter with no downside.
+**Default:** always on, no config toggle. Demote-only, so it can never hide a blocking finding.
 
 **Edge cases:**
-- `category:"security"` finding mentioning `<REDACTED:` → **kept** (gate 2; possible real leak).
+- `category:"security"` finding mentioning `<REDACTED:` → **stays blocking** (gate 2; possible real leak).
 - Non-security finding whose `message` OR `suggested_fix` names a secret (`api_key`/`hardcoded`/…)
-  → **kept** (gate 3 backstop scans both fields; covers a real leak miscategorized as non-security).
+  → **stays blocking** (gate 3 backstop scans both fields; covers a real leak miscategorized as non-security).
 - A finding whose `suggested_fix` is `null`/absent → only `message` is checked.
-- Multiple findings in the input each independently evaluated; the drop is per-finding.
+- A demoted artifact co-located with a real finding never masks it (demote is pre-cluster → the
+  INFO artifact is never the cluster representative).
+- Multiple findings in the input each independently evaluated; the demote is per-finding.
 
 ---
 
@@ -249,19 +242,20 @@ otherwise it is render-only.
 `bun test`, in-process, no provider subprocesses.
 
 **Slice 1 (`tests/unit/aggregator-redaction-drop.test.ts`):**
-- A **non-security** finding with `<REDACTED:HIGH_ENTROPY>` in `message` → dropped, present in
-  `redactionDropped`, absent from `findings`.
-- Non-security `<REDACTED:` in `suggested_fix` → dropped.
-- **`category:"security"`** finding with `<REDACTED:` in `message` → **kept** (gate 2 fail-open
-  guard: could be a real committed secret).
+- A **non-security** finding with `<REDACTED:HIGH_ENTROPY>` in `message` → **demoted to INFO**,
+  `redaction_demoted:true`, kept in `dedupedFindings`, verdict not FAIL.
+- Non-security `<REDACTED:` in `suggested_fix` → demoted to INFO.
+- **`category:"security"`** finding with `<REDACTED:` in `message` → **stays CRITICAL** (gate 2:
+  could be a real committed secret).
 - **`category:"correctness"`** finding `message:"Hardcoded api_key <REDACTED:…> committed"` →
-  **kept** (gate 3 lead-word backstop: a real secret leak miscategorized as non-security).
+  **stays CRITICAL** (gate 3 lead-word backstop: a real leak miscategorized as non-security).
 - **`category:"correctness"`**, `message:"remove this committed value <REDACTED:…>"` (no lead
-  word), `suggested_fix:"delete the hardcoded api_key"` → **kept** (gate 3 scans `suggested_fix`
-  too — the symmetry guard; a message-only backstop would have wrongly dropped this real leak).
-- `<REDACTED:` only in `details` → **kept** (subject rule).
-- `<REDACTED:` only in `diff_hunk` (context) → **kept**.
-- A clean finding co-located with a dropped one is unaffected (drop is pre-cluster, per-finding).
+  word), `suggested_fix:"delete the hardcoded api_key"` → **stays CRITICAL** (gate 3 scans
+  `suggested_fix` too — a message-only backstop would have wrongly demoted this real leak).
+- `<REDACTED:` only in `details` → **stays CRITICAL** (subject rule).
+- lowercase `<redacted:…>` → **stays CRITICAL** (case-sensitive gate).
+- A real co-located finding still BLOCKS — the demoted INFO artifact never masks it (demote is
+  pre-cluster, so the artifact is never the cluster representative).
 
 **Slice 2 (`tests/unit/aggregator-test-severity.test.ts`):**
 - `category:"security"` on `foo.test.ts` (CRITICAL) → INFO, `test_severity_demoted:true`.
