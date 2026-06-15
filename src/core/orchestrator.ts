@@ -1591,6 +1591,7 @@ export class Orchestrator {
       outOfDiffBlocking: this.input.config.phases.review.outOfDiffBlocking ?? [],
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       demoteCorrectness: repCfg?.demoteCorrectness ?? true,
+      demoteTestSecurity: this.input.config.phases.review.demoteTestSecurity ?? true,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),

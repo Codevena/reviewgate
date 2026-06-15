@@ -42,6 +42,7 @@ export function findingBadges(f: Finding): string | null {
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
   if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
   if (f.scope_demoted) badges.push("📍 outside changed lines");
+  if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
   if (f.redaction_demoted)
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",

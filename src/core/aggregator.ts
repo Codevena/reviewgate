@@ -1,6 +1,7 @@
 // src/core/aggregator.ts
 import { type Range, rangeOverlapsChanged } from "../diff/hunks.ts";
 import { normalizeRepoPath } from "../diff/repo-path.ts";
+import { classify } from "../research/diff-facts.ts";
 import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
@@ -53,6 +54,10 @@ export interface AggregateInput {
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
   // (preserves the pre-feature behavior; production passes true from config).
   demoteCorrectness?: boolean;
+  // Slice 2 (field report #9): when true, a SECURITY finding whose file classify()s as
+  // "tests" is demoted to INFO (advisory). Only security; correctness/other stay. Absent/
+  // false → no-op (production passes the config value, default true). Representative-keyed.
+  demoteTestSecurity?: boolean;
   // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
   // an EARLIER iteration of the current cycle → earliest claimed iter. A deduped
   // finding whose representative OR any member signature matches (and whose
@@ -650,12 +655,33 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : confScoped;
 
+  // Slice 2 (field report #9): demote a SECURITY finding on a test/fixture file to INFO
+  // (advisory). Representative-keyed — clustering is per-file (anchorFile), so members
+  // share the file; a security member wording-merged under a non-security representative
+  // simply stays at full severity (safe under-demote, never over-demote). Only category
+  // "security"; correctness/other test-file findings stay blocking (a real test bug is a bug).
+  const testScoped: Finding[] =
+    input.demoteTestSecurity === true
+      ? repScoped.map((f) => {
+          if (f.category !== "security" || classify(f.file) !== "tests") return f;
+          if (f.severity === "INFO") return { ...f, test_severity_demoted: true };
+          const note =
+            "\n\n↓ security finding on a test/fixture file — not production code; advisory only.";
+          return {
+            ...f,
+            severity: "INFO" as const,
+            test_severity_demoted: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : repScoped;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of repScoped) {
+  for (const f of testScoped) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (touchesSecurityOrCorrectness(f)) {
@@ -706,7 +732,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = repScoped.map((f, i) => ({
+  const renumbered = testScoped.map((f, i) => ({
     ...f,
     id: `F-${String(i + 1).padStart(3, "0")}`,
   }));

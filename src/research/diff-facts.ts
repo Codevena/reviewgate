@@ -89,7 +89,7 @@ function gitUnquotePath(token: string): string {
   }
 }
 
-function classify(path: string): FileKind {
+export function classify(path: string): FileKind {
   // "lockfile" feeds DiffFacts.lockfileOnly (the triage-side signal) and the
   // research.md per-file kind display (research-writer.ts). Without this branch
   // these files would classify as "config" via their .json/.yaml extensions.

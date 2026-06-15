@@ -70,6 +70,10 @@ export const ConfigSchema = z.object({
       // M5 Part A: demote findings outside the changed hunks to INFO (advisory).
       // Default ON via defaults.ts (deep-merged) — the gate primarily reviews the change.
       scopeToDiff: z.boolean().optional(),
+      // Slice 2 (field report #9): demote security findings on test/fixture files to
+      // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
+      // defaults.ts. Set false for repos that ship production code under a tests/ path.
+      demoteTestSecurity: z.boolean().optional(),
       // Categories that stay BLOCKING even when the finding's file is not in the
       // diff at ALL (escape hatch for legitimate cross-file impact, e.g. a changed
       // export breaking an untouched caller). Default [] — every out-of-diff

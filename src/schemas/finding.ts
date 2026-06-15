@@ -85,6 +85,11 @@ export const FindingSchema = z.object({
   // Demoted (not dropped) so a mis-worded REAL leak stays visible; security/secret-lead-word
   // findings are exempt (stay blocking). Advisory, non-blocking.
   redaction_demoted: z.boolean().optional(),
+  // Slice 2 (field report #9): set true when the aggregator demoted a SECURITY finding
+  // to INFO because its file is a test/fixture (classify()==="tests") — a mocked secret /
+  // weak password in a fixture is not a production vulnerability. Only category "security"
+  // is demoted; correctness/other on a test file stay blocking. Advisory, non-blocking.
+  test_severity_demoted: z.boolean().optional(),
   // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).
