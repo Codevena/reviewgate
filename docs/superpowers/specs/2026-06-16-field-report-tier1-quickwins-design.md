@@ -52,11 +52,18 @@ when **all** of the following hold:
 
 1. `<REDACTED:` appears in **`message`** OR **`suggested_fix`**, AND
 2. `category !== "security"`, AND
-3. `message` contains **no secret-leak lead word** (case-insensitive). The set is a **superset**
-   of the lead words the sanitizer uses in `HEX_SECRET_WITH_CONTEXT` — `api[_-]?key | secret |
-   token | passwo?r?d | pwd | auth | bearer | access[_-]?key | private[_-]?key |
-   client[_-]?secret` — **plus** `credential | hardcoded` (the latter two are not in the
-   sanitizer regex; adding them only KEEPS more findings, which is the safe direction).
+3. **neither `message` NOR `suggested_fix`** contains a **secret-leak lead word**
+   (case-insensitive). The set is a **superset** of the lead words the sanitizer uses in
+   `HEX_SECRET_WITH_CONTEXT` — `api[_-]?key | secret | token | passwo?r?d | pwd | auth | bearer |
+   access[_-]?key | private[_-]?key | client[_-]?secret` — **plus** `credential | hardcoded`
+   (the latter two are not in the sanitizer regex; adding them only KEEPS more findings).
+
+**Gate (3) MUST scan the SAME field set as gate (1)** (`message` ∪ `suggested_fix`). If the drop
+*triggers* on a field the backstop does not *scan*, a real secret leak whose lead language lives
+only in `suggested_fix` (message "remove this committed value" / suggested_fix "delete the
+hardcoded `api_key` `<REDACTED:…>`") would trip gate 1, pass gate 2 if mislabeled non-security,
+and slip gate 3 → destructively dropped. The backstop is **co-extensive with the drop trigger**
+so the two can never diverge.
 
 **Why two independent gates (the fail-open fix).** `redactHighEntropy()` emits the SAME
 `<REDACTED:HIGH_ENTROPY>` placeholder for a *benign* high-entropy token (a CUID used as a real
@@ -77,8 +84,9 @@ the untrusted category alone:
 - "undefined variable `<REDACTED:…>`" / "invalid CUID `<REDACTED:…>`" `correctness` → no lead
   word → **dropped** (the field-report `correctness` CRITICAL @1.00 FP is killed).
 
-Using untrusted message text to KEEP (gate 3 is fail-safe: its presence *blocks* a drop) is
-safe; only its absence — together with a non-security label — permits the drop.
+Using untrusted text to KEEP (gate 3 is fail-safe: a lead word's *presence* in either field
+*blocks* a drop) is safe; only its absence from BOTH fields — together with a non-security
+label — permits the drop.
 
 - **Subject fields, not context.** `message` (the ≤200-char headline) and `suggested_fix`
   *assert what is wrong* / *propose the fix*; a synthetic placeholder there means the finding
@@ -98,19 +106,32 @@ prose slips past this filter. That case stays covered by the existing prompt ins
 (`7fe9ea3`). We accept this to avoid false-dropping genuine findings whose `details` quote a
 redacted context line.
 
-**Audit / accounting:** dropped findings are returned via a new `redactionDropped: Finding[]`
-field on `AggregateResult` (mirroring `criticDropped`). The orchestrator emits a
-`finding.suppressed` audit event (reason `redaction_artifact`) per drop. These are **not**
-counted as false positives in the precision metric (they are tool artifacts, not reviewer
-hallucinations about real code) — i.e. they do not flow into the FP-ledger or
-`decision.applied`/FP precision accounting.
+**Audit / accounting (parity with `criticDropped`).** Dropped findings are returned via a new
+`redactionDropped: Finding[]` (+ `redactionDroppedCount`) on `AggregateResult`, mirroring
+`criticDropped`/`criticDroppedCount` exactly. We do **NOT** invent a new audit EventType: no
+sibling suppressor (scope/fp/critic/reputation) emits a per-finding audit event, and
+`src/schemas/audit-event.ts` has no `finding.suppressed` type / `reason` field. Reusing the
+existing count-on-result channel keeps parity and avoids schema churn. Because the drop is
+**pre-cluster**, these findings never reach `pending.json`, never become an agent decision, and
+therefore never flow into the FP-ledger, reputation samples, or the precision metric — verified
+clean (the metric reads `decision.applied` events, which a never-surfaced finding cannot
+produce).
+
+**Why DROP (not demote-to-advisory).** Every other suppressor in `aggregate()` (scope / fp /
+critic / reputation / confidence) is **demote-only and stays visible** — because each suppresses
+a *possibly-real* finding, so visibility preserves a learning signal and a human escape hatch.
+This class is different: after gates (1)–(3) the finding is *provably about a synthetic
+placeholder* (`<REDACTED:` in a subject field, non-security, no secret lead word in either field)
+— it carries **zero signal about real code** and re-surfacing it as advisory is the very
+"tool yelling at its own redaction" noise the field report flags. So DROP is the deliberate,
+bounded exception to the demote-only norm; the two-gate proof is what licenses it.
 
 **Default:** always on, no config toggle. A pure correctness filter with no downside.
 
 **Edge cases:**
 - `category:"security"` finding mentioning `<REDACTED:` → **kept** (gate 2; possible real leak).
-- Non-security finding whose `message` names a secret (`api_key`/`hardcoded`/…) → **kept**
-  (gate 3 backstop; covers a real secret leak miscategorized as non-security).
+- Non-security finding whose `message` OR `suggested_fix` names a secret (`api_key`/`hardcoded`/…)
+  → **kept** (gate 3 backstop scans both fields; covers a real leak miscategorized as non-security).
 - A finding whose `suggested_fix` is `null`/absent → only `message` is checked.
 - Multiple findings in the input each independently evaluated; the drop is per-finding.
 
@@ -121,8 +142,13 @@ hallucinations about real code) — i.e. they do not flow into the FP-ledger or
 **Files:** `src/core/aggregator.ts`, `src/schemas/finding.ts`, `src/config/defaults.ts`,
 `src/config/define-config.ts`, the orchestrator's `AggregateInput` wiring.
 
-**Schema:** add optional `test_severity_demoted?: boolean` to `FindingSchema` (exact pattern
-of `scope_demoted`).
+**Schema & visibility:** add optional `test_severity_demoted?: boolean` to `FindingSchema`
+(exact pattern of `scope_demoted`), AND a corresponding entry in the report-writer's
+`findingBadges()` (e.g. `📁 test-only` / "demoted: security finding on a test file") so the
+demote is visible in `pending.md` — `isAdvisory()` already routes the INFO-demoted finding into
+the advisory section, but without a badge the *reason* is invisible. Note a Slice-2 demote and
+the existing `categories.size > 1` masking warning can co-occur on one finding (a security
+member merged under a non-security representative): both notes should render coherently.
 
 **Where:** a new demote pass in `aggregate()`, a peer of `scopeFindings` (runs over deduped
 survivors; order relative to the other demotes does not matter — it is path+category based and
@@ -230,6 +256,9 @@ otherwise it is render-only.
   guard: could be a real committed secret).
 - **`category:"correctness"`** finding `message:"Hardcoded api_key <REDACTED:…> committed"` →
   **kept** (gate 3 lead-word backstop: a real secret leak miscategorized as non-security).
+- **`category:"correctness"`**, `message:"remove this committed value <REDACTED:…>"` (no lead
+  word), `suggested_fix:"delete the hardcoded api_key"` → **kept** (gate 3 scans `suggested_fix`
+  too — the symmetry guard; a message-only backstop would have wrongly dropped this real leak).
 - `<REDACTED:` only in `details` → **kept** (subject rule).
 - `<REDACTED:` only in `diff_hunk` (context) → **kept**.
 - A clean finding co-located with a dropped one is unaffected (drop is pre-cluster, per-finding).
@@ -250,6 +279,9 @@ otherwise it is render-only.
   predicate still reflects real `diff --git` headers).
 - Diff under both → no banner.
 - Either threshold `0` → that check disabled.
+- The over-limit predicate / `console.warn` path is exercised **independently** of report
+  writing (it lives in `gate.ts` before the deadline) — so the stderr warning is asserted to
+  fire even when no `pending.md` is produced (the self-deadline-abort case it exists for).
 
 ## Definition of Done
 
