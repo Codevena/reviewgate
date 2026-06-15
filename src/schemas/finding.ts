@@ -147,6 +147,12 @@ export const FindingSchema = z.object({
   // skip it) so an ineffective "fix" stays blocking. `iter` = earliest iteration the
   // fix was claimed. Rendered as a blocking-section badge by report-writer.
   claimed_fixed_recurred: z.object({ iter: z.number().int().positive() }).optional(),
+  // Deterministic checker tier: set true when this finding represents a configured
+  // command (tsc/build/test) that exited non-zero — ground truth, not a reviewer
+  // opinion. It is reject-forbidden in the decisions gate (you can't "reject" a
+  // compiler) and exempt from the aggregator's demote passes (it short-circuits
+  // the panel entirely). Signature is stable per check (`check:<name>`).
+  deterministic: z.boolean().optional(),
   contradicts_memory: z
     .object({
       brain_entry_id: z.string(),

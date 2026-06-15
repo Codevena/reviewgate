@@ -11,7 +11,7 @@ export interface StatsReport {
     runCount: number;
     firstTs: string | null;
     lastTs: string | null;
-    bySource: { panel: number; cache: number; skipped: number };
+    bySource: { panel: number; cache: number; skipped: number; checks: number };
   };
   verdicts: { PASS: number; "SOFT-PASS": number; FAIL: number; ERROR: number }; // over ALL runs
   escalationRate: number; // escalationCount / runCount (0 when no runs)
@@ -76,7 +76,7 @@ export function aggregate(
   const firstTs = sortedTs.length > 0 ? (sortedTs[0] ?? null) : null;
   const lastTs = sortedTs.length > 0 ? (sortedTs[sortedTs.length - 1] ?? null) : null;
 
-  const bySource = { panel: 0, cache: 0, skipped: 0 };
+  const bySource = { panel: 0, cache: 0, skipped: 0, checks: 0 };
   for (const r of runs) {
     bySource[r.summary.source] += 1;
   }

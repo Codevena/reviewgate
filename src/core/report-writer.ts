@@ -33,8 +33,10 @@ function consensusEmoji(c: Finding["consensus"]): string {
 // least one flag applies — so clean findings render no extra noise. Lets the
 // agent see at a glance "the system already flagged this as lower-confidence"
 // rather than having to read the JSON to discover it.
-function demoteBadges(f: Finding): string | null {
+export function demoteBadges(f: Finding): string | null {
   const badges: string[] = [];
+  if (f.deterministic)
+    badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
   if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
   if (f.scope_demoted) badges.push("📍 outside changed lines");

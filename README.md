@@ -243,6 +243,40 @@ export default {
 
 Anything you omit falls back to the defaults. The config is zod-validated.
 
+### Deterministic checker tier (`phases.checks`)
+
+Before the LLM panel runs, Reviewgate can execute a set of **deterministic
+commands** (typecheck, build, test suite, linter) that are fast, free, and
+perfectly reproducible. If any command exits non-zero the gate **fails closed**
+immediately — without spending a single token on reviewer inference — and
+surfaces the exact output as a `CRITICAL` finding. Commands run in order,
+fail-fast (the first failure stops the rest).
+
+```ts
+// reviewgate.config.ts — run tsc + tests before the LLM panel; a failure blocks
+// the turn (with the output) and skips the panel. Order cheap → expensive.
+phases: {
+  checks: {
+    commands: [
+      { name: "typecheck", run: "bun run typecheck", timeoutMs: 120_000 },
+      { name: "test",      run: "bun test",          timeoutMs: 300_000 },
+    ],
+  },
+}
+```
+
+Key properties:
+
+- Commands run **unsandboxed** — they are your own trusted config (same trust
+  level as `reviewgate.config.ts` itself), not untrusted reviewer subprocesses.
+- A check failure is **not rejectable** by the agent; it must be fixed (or the
+  check removed from the config) before the panel runs. This prevents the
+  agent from shipping code that doesn't compile or breaks tests.
+- Each command has an optional `timeoutMs` (default 300 s). A timeout is also
+  treated as a failure (fail-closed, never a silent skip).
+- Combine with `sandbox.mode` to isolate only the LLM reviewers — the checks
+  tier always runs unsandboxed regardless of the sandbox setting.
+
 ### Completion signal
 
 A passing review used to be silent (the Stop hook just exits 0). Now the gate

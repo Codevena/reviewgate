@@ -435,8 +435,13 @@ export function evaluateDecisions(
   // N2: finding severity/category, loaded lazily ONLY when an acknowledged-low-value
   // line needs validating (a CRITICAL or security/correctness finding can't be
   // acknowledged away). Read from the same pending.json the required ids came from.
-  let findingMeta: Map<string, { severity: string; highStakes: boolean }> | null = null;
-  const metaOf = (id: string): { severity: string; highStakes: boolean } | undefined => {
+  let findingMeta: Map<
+    string,
+    { severity: string; highStakes: boolean; deterministic: boolean }
+  > | null = null;
+  const metaOf = (
+    id: string,
+  ): { severity: string; highStakes: boolean; deterministic: boolean } | undefined => {
     if (!findingMeta) {
       findingMeta = new Map(
         readPendingReport(repoRoot).findings.map((f) => [
@@ -453,6 +458,7 @@ export function evaluateDecisions(
               (f.members ?? []).some(
                 (m) => m.category === "security" || m.category === "correctness",
               ),
+            deterministic: f.deterministic === true,
           },
         ]),
       );
@@ -472,6 +478,16 @@ export function evaluateDecisions(
     // the gate is trivially bypassable with malformed lines.
     const res = DecisionEntrySchema.safeParse(parsed);
     if (res.success) {
+      // A deterministic check failure (tsc/build/test) is ground truth — you cannot
+      // "reject" a compiler. A rejected decision does NOT satisfy the gate; it must be
+      // FIXED (the check re-runs and clears on its own) or the check removed from config.
+      if (res.data.verdict === "rejected" && metaOf(res.data.finding_id)?.deterministic) {
+        invalidIds.add(res.data.finding_id);
+        invalid.push(
+          `${res.data.finding_id}: verdict — a deterministic check failure can't be rejected; fix the build/test (it re-runs and clears automatically) or remove the check from reviewgate.config.ts`,
+        );
+        continue;
+      }
       // N2: an "acknowledged-low-value" disposition is valid ONLY for an INFO/WARN
       // finding that is not security/correctness. On a CRITICAL or security/correctness
       // finding (or one missing from pending — fail-safe) it does NOT satisfy the gate:

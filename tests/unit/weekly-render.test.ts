@@ -9,7 +9,7 @@ function baseReport(overrides: Partial<WeeklyReport> = {}): WeeklyReport {
       runCount: 12,
       firstTs: null,
       lastTs: null,
-      bySource: { panel: 12, cache: 0, skipped: 0 },
+      bySource: { panel: 12, cache: 0, skipped: 0, checks: 0 },
     },
     verdicts: { PASS: 10, "SOFT-PASS": 0, FAIL: 2, ERROR: 0 },
     escalationRate: 0.1,
@@ -107,7 +107,7 @@ describe("renderWeeklyMarkdown", () => {
           runCount: 0,
           firstTs: null,
           lastTs: null,
-          bySource: { panel: 0, cache: 0, skipped: 0 },
+          bySource: { panel: 0, cache: 0, skipped: 0, checks: 0 },
         },
       },
       meta: {
