@@ -69,8 +69,8 @@ export function renderStats(report: StatsReport): string {
   }
   out += "\n";
   out += row(
-    "panel / cache / skipped",
-    `${window.bySource.panel} / ${window.bySource.cache} / ${window.bySource.skipped}`,
+    "panel / cache / skipped / checks",
+    `${window.bySource.panel} / ${window.bySource.cache} / ${window.bySource.skipped} / ${window.bySource.checks}`,
   );
 
   // ── Verdicts ──────────────────────────────────────────────────────────────

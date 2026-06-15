@@ -85,7 +85,7 @@ export const ProviderStatSchema = z.object({
 
 export const RunSummarySchema = z.object({
   verdict: z.enum(["PASS", "SOFT-PASS", "FAIL", "ERROR"]),
-  source: z.enum(["panel", "cache", "skipped"]),
+  source: z.enum(["panel", "cache", "skipped", "checks"]),
   counts: z.object({
     critical: z.number().int().nonnegative(),
     warn: z.number().int().nonnegative(),

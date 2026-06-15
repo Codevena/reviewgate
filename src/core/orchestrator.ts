@@ -56,6 +56,7 @@ import { type ContradictionJudge, pairActiveFpEntries } from "./brain/fp-couplin
 import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
+import { runChecks } from "./checks/runner.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
 import { validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
@@ -552,6 +553,53 @@ export class Orchestrator {
           runs: [],
         }),
       };
+    }
+
+    // Deterministic checker tier (fail-fast, $0): run BEFORE the cache read,
+    // research, and the panel. A failing check short-circuits to FAIL with the
+    // captured output and skips the expensive panel. Reaches here only when we
+    // would review (triage.runReview true, or forcePersona). See the design spec.
+    const checksCfg = this.input.config.phases.checks;
+    if (checksCfg) {
+      const checkRes = await runChecks({
+        repoRoot: repo,
+        // Map to drop `timeoutMs: undefined` keys (exactOptionalPropertyTypes:
+        // the config's optional is `number | undefined`, the runner's is `number?`).
+        commands: checksCfg.commands.map((c) => ({
+          name: c.name,
+          run: c.run,
+          ...(c.timeoutMs !== undefined ? { timeoutMs: c.timeoutMs } : {}),
+        })),
+        ...(checksCfg.defaultTimeoutMs !== undefined
+          ? { defaultTimeoutMs: checksCfg.defaultTimeoutMs }
+          : {}),
+        ...(checksCfg.outputCapBytes !== undefined
+          ? { outputCapBytes: checksCfg.outputCapBytes }
+          : {}),
+        signal: opts.signal,
+      });
+      if (!checkRes.ok) {
+        const f = checkRes.finding;
+        // writeReport arg order is (opts, start, runs, findings, verdict, counts):
+        // no reviewer ran, so runs=[] and the deterministic finding goes in findings.
+        await this.writeReport(opts, start, [], [f], "FAIL", { critical: 1, warn: 0, info: 0 });
+        return {
+          verdict: "FAIL",
+          costUsd: 0,
+          durationMs: Date.now() - start,
+          signaturesThisIter: [f.signature],
+          maxIterationsOverride,
+          summary: buildRunSummary({
+            verdict: "FAIL",
+            source: "checks",
+            counts: { critical: 1, warn: 0, info: 0 },
+            durationMs: Date.now() - start,
+            criticCostUsd: 0,
+            findings: [f],
+            runs: [],
+          }),
+        };
+      }
     }
 
     // --- Brain read path: pin an immutable snapshot once per run, compute the
