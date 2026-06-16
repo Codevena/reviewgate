@@ -39,7 +39,12 @@ The `decision.applied` audit events (`DecisionOutcome` in
 `severity`, and `providers` (base provider ids from `normalizeProviders` —
 `reviewer.provider` + `members[].provider`, persona suffix stripped, deduped).
 This is the exact data `reviewgate stats` precision already consumes. Loaded with
-the existing `loadAuditWindow(repoRoot, { since })` (`src/stats/load.ts`).
+the existing `loadAuditWindow(repoRoot, { since, until })` (`src/stats/load.ts`)
+— **both** `since` and `until` MUST be passed: `loadAuditWindow`/`collectFiles`
+only takes the bounded `dayDirsInRange` day-dir scan when both are non-null;
+with `since` alone it falls back to a `**/*.jsonl` scan of the ENTIRE audit tree
+(then filters in memory), defeating the cost bound. So
+`loadProviderPrecision` passes `since = now − windowDays` and `until = now`.
 
 Precision per provider = `tp / (tp + fp)`, **INFO excluded** (non-blocking, needs
 no decision — same rule as the stats metric), `declined` excluded entirely (it is
@@ -65,8 +70,10 @@ export function perProviderPrecision(
   decisions: DecisionOutcome[],
 ): Map<string, ProviderPrecision>;
 
-// Best-effort gate-time load: loadAuditWindow over the last `windowDays`, then
-// aggregate. Returns an empty Map on ANY error (never throws — advisory only).
+// Best-effort gate-time load: loadAuditWindow over [now − windowDays, now] — pass
+// BOTH since AND until (computed from `now`/`windowDays` as ISO strings) so the
+// bounded dayDirsInRange scan is used (passing only `since` scans the whole audit
+// tree). Then aggregate. Returns an empty Map on ANY error (never throws — advisory).
 export function loadProviderPrecision(
   repoRoot: string,
   opts: { windowDays: number; now: Date },
@@ -193,7 +200,10 @@ constants (not config) — YAGNI; promote later if a repo needs to tune them.
 - Best-effort: any load/aggregate error → no annotation, never blocks the gate.
 - Toggle off → no annotation, no audit load.
 - Per-iteration recompute is correct: it picks up the prior iteration's freshly
-  written decisions. Cost is bounded by the 90-day window (≤ ~90 day-dir scans).
+  written decisions (their `ts` is in the past, so `until = now` keeps them).
+- Cost is bounded by the 90-day window (≤ ~90 day-dir scans) — but ONLY because
+  `loadProviderPrecision` passes BOTH `since` and `until` (see Data source);
+  passing only one bound would scan the entire audit tree.
 
 ## Testing
 
