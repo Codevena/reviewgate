@@ -201,14 +201,15 @@ export async function importBindings(repoRoot: string, file: string): Promise<Ma
   if (!g || !JS_TS_LANGS.has(g.lang)) return out;
   const lang = await getLanguage(g.wasmFile);
   if (!lang) return out;
-  const code = safeReadContained(repoRoot, relative(repoRoot, file) || file, 2_000_000);
+  const code = safeReadContained(repoRoot, relative(repoRoot, file) || file, IMPORTS_FILE_CAP);
   if (code === null) return out;
   let parser: Parser | null = null;
   let q: Query | null = null;
+  let tree: ReturnType<Parser["parse"]> | null = null;
   try {
     parser = new Parser();
     parser.setLanguage(lang);
-    const tree = parser.parse(code);
+    tree = parser.parse(code);
     if (!tree) return out;
     q = new Query(lang, "(import_statement) @imp");
     for (const m of q.matches(tree.rootNode)) {
@@ -232,11 +233,11 @@ export async function importBindings(repoRoot: string, file: string): Promise<Ma
         }
       }
     }
-    tree.delete();
     return out;
   } catch {
     return out;
   } finally {
+    tree?.delete();
     q?.delete();
     parser?.delete();
   }
