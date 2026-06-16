@@ -44,7 +44,7 @@ export async function fileSymbols(file: string, repoRoot?: string): Promise<Symb
 }
 ```
 
-Reuses the existing `parseCache` (parse-once-per-process) and the per-file parse size cap (over cap → null → line-window fallback). **Blast radius:** the existing consumers get strictly MORE symbols (additive). `enclosingSymbol` still picks the innermost-by-span (an arrow const inside which a line changed now resolves to that const — an improvement); `buildSymbolGraph` lists more symbols (more accurate caller/callee graph). The existing `symbol-graph.test.ts` + `signature-symbol.test.ts` must stay green; new-form tests are added.
+Reuses the existing `parseCache` (parse-once-per-process) and the per-file parse size cap (over cap → null → line-window fallback). **Blast radius:** the existing consumers get strictly MORE symbols (additive). `enclosingSymbol` still picks the innermost-by-span (an arrow const inside which a line changed now resolves to that const — an improvement); `buildSymbolGraph` lists more symbols (more accurate caller/callee graph). One accepted nuance: a class/outer-const `@sym` spans the whole node, so `CALL_QUERY` captures calls from inner methods/nested functions as the outer symbol's `callees` — a redundant superset in the brain's call graph. Advisory-only (brain is default-off; no verdict impact). The existing `symbol-graph.test.ts` + `signature-symbol.test.ts` must stay green; new-form tests are added.
 
 ### New: `src/research/file-context.ts` — the scoping builder
 
@@ -62,7 +62,7 @@ export async function collectFileContext(opts: FileContextOpts): Promise<string>
 
 Algorithm (deterministic file order = sorted keys of `changedRanges`; `used`/`totalBudgetBytes` bound the whole output exactly like today):
 
-For each changed file (skip `isExcludedFromReview`):
+For each changed file (skip `isExcludedFromReview`) — **check `used >= totalBudgetBytes` at the TOP of the iteration and stop** (mirror `git.ts:396`), so read + parse work scales with the output budget, not the file count, on a 170-file diff:
 1. **`lstat` probe** (TOCTOU-safe, mirrors current code): not a regular file (symlink/dir/special) → skip.
 2. **size ≤ `perFileBytes`** AND fits remaining total → **whole file**: `### <file>\n```\n<safeReadContained(perFileBytes)>\n```\n` (today's behavior for small files; unchanged).
 3. **size > `perFileBytes`** → **scoped**:
@@ -71,7 +71,7 @@ For each changed file (skip `isExcludedFromReview`):
    - **Range semantics (explicit).** `parseChangedRanges` yields `Range = [start, endExclusive]` per hunk — NEW-file line numbers from `@@` headers, **including context lines**, and a hunk may span zero, one, or several symbols. So convert each range to inclusive `[rs, re] = [start, endExclusive - 1]` and select symbols by **overlap, not containment**: a symbol `s` is selected if `s.startLine <= re && s.endLine >= rs`. tree-sitter `startLine`/`endLine` are 1-based inclusive.
    - **If `syms` non-null (TS/TSX/Python):**
      - **Outline:** one block `// symbols: name@L<startLine>, …` over all symbols (compact; tells the reviewer what's defined here — closes the *new* "undefined symbol defined elsewhere in the file" FP class).
-     - **Enclosing bodies:** the union of all symbols overlapping any changed range (deduped by `(startLine,endLine)`). Emit each selected symbol's full source via `lines.slice(startLine - 1, endLine)` (1-based inclusive → JS slice's exclusive end keeps the `endLine` row).
+     - **Enclosing bodies:** the union of all symbols overlapping any changed range, then **collapse nesting** — drop any selected symbol whose span is fully contained within another selected symbol's span (`outer.startLine <= inner.startLine && outer.endLine >= inner.endLine`), keeping the OUTERMOST. This is required because an arrow-const `@sym` is the whole `lexical_declaration` and a class `@sym` is the whole class: a changed line in a method-inside-a-class or a nested-arrow-inside-a-const overlaps BOTH the parent and the child, and a plain `(startLine,endLine)` dedup would emit the inner body twice and double-charge it against the budgets. Emit each surviving symbol's full source once via `lines.slice(startLine - 1, endLine)` (1-based inclusive → JS slice's exclusive end keeps the `endLine` row).
      - **Uncovered lines:** any inclusive `[rs, re]` line not covered by a selected symbol (top-level statement, or a hunk's context spilling outside functions) → a **line-window** `lines.slice(max(0, rs-1-windowLines), re+windowLines)`. Merge windows that overlap so the same lines aren't emitted twice.
    - **If `syms` is null** (non-TS/Python, parse failure) → **line-windows only**: a `±windowLines` window around each changed `[rs, re]`, merged when overlapping. No outline.
    - Header marks it scoped: `### <file> (scoped: symbol outline + enclosing functions of the changed lines)` (or `(scoped: line windows around the changed lines)` for the null-syms path).
@@ -110,7 +110,7 @@ Defaults live in `src/config/defaults.ts` (`phases.review`); schema in `src/conf
 - TS: `function_declaration`, `method_definition`, **`const X = () => {}`**, **`export const X = () => {}`**, **function-expression const**, and **`class Foo {}`** each produce a `SymbolInfo` with the correct `name`, `startLine`, `endLine` (full declaration span).
 - TSX: an arrow-function component is captured (the dominant React form).
 - Python: `def f():` and `class C:` each produce a `SymbolInfo` (previously zero — net-new, since both `FN_QUERY` and `CALL_QUERY` were TS-only and threw); a `def` that calls another function records the callee (`CALL_QUERY_PY` compiles + matches).
-- `enclosingSymbol` for a line inside an arrow-const body now resolves to that const (was null before).
+- `enclosingSymbol` behavior shift (lock it explicitly — it's a real change, not "strictly additive"): a line inside an arrow-const body resolves to that const (was null); a line inside a class body but outside any method resolves to the class (was null). Benign (one-time FP-ledger signature drift at deploy), but asserted so it's intentional.
 - Defensive compile: a deliberately malformed query / unsupported-grammar path returns null (file treated unparseable → line-window fallback) instead of throwing.
 - Regression: the existing `symbol-graph.test.ts` / `signature-symbol.test.ts` assertions still pass (additive coverage).
 
@@ -119,6 +119,7 @@ Defaults live in `src/config/defaults.ts` (`phases.review`); schema in `src/conf
 - Large TS file, change inside one function → output contains that function's full body + the symbol outline; does NOT contain an *unrelated* large function's body.
 - A symbol defined elsewhere in the same large file → its name appears in the outline (undefined-FP protection).
 - **Hunk overlapping two functions** (a `[start, endExclusive)` range spanning the end of one and the start of another) → BOTH function bodies emitted (overlap selection, not containment).
+- **Nested symbols** — a change inside a method-in-a-class (and inside a nested-arrow-in-a-const): the OUTERMOST enclosing body (the class / the const) is emitted exactly ONCE; the inner body is NOT emitted a second time, and the bytes are charged once (nesting-collapse guard).
 - Large non-TS file (e.g. `.go`) → line-windows around the changed ranges (no symbol outline, not whole-file, not omitted).
 - Change at a top-level statement (no enclosing symbol) in a large TS file → line-window for that range; merged windows don't duplicate lines.
 - A changed range whose end runs **past EOF** → clamped, no crash.
