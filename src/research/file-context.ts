@@ -39,7 +39,20 @@ export async function collectFileContext(opts: FileContextOpts): Promise<string>
   }
   let out = "";
   let used = 0;
+  // PRE-check the bound (mirrors collectChangedFileContents in git.ts): appending
+  // first then checking lets the final block overflow by up to a whole block, so
+  // refuse anything that would breach the hard bound. Guarantees out.length <=
+  // totalBudgetBytes always.
   const emit = (s: string): boolean => {
+    if (used + s.length > totalBudgetBytes) {
+      // Would breach the hard bound — emit a tiny marker if even that fits, then stop.
+      const marker = "### (further files omitted — context budget exceeded)\n";
+      if (used + marker.length <= totalBudgetBytes) {
+        out += marker;
+        used += marker.length;
+      }
+      return true; // stop
+    }
     out += s;
     used += s.length;
     return used >= totalBudgetBytes;
@@ -104,12 +117,19 @@ export async function collectFileContext(opts: FileContextOpts): Promise<string>
       parts.push(lines.slice(ws - 1, we).join("\n"));
     }
 
-    const tag = syms && syms.length > 0 ? "symbol outline + enclosing functions" : "line windows";
+    // Header tag reflects what's actually in `body`: empty ranges → outline only
+    // (don't claim "enclosing functions of the changed lines" when there are none).
+    const tag =
+      ranges.length === 0
+        ? "symbol outline; no changed lines in range"
+        : syms && syms.length > 0
+          ? "symbol outline + enclosing functions of the changed lines"
+          : "line windows of the changed lines";
     let body = parts.join("\n…\n");
     if (body.length > perFileBytes) {
       body = `${body.slice(0, perFileBytes)}\n… (truncated — over per-file context budget)`;
     }
-    if (emit(`### ${file} (scoped: ${tag} of the changed lines)\n\`\`\`\n${body}\n\`\`\`\n`)) break;
+    if (emit(`### ${file} (scoped: ${tag})\n\`\`\`\n${body}\n\`\`\`\n`)) break;
   }
   return out;
 }

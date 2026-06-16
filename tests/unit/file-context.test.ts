@@ -55,17 +55,53 @@ describe("collectFileContext", () => {
     expect(out).not.toContain("(omitted");
   });
 
-  test("total budget bounds output", async () => {
-    const f = `${"x".repeat(1000)}\n`;
-    const repo = repoWith({ "a.ts": `const a=()=>{${f}};\n`, "z.ts": `const z=()=>{${f}};\n` });
+  test("total budget HARD-bounds output (overflow refused, not just overshot)", async () => {
+    // Three small files, each emitting a ~450-byte whole-file block, against a
+    // 1200-byte total budget: appending-then-checking would let the 3rd block push
+    // past 1200; the PRE-check must refuse it so out.length never breaches the bound.
+    const body = `const x = "${"y".repeat(420)}";\n`; // small file → whole-file block
+    const repo = repoWith({ "a.ts": body, "b.ts": body, "c.ts": body });
     const out = await collectFileContext({
       ...opts(repo, [
         ["a.ts", [[1, 2]]],
-        ["z.ts", [[1, 2]]],
+        ["b.ts", [[1, 2]]],
+        ["c.ts", [[1, 2]]],
       ]),
       totalBudgetBytes: 1200,
     });
     expect(out.length).toBeLessThanOrEqual(1200);
+    // At least the first two blocks fit (≈900 bytes); the third would overflow.
+    expect(out).toContain("### a.ts");
+    expect(out).toContain("### b.ts");
+  });
+
+  test("hunk overlapping two functions → BOTH bodies emitted", async () => {
+    // Pad past perFileBytes (400), then two adjacent top-level functions. aa =
+    // lines 81-83, bb = lines 84-86. A range spanning aa's tail and bb's head
+    // (endExclusive 86 → lines 83..85) must select BOTH symbols.
+    const big = `${"// pad\n".repeat(80)}function aa() {\n  return 1;\n}\nfunction bb() {\n  return 2;\n}\n`;
+    const repo = repoWith({ "e.ts": big });
+    const out = await collectFileContext(opts(repo, [["e.ts", [[83, 86]]]]));
+    expect(out).toContain("function aa()");
+    expect(out).toContain("function bb()");
+  });
+
+  test("range end past EOF → clamped, no crash, includes last lines", async () => {
+    // 120 pad lines + a 3-line func ⇒ ~125 lines; range endExclusive 999 exceeds EOF.
+    const go = `${"// pad\n".repeat(120)}func Target() int {\n\treturn 7\n}\n`;
+    const repo = repoWith({ "f.go": go });
+    const out = await collectFileContext(opts(repo, [["f.go", [[124, 999]]]]));
+    expect(out).toContain("### f.go");
+    expect(out).toContain("return 7"); // clamped window still reaches the last lines
+  });
+
+  test("file > 2 MB → (omitted marker (safeReadContained refuses over MAX_READ_BYTES)", async () => {
+    // ~2.2 MB > MAX_READ_BYTES (2 MiB): the large-file read returns null → omit.
+    const huge = "x\n".repeat(1_100_000);
+    const repo = repoWith({ "g.ts": huge });
+    const out = await collectFileContext(opts(repo, [["g.ts", [[1, 2]]]]));
+    expect(out).toContain("### g.ts");
+    expect(out).toContain("omitted");
   });
 
   test("symlink / excluded path is skipped", async () => {
