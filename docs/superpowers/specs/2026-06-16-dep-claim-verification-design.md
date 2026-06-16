@@ -45,13 +45,15 @@ Demote-only, fail-safe. For each finding (only CRITICAL/WARN — INFO needs no d
    - **Proximity link (precision):** only a `binding.member` token whose `member` appears **within 40 characters of a `NONEXISTENCE_RE` match** (in the same field) is a candidate — so the verified symbol is the one the non-existence claim is ABOUT. This stops a finding that asserts a DIFFERENT (truly-absent) symbol doesn't exist while *incidentally* mentioning a present `y.z` from being wrongly demoted on `y.z`.
    - If no non-existence assertion, or no `binding.member` token linked to it by proximity → skip (leave finding unchanged).
 2. **Resolve binding → package** via `importBindings(repoRoot, f.file)`. If `binding` isn't a known import (or `f.file` isn't JS/TS / unparseable) → skip (fail-safe).
-3. **Resolve the package's type surface** under `repoRoot/node_modules/<pkg>`:
-   - Read `node_modules/<pkg>/package.json` (via `safeReadContained`) → `types`/`typings` field; else try `index.d.ts`, `dist/index.d.ts`, `lib/index.d.ts`.
-   - Collect `.d.ts` files in the package dir via `Bun.Glob("**/*.d.ts")`, capped (≤ 50 files, ≤ 2 MB total read) to bound work and survive re-exports. All reads via `safeReadContained` (node_modules is UNDER repoRoot → stays contained; symlink/size guards apply).
-4. **Member presence** — the member appears in a **declaration position** in any collected `.d.ts`: regex `(^|[^.\w$])<member>\s*[?(:<]` (matches `member?:`, `member(`, `member:`, `member<T>`; does NOT match `obj.member` usage). Found in any → present.
-5. **Action:** present → **one-step demote** (CRITICAL→WARN, WARN→INFO) + `dep_verified: true` + a details note. Not present / package unresolvable / no `.d.ts` / cap exhausted without a hit / non-JS-TS → **leave blocking** (fail-safe; never demote on uncertainty).
+3. **Resolve the types ENTRYPOINT** under `repoRoot/node_modules/<pkg>` (NOT a blanket glob — a blanket scan proves "exists somewhere in the package", not "exists on the imported surface": e.g. installed `zod`'s v3 root does NOT export `partialRecord`, but `v4/classic/schemas.d.ts` does — scanning all files would wrongly demote a TRUE "invalid for the v3 root import" finding). Read `node_modules/<pkg>/package.json` (via `safeReadContained`) and pick the entry, in order:
+   - `exports["."]` → its `types` (handle a conditional object: `exports["."].types`, or `exports["."].import/require` → their `.types`/string),
+   - else `types` / `typings`,
+   - else the first existing of `index.d.ts`, `index.d.cts`, `index.d.mts` (modern extensions matter — zod ships `"types":"./index.d.cts"`).
+   If no entry resolves → **leave blocking** (fail-safe).
+4. **Member presence on the imported surface** — search the entry `.d.ts` for the member in a **declaration position**: regex `(^|[^.\w$])<member>\s*[?(:<]` (matches `member?:`, `member(`, `member:`, `member<T>`; does NOT match `obj.member` usage). If not found in the entry, **follow the entry's re-export graph** — `export * from "./x"` and `export { <member>|… } from "./x"` (a by-name re-export of `<member>` is itself direct presence) — to bounded depth **2** and a bounded budget (≤ 30 files, ≤ 2 MB total), resolving each `./x` relative to the referencing file (try `x`, `x.d.ts`, `x.d.cts`, `x.d.mts`, `x/index.d.ts`). Only files reachable from the entry via re-exports are searched — never an unrelated subpath. Found anywhere on this reachable surface → **present**.
+5. **Action:** present → **one-step demote** (CRITICAL→WARN, WARN→INFO) + `dep_verified: true` + a details note. Not found on the reachable surface / package or entry unresolvable / budget exhausted without a hit / non-JS-TS → **leave blocking** (fail-safe; never demote on uncertainty).
 
-We ONLY demote when we POSITIVELY confirm the member exists. A genuinely-absent member (a TRUE "doesn't exist" finding) is never found → never demoted. The only feature-miss is a present-but-too-deep member we don't reach within the caps → safe (leaves a fabricated finding blocking; no real finding suppressed).
+We ONLY demote when we POSITIVELY confirm the member exists **on the imported entry's reachable surface**. A genuinely-absent member (a TRUE "doesn't exist" finding) — or one that lives only in an unrelated subpath the root doesn't re-export (the zod-v4 case) — is never found → never demoted. The only feature-miss is a present member behind deeper-than-depth-2 re-exports → safe (leaves a fabricated finding blocking; no real finding suppressed).
 
 ### Schema / report / config / orchestrator
 
@@ -65,16 +67,22 @@ One-step (CRITICAL→WARN) — NOT straight to INFO like fact-check — because 
 
 ## Testing (TDD, `bun test`, against real mini-package fixtures written to a tmp repo)
 
-`tests/unit/dep-verify.test.ts` (write a `node_modules/<pkg>/` fixture with a `package.json` + `.d.ts`, a source file importing it, and findings):
-- `import { z } from "zod"` (fixture zod with `partialRecord(` in its `.d.ts`); finding `message:"z.partialRecord is not a valid method"` on that file → **demoted to WARN**, `dep_verified:true`.
-- Member ABSENT from the fixture `.d.ts` (true "doesn't exist") → **stays CRITICAL**.
-- A non-existence claim but `binding` not imported in `f.file` → **stays** (fail-safe).
-- A `binding.member` token but NO non-existence keyword (e.g. "z.partialRecord is the wrong validator here") → **stays** (only non-existence claims).
-- Member appears in `.d.ts` only as `.member` usage, never as a declaration → **stays** (regex excludes `.member`).
+`tests/unit/dep-verify.test.ts` (write a `node_modules/<pkg>/` fixture — `package.json` + entry `.d.ts` (± re-exported sub-files) — a source file importing it, and findings):
+- **Entry declares it:** fixture `pkg` with `package.json {"types":"./index.d.ts"}`, `index.d.ts` containing `partialRecord(`; `import { z } from "pkg"`; finding `"z.partialRecord is not a valid method"` → **demoted to WARN**, `dep_verified:true`.
+- **Re-export following:** entry `index.d.ts` is `export * from "./schemas"`, `schemas.d.ts` has `partialRecord(` → **demoted** (depth-1 re-export reached). And `export { partialRecord } from "./schemas"` (by-name) → **demoted**.
+- **WARN-1 regression — member only in an UNRELATED subpath the entry does NOT re-export** (`index.d.ts` exports v3 surface; `v4/schemas.d.ts` has `partialRecord(` but is not re-exported from the entry) → **stays CRITICAL** (we must not "prove" presence from an unreachable subpath).
+- **`.d.cts` / exports resolution:** `package.json {"exports":{".":{"types":"./index.d.cts"}}}`, `index.d.cts` has the member → resolved + **demoted** (modern extension + exports["."] honored).
+- Member ABSENT from the entry + its reachable re-exports (true "doesn't exist") → **stays CRITICAL**.
+- Non-existence claim but `binding` not imported in `f.file` → **stays** (fail-safe).
+- `binding.member` token but NO non-existence keyword ("z.partialRecord is the wrong validator here") → **stays**.
+- Member appears only as `.member` usage in the `.d.ts`, never as a declaration → **stays** (regex excludes `.member`).
+- Incidental present `y.z` token far (>40 chars) from the non-existence phrase about an absent `x.q` → **stays** (proximity link).
 - Package dir missing in node_modules → **stays** (fail-safe).
-- Namespace import `import * as z from "zod"` and default `import z from "zod"` both resolve `z`→zod.
+- `import * as z from "pkg"` and `import z from "pkg"` both resolve `z`→pkg.
 - `verifyDeps:false` → no-op.
-- `tests/unit/imports.test.ts` (extend): `importBindings` maps default/namespace/named (incl. `as` alias) bindings → package; skips relative/builtin; empty map for non-JS/TS.
+- `tests/unit/imports.test.ts` (extend): `importBindings` maps default/namespace/named (incl. `as` alias) bindings → package; skips relative/builtin; empty map for non-JS/TS or parse failure.
+
+Implementation note: `specToPackage` is currently module-private in `imports.ts`; export it (or have `importBindings` apply the same scoped-package normalization internally) so the dep-verify resolution maps a binding's source (`"zod"`, `"zod/v4"`, `"@scope/x"`) to its `node_modules/<pkg>` dir.
 
 ## Definition of Done
 `bunx tsc --noEmit` + `bun run lint` clean; full `bun test --timeout 30000` green; then the dogfood gate PASS. Do NOT `bun run build`/deploy before merge + user OK (it deploys via the dist symlink).
