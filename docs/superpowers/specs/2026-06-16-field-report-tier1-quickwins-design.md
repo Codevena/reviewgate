@@ -181,14 +181,17 @@ idempotent).
   `src/research/diff-facts.ts` (regex: `/\.(test|spec)\.[a-z]+$|(^|\/)tests?\//`) — **export it**
   (currently module-private) rather than duplicating the pattern or reaching around the module.
 
-**Cluster safety (WARN from spec review).** Clustering is **per-file** (`anchorFile`), so every
-member of a cluster shares the representative's file — there is no cross-file demote risk. The
-remaining edge is a *wording-merge across categories*: a `security` member can merge under a
-non-`security` representative in a test file. We **keep the representative-keyed rule** and
-accept the resulting **under-demote** (the finding simply stays at full severity — the SAFE
-direction; we never suppress). We deliberately do **NOT** do a member-aware whole-cluster
-demote: that would wrongly lower the `correctness`/other concerns the masking-warning
-(`categories.size > 1`) already surfaces for the agent's combined decision.
+**Cluster safety (BOTH masking directions).** Clustering is **per-file** (`anchorFile`), so every
+member shares the representative's file — no cross-file risk. Two category-mixing edges, both
+handled:
+- *(a) under-demote* — a `security` member merges under a **non-security** representative: not
+  demoted (the representative isn't security) → stays at full severity. SAFE; we never suppress.
+- *(b) over-demote* — a **non-security** member (e.g. `correctness`) merges under a `security`
+  representative on a test file: demoting the whole cluster would suppress that correctness
+  concern, violating "correctness stays blocking" (flagged by the **dogfood gate iter 3**). Fix:
+  demote **only when EVERY clustered member is also `security`** (`f.members.every(security)`); a
+  single non-security member keeps the whole cluster blocking. So the demote fires only on a
+  pure-security-on-test cluster — never softening a co-clustered correctness/other concern.
 
 **Residual & visibility (WARN from spec review).** `classify()`'s `(^|\/)tests?\//` is broad: a
 repo that ships production-reachable code under a `tests/` path would see a real security

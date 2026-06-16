@@ -62,4 +62,36 @@ describe("Slice 2: test-file security demote", () => {
     const r = aggregate({ findings: [mkFinding()], reviewersTotal: 1 });
     expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
   });
+
+  test("does NOT demote a security-on-test cluster that absorbed a non-security member (inverse masking)", () => {
+    // A security CRITICAL and a correctness WARN on the same test-file line cluster into one
+    // finding (security = representative). Demoting the cluster to INFO would suppress the
+    // correctness concern, which must stay blocking. The member check keeps the whole cluster
+    // blocking (dogfood gate iter 3). (Both are high-stakes categories, so N6 allows the merge.)
+    const sec = mkFinding({
+      id: "F-001",
+      category: "security",
+      severity: "CRITICAL",
+      file: "src/foo.test.ts",
+      line_start: 10,
+      message: "weak password in mock",
+      rule_id: "sec.weak",
+    });
+    const corr = mkFinding({
+      id: "F-002",
+      signature: "sig-2",
+      category: "correctness",
+      severity: "WARN",
+      file: "src/foo.test.ts",
+      line_start: 10,
+      message: "off-by-one in test helper loop",
+      rule_id: "corr.oboe",
+    });
+    const r = aggregate({ findings: [sec, corr], reviewersTotal: 1, demoteTestSecurity: true });
+    expect(r.dedupedFindings).toHaveLength(1); // merged into one cluster
+    const f = r.dedupedFindings[0];
+    expect(f?.category).toBe("security"); // representative
+    expect(f?.severity).toBe("CRITICAL"); // NOT demoted — a correctness member rode along
+    expect(f?.test_severity_demoted).toBeUndefined();
+  });
 });

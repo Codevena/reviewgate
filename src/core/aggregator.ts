@@ -671,14 +671,20 @@ export function aggregate(input: AggregateInput): AggregateResult {
       : confScoped;
 
   // Slice 2 (field report #9): demote a SECURITY finding on a test/fixture file to INFO
-  // (advisory). Representative-keyed — clustering is per-file (anchorFile), so members
-  // share the file; a security member wording-merged under a non-security representative
-  // simply stays at full severity (safe under-demote, never over-demote). Only category
-  // "security"; correctness/other test-file findings stay blocking (a real test bug is a bug).
+  // (advisory). Only category "security"; correctness/other test-file findings stay blocking
+  // (a real test bug is a bug). Clustering is per-file (anchorFile) so members share the file.
+  // BOTH masking directions are handled: (a) a security member merged under a NON-security
+  // representative is simply not demoted (the representative isn't security) — safe; (b) a
+  // NON-security member (e.g. correctness) merged under a SECURITY representative must NOT ride
+  // the demote down to advisory (that would suppress a real correctness concern, violating the
+  // "correctness stays blocking" rule — flagged by the dogfood gate iter 3). So we demote only
+  // when EVERY clustered member is also security: a single non-security member keeps the whole
+  // cluster blocking. (members[] includes the representative's own entry; absent → lone finding.)
   const testScoped: Finding[] =
     input.demoteTestSecurity === true
       ? repScoped.map((f) => {
           if (f.category !== "security" || classify(f.file) !== "tests") return f;
+          if ((f.members ?? []).some((m) => m.category !== "security")) return f;
           if (f.severity === "INFO") return { ...f, test_severity_demoted: true };
           const note =
             "\n\n↓ security finding on a test/fixture file — not production code; advisory only.";
