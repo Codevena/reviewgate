@@ -124,6 +124,10 @@ export const ConfigSchema = z.object({
       // non-existent. Context-only, no verdict change. Default ON.
       depSurface: z.boolean().optional(),
       depSurfaceBudgetBytes: z.number().int().positive().optional(),
+      // #8: annotate each finding in pending.md/json with the historical precision
+      // (tp/fp) of the provider(s) that raised it — ADVISORY context for the agent's
+      // accept/reject decision; never changes severity/verdict. Default on.
+      providerPrecisionContext: z.boolean().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

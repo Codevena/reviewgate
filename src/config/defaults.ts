@@ -99,6 +99,10 @@ export const defaultConfig = {
       // (`depSurface: false`) to skip the .d.ts extraction phase.
       depSurface: true,
       depSurfaceBudgetBytes: 4_000,
+      // #8: annotate each finding with historical precision stats of the raising
+      // provider(s) — ADVISORY context for the agent's accept/reject decision.
+      // Never changes severity or verdict. Default ON.
+      providerPrecisionContext: true,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
