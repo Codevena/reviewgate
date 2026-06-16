@@ -51,21 +51,38 @@ on quota reset (Approach 2). This design is **defer-only** (Approach 1): while a
 reviewer is in cooldown, do not give up; once the cooldown clears, normal
 escalation semantics resume.
 
-**What "defer-only" does and does NOT do (important, do not overstate this in
+**What "defer-only" does and does NOT do (important — do not overstate this in
 copy):** during a pure defer streak the `iteration` is NOT advanced — it stays at
 the cap — so the `max-iterations`/`stuck-signatures` precondition re-fires at the
 *top* of `run()` on every subsequent turn, **before any new panel runs**. The
-defer therefore does **not** trigger a fresh full-panel review on its own, and a
-plain edit (new dirty flag) while at the cap does **not** re-arm the cycle (the
-re-arm paths require `escalated=true` or a completed review). The only exits from
-a defer streak are: (a) the cooldown clears → the precondition escalates on the
-existing history; (b) the defer cap is reached → escalate (fail-closed backstop);
-or (c) the agent **commits** (HEAD moves), which re-arms a fresh cycle
-(`iteration → 0`) so the next turn reviews the new batch with whatever panel is
-then available. The value Approach 1 delivers is precisely: **the gate does not
-give up / summon the human while the panel is provably incomplete**, for a bounded
-window. Rationale for choosing it over Approach 2: lowest fail-open risk (no
-iteration-cap bypass).
+defer therefore does **not** trigger a fresh full-panel review on its own, and
+neither a plain edit (new dirty flag) **nor a commit** re-arms the cycle while
+deferring: the commit re-arm fires only when `state.escalated === true`
+(`loop-driver.ts:676`, `headMovedWhileEscalated`), and a quota defer deliberately
+leaves `escalated=false`, so a commit during a defer streak just records the new
+HEAD sha and re-fires the precondition on the **stale, pre-commit history**. (The
+clean-PASS re-arm and the post-escalation re-arm likewise can't fire mid-defer.)
+
+The only two exits from a defer streak are therefore:
+
+- (a) the cooldown clears (`quotaDegradationNote` → `null`) → the precondition
+  escalates on the existing history (Approach 1 — no fresh round); or
+- (b) the defer cap is reached → escalate (the fail-closed backstop), even if
+  still in cooldown.
+
+After that escalation, normal recovery applies (the agent surfaces it to the
+human and/or runs `reviewgate reset`, or — now that `escalated=true` — a commit
+re-arms a fresh cycle that reviews with whatever panel is then available). The
+value Approach 1 delivers is precisely: **the gate does not give up / summon the
+human while the panel is provably incomplete**, for a bounded window. Rationale
+for choosing it over Approach 2: lowest fail-open risk (no iteration-cap bypass).
+
+Consequence for the default cap: because the defer is bounded by *turn count*
+(not wall-clock), a cooldown that outlasts `quotaDeferMaxConsecutive` agent turns
+still escalates on the degraded panel — the backstop. `3` mirrors
+`infraDeferMaxConsecutive`; a repo expecting long quota cooldowns relative to its
+turn cadence can raise it. (Deferring longer is safe — the agent is never blocked
+during a defer, only the human-escalation is held off.)
 
 ## Design
 
@@ -101,7 +118,7 @@ if (deferableOnQuota && degraded && cap > 0 && state.consecutive_quota_defers < 
   // (next turn re-checks) and `iteration` is NOT advanced.
   return {
     kind: "allow_stop",
-    reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — a reviewer is in cooldown, so the panel is incomplete; NOT escalating on a degraded panel yet. Will escalate once the cooldown clears, or after ${cap - next} more degraded turn(s) (defer ${next}/${cap}); commit your work to re-review the change with the full panel.` + note,
+    reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — a reviewer is in cooldown, so the panel is incomplete; NOT escalating on a degraded panel yet. Will escalate once the cooldown clears, or after ${cap - next} more degraded turn(s) (defer ${next}/${cap}).` + note,
   };
 }
 ```
@@ -158,16 +175,25 @@ Added to `initialState()` (`consecutive_quota_defers: 0`).
 
 `consecutive_quota_defers` is reset to `0`:
 
-1. on the normal post-review state update (`loop-driver.ts:~1269`, alongside
-   `consecutive_infra_defers: 0`) — a real review completed, so the defer streak
-   is broken;
-2. whenever an escalation actually **proceeds** (folded into the
-   `escalation_announced` update at `~1596`) — once we stop deferring and give up,
-   the counter is clean for the next cycle.
+1. whenever an escalation actually **proceeds** (folded into the
+   `escalation_announced` update at `~1596`). This is the **guarantor**: a defer
+   streak can only end via an escalation (cooldown clears, or cap reached — see
+   "the only two exits" above; no panel runs mid-streak, so it cannot end any
+   other way). At that escalation `escalation_announced` is still `false` (a defer
+   never sets it), so `firstAnnounce` is `true` and the `~1596` update runs →
+   counter reset to 0;
+2. on the normal post-review state update (`loop-driver.ts:~1269`, alongside
+   `consecutive_infra_defers: 0`) — belt-and-suspenders: resets the counter the
+   first time a panel actually completes after the gate leaves a defer/escalation
+   state.
 
-(It does not need a dedicated reset in the commit/PASS re-arm blocks: re-arm
-resets `iteration` to 0 and the next completed review resets the counter via
-point 1 — the same lifecycle `consecutive_infra_defers` relies on.)
+It does **not** need a dedicated reset in the commit/PASS re-arm blocks. A commit
+*during* a defer streak does not re-arm at all (`escalated=false`), so the counter
+simply persists across it — which is safe: it stays bounded by the cap and the
+streak still terminates in the point-1 escalation reset. By the time any re-arm
+block fires (post-escalation, escalated=true), the counter was already zeroed at
+the escalation. This mirrors how `consecutive_infra_defers` is reset (only at
+`~1269` + its escalation-proceed at `~1477`, never in the re-arm blocks).
 
 ### New config
 
