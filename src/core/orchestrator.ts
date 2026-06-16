@@ -69,6 +69,12 @@ import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
+  PROVIDER_PRECISION_MIN_DECISIONS,
+  PROVIDER_PRECISION_WINDOW_DAYS,
+  annotateFindingsWithPrecision,
+  loadProviderPrecision,
+} from "./provider-precision.ts";
+import {
   QuotaCooldownStore,
   SLOW_ERROR_THRESHOLD_MS,
   TIMEOUT_COOLDOWN_MS,
@@ -1688,11 +1694,34 @@ export class Orchestrator {
       }
     }
 
+    // #8: advisory per-provider precision context (gate mode only, toggle-gated,
+    // best-effort). Pure metadata on the REPORT findings only — the verdict/counts
+    // (from aggregate, above) and the cached {verdict,counts} are untouched.
+    let reportFindings = agg.dedupedFindings;
+    if (
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.providerPrecisionContext
+    ) {
+      try {
+        const precision = loadProviderPrecision(repo, {
+          windowDays: PROVIDER_PRECISION_WINDOW_DAYS,
+          now,
+        });
+        reportFindings = annotateFindingsWithPrecision(reportFindings, precision, {
+          minDecisions: PROVIDER_PRECISION_MIN_DECISIONS,
+        });
+      } catch (err) {
+        console.warn(
+          `[reviewgate] provider-precision annotation failed (non-fatal): ${String(err)}`,
+        );
+      }
+    }
+
     await this.writeReport(
       opts,
       start,
       settled,
-      agg.dedupedFindings,
+      reportFindings,
       agg.verdict,
       agg.counts,
       criticInfo ? { ...criticInfo, demoted } : undefined,
