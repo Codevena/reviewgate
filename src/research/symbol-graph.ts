@@ -67,10 +67,23 @@ export async function getLanguage(wasmFile: string): Promise<LoadedLanguage | nu
   return lang;
 }
 
-const FN_QUERY =
-  "[(function_declaration name:(identifier) @n) (method_definition name:(property_identifier) @n) (function_signature name:(identifier) @n)] @sym";
-const CALL_QUERY =
+// Per-language symbol + call queries. A query may reference ONLY node types that exist in its
+// OWN grammar — a TS node name in a Python query (or vice-versa) makes `new Query()` throw
+// "Bad node name …". Selected by grammarForFile().lang. (Before: one TS-only pair, which
+// matched nothing for Python AND threw on CALL_QUERY, and missed arrow-const/func-expr/class.)
+const FN_QUERY_TS =
+  "[(function_declaration name:(identifier) @n) (method_definition name:(property_identifier) @n) (function_signature name:(identifier) @n) (lexical_declaration (variable_declarator name:(identifier) @n value:[(arrow_function) (function_expression)])) (class_declaration name:(type_identifier) @n)] @sym";
+const FN_QUERY_PY =
+  "[(function_definition name:(identifier) @n) (class_definition name:(identifier) @n)] @sym";
+const CALL_QUERY_TS =
   "(call_expression function: [(identifier) @c (member_expression property:(property_identifier) @c)])";
+const CALL_QUERY_PY = "(call function: [(identifier) @c (attribute attribute:(identifier) @c)])";
+
+function queriesFor(lang: string): { fn: string; call: string } {
+  return lang === "python"
+    ? { fn: FN_QUERY_PY, call: CALL_QUERY_PY }
+    : { fn: FN_QUERY_TS, call: CALL_QUERY_TS };
+}
 
 // Per-run memo: a file is parsed at most once per process. enclosingSymbol (one
 // call per finding) and buildSymbolGraph otherwise re-parse the same file many
@@ -118,8 +131,9 @@ async function parseFileUncached(
   let callQ: Query | null = null;
   try {
     const symbols: SymbolInfo[] = [];
-    symQ = new Query(lang, FN_QUERY);
-    callQ = new Query(lang, CALL_QUERY);
+    const q = queriesFor(g.lang);
+    symQ = new Query(lang, q.fn);
+    callQ = new Query(lang, q.call);
     for (const match of symQ.matches(tree.rootNode)) {
       const symNode = match.captures.find((c) => c.name === "sym")?.node;
       const nameNode = match.captures.find((c) => c.name === "n")?.node;
@@ -133,12 +147,25 @@ async function parseFileUncached(
       });
     }
     return { symbols };
+  } catch {
+    // Malformed query / grammar mismatch → treat the file as unparseable so the caller
+    // falls back to line windows, instead of throwing and killing the symbol graph for
+    // this language. (`finally` below still releases the native handles.)
+    return null;
   } finally {
     symQ?.delete();
     callQ?.delete();
     tree.delete();
     p.delete();
   }
+}
+
+/** A changed file's symbols (name, startLine, endLine, callees) from the per-language query,
+ *  or null when the language is unsupported or the file is unparseable / over the parse size
+ *  cap (caller falls back to line windows). Reuses the cached parseFile. */
+export async function fileSymbols(file: string, repoRoot?: string): Promise<SymbolInfo[] | null> {
+  const parsed = await parseFile(file, repoRoot).catch(() => null);
+  return parsed ? parsed.symbols : null;
 }
 
 export async function enclosingSymbol(

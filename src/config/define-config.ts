@@ -67,6 +67,13 @@ export const ConfigSchema = z.object({
       // diff (for symbol verification). Smaller = smaller prompts = faster reviews
       // and fewer timeouts on slow remote models; larger = more context.
       fileContextBudgetBytes: z.number().int().positive().optional(),
+      // Whole-vs-scoped threshold AND per-file output cap for changed-file context. A file
+      // larger than this is scoped (symbol outline + enclosing function bodies) instead of
+      // included whole. Default 8_000.
+      fileContextPerFileBytes: z.number().int().positive().optional(),
+      // Line-window radius for the scoped fallback (non-TS/Python, unparseable, or changed
+      // lines outside any symbol). Default 40.
+      fileContextWindowLines: z.number().int().nonnegative().optional(),
       // M5 Part A: demote findings outside the changed hunks to INFO (advisory).
       // Default ON via defaults.ts (deep-merged) — the gate primarily reviews the change.
       scopeToDiff: z.boolean().optional(),

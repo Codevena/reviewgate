@@ -67,6 +67,8 @@ export const defaultConfig = {
         },
       ],
       fileContextBudgetBytes: 32_000,
+      fileContextPerFileBytes: 8_000,
+      fileContextWindowLines: 40,
       scopeToDiff: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
