@@ -27,6 +27,7 @@ import { type CollaboratorSource, collectCollaboratorSources } from "../research
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
 import { computeDiffFacts } from "../research/diff-facts.ts";
+import { collectFileContext } from "../research/file-context.ts";
 import { extractImportedLibs } from "../research/imports.ts";
 import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
@@ -925,6 +926,19 @@ export class Orchestrator {
       opts.signal,
     );
 
+    // Scoped context for the reviewer PROMPT (the whole-file `fileContext` above is kept,
+    // unchanged, for the deterministic grounding corpus below). parseChangedRanges is reused
+    // by aggregate() later in this function.
+    const changedRanges = parseChangedRanges(this.input.diff);
+    const promptContext = await collectFileContext({
+      repoRoot: repo,
+      changedRanges,
+      totalBudgetBytes: this.input.config.phases.review.fileContextBudgetBytes ?? 32_000,
+      perFileBytes: this.input.config.phases.review.fileContextPerFileBytes ?? 8_000,
+      windowLines: this.input.config.phases.review.fileContextWindowLines ?? 40,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+
     // Resolve the effective model for a provider, applying the host-tier override
     // for claude-code (returns null when that tier is disabled → the slot/fallback
     // candidate is skipped). Other providers use the configured model as-is.
@@ -1084,8 +1098,8 @@ export class Orchestrator {
         const persona = docPersona ?? r.persona;
         const reaffirm = reaffirmFor(persona, personas);
         const sanitised = sanitizeDiff({ diff: this.input.diff, personaReaffirm: reaffirm });
-        const sanitisedCtx = fileContext
-          ? sanitizeDiff({ diff: fileContext, personaReaffirm: reaffirm }).text
+        const sanitisedCtx = promptContext
+          ? sanitizeDiff({ diff: promptContext, personaReaffirm: reaffirm }).text
           : "";
         const runDir = mkdtempSync(join(tmpdir(), `rg-rev-${r.provider}-`));
         // try/finally: the runDir holds the diff + prompt + reviewer output at
@@ -1130,7 +1144,7 @@ export class Orchestrator {
           if (sanitisedCtx)
             promptParts.push(
               "",
-              "## Full content of changed files (reference only — review the DIFF above; consult this to confirm a symbol exists before reporting it undefined/missing)",
+              "## Changed-file context (reference only — review the DIFF above). Full source for small files; for large files, an outline of the functions/methods/components/classes defined in the file + the full source of the enclosing one(s) for the changed lines (line windows for anything outside them). Confirm a symbol exists / read the surrounding logic before reporting it undefined or missing; if a symbol you need is not shown, say so rather than assuming it is absent.",
               sanitisedCtx,
             );
           const sanitisedRefs = referencedRaw
@@ -1585,7 +1599,7 @@ export class Orchestrator {
       // (two slots → same provider:persona) must not satisfy the singleton-
       // CRITICAL failsafe as a phantom multi-reviewer panel.
       reviewersTotal: effectiveReviewerCount(okRuns),
-      changedRanges: parseChangedRanges(this.input.diff),
+      changedRanges,
       // One-shot reviews (plan/spec) review a WHOLE document, not a code change —
       // there are no "unchanged lines" to exclude, so diff-scoping must not apply
       // (its synthetic full-file diff would otherwise mis-demote legit findings).
