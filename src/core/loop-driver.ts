@@ -877,6 +877,7 @@ export class LoopDriver {
           state,
           "max-iterations",
           `Reached ${state.iteration} iterations without convergence — ${recurring} of the prior round's findings recurred and severity did not improve (real findings not decreasing).`,
+          true,
         );
       }
       // Converging (real findings strictly fewer than the previous round) and below
@@ -905,6 +906,7 @@ export class LoopDriver {
         state,
         "stuck-signatures",
         `Findings unchanged across ${stuckN} iterations.`,
+        true,
       );
     }
 
@@ -1267,6 +1269,7 @@ export class LoopDriver {
         // infra-defer returns early above and never gets here, so reaching this point
         // means the outage is over. Reset so a later outage counts fresh.
         consecutive_infra_defers: 0,
+        consecutive_quota_defers: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
         last_stop_ts: new Date().toISOString(),
         // On a clean pass (re-arm), bump the cycle sequence so the next cycle's
@@ -1569,10 +1572,48 @@ export class LoopDriver {
     state: ReviewgateState,
     reasonCode: EscalationReason,
     summary: string,
+    deferableOnQuota = false,
   ): Promise<LoopDecision> {
-    const degraded = this.quotaDegradationNote(new Date());
-    const fullSummary = degraded ? summary + degraded : summary;
-    const suffix = degraded ? " · ⚠ degraded panel (quota) — see ESCALATION.md" : "";
+    const now = new Date();
+    const note = this.quotaDegradationNote(now); // string | null — reused below
+    // #10: don't give up (max-iterations / stuck-signatures) while the reviewer
+    // panel is degraded by a quota cap / timeout backoff. DEFER (allow_stop, keep
+    // the dirty flag, do NOT advance the iteration) for a bounded number of turns,
+    // then escalate anyway (fail-closed). Mirrors the infra-defer pattern; the
+    // runaway/budget/protocol escalations pass deferableOnQuota=false and skip this.
+    const quotaDeferCap = this.i.config.loop.quotaDeferMaxConsecutive;
+    if (
+      deferableOnQuota &&
+      note !== null &&
+      quotaDeferCap > 0 &&
+      state.consecutive_quota_defers < quotaDeferCap
+    ) {
+      const next = state.consecutive_quota_defers + 1;
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          consecutive_quota_defers: next,
+          last_stop_ts: now.toISOString(),
+        }),
+      );
+      await this.i.audit
+        .append({
+          event: "gate.decision",
+          run_id: state.session_id,
+          iter: state.iteration,
+          trigger: "stop-hook",
+        })
+        .catch(() => {});
+      // EARLY RETURN — before this.escalate(...) and unlinkDirtyFlagIfUnchanged():
+      // the dirty flag is KEPT (next turn re-checks the cooldown), `iteration` is
+      // not advanced, and no escalation state (escalated/announced/reason) is set.
+      return {
+        kind: "allow_stop",
+        reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — a reviewer is in cooldown, so the panel is incomplete; NOT escalating on a degraded panel yet. Will escalate once the cooldown clears, or after ${quotaDeferCap - next} more degraded turn(s) (defer ${next}/${quotaDeferCap}).${note}`,
+      };
+    }
+    const fullSummary = note ? summary + note : summary;
+    const suffix = note ? " · ⚠ degraded panel (quota) — see ESCALATION.md" : "";
     const firstAnnounce = !state.escalation_announced;
     // Only write ESCALATION.md + the audit entry + state on the first announce.
     // Re-stops (with a fresh dirty flag) would otherwise churn the file and spam
@@ -1593,7 +1634,11 @@ export class LoopDriver {
         state.signature_history,
         state.iteration_stats,
       );
-      await this.i.state.update((cur) => ({ ...cur, escalation_announced: true }));
+      await this.i.state.update((cur) => ({
+        ...cur,
+        escalation_announced: true,
+        consecutive_quota_defers: 0,
+      }));
     }
     // Compare-and-delete (F-005): a flag rewritten mid-review carries a captured
     // base for the NEW batch; deleting it would make a later trigger re-capture
