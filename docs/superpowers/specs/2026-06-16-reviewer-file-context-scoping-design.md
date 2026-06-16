@@ -16,13 +16,21 @@ The building blocks exist: `parseChangedRanges(diff)` (`src/diff/hunks.ts`) give
 
 ## Architecture
 
-### New: `src/research/symbol-graph.ts` — export `fileSymbols`
+### Changed: `src/research/symbol-graph.ts` — per-language queries + export `fileSymbols`
 
-`enclosingSymbol` returns only `{name, startLine}` (no `endLine` → cannot extract a body) and `parseFile` is module-private. Add:
+Two changes here, both improving the shared symbol graph (so `enclosingSymbol` — used by fact-check — and `buildSymbolGraph` — used by the brain — get the same richer coverage):
+
+**(1) Per-language symbol queries (replaces the single `FN_QUERY`).** Today `FN_QUERY` is ONE string used for both TS and Python, but it contains only TS/JS node types (`function_declaration`, `method_definition`, `function_signature`) — so it matches **nothing** for Python (a latent gap; only `.ts` is currently tested) and misses the dominant TS/React forms (`const X = () => {}`, exported arrows, function expressions, classes). Split into per-grammar queries selected by `grammarForFile(file).lang`:
+- **`FN_QUERY_TS`** (typescript/tsx/js/jsx): the existing three captures PLUS a `lexical_declaration`→`variable_declarator` whose `value` is an `arrow_function` or `function_expression` (the `@sym` span = the whole declaration so the reviewer gets `const Component = (props) => { …full body… }`; `@n` = the bound identifier), PLUS `class_declaration` (name → `@n`, whole class → `@sym`). Arrow consts wrapped in `export_statement` still match because the `lexical_declaration` is a child.
+- **`FN_QUERY_PY`** (python): `function_definition` + `class_definition` (name child → `@n`, whole node → `@sym`). This is a net-new capability — Python symbol extraction works for the first time.
+
+A query references only node types that EXIST in its own grammar, so `new Query(lang, …)` never throws on a cross-grammar unknown-node type. `CALL_QUERY` (callees) stays separate and unchanged. **This MUST be verified against the real `.wasm` grammars** (a malformed query throws at `new Query` → the symbol graph dies for that language); stub tests do not catch query-compile errors — see Testing.
+
+**(2) Export `fileSymbols`** — `enclosingSymbol` returns only `{name, startLine}` (no `endLine` → cannot extract a body) and `parseFile` is module-private. Add:
 
 ```ts
-/** A changed file's top-level + nested symbols (name, startLine, endLine, callees),
- *  or null when the language is unsupported or the file is unparseable / over the
+/** A changed file's symbols (name, startLine, endLine, callees) for the per-language
+ *  query, or null when the language is unsupported or the file is unparseable / over the
  *  parse size cap (caller falls back to line windows). Reuses the cached parseFile. */
 export async function fileSymbols(file: string, repoRoot?: string): Promise<SymbolInfo[] | null> {
   const parsed = await parseFile(file, repoRoot).catch(() => null);
@@ -30,7 +38,7 @@ export async function fileSymbols(file: string, repoRoot?: string): Promise<Symb
 }
 ```
 
-This reuses the existing `parseCache` (parse-once-per-process) and the existing per-file parse size cap (a file over the cap → `parseFile` returns null → `fileSymbols` returns null → line-window fallback).
+Reuses the existing `parseCache` (parse-once-per-process) and the per-file parse size cap (over cap → null → line-window fallback). **Blast radius:** the existing consumers get strictly MORE symbols (additive). `enclosingSymbol` still picks the innermost-by-span (an arrow const inside which a line changed now resolves to that const — an improvement); `buildSymbolGraph` lists more symbols (more accurate caller/callee graph). The existing `symbol-graph.test.ts` + `signature-symbol.test.ts` must stay green; new-form tests are added.
 
 ### New: `src/research/file-context.ts` — the scoping builder
 
@@ -80,7 +88,7 @@ For each changed file (skip `isExcludedFromReview`):
 The section header changes from "Full content of changed files (reference only — …)" to an honest description so a reviewer never assumes whole-file completeness when the content is scoped:
 
 > ## Changed-file context (reference only — review the DIFF above)
-> Full source for small files. For large files: a symbol outline (everything defined in the file) + the full source of the enclosing function(s) of the changed lines (and line windows for anything outside a function). Use this to confirm a symbol exists / read the surrounding logic before reporting something undefined or missing.
+> Full source for small files. For large files: an outline of the functions, methods, components, and classes defined in the file + the full source of the enclosing one(s) for the changed lines (and line windows for anything outside them). Use this to confirm a symbol exists / read the surrounding logic before reporting something undefined or missing; if a symbol you need is not shown, say so rather than assuming it is absent.
 
 ### Config (`phases.review`, flat, beside `fileContextBudgetBytes`)
 
@@ -92,7 +100,14 @@ Defaults live in `src/config/defaults.ts` (`phases.review`); schema in `src/conf
 
 ## Testing (TDD, `bun test`, no provider subprocess)
 
-`tests/unit/file-context.test.ts` against a temp repo (write files, build a `changedRanges` map, call `collectFileContext`):
+**`tests/unit/symbol-graph.test.ts` (additions — MUST run against the real `.wasm` grammars, not stubs, since a malformed query only fails at real `new Query` time):**
+- TS: `function_declaration`, `method_definition`, **`const X = () => {}`**, **`export const X = () => {}`**, **function-expression const**, and **`class Foo {}`** each produce a `SymbolInfo` with the correct `name`, `startLine`, `endLine` (full declaration span).
+- TSX: an arrow-function component is captured (the dominant React form).
+- Python: `def f():` and `class C:` each produce a `SymbolInfo` (previously zero — net-new).
+- `enclosingSymbol` for a line inside an arrow-const body now resolves to that const (was null before).
+- Regression: the existing `symbol-graph.test.ts` / `signature-symbol.test.ts` assertions still pass (additive coverage).
+
+**`tests/unit/file-context.test.ts`** against a temp repo (write files, build a `changedRanges` map, call `collectFileContext`):
 - Small file (≤ perFileBytes) → whole-file block, unchanged.
 - Large TS file, change inside one function → output contains that function's full body + the symbol outline; does NOT contain an *unrelated* large function's body.
 - A symbol defined elsewhere in the same large file → its name appears in the outline (undefined-FP protection).
