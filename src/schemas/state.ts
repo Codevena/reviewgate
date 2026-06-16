@@ -116,6 +116,13 @@ export const ReviewgateStateSchema = z.object({
   // Reset to 0 whenever a review actually completes (any verdict). `.default(0)` for
   // back-compat with state.json written before this field existed.
   consecutive_infra_defers: z.number().int().nonnegative().default(0),
+  // #10: consecutive turns the gate DEFERRED a give-up escalation (max-iterations
+  // / stuck-signatures) because a configured reviewer was in cooldown (quota cap
+  // or timeout/error backoff). Like consecutive_infra_defers it is NOT a review
+  // round and does not advance `iteration`; bounded by loop.quotaDeferMaxConsecutive
+  // so a persistently-degraded panel escalates instead of deferring forever. Reset
+  // to 0 when an escalation proceeds or a review completes. .default(0) for back-compat.
+  consecutive_quota_defers: z.number().int().nonnegative().default(0),
   // Monotonic per-session counter, incremented on every re-arm (clean PASS /
   // commit-recovery). Feeds the reputation event-id namespace so a re-armed cycle
   // (iteration resets to 0, findings renumber from F-001) cannot collide with a
@@ -152,6 +159,7 @@ export function initialState(sessionId: string): ReviewgateState {
     escalation_reason: null,
     escalation_announced: false,
     consecutive_infra_defers: 0,
+    consecutive_quota_defers: 0,
     incomplete_runs: 0,
     reputation_cycle_seq: 0,
   };
