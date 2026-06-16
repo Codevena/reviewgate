@@ -40,13 +40,32 @@ gave up because the code won't converge"):
   (`handleInfraUnavailable`).
 - `reviewer-fp-streak` — a specific reviewer that *ran* and kept being wrong; a
   different reviewer being capped does not make it premature. Already allow_stop.
+- `reject-rate-high` — the agent's confirmed-FP rate is high; a "the reviewers
+  that ran are noisy" signal, not "the code won't converge." Excluded for the
+  same reason as `reviewer-fp-streak`. (Handled automatically by the default-false
+  param — it is one of the nine `escalateAndDecide` call sites, listed here for
+  completeness.)
 
 Also out of scope (decided during brainstorming): a fresh full-panel review round
 on quota reset (Approach 2). This design is **defer-only** (Approach 1): while a
-reviewer is capped, do not give up; once the cap clears, normal escalation
-semantics resume. Rationale: lowest fail-open risk (no iteration-cap bypass), and
-in the real agent flow the agent edits again after the defer allow_stop → a fresh
-full-panel review happens naturally once quota is back.
+reviewer is in cooldown, do not give up; once the cooldown clears, normal
+escalation semantics resume.
+
+**What "defer-only" does and does NOT do (important, do not overstate this in
+copy):** during a pure defer streak the `iteration` is NOT advanced — it stays at
+the cap — so the `max-iterations`/`stuck-signatures` precondition re-fires at the
+*top* of `run()` on every subsequent turn, **before any new panel runs**. The
+defer therefore does **not** trigger a fresh full-panel review on its own, and a
+plain edit (new dirty flag) while at the cap does **not** re-arm the cycle (the
+re-arm paths require `escalated=true` or a completed review). The only exits from
+a defer streak are: (a) the cooldown clears → the precondition escalates on the
+existing history; (b) the defer cap is reached → escalate (fail-closed backstop);
+or (c) the agent **commits** (HEAD moves), which re-arms a fresh cycle
+(`iteration → 0`) so the next turn reviews the new batch with whatever panel is
+then available. The value Approach 1 delivers is precisely: **the gate does not
+give up / summon the human while the panel is provably incomplete**, for a bounded
+window. Rationale for choosing it over Approach 2: lowest fail-open risk (no
+iteration-cap bypass).
 
 ## Design
 
@@ -69,7 +88,8 @@ Every other call site passes `false` (omits the arg) → behavior unchanged.
 Before the existing `firstAnnounce` logic:
 
 ```
-const degraded = this.quotaDegradationNote(now) !== null;
+const note = this.quotaDegradationNote(now);   // string | null; reused (not recomputed)
+const degraded = note !== null;
 const cap = this.i.config.loop.quotaDeferMaxConsecutive;
 
 if (deferableOnQuota && degraded && cap > 0 && state.consecutive_quota_defers < cap) {
@@ -81,13 +101,17 @@ if (deferableOnQuota && degraded && cap > 0 && state.consecutive_quota_defers < 
   // (next turn re-checks) and `iteration` is NOT advanced.
   return {
     kind: "allow_stop",
-    reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — a reviewer is quota-capped, so the panel is incomplete; NOT escalating on a degraded panel. The change stays flagged and is re-reviewed once quota resets. Will escalate if the panel stays degraded (defer ${next}/${cap}).` + degradationDetail,
+    reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — a reviewer is in cooldown, so the panel is incomplete; NOT escalating on a degraded panel yet. Will escalate once the cooldown clears, or after ${cap - next} more degraded turn(s) (defer ${next}/${cap}); commit your work to re-review the change with the full panel.` + note,
   };
 }
 ```
 
-Where `degradationDetail` is the existing `quotaDegradationNote(now)` string
-(reused, not recomputed — it already names the provider + reset time).
+The detail string appended is the existing `quotaDegradationNote(now)` return
+value (captured once in `note`, reused — it already names the provider + reset
+time and begins with its own `\n\n⚠ …` prefix). The message deliberately does
+**not** claim the change is "re-reviewed once quota resets" — per Approach 1 the
+defer holds off the *give-up*; it does not itself re-run the panel (see "What
+defer-only does and does NOT do" above).
 
 If the guard is false (not deferable, not degraded, cap is 0, or the defer cap is
 exhausted) → fall through to the **existing** escalation path unchanged (the ⚠
@@ -151,24 +175,36 @@ point 1 — the same lifecycle `consecutive_infra_defers` relies on.)
 
 ```
 // Max consecutive turns to DEFER a give-up escalation (max-iterations /
-// stuck-signatures) while the reviewer panel is quota-degraded, before
-// escalating anyway. Mirrors infraDeferMaxConsecutive. 0 disables the defer
-// (escalate immediately even when degraded — prior behavior).
+// stuck-signatures) while a configured reviewer is in cooldown (quota cap or
+// timeout/error backoff — see quotaDegradationNote), before escalating anyway.
+// Mirrors infraDeferMaxConsecutive. 0 disables the defer (escalate immediately
+// even when degraded — prior behavior).
 quotaDeferMaxConsecutive: z.number().int().nonnegative().default(3),
 ```
 
 `src/config/defaults.ts` (under `loop`): `quotaDeferMaxConsecutive: 3`.
 
-### Degradation signal & its limitation
+### Degradation signal & its limitations
 
 The signal is the existing `quotaDegradationNote(now)` cooldown-store check: a
-configured reviewer's provider is currently in quota cooldown. This is the same
-signal the existing ⚠ note uses.
+configured reviewer's provider is currently in cooldown (`activeUntil(p, now) !==
+null`). This reuses the *exact* signal the existing ⚠ note already uses — no new
+detection logic.
 
-Documented limitation: it slightly **over-defers** when a capped primary's
-failover actually covered the slot (the panel was effectively whole). This errs
-toward *not* escalating (never wrongly summons the human) and is bounded by
-`quotaDeferMaxConsecutive`. A more precise signal would require persisting
+Note on the trigger set: `activeUntil` does **not** discriminate on the cooldown
+`source`, so a reviewer recorded via `recordBackoff` (a per-reviewer **timeout /
+error backoff**, or a silent agy stall) reads as "degraded" too — not only a
+hard quota cap. This is intentional: deferring the give-up on a *timeout*-degraded
+panel is equally valid, and it matches the existing ⚠-note behavior exactly (no
+regression). The `quota`-prefixed names (`quotaDeferMaxConsecutive`,
+"GATE DEFERRED … reviewer is in cooldown") are kept to mirror `quotaDegradationNote`
+and the field-report framing; the user-facing copy says "in cooldown" rather than
+"quota-capped" to stay accurate.
+
+Documented limitation: it slightly **over-defers** when a capped/backed-off
+primary's failover actually covered the slot (the panel was effectively whole).
+This errs toward *not* escalating (never wrongly summons the human) and is bounded
+by `quotaDeferMaxConsecutive`. A more precise signal would require persisting
 per-iteration genuine coverage from the orchestrator — deferred as a future
 refinement, not needed for v1.
 
