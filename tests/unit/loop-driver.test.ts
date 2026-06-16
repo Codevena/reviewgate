@@ -3123,11 +3123,22 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
 describe("LoopDriver quota-degraded escalation note", () => {
   // Forces a max-iterations escalation (rising real findings) with codex — the
   // default configured reviewer — quota-capped, and asserts the note surfaces.
-  async function escalateWith(opts: { capProvider?: string } = {}) {
+  // NOTE (#10): capping a configured reviewer now DEFERS the soft max-iterations
+  // escalation while the panel is degraded — unless the quota-defer cap is already
+  // exhausted. Pass `consecutiveQuotaDefers` at the cap (default
+  // quotaDeferMaxConsecutive=3) to drive the escalation-with-note path.
+  async function escalateWith(
+    opts: { capProvider?: string; consecutiveQuotaDefers?: number } = {},
+  ) {
     const repo = fakeRepo();
     const state = new StateStore(repo);
     await state.initialise("01HXQDEGR");
-    await state.update((cur) => ({ ...cur, iteration: 3, signature_history: [["a"], ["a", "b"]] })); // rising → non-progressing
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["a"], ["a", "b"]],
+      consecutive_quota_defers: opts.consecutiveQuotaDefers ?? 0,
+    })); // rising → non-progressing
     if (opts.capProvider) {
       // capped 1h into the future → activeUntil() returns non-null
       const future = new Date(Date.now() + 3_600_000).toISOString();
@@ -3162,7 +3173,11 @@ describe("LoopDriver quota-degraded escalation note", () => {
   }
 
   it("appends the quota-degraded note when a configured reviewer (codex) is capped", async () => {
-    const { decision, escMd } = await escalateWith({ capProvider: "codex" });
+    // cap exhausted → the degraded panel ESCALATES (not defers) and surfaces the note
+    const { decision, escMd } = await escalateWith({
+      capProvider: "codex",
+      consecutiveQuotaDefers: 3,
+    });
     expect(decision.kind).toBe("block");
     expect(decision.reason).toContain("degraded panel");
     expect(escMd).toContain("Quota-degraded panel");
