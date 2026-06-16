@@ -98,6 +98,20 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // #8: historical precision of the base provider(s) that raised this finding,
+  // attached at report-write time as ADVISORY context (never affects severity/
+  // verdict). Only providers with >= PROVIDER_PRECISION_MIN_DECISIONS of decision
+  // history are listed. precision is tp/(tp+fp), or null at zero samples.
+  reviewer_precision: z
+    .array(
+      z.object({
+        provider: z.string(),
+        tp: z.number().int().nonnegative(),
+        fp: z.number().int().nonnegative(),
+        precision: z.number().min(0).max(1).nullable(),
+      }),
+    )
+    .optional(),
   // S6 grounding (layer 1): set true when the grounding pass demoted this finding
   // one severity step (CRITICAL→WARN) because it cited a code-shaped token (CSS
   // custom property or backtick code-span) that is wholly absent from the reviewed
