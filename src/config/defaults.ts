@@ -204,6 +204,7 @@ export const defaultConfig = {
     // and ESCALATES to the human (ESCALATION.md) after N — so a persistent misconfig is
     // surfaced, not silently waved through. Set 0 to restore the old hard-block.
     infraDeferMaxConsecutive: 3,
+    quotaDeferMaxConsecutive: 3,
   },
   sandbox: {
     // Default 'off' = opt-in isolation. 'strict'/'permissive' DO isolate the

@@ -299,6 +299,12 @@ export const ConfigSchema = z.object({
     // — no real security, only a block-loop (field evidence 2026-06-05). Set 0 to restore
     // the old hard-block.
     infraDeferMaxConsecutive: z.number().int().nonnegative().default(3),
+    // #10: max consecutive turns to DEFER a give-up escalation (max-iterations /
+    // stuck-signatures) while a configured reviewer is in cooldown (quota cap or
+    // timeout/error backoff — see quotaDegradationNote), before escalating anyway.
+    // Mirrors infraDeferMaxConsecutive. 0 disables the defer (escalate immediately
+    // even when degraded — prior behavior).
+    quotaDeferMaxConsecutive: z.number().int().nonnegative().default(3),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),
