@@ -1473,9 +1473,12 @@ export class Orchestrator {
       this.input.repoRoot,
       parseDeletedPaths(this.input.diff),
     );
-    // S6 grounding corpus = exactly what the reviewer was shown (diff + full content of
-    // changed files). A fabricated correctness/security CRITICAL otherwise hard-FAILs the
-    // gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +
+    // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
+    // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
+    // demotes a CRITICAL whose cited token is ABSENT from the corpus, so it must check against
+    // the full file (ground truth) — a scoped corpus would false-demote a token that exists
+    // outside the scoped extract. A fabricated correctness/security CRITICAL otherwise hard-FAILs
+    // the gate unconditionally (aggregator.ts:576-590), so both layers run BEFORE the critic +
     // aggregate to let the demoted severity flow through. Both are demote-only + fail-safe.
     const groundingCorpus = `${this.input.diff}\n${fileContext ?? ""}`;
     // Layer 1 (deterministic, no LLM): demote a CRITICAL citing a code-shaped token absent
