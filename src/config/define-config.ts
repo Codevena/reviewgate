@@ -119,6 +119,11 @@ export const ConfigSchema = z.object({
       // computed values (gap-3 → 12px) and inject them as trusted facts, so reviewers stop
       // misreading layout from the raw diff. Opt-in (UI repos); no browser. null = off.
       uiAnalysis: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
+      // #3: inject the installed dependency API surface (exported names from node_modules
+      // .d.ts) as advisory reviewer context, so reviewers don't claim a real installed API is
+      // non-existent. Context-only, no verdict change. Default ON.
+      depSurface: z.boolean().optional(),
+      depSurfaceBudgetBytes: z.number().int().positive().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

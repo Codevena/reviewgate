@@ -95,6 +95,10 @@ export const defaultConfig = {
       // N7: static Tailwind/CSS fact block — OFF by default. Enable per repo
       // (`uiAnalysis: { enabled: true }`) so reviewers see resolved class values.
       uiAnalysis: null as null | { enabled: boolean },
+      // #3: installed dependency API surface — ON by default. Disable per repo
+      // (`depSurface: false`) to skip the .d.ts extraction phase.
+      depSurface: true,
+      depSurfaceBudgetBytes: 4_000,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
