@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractImportedLibs } from "../../src/research/imports.ts";
+import { extractImportedLibs, importBindings, specToPackage } from "../../src/research/imports.ts";
 
 describe("extractImportedLibs", () => {
   it("extracts external libs, drops relative + builtin, resolves version from package.json", async () => {
@@ -164,4 +164,42 @@ describe("extractImportedLibs", () => {
     const names = (await extractImportedLibs(repo, ["i.ts"])).map((l) => l.name);
     expect(names).toEqual(["react"]); // "foo/anything/bar" matched the prefix+suffix matcher
   });
+});
+
+it("specToPackage normalizes bare, subpath, and scoped specifiers", () => {
+  expect(specToPackage("zod")).toBe("zod");
+  expect(specToPackage("zod/v4")).toBe("zod");
+  expect(specToPackage("@scope/x")).toBe("@scope/x");
+  expect(specToPackage("@scope/x/sub")).toBe("@scope/x");
+  expect(specToPackage("./local")).toBeNull();
+});
+
+it("importBindings maps default/namespace/named (+ alias) to package; skips relative/builtin", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rg-ib-"));
+  const f = join(dir, "a.ts");
+  writeFileSync(
+    f,
+    [
+      'import { z } from "zod";',
+      'import * as React from "react";',
+      'import def from "lodash";',
+      'import { foo as bar } from "@scope/pkg";',
+      'import { rel } from "./local";',
+      'import { readFile } from "node:fs";',
+    ].join("\n"),
+  );
+  const m = await importBindings(dir, f);
+  expect(m.get("z")).toBe("zod");
+  expect(m.get("React")).toBe("react");
+  expect(m.get("def")).toBe("lodash");
+  expect(m.get("bar")).toBe("@scope/pkg");
+  expect(m.has("rel")).toBe(false);
+  expect(m.has("readFile")).toBe(false);
+});
+
+it("importBindings returns an empty map for a non-JS/TS file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "rg-ib2-"));
+  const f = join(dir, "a.py");
+  writeFileSync(f, "import os\n");
+  expect((await importBindings(dir, f)).size).toBe(0);
 });

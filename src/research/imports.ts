@@ -16,6 +16,7 @@
  * (version `null`).
  */
 
+import { relative } from "node:path";
 import type { Language, Node } from "web-tree-sitter";
 import { Parser, Query } from "web-tree-sitter";
 import { safeReadContained } from "../utils/safe-read.ts";
@@ -154,7 +155,7 @@ function regexSpecifiers(code: string): string[] {
 }
 
 /** Reduce a module specifier to its package name, or null if not an external pkg. */
-function specToPackage(spec: string): string | null {
+export function specToPackage(spec: string): string | null {
   if (!spec) return null;
   if (spec.startsWith(".") || spec.startsWith("/")) return null; // relative / absolute
   if (spec.startsWith("node:")) return null; // explicit builtin
@@ -190,6 +191,66 @@ export async function specifiersFromFile(repoRoot: string, file: string): Promis
   } catch {
     return regexSpecifiers(code); // labelled fallback on any parse error
   }
+}
+
+/** Local import binding → package name for one JS/TS file (default / `* as ns` / named incl.
+ *  `as` alias). Relative/builtin sources skipped. Empty map for non-JS/TS or parse failure. */
+export async function importBindings(repoRoot: string, file: string): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const g = grammarForFile(file);
+  if (!g || !JS_TS_LANGS.has(g.lang)) return out;
+  const lang = await getLanguage(g.wasmFile);
+  if (!lang) return out;
+  const code = safeReadContained(repoRoot, relative(repoRoot, file) || file, 2_000_000);
+  if (code === null) return out;
+  let parser: Parser | null = null;
+  let q: Query | null = null;
+  try {
+    parser = new Parser();
+    parser.setLanguage(lang);
+    const tree = parser.parse(code);
+    if (!tree) return out;
+    q = new Query(lang, "(import_statement) @imp");
+    for (const m of q.matches(tree.rootNode)) {
+      const node = m.captures[0]?.node;
+      if (!node) continue;
+      const source = node.childForFieldName("source");
+      const spec = source ? stringNodeValue(source) : null;
+      const pkg = spec ? specToPackage(spec) : null;
+      if (!pkg) continue;
+      for (const child of walkClause(node)) {
+        if (child.type === "identifier" && child.parent?.type === "import_clause")
+          out.set(child.text, pkg);
+        else if (child.type === "namespace_import") {
+          const id = child.namedChildren.find((c) => c.type === "identifier");
+          if (id) out.set(id.text, pkg);
+        } else if (child.type === "import_specifier") {
+          const alias = child.childForFieldName("alias");
+          const name = child.childForFieldName("name");
+          const local = (alias ?? name)?.text;
+          if (local) out.set(local, pkg);
+        }
+      }
+    }
+    tree.delete();
+    return out;
+  } catch {
+    return out;
+  } finally {
+    q?.delete();
+    parser?.delete();
+  }
+}
+
+function walkClause(importNode: Node): Node[] {
+  const acc: Node[] = [];
+  const visit = (n: Node) => {
+    if (n.type === "identifier" || n.type === "namespace_import" || n.type === "import_specifier")
+      acc.push(n);
+    for (const c of n.namedChildren) visit(c);
+  };
+  visit(importNode);
+  return acc;
 }
 
 // --- version resolution ------------------------------------------------------
