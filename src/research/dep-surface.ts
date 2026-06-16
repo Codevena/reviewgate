@@ -99,11 +99,13 @@ function extractNames(text: string): { names: Set<string>; reexports: string[] }
     }
     if (m[2]) reexports.push(m[2] as string);
   }
-  // export * from "./x"
+  // export * from "./x"  and  export * as ns from "./x" (the `ns` binding is itself an export)
   for (const m of text.matchAll(
-    /export\s*\*\s*(?:as\s+[A-Za-z_$][\w$]*\s+)?from\s*['"]([^'"]+)['"]/g,
-  ))
-    reexports.push(m[1] as string);
+    /export\s*\*\s*(?:as\s+([A-Za-z_$][\w$]*)\s+)?from\s*['"]([^'"]+)['"]/g,
+  )) {
+    if (m[1]) add(m[1] as string);
+    reexports.push(m[2] as string);
+  }
   return { names, reexports };
 }
 
@@ -111,31 +113,39 @@ function extractNames(text: string): { names: Set<string>; reexports: string[] }
 function extractBindingMembers(text: string, binding: string): string[] {
   if (!IDENT.test(binding)) return [];
   const out = new Set<string>();
-  // const binding: { ... } — capture the inline object body (single level).
-  const constRe = new RegExp(
-    `(?:export\\s+)?(?:declare\\s+)?(?:const|let|var)\\s+${binding}\\s*:\\s*\\{`,
-  );
-  const cm = constRe.exec(text);
-  if (cm) {
-    const start = cm.index + cm[0].length - 1; // at the `{`
+  // Brace-match the `{ ... }` body starting at `openIndex` (the offset of the `{`),
+  // returning the inner slice (capped so a pathological file can't run away).
+  const matchBody = (openIndex: number): string => {
     let depth = 0;
-    let i = start;
-    for (; i < text.length && i < start + 50_000; i++) {
+    let i = openIndex;
+    for (; i < text.length && i < openIndex + 50_000; i++) {
       if (text[i] === "{") depth++;
       else if (text[i] === "}") {
         depth--;
         if (depth === 0) break;
       }
     }
-    const body = text.slice(start + 1, i);
+    return text.slice(openIndex + 1, i);
+  };
+  // const binding: { ... } — capture the inline object body (single level).
+  const constRe = new RegExp(
+    `(?:export\\s+)?(?:declare\\s+)?(?:const|let|var)\\s+${binding}\\s*:\\s*\\{`,
+  );
+  const cm = constRe.exec(text);
+  if (cm) {
+    const body = matchBody(cm.index + cm[0].length - 1); // -1 lands on the `{`
     for (const m of body.matchAll(/(?:^|[;{,\n])\s*([A-Za-z_$][\w$]*)\s*[?(:<]/g))
       out.add(m[1] as string);
   }
-  // namespace binding { export ... }
+  // namespace binding { export ... } — scan ONLY the namespace body (brace-matched),
+  // not the whole file, so unrelated top-level declarations aren't mis-attributed.
   const nsRe = new RegExp(`namespace\\s+${binding}\\s*\\{`);
-  if (nsRe.test(text))
-    for (const m of text.matchAll(/(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g))
+  const nm = nsRe.exec(text);
+  if (nm) {
+    const body = matchBody(nm.index + nm[0].length - 1); // -1 lands on the `{`
+    for (const m of body.matchAll(/(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g))
       out.add(m[1] as string);
+  }
   return [...out].filter((n) => IDENT.test(n));
 }
 
@@ -190,7 +200,7 @@ export async function collectDepSurface(opts: DepSurfaceOpts): Promise<string> {
       if (ms.length) memberLines.push(`${b}: { ${[...new Set(ms)].sort().join(", ")} }`);
     }
     const version = lib.version && VERSION_OK.test(lib.version) ? lib.version : null;
-    const header = `## ${specSafe(lib.name)}${version ? `@${version}` : ""}`;
+    const header = `### ${specSafe(lib.name)}${version ? `@${version}` : ""}`;
     const exportLine = `exports: ${[...names].sort().join(", ")}`;
     const raw = [header, exportLine, ...memberLines].join("\n");
     // Defense-in-depth (the identifier-whitelist above is the primary guarantee — every name

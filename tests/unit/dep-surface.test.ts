@@ -75,8 +75,8 @@ describe("collectDepSurface", () => {
     });
     const out = await collectDepSurface(opts(repo, [{ name: "pkg", version: null, bindings: [] }]));
     expect(out).toContain("real");
-    expect(out).not.toContain("Instruction");
-    expect(out).not.toContain("###");
+    expect(out).toContain("### pkg"); // legit per-package header renders
+    expect(out).not.toContain("Instruction"); // injected payload dropped by the IDENT whitelist
   });
 
   test("missing package is omitted, others still render; no throw", async () => {
