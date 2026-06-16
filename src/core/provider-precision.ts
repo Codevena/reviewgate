@@ -24,9 +24,7 @@ export interface ProviderPrecision {
 
 // Pure: count tp/fp per base provider. INFO is excluded (non-blocking, needs no
 // decision); `declined` is ignored (neither a true nor a false positive).
-export function perProviderPrecision(
-  decisions: DecisionOutcome[],
-): Map<string, ProviderPrecision> {
+export function perProviderPrecision(decisions: DecisionOutcome[]): Map<string, ProviderPrecision> {
   const acc = new Map<string, { tp: number; fp: number }>();
   for (const d of decisions) {
     if (d.severity === "INFO") continue;

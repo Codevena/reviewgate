@@ -11,7 +11,11 @@ import {
 import type { DecisionOutcome } from "../../src/schemas/audit-event.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
-function dec(bucket: DecisionOutcome["bucket"], providers: string[], severity: DecisionOutcome["severity"] = "CRITICAL"): DecisionOutcome {
+function dec(
+  bucket: DecisionOutcome["bucket"],
+  providers: string[],
+  severity: DecisionOutcome["severity"] = "CRITICAL",
+): DecisionOutcome {
   return { finding_id: "F", severity, bucket, providers };
 }
 
@@ -66,11 +70,15 @@ describe("annotateFindingsWithPrecision", () => {
 
   it("attaches reviewer_precision only for providers with >= minDecisions samples", () => {
     const out = annotateFindingsWithPrecision([finding("codex")], precision, { minDecisions: 5 });
-    expect(out[0]?.reviewer_precision).toEqual([{ provider: "codex", tp: 22, fp: 3, precision: 22 / 25 }]);
+    expect(out[0]?.reviewer_precision).toEqual([
+      { provider: "codex", tp: 22, fp: 3, precision: 22 / 25 },
+    ]);
   });
 
   it("omits a provider below minDecisions (no annotation when none qualify)", () => {
-    const out = annotateFindingsWithPrecision([finding("openrouter")], precision, { minDecisions: 5 });
+    const out = annotateFindingsWithPrecision([finding("openrouter")], precision, {
+      minDecisions: 5,
+    });
     expect(out[0]?.reviewer_precision).toBeUndefined();
   });
 
