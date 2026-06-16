@@ -1,6 +1,7 @@
 // src/core/aggregator.ts
 import { type Range, rangeOverlapsChanged } from "../diff/hunks.ts";
 import { normalizeRepoPath } from "../diff/repo-path.ts";
+import { classify } from "../research/diff-facts.ts";
 import type { Consensus, Finding, FindingCategory } from "../schemas/finding.ts";
 import type { Verdict } from "../schemas/pending-report.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
@@ -53,6 +54,10 @@ export interface AggregateInput {
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
   // (preserves the pre-feature behavior; production passes true from config).
   demoteCorrectness?: boolean;
+  // Slice 2 (field report #9): when true, a SECURITY finding whose file classify()s as
+  // "tests" is demoted to INFO (advisory). Only security; correctness/other stay. Absent/
+  // false → no-op (production passes the config value, default true). Representative-keyed.
+  demoteTestSecurity?: boolean;
   // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
   // an EARLIER iteration of the current cycle → earliest claimed iter. A deduped
   // finding whose representative OR any member signature matches (and whose
@@ -253,15 +258,75 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
   });
 }
 
+// Slice 1 (field report #1): a finding whose SUBJECT (message/suggested_fix) is
+// Reviewgate's own <REDACTED:…> placeholder, where the reviewer is treating that placeholder
+// as a broken CODE SYMBOL (e.g. "undefined variable <REDACTED:…>", "invalid CUID") — a false
+// positive by construction (the placeholder isn't real code). We DEMOTE such findings to
+// advisory INFO. The SAME placeholder also masks a genuinely committed secret (sanitizer
+// HEX_SECRET_WITH_CONTEXT), so the demote must NEVER touch a real-leak report. The gates are
+// designed to FAIL SAFE — a finding is demoted ONLY when it POSITIVELY looks like the
+// code-symbol hallucination AND nothing flags it as a secret:
+//   (1) the placeholder is in the subject (message/suggested_fix), AND
+//   (2) category !== security (a security finding always stays blocking), AND
+//   (3) NO secret lead word in either subject field (trusted backstop, superset of the
+//       sanitizer's own HEX_SECRET_WITH_CONTEXT lead words), AND
+//   (4) a POSITIVE code-hallucination signal IS present (the reviewer calls the placeholder
+//       an undefined/undeclared/unused symbol, a reference/type/syntax error, etc.).
+// Gate (4) is the key fail-safe (the dogfood gate's codex, iter 2, flagged that an
+// absence-only rule fails OPEN: a real leak worded blandly — "exposed value <REDACTED:…>" —
+// matches no secret word and would be wrongly demoted). Requiring a POSITIVE code-symbol
+// signal inverts the failure direction: an unrecognized finding is NOT demoted (stays
+// blocking), so a real leak we can't positively classify as a code hallucination is never
+// silently softened. `category` (gate 2) is reviewer-supplied/untrusted; gates (3)+(4) are
+// trusted content checks over the SAME fields gate (1) triggers on.
+const SECRET_LEAD_WORD =
+  /api[_-]?key|secret|token|passwo?r?d|pwd|auth|bearer|access[_-]?key|private[_-]?key|client[_-]?secret|credential|hardcoded/i;
+
+// Positive "the reviewer thinks the placeholder is a broken code symbol" signal. Tight on
+// purpose: a vague phrasing ("exposed value", "suspicious string") does NOT match, so it
+// stays blocking. Matching here is the ONLY thing that permits a demote.
+const REDACTION_CODE_HALLUCINATION =
+  /\b(undefined|undeclared|not\s+defined|unused|unresolved|reference\s?error|type\s?error|syntax\s?error|no\s+such\s+(?:variable|symbol|identifier)|cannot\s+find\s+(?:name|module)|can't\s+find\s+(?:name|module)|invalid\s+(?:identifier|cuid|uuid|token|symbol)|not\s+a\s+valid\s+(?:identifier|name|variable)|never\s+(?:declared|defined))\b/i;
+
+function isRedactionArtifact(f: Finding): boolean {
+  const fields = [f.message, f.suggested_fix ?? ""];
+  if (!fields.some((s) => s.includes("<REDACTED:"))) return false; // gate 1: subject only
+  if (f.category === "security") return false; // gate 2: keep a possible real leak blocking
+  if (fields.some((s) => SECRET_LEAD_WORD.test(s))) return false; // gate 3: secret-word backstop
+  // gate 4 (fail-safe): demote ONLY with a positive code-hallucination signal. No signal →
+  // not demoted → stays blocking, so an unrecognized real leak is never softened.
+  if (!fields.some((s) => REDACTION_CODE_HALLUCINATION.test(s))) return false;
+  return true;
+}
+
 export function aggregate(input: AggregateInput): AggregateResult {
+  // Slice 1: DEMOTE redaction-artifact findings to INFO (advisory) BEFORE clustering.
+  // Pre-cluster so a demoted artifact (now INFO, the lowest severity) can never become a
+  // cluster REPRESENTATIVE that masks a real co-located finding — a real CRITICAL/WARN seeds
+  // the cluster instead, and the artifact rides as an INFO member. Demote, NOT drop: see
+  // isRedactionArtifact — a mis-worded real secret leak must stay VISIBLE, not vanish.
+  const demoteRedaction = (f: Finding): Finding => {
+    if (!isRedactionArtifact(f)) return f;
+    if (f.severity === "INFO") return { ...f, redaction_demoted: true };
+    const note =
+      "\n\n↓ targets Reviewgate's own <REDACTED:…> placeholder (a stripped secret, not real code) — advisory only.";
+    return {
+      ...f,
+      severity: "INFO" as const,
+      redaction_demoted: true,
+      details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+    };
+  };
   // Canonicalize every finding's path up front so clustering/dedup, the emitted
   // representative path, AND the diff-scope lookup all agree — otherwise "./x.ts"
   // and "x.ts" from two reviewers would never merge and would scope inconsistently.
   // (Built-in reviewers already normalize in review-output, but aggregate() is
-  // exported and must be robust to raw paths.)
-  const findings = input.findings.map((f) =>
-    f.file ? { ...f, file: normalizeRepoPath(f.file) } : f,
-  );
+  // exported and must be robust to raw paths.) Redaction-demote folds in here so a
+  // demoted finding's INFO severity is set before the severity-ordered clustering sort.
+  const findings = input.findings.map((f) => {
+    const d = demoteRedaction(f);
+    return d.file ? { ...d, file: normalizeRepoPath(d.file) } : d;
+  });
   // Sort into a fully deterministic order BEFORE greedy clustering — reviewers
   // return findings in an unstable order, and the cluster a finding lands in must
   // not depend on that order. Highest severity first within a file+line so the
@@ -605,12 +670,39 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : confScoped;
 
+  // Slice 2 (field report #9): demote a SECURITY finding on a test/fixture file to INFO
+  // (advisory). Only category "security"; correctness/other test-file findings stay blocking
+  // (a real test bug is a bug). Clustering is per-file (anchorFile) so members share the file.
+  // BOTH masking directions are handled: (a) a security member merged under a NON-security
+  // representative is simply not demoted (the representative isn't security) — safe; (b) a
+  // NON-security member (e.g. correctness) merged under a SECURITY representative must NOT ride
+  // the demote down to advisory (that would suppress a real correctness concern, violating the
+  // "correctness stays blocking" rule — flagged by the dogfood gate iter 3). So we demote only
+  // when EVERY clustered member is also security: a single non-security member keeps the whole
+  // cluster blocking. (members[] includes the representative's own entry; absent → lone finding.)
+  const testScoped: Finding[] =
+    input.demoteTestSecurity === true
+      ? repScoped.map((f) => {
+          if (f.category !== "security" || classify(f.file) !== "tests") return f;
+          if ((f.members ?? []).some((m) => m.category !== "security")) return f;
+          if (f.severity === "INFO") return { ...f, test_severity_demoted: true };
+          const note =
+            "\n\n↓ security finding on a test/fixture file — not production code; advisory only.";
+          return {
+            ...f,
+            severity: "INFO" as const,
+            test_severity_demoted: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : repScoped;
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of repScoped) {
+  for (const f of testScoped) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (touchesSecurityOrCorrectness(f)) {
@@ -661,7 +753,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = repScoped.map((f, i) => ({
+  const renumbered = testScoped.map((f, i) => ({
     ...f,
     id: `F-${String(i + 1).padStart(3, "0")}`,
   }));

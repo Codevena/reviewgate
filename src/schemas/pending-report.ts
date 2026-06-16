@@ -36,6 +36,11 @@ export const PendingReportSchema = z.object({
   // Slice C: a human/agent-visible note when the reviewer panel was degraded this
   // cycle (reviewers quarantined, or all-quarantined → full panel ran anyway).
   panel_note: z.string().optional(),
+  // Slice 3 (field report #6): counts for the large-diff warning banner. Present only when
+  // the reviewed diff exceeded loop.diffWarnBytes/diffWarnFiles. Render-only; mirrors panel_note.
+  large_diff: z
+    .object({ files: z.number().int().nonnegative(), bytes: z.number().int().nonnegative() })
+    .optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)

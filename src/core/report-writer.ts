@@ -42,6 +42,11 @@ export function findingBadges(f: Finding): string | null {
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
   if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
   if (f.scope_demoted) badges.push("📍 outside changed lines");
+  if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
+  if (f.redaction_demoted)
+    badges.push(
+      "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
+    );
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
   if (f.fp_cluster_match?.suppressed)
@@ -146,6 +151,17 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
           "",
         ]
       : [];
+  // Slice 3 (field report #6): large-diff warning. The matching stderr warning is emitted
+  // in gate.ts (outside the loop self-deadline, so it survives a timeout-abort that writes
+  // no report); this banner is the in-report copy with the remediation.
+  const largeDiffBanner = r.large_diff
+    ? [
+        `> ⚠ **Large diff:** ${r.large_diff.files} files / ${Math.round(
+          r.large_diff.bytes / 1000,
+        )} KB. If the review times out, raise \`loop.runTimeoutMs\` in \`reviewgate.config.ts\` AND the Stop-hook \`timeout\` in \`.claude/settings.json\` — both, or the OS kills the hook before Reviewgate's deadline and the turn ends un-reviewed (fail-open).`,
+        "",
+      ]
+    : [];
   const actions =
     mode === "one-shot"
       ? []
@@ -169,6 +185,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     "",
     ...coverageBanner,
     ...singleReviewerBanner,
+    ...largeDiffBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",
