@@ -26,9 +26,10 @@ import { parseReviewOutput } from "../providers/review-output.ts";
 import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
+import { collectDepSurface } from "../research/dep-surface.ts";
 import { computeDiffFacts } from "../research/diff-facts.ts";
 import { collectFileContext } from "../research/file-context.ts";
-import { extractImportedLibs } from "../research/imports.ts";
+import { extractImportedLibs, importBindings } from "../research/imports.ts";
 import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
@@ -686,6 +687,38 @@ export class Orchestrator {
       if (contextDocs) writeDocsDebugArtifact(repo, contextDocs);
     }
 
+    // #3: installed dependency API surface (advisory, sanitized) — bounded by the same
+    // withTimeout posture as contextDocs so a slow .d.ts read can't push the self-deadline.
+    let depSurface = "";
+    if (this.input.config.phases.review.depSurface) {
+      depSurface = await withTimeout(
+        (async () => {
+          const changed = facts.files.map((f) => f.path);
+          const libs = await extractImportedLibs(repo, changed).catch(() => []);
+          if (libs.length === 0) return "";
+          const binds = new Map<string, string>();
+          for (const file of changed)
+            for (const [b, p] of await importBindings(repo, join(repo, file)).catch(
+              () => new Map<string, string>(),
+            ))
+              binds.set(b, p);
+          const enriched = libs.map((l) => ({
+            name: l.name,
+            version: l.version,
+            bindings: [...binds.entries()].filter(([, p]) => p === l.name).map(([b]) => b),
+          }));
+          return collectDepSurface({
+            repoRoot: repo,
+            libs: enriched,
+            budgetBytes: this.input.config.phases.review.depSurfaceBudgetBytes ?? 4_000,
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          });
+        })(),
+        DOCS_TOTAL_TIMEOUT_MS,
+        "dep-surface",
+      ).catch(() => "");
+    }
+
     // Slice 2: doc/plan reviews — inject the source the plan references (PRE-CACHE
     // so a referenced-file change invalidates the cached verdict). Doc-only.
     let referencedRaw = "";
@@ -1116,6 +1149,13 @@ export class Orchestrator {
           ];
           // House rules first — the most authoritative trusted context (maintainer ground truth).
           if (houseRulesText) promptParts.push(houseRulesText, "");
+          if (depSurface)
+            promptParts.push(
+              "## Installed dependency API surface (from this repo's node_modules — the ACTUALLY-installed versions; prefer this over your training data, which may be stale)",
+              "These are exported symbols of the libraries this change imports, read from the installed packages. Use them to CHECK before claiming an API is undefined/invalid/non-existent — your training data may predate the installed version. A listed symbol exists somewhere in that package (possibly via a different entrypoint than the one imported here), so confirm the specific import path rather than treating \"listed\" as proof for this exact usage. Names-only surface: a symbol NOT listed may still exist (deeper members aren't all shown) — verify against node_modules, don't assume it's absent.",
+              depSurface,
+              "",
+            );
           if (researchText) promptParts.push("## Research context", researchText, "");
           // N7: static UI/CSS facts — trusted, BEFORE the diff fence (the block carries its
           // own heading). Lets the reviewer read resolved class values instead of guessing.
