@@ -7,6 +7,7 @@ import { Query } from "web-tree-sitter";
 import {
   buildSymbolGraph,
   enclosingSymbol,
+  fileSymbols,
   scanCallersFallback,
 } from "../../src/research/symbol-graph.ts";
 
@@ -89,5 +90,66 @@ describe("symbol-graph", () => {
     } finally {
       Query.prototype.delete = orig;
     }
+  });
+
+  it("captures TS arrow-const, exported arrow, function-expression, class, method", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-sym-ts-"));
+    const f = join(dir, "x.ts");
+    writeFileSync(
+      f,
+      [
+        "export const Widget = (p: number) => {",
+        "  return p + 1;",
+        "};",
+        "const helper = function () { return 2; };",
+        "class Box {",
+        "  area() { return 3; }",
+        "}",
+        "function plain() { return 4; }",
+      ].join("\n"),
+    );
+    const syms = await fileSymbols(f, dir);
+    const names = (syms ?? []).map((s) => s.name).sort();
+    expect(names).toContain("Widget");
+    expect(names).toContain("helper");
+    expect(names).toContain("Box");
+    expect(names).toContain("area");
+    expect(names).toContain("plain");
+    const w = (syms ?? []).find((s) => s.name === "Widget");
+    expect(w?.startLine).toBe(1);
+    expect(w?.endLine).toBe(3);
+  });
+
+  it("captures Python def and class (previously zero — both queries were TS-only)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-sym-py-"));
+    const f = join(dir, "x.py");
+    writeFileSync(
+      f,
+      ["def foo():", "    bar()", "", "class C:", "    def m(self):", "        pass"].join("\n"),
+    );
+    const syms = await fileSymbols(f, dir);
+    const names = (syms ?? []).map((s) => s.name).sort();
+    expect(names).toContain("foo");
+    expect(names).toContain("C");
+    const foo = (syms ?? []).find((s) => s.name === "foo");
+    expect(foo?.callees).toContain("bar");
+  });
+
+  it("enclosingSymbol resolves a line inside an arrow-const body (was null before)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-sym-enc-"));
+    const f = join(dir, "y.ts");
+    writeFileSync(
+      f,
+      ["export const Widget = () => {", "  const z = 1;", "  return z;", "};"].join("\n"),
+    );
+    const sym = await enclosingSymbol(f, 2, dir);
+    expect(sym?.name).toBe("Widget");
+  });
+
+  it("fileSymbols returns null for an unsupported extension", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-sym-unsup-"));
+    const f = join(dir, "x.rb");
+    writeFileSync(f, "def foo; end\n");
+    expect(await fileSymbols(f, dir)).toBeNull();
   });
 });
