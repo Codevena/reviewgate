@@ -196,6 +196,7 @@ export async function collectDepSurface(opts: DepSurfaceOpts): Promise<string> {
     // Best-effort members of used object bindings (from the entry text only).
     const memberLines: string[] = [];
     for (const b of lib.bindings) {
+      if (!IDENT.test(b)) continue; // explicit injection guard on the binding label (defense-in-depth)
       const ms = extractBindingMembers(entryText, b);
       if (ms.length) memberLines.push(`${b}: { ${[...new Set(ms)].sort().join(", ")} }`);
     }
