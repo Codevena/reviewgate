@@ -259,28 +259,43 @@ function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
 }
 
 // Slice 1 (field report #1): a finding whose SUBJECT (message/suggested_fix) is
-// Reviewgate's own <REDACTED:…> placeholder is (almost always) a false positive by
-// construction — the reviewer mistook the sanitizer's redaction for broken code. We
-// DEMOTE such findings to advisory INFO rather than DROP them, because the SAME
-// placeholder also masks a genuinely committed secret (sanitizer HEX_SECRET_WITH_CONTEXT):
-// a reviewer might report a real leak as a non-security finding with bland wording that
-// misses every secret lead word, and DROPPING that would silently fail-open the leak
-// (codex/opus/gate all flagged this). Demoting keeps it VISIBLE in the advisory section
-// (fail-VISIBLE, not fail-open) while removing the blocking weight that was the
-// field-report trust-killer (a CRITICAL@1.00 on a placeholder). Two gates keep a LIKELY-REAL
-// leak BLOCKING (un-demoted): (2) anything categorized security; (3) anything whose subject
-// names a secret (lead-word backstop — a superset of the sanitizer's own
-// HEX_SECRET_WITH_CONTEXT lead words). Gate (3) scans the SAME fields gate (1) triggers on,
-// so the backstop can never be narrower than the trigger. `category` alone is untrusted
-// (reviewer-supplied); gate (3) is the trusted content backstop.
+// Reviewgate's own <REDACTED:…> placeholder, where the reviewer is treating that placeholder
+// as a broken CODE SYMBOL (e.g. "undefined variable <REDACTED:…>", "invalid CUID") — a false
+// positive by construction (the placeholder isn't real code). We DEMOTE such findings to
+// advisory INFO. The SAME placeholder also masks a genuinely committed secret (sanitizer
+// HEX_SECRET_WITH_CONTEXT), so the demote must NEVER touch a real-leak report. The gates are
+// designed to FAIL SAFE — a finding is demoted ONLY when it POSITIVELY looks like the
+// code-symbol hallucination AND nothing flags it as a secret:
+//   (1) the placeholder is in the subject (message/suggested_fix), AND
+//   (2) category !== security (a security finding always stays blocking), AND
+//   (3) NO secret lead word in either subject field (trusted backstop, superset of the
+//       sanitizer's own HEX_SECRET_WITH_CONTEXT lead words), AND
+//   (4) a POSITIVE code-hallucination signal IS present (the reviewer calls the placeholder
+//       an undefined/undeclared/unused symbol, a reference/type/syntax error, etc.).
+// Gate (4) is the key fail-safe (the dogfood gate's codex, iter 2, flagged that an
+// absence-only rule fails OPEN: a real leak worded blandly — "exposed value <REDACTED:…>" —
+// matches no secret word and would be wrongly demoted). Requiring a POSITIVE code-symbol
+// signal inverts the failure direction: an unrecognized finding is NOT demoted (stays
+// blocking), so a real leak we can't positively classify as a code hallucination is never
+// silently softened. `category` (gate 2) is reviewer-supplied/untrusted; gates (3)+(4) are
+// trusted content checks over the SAME fields gate (1) triggers on.
 const SECRET_LEAD_WORD =
   /api[_-]?key|secret|token|passwo?r?d|pwd|auth|bearer|access[_-]?key|private[_-]?key|client[_-]?secret|credential|hardcoded/i;
+
+// Positive "the reviewer thinks the placeholder is a broken code symbol" signal. Tight on
+// purpose: a vague phrasing ("exposed value", "suspicious string") does NOT match, so it
+// stays blocking. Matching here is the ONLY thing that permits a demote.
+const REDACTION_CODE_HALLUCINATION =
+  /\b(undefined|undeclared|not\s+defined|unused|unresolved|reference\s?error|type\s?error|syntax\s?error|no\s+such\s+(?:variable|symbol|identifier)|cannot\s+find\s+(?:name|module)|can't\s+find\s+(?:name|module)|invalid\s+(?:identifier|cuid|uuid|token|symbol)|not\s+a\s+valid\s+(?:identifier|name|variable)|never\s+(?:declared|defined))\b/i;
 
 function isRedactionArtifact(f: Finding): boolean {
   const fields = [f.message, f.suggested_fix ?? ""];
   if (!fields.some((s) => s.includes("<REDACTED:"))) return false; // gate 1: subject only
   if (f.category === "security") return false; // gate 2: keep a possible real leak blocking
-  if (fields.some((s) => SECRET_LEAD_WORD.test(s))) return false; // gate 3: trusted backstop
+  if (fields.some((s) => SECRET_LEAD_WORD.test(s))) return false; // gate 3: secret-word backstop
+  // gate 4 (fail-safe): demote ONLY with a positive code-hallucination signal. No signal →
+  // not demoted → stays blocking, so an unrecognized real leak is never softened.
+  if (!fields.some((s) => REDACTION_CODE_HALLUCINATION.test(s))) return false;
   return true;
 }
 

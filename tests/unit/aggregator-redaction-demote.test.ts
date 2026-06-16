@@ -32,11 +32,28 @@ describe("Slice 1: redaction-artifact demote (not drop — keeps a mis-worded re
     expect(r.verdict).not.toBe("FAIL"); // no longer blocks the gate
   });
 
-  test("demotes when REDACTED is only in suggested_fix (non-security, no lead word)", () => {
-    const f = mkFinding({ message: "fix this", suggested_fix: "remove <REDACTED:HIGH_ENTROPY>" });
+  test("demotes when the code-hallucination signal + REDACTED are in suggested_fix", () => {
+    const f = mkFinding({
+      message: "fix this",
+      suggested_fix: "remove the undefined symbol <REDACTED:HIGH_ENTROPY>",
+    });
     const r = aggregate({ findings: [f], reviewersTotal: 1 });
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
     expect(r.dedupedFindings[0]?.redaction_demoted).toBe(true);
+  });
+
+  test("KEEPS BLOCKING a blandly-worded REDACTED mention with NO code-hallucination signal (gate 4 fail-safe)", () => {
+    // codex (dogfood gate iter 2) flagged this exact class: a real secret leak worded
+    // blandly ("exposed value <REDACTED:…>"), non-security, no secret lead word — an
+    // absence-only rule would wrongly demote it. Gate 4 requires a POSITIVE code-symbol
+    // signal, which "exposed value" lacks → it stays blocking (fail-safe).
+    const f = mkFinding({
+      category: "correctness",
+      message: "exposed value <REDACTED:HIGH_ENTROPY>",
+    });
+    const r = aggregate({ findings: [f], reviewersTotal: 1 });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.dedupedFindings[0]?.redaction_demoted).toBeUndefined();
   });
 
   test("KEEPS BLOCKING a security finding mentioning REDACTED (gate 2: possible real leak)", () => {

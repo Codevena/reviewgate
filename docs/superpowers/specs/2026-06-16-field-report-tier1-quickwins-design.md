@@ -52,6 +52,18 @@ these three are genuine gaps that need no architecture change:
 > advisory section (fail-VISIBLE, not fail-open) while losing the blocking weight that was the
 > field-report trust-killer. The two gates are unchanged — they now decide what stays *blocking*
 > vs. what is *demoted*, not what is *kept* vs. *deleted*.
+>
+> **UPDATE 2 (dogfood gate, iteration 2).** Codex re-flagged that even DEMOTE-to-INFO is a
+> fail-open: an absence-only rule ("demote *unless* it looks like a secret") fails in the WRONG
+> direction — a real leak worded blandly ("exposed value `<REDACTED:…>`", non-security, no secret
+> word) matches no exclusion and is wrongly demoted to non-blocking INFO ("visibility ≠
+> blocking"). Codex is right. Fix: **add gate (4) — a POSITIVE code-hallucination signal is
+> REQUIRED to demote.** The demote now fires only when the reviewer positively treats the
+> placeholder as a broken code symbol ("undefined", "invalid CUID", "unused", "reference error",
+> …). This **inverts the failure direction**: a finding we cannot positively classify as a
+> code-symbol hallucination is **left blocking**, so an unrecognized real leak is never softened.
+> "exposed value `<REDACTED:…>`" → no gate-4 signal → stays blocking. The field-report FPs
+> ("undefined variable", "invalid CUID") still match → demoted.
 
 **File:** `src/core/aggregator.ts` (+ `FindingSchema` flag, `findingBadges()`)
 
@@ -69,9 +81,19 @@ to INFO** (`redaction_demoted: true`) when **all** of the following hold:
    (case-insensitive). The set is a **superset** of the lead words the sanitizer uses in
    `HEX_SECRET_WITH_CONTEXT` — `api[_-]?key | secret | token | passwo?r?d | pwd | auth | bearer |
    access[_-]?key | private[_-]?key | client[_-]?secret` — **plus** `credential | hardcoded`
-   (the latter two are not in the sanitizer regex; adding them only KEEPS more findings blocking).
+   (the latter two are not in the sanitizer regex; adding them only KEEPS more findings blocking), AND
+4. **a POSITIVE code-hallucination signal IS present** in `message` OR `suggested_fix`
+   (`REDACTION_CODE_HALLUCINATION`): `undefined | undeclared | not defined | unused | unresolved |
+   reference error | type error | syntax error | no such (variable|symbol|identifier) | cannot find
+   (name|module) | invalid (identifier|cuid|uuid|token|symbol) | not a valid (identifier|name|variable)
+   | never (declared|defined)`. This is the **fail-safe**: a finding with no such signal is **not**
+   demoted (stays blocking), so an unrecognized real leak is never softened. Tight on purpose —
+   vague phrasings ("exposed value", "suspicious string") do NOT match.
 
-When any gate fails, the finding is left **blocking** (un-demoted).
+When any gate fails, the finding is left **blocking** (un-demoted). Gates (1)–(4) are an AND: the
+demote requires the placeholder in the subject, a non-security category, no secret word, AND a
+positive code-symbol signal — so it only ever softens a positively-identified placeholder-as-code
+false positive.
 
 **Gate (3) MUST scan the SAME field set as gate (1)** (`message` ∪ `suggested_fix`). If the demote
 *triggers* on a field the backstop does not *scan*, a real secret leak whose lead language lives
