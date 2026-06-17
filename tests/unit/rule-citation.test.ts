@@ -71,6 +71,19 @@ describe("tagUncitedRuleClaims — does NOT flag (#6)", () => {
     const { f: out } = tag({ message: "Unbounded loop can overflow", details: "No base case." });
     expect(out?.rule_citation_unverified).toBeUndefined();
   });
+
+  it("a BARE 'line N' pointing at the CODE (not the rule source) does NOT count as a citation (codex DoD)", () => {
+    const { f: out, count } = tag({
+      message: "CLAUDE.md says no comments; remove the comment on line 42",
+    });
+    expect(out?.rule_citation_unverified).toBe(true);
+    expect(count).toBe(1);
+  });
+
+  it("accepts 'line N of <file>' as a citation", () => {
+    const { f: out } = tag({ details: "Per the house rule on line 5 of CLAUDE.md, avoid this." });
+    expect(out?.rule_citation_unverified).toBeUndefined();
+  });
 });
 
 describe("tagUncitedRuleClaims — counting + toggle", () => {

@@ -18,10 +18,12 @@ import type { Finding } from "../schemas/finding.ts";
 const RULE_ASSERTION =
   /\b(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|COPILOT\.md|house[\s-]*rules?|repo(?:sitory)?[\s-]+(?:convention|rule|standard|guideline)s?|project[\s-]+(?:convention|rule|standard|guideline)s?|coding[\s-]+(?:standard|convention|guideline)s?|style[\s-]*guide|the\s+(?:repo|project|team)\s+convention|per\s+(?:the|our|your)\s+(?:convention|guidelines?|standards?|style\s*guide|coding\s+standard))\b/i;
 
-// A verifiable citation for WHERE the rule is written: a file:line pointer, or "line N"
-// (optionally "line N of <file>"). If the reviewer cited ANY location we give the benefit of
-// the doubt (keeps false-positives low — this is a measurement, not a gate).
-const CITATION = /\b[\w./-]+\.[a-z][a-z0-9]*:\d+|\bline\s+\d+\b/i;
+// A verifiable citation to WHERE the rule is written: a `path.ext:line` token, or a file
+// reference paired with a line ("CLAUDE.md line 5", "line 5 of CLAUDE.md"). A BARE "line N" is
+// deliberately NOT accepted — it usually points at the CODE location to fix, not the rule
+// source, so accepting it would let an uncited rule claim escape the count (codex DoD).
+const CITATION =
+  /\b[\w./-]+\.[a-z][a-z0-9]*:\d+|\b[\w./-]+\.[a-z][a-z0-9]*\s+lines?\s+\d+|\blines?\s+\d+\s+(?:of|in)\s+[\w./-]+\.[a-z][a-z0-9]*/i;
 
 export interface RuleCitationResult {
   findings: Finding[];
