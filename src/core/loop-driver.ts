@@ -25,6 +25,7 @@ import { buildDecisionOutcome } from "./decision-outcome.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
+import { locationKey, recurringBlockingLocations } from "./location-recurrence.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { QuotaCooldownStore } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
@@ -704,6 +705,7 @@ export class LoopDriver {
                 iteration: 0,
                 cost_usd_so_far: 0,
                 signature_history: [],
+                location_history: [],
                 iteration_stats: [],
                 fp_rejects_history: [],
                 escalated: false,
@@ -754,6 +756,7 @@ export class LoopDriver {
           iteration: 0,
           cost_usd_so_far: 0,
           signature_history: [],
+          location_history: [],
           iteration_stats: [],
           fp_rejects_history: [],
           escalated: false,
@@ -877,7 +880,20 @@ export class LoopDriver {
       for (const s of lastIdx >= 0 ? (hist[lastIdx] ?? []) : []) {
         if (prevSet.has(s)) recurring += 1;
       }
-      const churnProgressing = Number.isFinite(prevReal) && prevReal > 0 && recurring < prevReal;
+      // Non-convergence fix: approach-churn (different signatures than last round) is only
+      // genuine PROGRESS if the latest reviewed round surfaced a finding on a region NOT seen in
+      // any prior reviewed round. If every region was already raised earlier this cycle, the
+      // "fresh signatures" are the SAME lines re-litigated (a treadmill), not approach-switching —
+      // so it must NOT earn churn credit (else the loop runs to the hard cap on a settled region).
+      const latestRegions = lastIdx >= 0 ? (state.location_history[lastIdx] ?? []) : [];
+      const priorRegionSet = new Set<string>();
+      for (let k = 0; k < lastIdx; k++) {
+        for (const r of state.location_history[k] ?? []) priorRegionSet.add(r);
+      }
+      const hasNewLocation =
+        state.location_history.length === 0 || latestRegions.some((r) => !priorRegionSet.has(r));
+      const churnProgressing =
+        Number.isFinite(prevReal) && prevReal > 0 && recurring < prevReal && hasNewLocation;
       const progressing =
         m >= 2 &&
         (lastReal < prevReal ||
@@ -966,6 +982,38 @@ export class LoopDriver {
           state,
           "signature-recurrence",
           `${recurring.length} blocking finding(s) recurred across ${sigRecurThreshold} consecutive reviews without resolving (e.g. \`${recurring[0]}\`). To converge: fix each definitively, or — if it is a false positive — reject it (reviewer_was_wrong) so it is suppressed on recurrence. Further edits spawn fresh reviews and prolong the loop.`,
+          true,
+        );
+      }
+    }
+
+    // Non-convergence: per-LOCATION recurrence — the signature-keyed sibling above misses a
+    // reviewer re-litigating the SAME file:line region under a DIFFERENT signature each round
+    // (the field "remove the ?." → "add the ?. back" → … treadmill). Checked AFTER
+    // signature-recurrence and clamped strictly above stuckThreshold so the whole-set / per-
+    // signature stalls still win when applicable; a pure location-treadmill reaches here precisely
+    // because the signature-keyed checks returned []. Fail-safe: escalate (surface to the human,
+    // block-once), NEVER suppress the finding. No off-ramp exclusion — a region re-raised under a
+    // fresh signature is exactly what the signature off-ramp (cycleRejected) cannot suppress.
+    const locRecurCfg = this.i.config.loop.maxLocationRecurrence;
+    if (locRecurCfg > 0) {
+      const stuckClampLoc = Math.max(2, this.i.config.loop.stuckThreshold);
+      const locRecurThreshold = Math.max(locRecurCfg, stuckClampLoc + 1);
+      const blockingRegions = new Set(
+        readPendingReport(this.i.repoRoot)
+          .findings.filter((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+          .map((f) => locationKey(f.file, f.line_start)),
+      );
+      const recurringLoc = recurringBlockingLocations(
+        state.location_history,
+        blockingRegions,
+        locRecurThreshold,
+      );
+      if (recurringLoc.length > 0) {
+        return this.escalateAndDecide(
+          state,
+          "location-recurrence",
+          `A code region was re-raised as a blocking finding across ${locRecurThreshold} consecutive reviews under a CHANGING signature each round (e.g. \`${recurringLoc[0]}\`) — a contradiction/treadmill the signature-keyed guards miss. To converge: fix the region definitively, reject it (reviewer_was_wrong) if the reviewer keeps re-litigating a settled line, or add a \`phases.review.houseRules\` entry. Surfaced to you — do NOT keep re-editing.`,
           true,
         );
       }
@@ -1287,6 +1335,9 @@ export class LoopDriver {
         iteration: passed ? 0 : nextIter,
         cost_usd_so_far: passed ? 0 : cur.cost_usd_so_far + result.costUsd,
         signature_history: passed ? [] : [...cur.signature_history, result.signaturesThisIter],
+        // Non-convergence: location regions index-aligned with signature_history (same append +
+        // reset points), so a region re-litigated under a churning signature is detectable.
+        location_history: passed ? [] : [...cur.location_history, result.locationsThisIter ?? []],
         // Length-aligned with signature_history: one entry per non-passing iteration
         // so the escalation report can show this iteration's real severity split.
         iteration_stats: passed

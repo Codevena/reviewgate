@@ -351,6 +351,12 @@ export const ConfigSchema = z.object({
     // to the human, never suppresses). 0 disables. The loop-driver clamps the effective
     // value to > stuckThreshold so a low mis-config can't make per-signature the eager trigger.
     maxSignatureRecurrence: z.number().int().nonnegative().default(3),
+    // Non-convergence (field report 2026-06-17): escalate when a file:line REGION is re-raised as
+    // a blocking finding across this many consecutive reviewed iterations — the location treadmill
+    // where a reviewer re-litigates the same lines under a DIFFERENT signature each round
+    // (defeating maxSignatureRecurrence). Fail-safe (surfaces to the human, never suppresses).
+    // 0 disables. The loop-driver clamps the effective value > stuckThreshold (in code, like #5).
+    maxLocationRecurrence: z.number().int().nonnegative().default(3),
     // Rec #3 (deep half): the installed git pre-push hook WARNS (never blocks; exit 0) when the
     // commit being pushed has no recorded clean Reviewgate PASS — closing the "a clean turn-end
     // pass got pushed before a deep review" gap for push-to-deploy setups. The Stop-hook can't

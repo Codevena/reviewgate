@@ -233,6 +233,10 @@ export const defaultConfig = {
     infraDeferMaxConsecutive: 3,
     quotaDeferMaxConsecutive: 3,
     maxSignatureRecurrence: 3,
+    // Non-convergence (field report 2026-06-17): escalate when a file:line region is re-raised as
+    // a blocking finding across this many consecutive iterations (the location treadmill under a
+    // churning signature). 0 disables; clamped > stuckThreshold in code. Default 3.
+    maxLocationRecurrence: 3,
     // Rec #3 (deep half): the installed git pre-push hook warns (never blocks) when the pushed
     // commit has no recorded clean Reviewgate PASS. Default on; set false to make it a no-op.
     prePushWarn: true,

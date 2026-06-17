@@ -76,6 +76,7 @@ import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./g
 import { renderHouseRules } from "./house-rules.ts";
 import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
+import { locationKey } from "./location-recurrence.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
   HIGH_PRECISION_FLOOR,
@@ -175,6 +176,11 @@ export interface IterationResult {
   costUsd: number;
   durationMs: number;
   signaturesThisIter: string[];
+  // Non-convergence: per-finding REGION keys (`file:line-bucket`) this iteration, appended to
+  // state.location_history index-aligned with signaturesThisIter → signature_history. Lets the
+  // loop detect a region re-litigated under a churning signature. Optional for back-compat with
+  // IterationResult stubs; the orchestrator always sets it and the loop-driver defaults it to [].
+  locationsThisIter?: string[];
   summary: RunSummary;
   // True when the panel collapsed to ZERO usable reviews AND every attempted
   // reviewer was quota-exhausted (transient outage, distinguishable from a
@@ -565,6 +571,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [],
+          locationsThisIter: [],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: "ERROR",
@@ -584,6 +591,7 @@ export class Orchestrator {
         costUsd: 0,
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        locationsThisIter: [],
         maxIterationsOverride,
         summary: buildRunSummary({
           verdict: "PASS",
@@ -631,6 +639,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [f.signature],
+          locationsThisIter: [locationKey(f.file, f.line_start)],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: "FAIL",
@@ -930,6 +939,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [],
+          locationsThisIter: [],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: cached.verdict,
@@ -1535,6 +1545,7 @@ export class Orchestrator {
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        locationsThisIter: [],
         summary: buildRunSummary({
           verdict: "ERROR",
           source: "panel",
@@ -1963,6 +1974,7 @@ export class Orchestrator {
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
+      locationsThisIter: agg.dedupedFindings.map((f) => locationKey(f.file, f.line_start)).sort(),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",
