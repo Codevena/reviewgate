@@ -1,7 +1,7 @@
 // tests/unit/triage-matrix.test.ts
 import { describe, expect, it } from "bun:test";
 import { computeDiffFacts } from "../../src/research/diff-facts.ts";
-import { triageFromFacts } from "../../src/triage/matrix.ts";
+import { SMALL_DIFF_REVIEWER_TIMEOUT_MS, triageFromFacts } from "../../src/triage/matrix.ts";
 
 function facts(diff: string) {
   return computeDiffFacts(diff);
@@ -73,6 +73,41 @@ describe("triageFromFacts (deterministic)", () => {
     });
     expect(d.runReview).toBe(false);
     expect(d.riskClass).toBe("trivial");
+  });
+
+  // #7: small low-risk diffs get a conservative per-reviewer timeout cap; sensitive/docs and
+  // large diffs keep each provider's full timeout (reviewerTimeoutCapMs null/absent).
+  describe("size-aware reviewer timeout cap (#7)", () => {
+    const bigDiff = `diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1,40 @@\n-a\n${Array.from(
+      { length: 40 },
+      (_, i) => `+line${i}`,
+    ).join("\n")}\n`;
+
+    it("small (≤30 line) default diff → reviewerTimeoutCapMs set to the small-diff cap", () => {
+      const d = triageFromFacts(
+        facts(
+          "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n",
+        ),
+      );
+      expect(d.riskClass).toBe("default");
+      expect(d.reviewerTimeoutCapMs).toBe(SMALL_DIFF_REVIEWER_TIMEOUT_MS);
+    });
+
+    it("large (>30 line) default diff → no cap (full provider timeout)", () => {
+      const d = triageFromFacts(facts(bigDiff));
+      expect(d.riskClass).toBe("default");
+      expect(d.reviewerTimeoutCapMs ?? null).toBeNull();
+    });
+
+    it("sensitive diff → no cap regardless of size", () => {
+      const d = triageFromFacts(
+        facts(
+          "diff --git a/src/auth/x.ts b/src/auth/x.ts\n--- a/src/auth/x.ts\n+++ b/src/auth/x.ts\n@@ -1 +1 @@\n-a\n+b\n",
+        ),
+      );
+      expect(d.riskClass).toBe("sensitive");
+      expect(d.reviewerTimeoutCapMs ?? null).toBeNull();
+    });
   });
 
   it("docReview enabled + glob match → reviewed as docs", () => {

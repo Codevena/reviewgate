@@ -52,6 +52,12 @@ export function findingBadges(f: Finding): string | null {
   if (f.fp_cluster_match?.suppressed)
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
+  // #4: only assert "kept blocking" while the finding IS still blocking. The protect flag is
+  // stamped in the critic pass BEFORE the hard suppressors (scopeToDiff/fpActive/cycleRejected)
+  // run; if one of them later demotes this finding to advisory INFO, the "kept blocking" badge
+  // would be a lie (codex DoD) — so gate it on a non-INFO severity.
+  if (f.protected_high_precision && f.severity !== "INFO")
+    badges.push("🛡 kept blocking — high-track-record reviewer (soft demote overridden)");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
   if (f.claimed_fixed_recurred)
     // A pinned recurrence that survived the demote chain (CRITICAL/WARN) is blocking →
@@ -64,6 +70,35 @@ export function findingBadges(f: Finding): string | null {
         : `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — still present; the fix did not resolve it`,
     );
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
+}
+
+// #8 bundling (field report 2026-06-17): when the aggregator folds findings of >1 category
+// under one representative, the agent must disposition ALL folded concerns with one decision.
+// The aggregator already appends a "merges concerns categorized as: …" sentence to details;
+// this turns that buried prose into an explicit, scannable checklist of the distinct concerns
+// (category · rule_id · provider), so the agent can tick each off. Render-only — the merge,
+// verdict and decision-fold accounting are unchanged (one finding_id still dispositions all).
+function renderFoldedConcerns(f: Finding): string | null {
+  const members = f.members ?? [];
+  const cats = new Set<string>([f.category, ...members.map((m) => m.category)]);
+  if (cats.size <= 1 || members.length === 0) return null;
+  const seen = new Set<string>();
+  const items: string[] = [];
+  const add = (category: string, ruleId: string, provider: string) => {
+    const key = `${category}::${ruleId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(
+      `- **${category}** · \`${neutralizeInjectionMarkers(ruleId)}\` (reported by ${neutralizeInjectionMarkers(provider)})`,
+    );
+  };
+  add(f.category, f.rule_id, f.reviewer.provider);
+  for (const m of members) add(m.category, m.rule_id, m.provider);
+  if (items.length <= 1) return null;
+  return [
+    "**Folded concerns — one decision on this finding dispositions ALL of them:**",
+    ...items,
+  ].join("\n");
 }
 
 function fmtFinding(f: Finding): string {
@@ -102,6 +137,7 @@ function fmtFinding(f: Finding): string {
           )
           .join(" · ")}`
       : null;
+  const foldedConcerns = renderFoldedConcerns(f);
   return [
     `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${consNote}${confirmed}`,
@@ -111,12 +147,34 @@ function fmtFinding(f: Finding): string {
     message,
     "",
     details,
+    ...(foldedConcerns ? ["", foldedConcerns] : []),
     suggestedFix ? `\n**Suggested fix:**\n\`\`\`\n${suggestedFix}\n\`\`\`` : "",
     "",
   ].join("\n");
 }
 
-function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
+// #3/#5: a reviewer is "low track record" for the collapse heuristic at precision below
+// this floor (the field report's 29%-precision reviewer is well under it). Render-only — it
+// only changes WHERE a note renders (collapsed block vs inline), never WHETHER it renders.
+const LOW_TRACK_RECORD_PRECISION = 0.4;
+
+// #3/#5 (field report 2026-06-17): a solo, low-track-record, non-security/correctness INFO is
+// noise the agent must mentally filter (the 29%-precision openrouter flood). Fold these into a
+// collapsed block so they stay present (never dropped) but don't dilute the in-scope advisory
+// list. Keys off the #8 reviewer_precision cell already attached to the finding.
+function isLowTrustSoloInfo(f: Finding): boolean {
+  if (f.severity !== "INFO") return false;
+  if (f.consensus !== "singleton" && f.consensus !== "minority") return false;
+  // Never collapse a security/correctness note, even uncorroborated INFO.
+  if (f.category === "security" || f.category === "correctness") return false;
+  if ((f.members ?? []).some((m) => m.category === "security" || m.category === "correctness")) {
+    return false;
+  }
+  const cells = f.reviewer_precision ?? [];
+  return cells.some((c) => c.precision !== null && c.precision < LOW_TRACK_RECORD_PRECISION);
+}
+
+function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust = true): string {
   // Coverage warning: any reviewer that didn't finish OK (timeout/error/etc.)
   // reduces how many independent reviewers actually saw this diff. Surface it
   // prominently — a silently degraded panel could let a PASS through with less
@@ -244,31 +302,67 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     f.fp_ledger_match?.suppressed === true ||
     f.fp_cluster_match?.suppressed === true;
   const blocking = r.findings.filter((f) => !isAdvisory(f));
-  const advisory = r.findings.filter(isAdvisory);
+  const advisoryAll = r.findings.filter(isAdvisory);
+  // #2 (field report 2026-06-17): hard-separate repo-wide (out-of-diff) findings from the
+  // agent's own in-scope advisory list. scope_demoted is the repo-wide marker — these are
+  // findings on files/lines the change never touched (e.g. SQL/Redis issues in untouched
+  // files). They are ALREADY non-blocking + decision-free (aggregator verdict counting +
+  // the loop-driver decision gate scope to CRITICAL/WARN), so this is a pure presentation
+  // split that stops the agent's must-read list from being diluted by pre-existing code.
+  const outOfDiff = advisoryAll.filter((f) => f.scope_demoted === true);
+  const inScopeAdvisory = advisoryAll.filter((f) => f.scope_demoted !== true);
 
   const sections: string[] = [];
   const crit = blocking.filter((f) => f.severity === "CRITICAL");
   const warn = blocking.filter((f) => f.severity === "WARN");
   if (crit.length > 0) sections.push("## CRITICAL ●\n", ...crit.map(fmtFinding));
   if (warn.length > 0) sections.push("## WARN ▲\n", ...warn.map(fmtFinding));
-  if (advisory.length > 0) {
-    sections.push(
-      "## Advisory (out of scope / known FP — no decision needed) ·\n",
-      ...advisory.map(fmtFinding),
-    );
-    // Optional learn-loop hint — only emitted in the agent-loop mode (NOT in
-    // one-shot review-plan reports). Advisory findings carry no gating
-    // semantics, but if the agent notices a reviewer hallucinated one, a
-    // single optional decision line teaches the FP-ledger + reputation. The
-    // signal would otherwise be lost: pre-this-hint a "F-XYZ halluziniert"
-    // observation in chat just dies because INFO requires no decision.
-    if (mode !== "one-shot") {
+  if (inScopeAdvisory.length > 0) {
+    // #3/#5: fold solo low-track-record INFO into a collapsed block (render-only; nothing
+    // dropped). The rest render inline as before.
+    const collapsed = collapseLowTrust ? inScopeAdvisory.filter(isLowTrustSoloInfo) : [];
+    const inline = inScopeAdvisory.filter((f) => !collapsed.includes(f));
+    sections.push("## Advisory (out of scope / known FP — no decision needed) ·\n");
+    if (inline.length > 0) sections.push(...inline.map(fmtFinding));
+    if (collapsed.length > 0) {
+      const provs = [
+        ...new Set(
+          collapsed.flatMap((f) =>
+            (f.reviewer_precision ?? [])
+              .filter((c) => c.precision !== null && c.precision < LOW_TRACK_RECORD_PRECISION)
+              .map(
+                (c) =>
+                  `${c.provider} ${c.precision === null ? "n/a" : `${Math.round(c.precision * 100)}%`}`,
+              ),
+          ),
+        ),
+      ].join(", ");
       sections.push(
-        "### Optional: train Reviewgate on advisory hallucinations\n",
-        "If you identify any advisory finding above as a reviewer hallucination, you may optionally write a decision line — it feeds the FP-ledger and reviewer reputation. No gating effect either way. `reason` must be ≥20 characters explaining why the reviewer was wrong:\n",
-        '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`\n',
+        `<details>\n<summary>▸ ${collapsed.length} low-track-record advisory note(s) from ${provs} — expand if relevant</summary>\n`,
+        ...collapsed.map(fmtFinding),
+        "</details>\n",
       );
     }
+  }
+  if (outOfDiff.length > 0) {
+    sections.push(
+      "## Existing code (advisory — pre-existing, not introduced by this change; NOT gated) 📍\n",
+      "These findings are on files/lines your change did not touch. They are advisory only and require NO decision — fix them separately if you choose.\n",
+      ...outOfDiff.map(fmtFinding),
+    );
+  }
+  // Optional learn-loop hint — only emitted in the agent-loop mode (NOT in
+  // one-shot review-plan reports). Advisory findings carry no gating
+  // semantics, but if the agent notices a reviewer hallucinated one, a
+  // single optional decision line teaches the FP-ledger + reputation. The
+  // signal would otherwise be lost: pre-this-hint a "F-XYZ halluziniert"
+  // observation in chat just dies because INFO requires no decision.
+  if (advisoryAll.length > 0 && mode !== "one-shot") {
+    sections.push(
+      "### Optional: train Reviewgate on advisory hallucinations\n",
+      "If you identify any advisory finding above as a reviewer hallucination, you may optionally write a decision line — it feeds the FP-ledger and reviewer reputation. No gating effect either way. `reason` must be ≥20 characters explaining why the reviewer was wrong:\n",
+      '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`\n',
+    );
   }
 
   return head + sections.join("\n");
@@ -320,8 +414,12 @@ function fmtFindingWithStatus(
 export class ReportWriter {
   constructor(private readonly repoRoot: string) {}
 
-  async write(report: PendingReport, opts?: { mode?: "gate" | "one-shot" }): Promise<void> {
+  async write(
+    report: PendingReport,
+    opts?: { mode?: "gate" | "one-shot"; collapseLowTrustSoloInfo?: boolean },
+  ): Promise<void> {
     const mode = opts?.mode ?? "gate";
+    const collapseLowTrust = opts?.collapseLowTrustSoloInfo !== false;
     // One-shot reviews write to their OWN files so they never clobber the gate's
     // pending.md/json (which the Stop-hook decisions loop reads).
     const md = mode === "one-shot" ? planReviewMdPath(this.repoRoot) : pendingMdPath(this.repoRoot);
@@ -330,7 +428,7 @@ export class ReportWriter {
     ensureDir(md);
     // Atomic tmp+rename: pending.{md,json} are read cross-process by the Stop-hook
     // decisions loop — a non-atomic writeFileSync could expose a half-written file.
-    writeFileAtomic(md, renderMd(report, mode), { mode: 0o600 });
+    writeFileAtomic(md, renderMd(report, mode, collapseLowTrust), { mode: 0o600 });
     writeFileAtomic(json, JSON.stringify(report, null, 2), { mode: 0o600 });
   }
 

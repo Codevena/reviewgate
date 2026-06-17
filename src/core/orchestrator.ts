@@ -77,9 +77,13 @@ import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
+  HIGH_PRECISION_FLOOR,
+  PROTECT_MIN_DECISIONS,
   PROVIDER_PRECISION_MIN_DECISIONS,
   PROVIDER_PRECISION_WINDOW_DAYS,
+  type ProviderPrecision,
   annotateFindingsWithPrecision,
+  highPrecisionProviders,
   loadProviderPrecision,
 } from "./provider-precision.ts";
 import {
@@ -92,6 +96,7 @@ import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
 import { buildRunSummary } from "./run-summary.ts";
+import { demoteSelfRefuting } from "./self-refutation.ts";
 
 // Persist the SSRF fetcher's per-attempt egress log (Gate 9) to the hash-chained
 // audit trail — one `brain.egress` event per fetch attempt (allow or deny, with
@@ -245,6 +250,15 @@ export const REVIEW_PROMPT_PREAMBLE = [
   "may never reach the deploy path. Review every change for real CODE issues, but do NOT assert",
   "that a file is 'committed', 'already in the deploy diff', or that it 'breaks the deploy' — you",
   "cannot determine commit/deploy state from this diff. Judge the code on its own merits.",
+  // #6 (field report 2026-06-17): a reviewer cited a non-existent CLAUDE.md rule ("DO NOT
+  // ADD ANY COMMENTS") — its training prior, not this repo's rule. Require a citation so a
+  // rule-based finding is falsifiable by the agent.
+  'If a finding relies on a PROJECT or HOUSE rule/convention (phrases like "CLAUDE.md says",',
+  '"the repo convention is", "house rule", "per the style guide/coding standard"), you MUST',
+  "quote the exact file and line in THIS repo where that rule is written. The well-known Claude",
+  "Code / assistant defaults (e.g. 'do not add comments unless asked') are NOT this repo's rules",
+  "unless written in its CLAUDE.md/config. If you cannot cite where the rule is stated, do not",
+  "assert it as a rule — raise it at most as an INFO suggestion, never a blocking finding.",
 ].join("\n");
 
 const DOC_REVIEW_PROMPT_PREAMBLE = [
@@ -259,6 +273,9 @@ const DOC_REVIEW_PROMPT_PREAMBLE = [
   "verifiability/testability, unrealistic assumptions, missing migration/rollback,",
   "and wrong file/symbol references. Report every real issue. Use verdict PASS",
   "with an empty findings array only if the plan is genuinely sound.",
+  // #6: a rule-based finding must cite where the rule is written (see REVIEW_PROMPT_PREAMBLE).
+  "If a finding relies on a project/house rule or convention, quote the exact file and line in",
+  "THIS repo where it is written; do not assert assistant-default conventions as repo rules.",
 ].join("\n");
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
@@ -863,6 +880,13 @@ export class Orchestrator {
     const conventionsSegment = `|conv:${createHash("sha256")
       .update(conventions.summary)
       .digest("hex")}`;
+    // #6: the reviewer prompt preamble (e.g. the rule-citation directive) is a code constant
+    // not covered by configHash. Fold its sha256 in so a preamble change re-runs the panel
+    // instead of serving a verdict produced under the OLD instructions — independent of an
+    // RG_VERSION bump (so it also invalidates correctly when dogfooding from source).
+    const promptSegment = `|pre:${createHash("sha256")
+      .update(`${REVIEW_PROMPT_PREAMBLE}\n${DOC_REVIEW_PROMPT_PREAMBLE}`)
+      .digest("hex")}`;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
@@ -872,7 +896,7 @@ export class Orchestrator {
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${promptSegment}`,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -1018,6 +1042,12 @@ export class Orchestrator {
     ): Promise<ReviewerRun> => {
       const adapter = this.input.adapters[provider];
       const reviewStart = Date.now();
+      // #7: clamp this reviewer's per-run timeout to the triage cap for a small diff (never
+      // ABOVE the provider's own timeout). The full panel still runs — only the wall-clock
+      // ceiling drops, so a tiny change can't stall behind one slow slot for the full default.
+      const capMs = triage.reviewerTimeoutCapMs ?? null;
+      const effectiveTimeoutMs =
+        capMs !== null ? Math.min(providerCfg.timeoutMs, capMs) : providerCfg.timeoutMs;
       if (!adapter) {
         return {
           res: {
@@ -1055,7 +1085,7 @@ export class Orchestrator {
                 workingDir: repo,
                 findingsPath,
                 tmpDir,
-                walltimeMs: providerCfg.timeoutMs,
+                walltimeMs: effectiveTimeoutMs,
                 writablePaths: this.input.config.sandbox.writablePaths,
                 deniedReads: this.input.config.sandbox.deniedReads,
               }),
@@ -1063,7 +1093,7 @@ export class Orchestrator {
             };
       try {
         const res = await adapter.review({
-          cfg: { ...providerCfg, model },
+          cfg: { ...providerCfg, model, timeoutMs: effectiveTimeoutMs },
           reviewerId: `${provider}-${persona}`,
           promptFile,
           workingDir: repo,
@@ -1247,9 +1277,15 @@ export class Orchestrator {
           // reviewer that hit its OWN timeoutMs gets the configured timeout cooldown
           // (loop.timeoutCooldownMs; 0 keeps timeouts immediately retryable). Falls
           // back to the module constant for a config written before the field existed.
-          const timeoutCooldownMs = opts.signal?.aborted
-            ? 0
-            : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
+          // #7: when a triage timeout cap is active, a `timeout` may be the GATE's
+          // lowered ceiling tearing the run down (not the provider's fault) — same posture
+          // as the gate self-deadline abort. Suppress the cooldown so a small-diff cap never
+          // wrongly cools/penalises a healthy reviewer.
+          const triageCapActive = (triage.reviewerTimeoutCapMs ?? null) !== null;
+          const timeoutCooldownMs =
+            opts.signal?.aborted || triageCapActive
+              ? 0
+              : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
           // F-01: anchor each effect at a FRESH clock read (the run has just
           // settled), not the pre-panel `now` — a parsed relative reset
           // ("retry after N seconds") anchored at panel START would under-cool
@@ -1525,10 +1561,18 @@ export class Orchestrator {
     // the gate on a phantom (both 2026-06-05 field reports). Demote-only + fail-safe:
     // any fs uncertainty leaves the finding blocking. Does NOT exempt security/
     // correctness — a non-existent line is a fabrication in any category.
-    const allFindings = validateFindingFacts(
+    const factCheckedFindings = validateFindingFacts(
       symbolFindings,
       this.input.repoRoot,
       parseDeletedPaths(this.input.diff),
+    );
+    // #1 (field report 2026-06-17): demote a finding whose OWN conclusion retracts it
+    // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
+    // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
+    // signal → category-independent; deterministic, demote-only, fail-safe.
+    const allFindings = demoteSelfRefuting(
+      factCheckedFindings,
+      this.input.config.phases.review.selfRefutationFilter !== false,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
@@ -1681,6 +1725,36 @@ export class Orchestrator {
         .catch(() => undefined);
     }
 
+    // #4 + #8: load per-provider precision ONCE here (reused for the #4 protect-set below AND
+    // the #8 annotation after aggregate), so the gate scans the audit window only once. Gate
+    // mode only; best-effort (empty/undefined on any error → both features simply no-op).
+    const wantPrecision =
+      this.input.reportMode !== "one-shot" &&
+      (this.input.config.phases.review.protectHighPrecisionReviewers !== false ||
+        this.input.config.phases.review.providerPrecisionContext === true);
+    let providerPrecision: Map<string, ProviderPrecision> | undefined;
+    if (wantPrecision) {
+      try {
+        providerPrecision = loadProviderPrecision(repo, {
+          windowDays: PROVIDER_PRECISION_WINDOW_DAYS,
+          now,
+        });
+      } catch {
+        providerPrecision = undefined;
+      }
+    }
+    // #4: protect high-track-record reviewers' blocking findings from the soft demoters.
+    const protectedReviewers =
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.protectHighPrecisionReviewers !== false &&
+      providerPrecision &&
+      providerPrecision.size > 0
+        ? highPrecisionProviders(providerPrecision, {
+            floor: HIGH_PRECISION_FLOOR,
+            minDecisions: PROTECT_MIN_DECISIONS,
+          })
+        : undefined;
+
     const agg = aggregate({
       findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
@@ -1702,6 +1776,7 @@ export class Orchestrator {
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
+      ...(protectedReviewers && protectedReviewers.size > 0 ? { protectedReviewers } : {}),
       ...(opts.cycleRejectedSignatures && opts.cycleRejectedSignatures.length > 0
         ? { cycleRejected: new Set(opts.cycleRejectedSignatures) }
         : {}),
@@ -1742,10 +1817,11 @@ export class Orchestrator {
       this.input.config.phases.review.providerPrecisionContext
     ) {
       try {
-        const precision = loadProviderPrecision(repo, {
-          windowDays: PROVIDER_PRECISION_WINDOW_DAYS,
-          now,
-        });
+        // Reuse the precision map already loaded for #4 (same audit window) — only fall
+        // back to a fresh load if it wasn't loaded (e.g. protect disabled but context on).
+        const precision =
+          providerPrecision ??
+          loadProviderPrecision(repo, { windowDays: PROVIDER_PRECISION_WINDOW_DAYS, now });
         reportFindings = annotateFindingsWithPrecision(reportFindings, precision, {
           minDecisions: PROVIDER_PRECISION_MIN_DECISIONS,
         });
@@ -2197,7 +2273,11 @@ export class Orchestrator {
           dirty_files: this.input.gitInfo?.dirtyFiles ?? [],
         },
       },
-      { mode: this.input.reportMode ?? "gate" },
+      {
+        mode: this.input.reportMode ?? "gate",
+        collapseLowTrustSoloInfo:
+          this.input.config.phases.review.collapseLowTrustSoloInfo !== false,
+      },
     );
   }
 }

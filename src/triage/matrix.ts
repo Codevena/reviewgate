@@ -23,6 +23,13 @@ export interface DocReviewPolicy {
 // (not config): the cap is not review CONTENT, so it never affects the review cache.
 export const SMALL_DIFF_LINES = 30;
 export const SMALL_DIFF_MAX_ITERATIONS = 2;
+// #7 (field report 2026-06-17): per-reviewer timeout ceiling for a small, low-risk diff. A
+// tiny change should never make the panel stall for the full default (300s) per reviewer.
+// Deliberately CONSERVATIVE: real reviews are observed at ~130-185s, so 240s is comfortably
+// above a legitimate review and only bounds a STALLED/hanging reviewer — it never clips a
+// genuine one, and the FULL panel still runs (no reviewer is dropped). A gate-imposed cap
+// hit is NOT the provider's fault, so it must not trigger a quota/timeout cooldown.
+export const SMALL_DIFF_REVIEWER_TIMEOUT_MS = 240_000;
 
 // True when any changed path matches any glob. Uses Bun.Glob (built-in). An
 // invalid glob is skipped with a warning and never throws — matching fails open
@@ -49,6 +56,10 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
   // this to null explicitly (never small-gated). Empty/doc-skip tiers don't review.
   const smallCap =
     facts.totalAdded + facts.totalRemoved <= SMALL_DIFF_LINES ? SMALL_DIFF_MAX_ITERATIONS : null;
+  // #7: a small low-risk diff also gets a conservative per-reviewer timeout ceiling (only the
+  // review-running, non-sensitive tiers below carry it; sensitive/docs keep each provider's
+  // full timeout). Tied to the same SMALL_DIFF_LINES gate as the iteration cap.
+  const smallReviewerTimeoutCap = smallCap !== null ? SMALL_DIFF_REVIEWER_TIMEOUT_MS : null;
   if (facts.files.length === 0) {
     // Nothing to review (empty diff, or everything was Reviewgate-managed and
     // excluded). Skip the panel entirely instead of spawning reviewers on noise.
@@ -123,6 +134,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       loopCap: 2,
       reviewerHint: [],
       maxIterationsOverride: smallCap,
+      reviewerTimeoutCapMs: smallReviewerTimeoutCap,
       justification: "Lockfile-only diff.",
     };
   }
@@ -135,6 +147,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
       loopCap: 2,
       reviewerHint: [],
       maxIterationsOverride: smallCap,
+      reviewerTimeoutCapMs: smallReviewerTimeoutCap,
       justification: "Tests-only diff.",
     };
   }
@@ -146,6 +159,7 @@ export function triageFromFacts(facts: DiffFacts, docReview?: DocReviewPolicy): 
     loopCap: 3,
     reviewerHint: [],
     maxIterationsOverride: smallCap,
+    reviewerTimeoutCapMs: smallReviewerTimeoutCap,
     justification: "Default code change.",
   };
 }

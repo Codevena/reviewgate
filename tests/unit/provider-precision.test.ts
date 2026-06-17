@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   annotateFindingsWithPrecision,
+  highPrecisionProviders,
   loadProviderPrecision,
   perProviderPrecision,
 } from "../../src/core/provider-precision.ts";
@@ -59,6 +60,22 @@ describe("perProviderPrecision", () => {
 
   it("returns an empty map for no qualifying decisions", () => {
     expect(perProviderPrecision([dec("declined", ["codex"])]).get("codex")).toBeUndefined();
+  });
+
+  it("highPrecisionProviders: includes >= floor with >= minDecisions, excludes a noisy newcomer (#4)", () => {
+    const m = perProviderPrecision([
+      // codex: 8 tp / 0 fp = 1.0 over 8 samples → protected
+      ...Array.from({ length: 8 }, () => dec("tp", ["codex"])),
+      // newcomer: 1/1 = 100% but only 1 sample → NOT protected (min-samples guard)
+      dec("tp", ["newcomer"]),
+      // lowtp: 2 tp / 8 fp = 0.2 over 10 samples → NOT protected (below floor)
+      ...Array.from({ length: 2 }, () => dec("tp", ["lowtp"])),
+      ...Array.from({ length: 8 }, () => dec("fp", ["lowtp"])),
+    ]);
+    const protectedSet = highPrecisionProviders(m, { floor: 0.7, minDecisions: 8 });
+    expect(protectedSet.has("codex")).toBe(true);
+    expect(protectedSet.has("newcomer")).toBe(false);
+    expect(protectedSet.has("lowtp")).toBe(false);
   });
 });
 

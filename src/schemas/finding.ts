@@ -79,6 +79,12 @@ export const FindingSchema = z.object({
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),
+  // Field report 2026-06-17 #1: set true when the deterministic self-refutation pass
+  // demoted this finding to INFO because the reviewer's OWN conclusion clause retracts it
+  // ("…appears safe", "No issue", "No defect", "Safe."). Demote-only, category-independent
+  // (a first-party retraction, like fact_invalid), fail-safe (positive-signal + negation
+  // backstop). Advisory, non-blocking.
+  self_refuted: z.boolean().optional(),
   // Slice 1 (field report #1): set true when the aggregator demoted this finding to INFO
   // because its subject (message/suggested_fix) targets Reviewgate's own <REDACTED:…>
   // placeholder — almost always the reviewer mistaking a stripped secret for broken code.
@@ -98,6 +104,13 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // #4 (field report 2026-06-17): set true when a SOFT demoter (critic likely_fp or the
+  // confidence-floor) WOULD have demoted this finding but it was kept at full blocking
+  // severity because its sole contributing reviewer has a high historical precision
+  // (>= HIGH_PRECISION_FLOOR with >= PROTECT_MIN_DECISIONS samples). Anti-suppression: the
+  // flag only ever PREVENTS a demote (a real bug from a trusted reviewer must not be
+  // silently downgraded — field report F-005). Never set on a self_refuted finding.
+  protected_high_precision: z.boolean().optional(),
   // #8: historical precision of the base provider(s) that raised this finding,
   // attached at report-write time as ADVISORY context (never affects severity/
   // verdict). Only providers with >= PROVIDER_PRECISION_MIN_DECISIONS of decision

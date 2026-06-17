@@ -14,7 +14,13 @@ import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-
 
 const T0 = Date.parse("2026-06-10T12:00:00.000Z");
 const PANEL_MS = 6 * 60_000; // reviewer burns 6 min before timing out
-const DIFF = "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1 @@\n-a\n+b\n";
+// A >30-line diff so the #7 small-diff reviewer-timeout cap is NOT active — this test
+// exercises a GENUINE provider timeout (which must still record a cooldown). A small diff
+// would be triage-capped, and a cap-imposed timeout is deliberately NOT cooled (#7).
+const DIFF = `diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1,40 @@\n-a\n${Array.from(
+  { length: 40 },
+  (_, i) => `+line${i}`,
+).join("\n")}\n`;
 
 describe("Orchestrator cooldown anchoring (F-01)", () => {
   it("anchors a timed-out reviewer's backoff at panel END, so the window is live next turn", async () => {
