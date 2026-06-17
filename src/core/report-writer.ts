@@ -91,9 +91,21 @@ function fmtFinding(f: Finding): string {
   const suggestedFix = f.suggested_fix
     ? neutralizeFences(neutralizeInjectionMarkers(f.suggested_fix))
     : undefined;
+  // #8: advisory per-provider precision (pure metadata; never affects the verdict).
+  // Rendered as a metadata line, NOT a badge — a badge would imply a demote happened.
+  const precisionLine =
+    f.reviewer_precision && f.reviewer_precision.length > 0
+      ? `**Reviewer track record:** ${f.reviewer_precision
+          .map(
+            (p) =>
+              `${p.provider} ${p.precision === null ? "n/a" : `${Math.round(p.precision * 100)}%`} (${p.tp} TP / ${p.fp} FP)`,
+          )
+          .join(" · ")}`
+      : null;
   return [
     `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${consNote}${confirmed}`,
+    ...(precisionLine ? [precisionLine] : []),
     ...(badges ? [badges] : []),
     "",
     message,
