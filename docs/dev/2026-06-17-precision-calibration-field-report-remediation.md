@@ -248,6 +248,37 @@ whole-branch)** must PASS — then merge + (with permission) push + `bun run bui
 
 - [x] Investigation (9-agent workflow) + cross-check
 - [x] Plan (this doc)
-- [ ] T4-plumbing / T1 / T6-directive / T4-protect / T2 / T3 / T8 / T6-backstop / T_timing / T7
+- [x] **T1** self-refutation demote — `self-refutation.ts`, default ON (commit `feat(#1)`)
+- [x] **T6-directive** rule-citation prompt directive (commit `feat(#6)`)
+- [x] **T2** in-diff vs "Existing code" section split (commit `feat(#2,#8)`)
+- [x] **T8** folded-concerns enumeration (commit `feat(#2,#8)`)
+- [x] **T4** protect high-precision reviewers from soft demoters (commit `feat(#4)`)
+- [x] **T_timing** preliminary-pass label (commit `feat(#3-timing)`)
+- [x] **T3** solo low-track-record INFO collapse (commit `feat(#3,#5)`)
+- [x] **T7** size-aware reviewer timeout cap (commit `feat(#7)`)
 - [ ] DoD review gate (codex + opus)
 - [ ] Merge + push + deploy (await user OK)
+
+### Scope decisions taken during implementation
+
+- **T6-backstop (deterministic rule-citation demote) DEFERRED** — per the investigation's own
+  recommendation ("ship Option 1 [the prompt directive] alone first; add the deterministic
+  backstop only if field data shows the directive is insufficient"). The prompt directive
+  attacks the root cause at zero risk; the regex-demote backstop adds schema + report-writer
+  surface for a marginal, lower-confidence gain. Revisit if F-004-class hallucinations recur.
+- **T7 cap value = 240s (conservative)** — memory records real reviews at ~130-185s, so a
+  120s cap (the investigation's first suggestion) would clip legitimate reviews. 240s bounds a
+  STALLED reviewer while never clipping a genuine one; tune `reviewerTimeoutCapMs` lower per
+  repo if reviewers are known-fast. The panel-narrowing lever (Option B) stays rejected.
+- **Residual escalated to the human (rec #3 deep half):** the gate runs at turn-end and has no
+  authority over a later user push; the "deep review BEFORE push-to-deploy" guarantee belongs
+  in a **pre-push / CI hook** that consults `.reviewgate/state.json` for a recent full-panel
+  PASS on the pushed SHA. Not built this batch — surfaced for a separate decision.
+
+### Verification
+
+`bunx tsc --noEmit` clean · `bun run lint` clean · `bun test tests/unit` = **1911 pass / 0
+fail**. New tests: self-refutation, review-prompt-rule-citation, report-writer-advisory (T2),
+report-writer-folded-concerns, aggregator-protect-high-precision, provider-precision (min-
+samples), loop-driver-preliminary-pass, report-writer-low-trust-collapse, triage-matrix (T7),
+orchestrator-timeout-cap. All new flags `z.boolean().optional()` + `defaults.ts` (default ON).
