@@ -225,6 +225,10 @@ export interface IterationRunner {
     // cycle (state.location_history flattened). A current finding on one of these is FLAGGED
     // (advisory badge, never demoted) so the agent doesn't blindly re-fix a re-litigated line.
     priorLocations?: string[];
+    // Stable-Code-Guard: files the agent edited (accepted decisions' files_touched) this cycle. A
+    // finding on a file NOT in this set (while the agent IS editing others) is on code unchanged
+    // across the loop → FLAGGED stable_code (advisory, never demoted).
+    priorTouchedFiles?: string[];
   }): Promise<IterationResult>;
 }
 
@@ -498,6 +502,7 @@ export class Orchestrator {
     claimedFixedSignatures?: Record<string, number>;
     priorAdjudications?: Adjudication[];
     priorLocations?: string[];
+    priorTouchedFiles?: string[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1878,6 +1883,18 @@ export class Orchestrator {
     if (priorLocSet.size > 0) {
       reportFindings = reportFindings.map((f) =>
         priorLocSet.has(locationKey(f.file, f.line_start)) ? { ...f, location_recurred: true } : f,
+      );
+    }
+
+    // Stable-Code-Guard (#2 bonus): FLAG (never demote) a finding on a file the agent has NOT
+    // edited this cycle while it IS editing others — the code under it is unchanged across the
+    // loop, so a fresh finding on it is likely reviewer non-determinism (the field iter-4 CRITICAL
+    // on a test file unchanged since iter-2). Only from iter ≥ 2 and only when the agent edited
+    // something (priorTouchedFiles non-empty), so it never fires on a first review.
+    const touchedFiles = new Set(opts.priorTouchedFiles ?? []);
+    if (opts.iter >= 2 && touchedFiles.size > 0) {
+      reportFindings = reportFindings.map((f) =>
+        touchedFiles.has(f.file) ? f : { ...f, stable_code: true },
       );
     }
 

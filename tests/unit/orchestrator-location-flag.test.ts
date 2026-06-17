@@ -64,7 +64,11 @@ const config = {
   },
 };
 
-async function run(priorLocations: string[]): Promise<Finding | undefined> {
+async function runWith(opts: {
+  priorLocations?: string[];
+  priorTouchedFiles?: string[];
+  iter?: number;
+}): Promise<Finding | undefined> {
   const repo = mkdtempSync(join(tmpdir(), "rg-locflag-"));
   writeFileSync(join(repo, "foo.ts"), "x");
   const orch = new Orchestrator({
@@ -76,10 +80,11 @@ async function run(priorLocations: string[]): Promise<Finding | undefined> {
     diff: DIFF,
     reasonOnFailEnabled: true,
   });
-  await orch.runIteration({ runId: "RUN", iter: 2, priorLocations });
+  await orch.runIteration({ runId: "RUN", iter: opts.iter ?? 2, ...opts });
   const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"));
   return report.findings[0];
 }
+const run = (priorLocations: string[]) => runWith({ priorLocations });
 
 describe("Orchestrator — location_recurred flag (#1)", () => {
   it("flags a finding whose region matches a prior-iteration location", async () => {
@@ -96,5 +101,28 @@ describe("Orchestrator — location_recurred flag (#1)", () => {
   it("does NOT flag when there are no prior locations", async () => {
     const out = await run([]);
     expect(out?.location_recurred).toBeUndefined();
+  });
+});
+
+describe("Orchestrator — stable_code flag (#2 bonus / G3b)", () => {
+  it("flags a finding on a file the agent has NOT edited (while editing others) — the gold-case", async () => {
+    const out = await runWith({ iter: 4, priorTouchedFiles: ["install-prompt.tsx"] }); // not foo.ts
+    expect(out?.stable_code).toBe(true);
+    expect(out?.severity).toBe("WARN"); // FLAG only — never demoted
+  });
+
+  it("does NOT flag when the agent HAS edited the finding's file", async () => {
+    const out = await runWith({ iter: 4, priorTouchedFiles: ["foo.ts"] });
+    expect(out?.stable_code).toBeUndefined();
+  });
+
+  it("does NOT flag at iteration 1 (no earlier review)", async () => {
+    const out = await runWith({ iter: 1, priorTouchedFiles: ["install-prompt.tsx"] });
+    expect(out?.stable_code).toBeUndefined();
+  });
+
+  it("does NOT flag when the agent edited nothing (no active-fixing signal)", async () => {
+    const out = await runWith({ iter: 4, priorTouchedFiles: [] });
+    expect(out?.stable_code).toBeUndefined();
   });
 });

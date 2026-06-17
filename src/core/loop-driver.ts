@@ -225,6 +225,39 @@ function priorIterationClaimedFixedSignatures(repoRoot: string, prevIter: number
   );
 }
 
+// Stable-Code-Guard (field report 2026-06-17): files the agent recorded as `files_touched` in an
+// accepted decision in `prevIter`. Accumulated across the cycle so the guard knows which files the
+// agent has actually EDITED while iterating — a finding on a NEVER-touched file is on code that
+// did not change across the loop (the field iter-4 CRITICAL on a test file unchanged since iter-2).
+// Never throws → [] (same contract as the sibling decision readers).
+function priorIterationTouchedFiles(repoRoot: string, prevIter: number): string[] {
+  if (prevIter < 1) return [];
+  const dp = decisionsPath(repoRoot, prevIter);
+  if (!existsSync(dp)) return [];
+  let lines: string[];
+  try {
+    lines = readFileSync(dp, "utf8").split("\n");
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const res = DecisionEntrySchema.safeParse(parsed);
+    if (!res.success) continue;
+    if (res.data.verdict === "accepted" && res.data.files_touched) {
+      for (const f of res.data.files_touched) out.add(f);
+    }
+  }
+  return [...out];
+}
+
 // S1 cross-iteration memory: the prior iteration's adjudications (finding location +
 // disposition + agent reason), joining pending.json findings (id → file/lines) with the LAST
 // decision per id in decisions/<prevIter>.jsonl. Fed to the next iteration's reviewer prompt
@@ -721,6 +754,7 @@ export class LoopDriver {
                 fp_counted_through_iter: 0,
                 decisions_emitted_through_iter: 0,
                 cycle_rejected_signatures: [],
+                agent_touched_files: [],
                 claimed_fixed_signatures: {},
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
@@ -767,6 +801,7 @@ export class LoopDriver {
           fp_counted_through_iter: 0,
           decisions_emitted_through_iter: 0,
           cycle_rejected_signatures: [],
+          agent_touched_files: [],
           claimed_fixed_signatures: {},
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
         }),
@@ -1041,6 +1076,10 @@ export class LoopDriver {
         state.iteration,
       );
       const mergedRejected = [...new Set([...state.cycle_rejected_signatures, ...priorRejected])];
+      // Stable-Code-Guard: accumulate files the agent edited this iteration (accepted decisions'
+      // files_touched) into the cycle set, so a finding on a never-edited file is flagged stable.
+      const priorTouched = priorIterationTouchedFiles(this.i.repoRoot, state.iteration);
+      const mergedTouched = [...new Set([...state.agent_touched_files, ...priorTouched])];
       const mergedClaimedFixed: Record<string, number> = { ...state.claimed_fixed_signatures };
       const claimedIter = state.iteration; // the iteration whose decisions we just folded
       // Reconcile THIS iteration's contribution before re-adding: the decisions-gate
@@ -1060,21 +1099,24 @@ export class LoopDriver {
         if (existing === undefined || claimedIter < existing) mergedClaimedFixed[sig] = claimedIter;
       }
       const rejectedChanged = mergedRejected.length !== state.cycle_rejected_signatures.length;
+      const touchedChanged = mergedTouched.length !== state.agent_touched_files.length;
       const claimedChanged =
         Object.keys(mergedClaimedFixed).length !==
           Object.keys(state.claimed_fixed_signatures).length ||
         Object.entries(mergedClaimedFixed).some(
           ([k, v]) => state.claimed_fixed_signatures[k] !== v,
         );
-      if (rejectedChanged || claimedChanged) {
+      if (rejectedChanged || claimedChanged || touchedChanged) {
         await this.i.state.update((cur) => ({
           ...cur,
           cycle_rejected_signatures: mergedRejected,
+          agent_touched_files: mergedTouched,
           claimed_fixed_signatures: mergedClaimedFixed,
         }));
         state = {
           ...state,
           cycle_rejected_signatures: mergedRejected,
+          agent_touched_files: mergedTouched,
           claimed_fixed_signatures: mergedClaimedFixed,
         };
       }
@@ -1226,6 +1268,7 @@ export class LoopDriver {
         claimedFixedSignatures: state.claimed_fixed_signatures,
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
+        priorTouchedFiles: state.agent_touched_files,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -1283,6 +1326,7 @@ export class LoopDriver {
         claimedFixedSignatures: state.claimed_fixed_signatures,
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
+        priorTouchedFiles: state.agent_touched_files,
       });
     }
 
@@ -1373,6 +1417,8 @@ export class LoopDriver {
         // Per-cycle suppression set (2b): cleared on re-arm so a fresh cycle
         // starts with no suppressed signatures; preserved across a cycle's FAILs.
         cycle_rejected_signatures: passed ? [] : cur.cycle_rejected_signatures,
+        // Stable-Code-Guard: agent-edited files this cycle — cleared on re-arm, preserved across FAILs.
+        agent_touched_files: passed ? [] : cur.agent_touched_files,
         // §4.3: claimed-fixed map is cycle-scoped — cleared on re-arm, preserved across a cycle's FAILs.
         claimed_fixed_signatures: passed ? {} : cur.claimed_fixed_signatures,
         // The review actually completed (any verdict) → the incomplete-run

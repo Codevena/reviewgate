@@ -56,6 +56,10 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "🔁 this region was raised in an earlier iteration this cycle — verify it is a genuinely NEW issue before re-fixing (possible reviewer contradiction)",
     );
+  if (f.stable_code)
+    badges.push(
+      "↔ on code you haven't edited this cycle (unchanged across the loop) — scrutinize whether this is genuinely new or reviewer non-determinism",
+    );
   if (f.rule_citation_unverified)
     badges.push(
       "📜 asserts a project/house rule without a file:line citation — verify the rule exists",

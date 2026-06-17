@@ -102,6 +102,12 @@ export const ReviewgateStateSchema = z.object({
   // to INFO so the agent never re-rejects the same finding (and it stops feeding
   // the reviewer-fp-streak). Reset to [] on re-arm. `.default([])` for back-compat.
   cycle_rejected_signatures: z.array(z.string()).default([]),
+  // Stable-Code-Guard (field report 2026-06-17): union of `files_touched` the agent recorded in
+  // accepted decisions across THIS cycle. A finding (iter ≥ 2) on a file NOT in this set is on
+  // code the agent never edited while iterating — stable across the loop — so a fresh finding on
+  // it is flagged `stable_code` (advisory; the reviewer is re-reviewing unchanged code). Reset to
+  // [] on re-arm. `.default([])` for back-compat with state.json written before this field.
+  agent_touched_files: z.array(z.string()).default([]),
   // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
   // an EARLIER iteration of the CURRENT cycle, mapped to the EARLIEST iteration the
   // claim was made. A later recurrence of the same signature is re-flagged as
@@ -167,6 +173,7 @@ export function initialState(sessionId: string): ReviewgateState {
     fp_counted_through_iter: 0,
     decisions_emitted_through_iter: 0,
     cycle_rejected_signatures: [],
+    agent_touched_files: [],
     claimed_fixed_signatures: {},
     last_diff_hash: null,
     last_stop_ts: null,
