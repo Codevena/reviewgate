@@ -261,13 +261,18 @@ The colleague's peer review of the shipped batch raised 3 radar items. Status:
   130-185s, well under the 240s cap, so the cap never clips a legit run (it only bounds a
   stalled/failing-over leg). Residual radar: the failover chain is a separate cost multiplier.
 
-## Remaining (escalated — needs a decision)
+## Rec #3 deep half — pre-push gate ✅ SHIPPED (master `c30525b`)
 
-**Rec #3 deep half — "deep review BEFORE push" guarantee → a pre-push / CI gate.** Structurally
-outside the Stop-hook (it fires at turn-end, no authority over a later user push). The right home
-is a pre-push hook / CI check that consults `.reviewgate/state.json` for a recent full-panel PASS
-on the pushed SHA and blocks/​warns otherwise. Not built — it adds an outward-facing surface that
-changes the user's git workflow, so it warrants a design decision (hard-block vs warn; no-CI repos).
+The "deep review BEFORE push/deploy" guarantee, in two layers (`docs/pre-push-gate.md`):
+- **Layer 1 (local, shipped):** a **warn-only** git pre-push hook installed by `reviewgate init`
+  (conservative, NO-CLOBBER; never blocks — always exit 0). New `src/core/pre-push-check.ts`
+  (pure: clean iff the pushed tip IS the last-reviewed HEAD of a non-escalated re-arm),
+  `reviewgate pre-push` command + `bin-templates/pre-push.sh` shim, `loop.prePushWarn` toggle
+  (default true). opus senior DoD PASS (codex quota-locked); invariants verified empirically.
+- **Layer 2 (CI, documented):** the hard, unbypassable guarantee runs Reviewgate in CI on the
+  pushed commit (state.json is local/gitignored, so CI can't read it) — GH Action skeleton in
+  the doc; gate the deploy job on it. Chosen posture: **warn-only locally** (a local hook is
+  `--no-verify`-bypassable, so a hard block is friction with false security) + the real block in CI.
 
 ## Definition of Done (per CLAUDE.md)
 
