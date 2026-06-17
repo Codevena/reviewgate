@@ -50,6 +50,20 @@ export const PendingReportSchema = z.object({
       waited_ms: z.number().int().nonnegative(),
     })
     .optional(),
+  // #4: advisory — files where a false-positive class is fragmenting across many
+  // FP-ledger entries but not promoting to auto-suppression (fragmented rule_ids /
+  // single-reviewer ≥2-provider floor). Render-only; recommends a house rule. The
+  // verdict is unaffected.
+  fp_fragmentation: z
+    .array(
+      z.object({
+        file: z.string(),
+        distinct_signatures: z.number().int().nonnegative(),
+        total_rejects: z.number().int().nonnegative(),
+        sample_rule_ids: z.array(z.string()),
+      }),
+    )
+    .optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)

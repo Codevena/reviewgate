@@ -181,6 +181,20 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
         "",
       ]
     : [];
+  // #4: advisory hint when a false-positive class is fragmenting on a file but not
+  // auto-suppressing — recommend a house rule (the durable fix).
+  // file + rule_ids are reviewer-SUPPLIED (stored verbatim in the FP-ledger), so
+  // neutralize injection markers like fmtFinding does for message/details.
+  const fragmentationBanner = (r.fp_fragmentation ?? []).flatMap((f) => {
+    const file = neutralizeInjectionMarkers(f.file);
+    const ruleIds = f.sample_rule_ids
+      .map((id) => `\`${neutralizeInjectionMarkers(id)}\``)
+      .join(", ");
+    return [
+      `> ⚠ **Fragmenting false-positive class:** \`${file}\` has ${f.distinct_signatures} distinct rejected-FP findings (e.g. ${ruleIds}; ${f.total_rejects} rejects) that aren't promoting to auto-suppression (fragmented rule_ids / single reviewer). The durable fix is a **house rule** in \`phases.review.houseRules\` (reviewgate.config.ts) asserting the repo's ground truth — it suppresses the class at the source and invalidates cached verdicts.`,
+      "",
+    ];
+  });
   const actions =
     mode === "one-shot"
       ? []
@@ -214,6 +228,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     ...singleReviewerBanner,
     ...largeDiffBanner,
     ...unsettledBanner,
+    ...fragmentationBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",
