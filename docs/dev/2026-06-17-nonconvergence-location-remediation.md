@@ -128,7 +128,11 @@ decision stream) but is not required for the detector; noted as a possible follo
 - [x] **G3** hypothetical/future CRITICAL→WARN demote (`feat(nonconvergence #2)`)
 - [x] **G0+G2** `location_history` + location-recurrence escalation + churnProgressing fix (`feat(nonconvergence #1/#3)`)
 - [x] **G1** contradiction flag (`location_recurred` badge) (`feat(nonconvergence #1)`)
-- [ ] G3b stable-code-guard — DEFERRED (advisory; needs per-iteration baseline plumbing)
+- [x] **G3b** stable-code-guard (`feat(nonconvergence #2-bonus / G3b)`) — flags a finding on a
+  file the agent hasn't edited this cycle while editing others (the iter-4-on-unchanged-test-code
+  case). Keys on the agent's accumulated `files_touched` (new `state.agent_touched_files`) — NO
+  per-iteration content snapshots (the lightweight path the investigation deferred to). Advisory
+  `stable_code` ↔ badge; never demotes. opus senior DoD PASS.
 - [ ] DoD (opus senior — codex quota-locked) · merge · push · deploy
 
 ### Maps to the gold-case
