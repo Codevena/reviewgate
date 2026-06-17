@@ -44,11 +44,13 @@ export interface FpFragmentation {
   sample_rule_ids: string[];   // a few distinct rule_ids, for the human
 }
 
-// Files where a false-positive class is FRAGMENTING but not being suppressed:
-// >= minDistinctSignatures distinct CANDIDATE (not active/sticky) ledger entries on
-// the file, with >= minRejects reject events within windowDays, AND the file has NO
-// active/sticky entry AND is not in `suppressedFiles` (already covered by an active
-// cluster). Pure; sorted by total_rejects desc; the caller caps the count.
+// Files where a false-positive class is FRAGMENTING but not being suppressed.
+// `suppressedFiles` is the set of files where suppression is EFFECTIVELY ACTIVE
+// AT `now` (built by the caller from the windowed views — the per-signature
+// activeSnapshot AND the active/sticky clusters — NOT from the stored entry.stage,
+// which is promote-only and can be stale). The detector does NOT read `entry.stage`;
+// it relies entirely on `suppressedFiles` for the "already suppressed" exclusion.
+// Pure; sorted by total_rejects desc; the caller caps the count.
 export function fragmentingFpClasses(
   entries: FpLedgerEntry[],
   nowIso: string,
@@ -61,34 +63,39 @@ export function fragmentingFpClasses(
 ): FpFragmentation[];
 ```
 
-Logic: group entries by `file`. For each file: if ANY entry on the file has
-`stage` "active" or "sticky" → skip (per-signature suppression already working). If
-the file is in `suppressedFiles` → skip (cluster suppression already working).
-Otherwise count distinct signatures and sum reject events whose `ts` is within
-`windowDays` of `nowIso`; if `distinctSignatures >= minDistinctSignatures` AND
-`windowedRejects >= minRejects` → emit `{ file, distinct_signatures, total_rejects,
-sample_rule_ids }` (sample_rule_ids = up to 4 distinct rule_ids, sorted). Return
-sorted by `total_rejects` desc, tie-broken by `file`.
+Logic: group entries by `file`, skipping files in `suppressedFiles`. For each
+remaining file, consider only entries with **≥1 reject within `windowDays`** of
+`nowIso` (so stale signatures with no recent activity neither inflate the
+fragmentation breadth nor the reject count — codex). Among those in-window entries:
+`distinct_signatures` = count of distinct signatures; `total_rejects` = sum of
+in-window reject events. If `distinct_signatures >= minDistinctSignatures` AND
+`total_rejects >= minRejects` → emit `{ file, distinct_signatures, total_rejects,
+sample_rule_ids }` (sample_rule_ids = up to 4 distinct rule_ids from the in-window
+entries, sorted). Return sorted by `total_rejects` desc, tie-broken by `file`.
 
 ### 2. Orchestrator wiring — `src/core/orchestrator.ts`
 
-The orchestrator already loads `fpFullSnapshot = await fpStore.snapshot()` (~651) and
-computes `fpActiveClusters` (active/sticky clusters, ~1621). Immediately after that,
-in gate mode only (`reportMode !== "one-shot"`) and when
+The orchestrator already loads `fpFullSnapshot = await fpStore.snapshot()` (~651), the
+windowed per-signature `fpActiveSnapshot = await fpStore.activeSnapshot(now)` (~654, a
+`Map<signature, FpLedgerEntry>` of entries EFFECTIVELY active at `now`), and computes
+`fpActiveClusters` from `computeFpClusters(...)` (~1621). In the SAME loop that builds
+`fpActiveClusters`, also collect the active/sticky clusters' files (from the `FpCluster`
+object's `.file`, BEFORE it is reduced to `{key, member_ids}` — do not parse the key).
+Then, in gate mode only (`reportMode !== "one-shot"`) and when
 `phases.review.fpFragmentationHint` is truthy and `fpFullSnapshot` exists:
 
 ```ts
+// suppressedFiles = files where suppression is EFFECTIVELY ACTIVE at `now`:
+//   (a) per-signature active entries (fpActiveSnapshot — already windowed/demoted), and
+//   (b) active/sticky clusters' files (collected from FpCluster.file in the cluster loop).
+// Built from the windowed views, never from the stored (promote-only, stale) entry.stage.
+const suppressedFiles = new Set<string>();
+if (fpActiveSnapshot) for (const e of fpActiveSnapshot.values()) suppressedFiles.add(e.file);
+for (const f of activeClusterFiles) suppressedFiles.add(f); // collected in the cluster loop
+
 let fpFragmentation: FpFragmentation[] | undefined;
 if (this.input.reportMode !== "one-shot" && this.input.config.phases.review.fpFragmentationHint && fpFullSnapshot) {
   try {
-    const suppressedFiles = new Set<string>();
-    // fpActiveClusters keys are "<rule_id_token0>@<file>"; recover the file.
-    if (fpActiveClusters) {
-      for (const { key } of fpActiveClusters.values()) {
-        const at = key.indexOf("@");
-        if (at >= 0) suppressedFiles.add(key.slice(at + 1));
-      }
-    }
     const frag = fragmentingFpClasses(fpFullSnapshot.entries, now.toISOString(), {
       minDistinctSignatures: FP_FRAG_MIN_SIGNATURES,
       minRejects: FP_FRAG_MIN_REJECTS,
@@ -100,16 +107,19 @@ if (this.input.reportMode !== "one-shot" && this.input.config.phases.review.fpFr
     console.warn(`[reviewgate] fp-fragmentation hint failed (non-fatal): ${String(err)}`);
   }
 }
-// ... pass `...(fpFragmentation ? { fpFragmentation } : {})` to writeReport's report object ...
 ```
 
+- `fpFragmentation` is a `runIteration` LOCAL (not a constructor `this.input`), unlike
+  `largeDiff`/`workspaceUnsettled` which the gate passes in. So thread it to `writeReport`
+  as a **new trailing optional parameter** (like `criticInfo`/`panelNote` are params), and
+  inside `writeReport` inject `...(fpFragmentation ? { fp_fragmentation: fpFragmentation } : {})`
+  into the `PendingReport` object (next to `large_diff`).
 - Constants in `fragmentation.ts`: `FP_FRAG_MIN_SIGNATURES = 3`, `FP_FRAG_MIN_REJECTS = 3`,
   `FP_FRAG_WINDOW_DAYS = 60` (matches the cluster active window), `FP_FRAG_MAX_REPORTED = 3`.
-- The cluster key is `${ruleIdToken0}@${file}`. `token0` is a hyphen-segment of a
-  rule_id and never contains `@`, so the FIRST `@` is always the separator — `slice(at
-  + 1)` recovers the full file even if the path itself contains `@` (e.g. `src/@scope/x.ts`).
-- Best-effort: a thrown error → no hint, never blocks. `fpFragmentation` flows to the
-  `PendingReport` only as a render-only field (mirrors `largeDiff`).
+- Suppression exclusion uses the WINDOWED views (`fpActiveSnapshot` + the active/sticky
+  cluster files), never the stored `entry.stage` (which `store.recompute` only ever raises,
+  so it can be stale; `activeSnapshot`/`computeFpClusters` are the read-time demoting views).
+- Best-effort: a thrown error → no hint, never blocks the verdict.
 
 ### 3. Schema — `src/schemas/pending-report.ts`
 
@@ -168,14 +178,15 @@ undefined and the hint is skipped).
 
 ## Testing
 
-Unit (`fragmentingFpClasses`, pure; construct `FpLedgerEntry[]` fixtures):
-1. a file with 3 distinct candidate signatures + 3 in-window rejects, no active entry,
-   not in `suppressedFiles` → flagged (correct counts + sample_rule_ids).
-2. below `minDistinctSignatures` (2 distinct) → not flagged.
-3. a file with an `active`/`sticky` entry → excluded (suppression working).
-4. a file in `suppressedFiles` → excluded.
-5. rejects all outside `windowDays` → `total_rejects` short → not flagged.
-6. multiple flagged files → sorted by `total_rejects` desc.
+Unit (`fragmentingFpClasses`, pure; construct `FpLedgerEntry[]` fixtures — the detector
+does NOT read `entry.stage`, so fixtures vary signatures/files/reject ts only):
+1. a file with 3 distinct signatures each with an in-window reject, not in
+   `suppressedFiles` → flagged (distinct_signatures 3, total_rejects ≥ 3, sample_rule_ids).
+2. below `minDistinctSignatures` (2 distinct in-window signatures) → not flagged.
+3. a file in `suppressedFiles` → excluded entirely.
+4. a signature whose only rejects are OUTSIDE `windowDays` → it neither counts toward
+   distinct_signatures nor total_rejects (so a file relying on it falls below threshold).
+5. multiple flagged files → sorted by `total_rejects` desc.
 
 report-writer: `fp_fragmentation` present → banner rendered (file + rule_ids + house-rule
 recommendation); absent → no banner.
