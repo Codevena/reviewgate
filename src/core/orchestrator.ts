@@ -150,6 +150,9 @@ export interface OrchestratorInput {
   // size-warning thresholds. Surfaced as a banner in pending.md (the stderr warning is
   // emitted in gate.ts, outside the loop self-deadline). Absent → no banner.
   largeDiff?: { files: number; bytes: number };
+  // #7: set by the gate when the pre-review settle-check hit its cap without the
+  // working tree going quiet. Render-only — passed straight into the PendingReport.
+  workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
 }
 
 export interface IterationResult {
@@ -2143,6 +2146,9 @@ export class Orchestrator {
         ...(critic ? { critic } : {}),
         ...(panelNote ? { panel_note: panelNote } : {}),
         ...(this.input.largeDiff ? { large_diff: this.input.largeDiff } : {}),
+        ...(this.input.workspaceUnsettled
+          ? { workspace_unsettled: this.input.workspaceUnsettled }
+          : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),
