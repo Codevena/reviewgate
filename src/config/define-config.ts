@@ -92,6 +92,11 @@ export const ConfigSchema = z.object({
       // (nothing dropped — every note stays in pending.json and the foldable block). Default
       // ON via defaults.ts.
       collapseLowTrustSoloInfo: z.boolean().optional(),
+      // Field report 2026-06-17 (non-convergence #2): demote a CRITICAL one step to WARN when the
+      // reviewer's own text frames it as currently-safe / hypothetical / future fragility (no
+      // present demonstrable defect). Deterministic, one-step, demote-only, security/correctness-
+      // exempt, fail-safe. Default ON via defaults.ts.
+      hypotheticalSeverityGuard: z.boolean().optional(),
       // Field report 2026-06-17 #6 (instrumentation): tag + COUNT findings that assert a
       // project/house rule without a verifiable file:line citation (the F-004 class). Adds a
       // pending.md badge + a per-run count in RunSummary/audit — NON-suppressing (never demotes).
@@ -346,6 +351,12 @@ export const ConfigSchema = z.object({
     // to the human, never suppresses). 0 disables. The loop-driver clamps the effective
     // value to > stuckThreshold so a low mis-config can't make per-signature the eager trigger.
     maxSignatureRecurrence: z.number().int().nonnegative().default(3),
+    // Non-convergence (field report 2026-06-17): escalate when a file:line REGION is re-raised as
+    // a blocking finding across this many consecutive reviewed iterations — the location treadmill
+    // where a reviewer re-litigates the same lines under a DIFFERENT signature each round
+    // (defeating maxSignatureRecurrence). Fail-safe (surfaces to the human, never suppresses).
+    // 0 disables. The loop-driver clamps the effective value > stuckThreshold (in code, like #5).
+    maxLocationRecurrence: z.number().int().nonnegative().default(3),
     // Rec #3 (deep half): the installed git pre-push hook WARNS (never blocks; exit 0) when the
     // commit being pushed has no recorded clean Reviewgate PASS — closing the "a clean turn-end
     // pass got pushed before a deep review" gap for push-to-deploy setups. The Stop-hook can't

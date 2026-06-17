@@ -74,7 +74,9 @@ import {
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
 import { renderHouseRules } from "./house-rules.ts";
+import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
+import { locationKey } from "./location-recurrence.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
   HIGH_PRECISION_FLOOR,
@@ -174,6 +176,11 @@ export interface IterationResult {
   costUsd: number;
   durationMs: number;
   signaturesThisIter: string[];
+  // Non-convergence: per-finding REGION keys (`file:line-bucket`) this iteration, appended to
+  // state.location_history index-aligned with signaturesThisIter → signature_history. Lets the
+  // loop detect a region re-litigated under a churning signature. Optional for back-compat with
+  // IterationResult stubs; the orchestrator always sets it and the loop-driver defaults it to [].
+  locationsThisIter?: string[];
   summary: RunSummary;
   // True when the panel collapsed to ZERO usable reviews AND every attempted
   // reviewer was quota-exhausted (transient outage, distinguishable from a
@@ -214,6 +221,10 @@ export interface IterationRunner {
     // agent reason) rendered into the reviewer prompt so it does not re-litigate settled
     // regions. Hashed into the cache key so a changed adjudication set re-runs the panel.
     priorAdjudications?: Adjudication[];
+    // Non-convergence #1: region keys (`file:line-bucket`) raised in EARLIER iterations this
+    // cycle (state.location_history flattened). A current finding on one of these is FLAGGED
+    // (advisory badge, never demoted) so the agent doesn't blindly re-fix a re-litigated line.
+    priorLocations?: string[];
   }): Promise<IterationResult>;
 }
 
@@ -486,6 +497,7 @@ export class Orchestrator {
     cycleRejectedSignatures?: string[];
     claimedFixedSignatures?: Record<string, number>;
     priorAdjudications?: Adjudication[];
+    priorLocations?: string[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -564,6 +576,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [],
+          locationsThisIter: [],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: "ERROR",
@@ -583,6 +596,7 @@ export class Orchestrator {
         costUsd: 0,
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        locationsThisIter: [],
         maxIterationsOverride,
         summary: buildRunSummary({
           verdict: "PASS",
@@ -630,6 +644,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [f.signature],
+          locationsThisIter: [locationKey(f.file, f.line_start)],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: "FAIL",
@@ -929,6 +944,7 @@ export class Orchestrator {
           costUsd: 0,
           durationMs: Date.now() - start,
           signaturesThisIter: [],
+          locationsThisIter: [],
           maxIterationsOverride,
           summary: buildRunSummary({
             verdict: cached.verdict,
@@ -1534,6 +1550,7 @@ export class Orchestrator {
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
+        locationsThisIter: [],
         summary: buildRunSummary({
           verdict: "ERROR",
           source: "panel",
@@ -1571,9 +1588,16 @@ export class Orchestrator {
     // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
     // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
     // signal → category-independent; deterministic, demote-only, fail-safe.
-    const allFindings = demoteSelfRefuting(
+    const selfScreenedFindings = demoteSelfRefuting(
       factCheckedFindings,
       this.input.config.phases.review.selfRefutationFilter !== false,
+    );
+    // non-convergence #2: demote a CRITICAL the reviewer's own text frames as currently-safe /
+    // hypothetical / future fragility (no present defect) one step to WARN — pre-aggregate, like
+    // self-refutation/grounding. One-step, security/correctness-exempt, fail-safe.
+    const allFindings = demoteHypotheticalCriticals(
+      selfScreenedFindings,
+      this.input.config.phases.review.hypotheticalSeverityGuard !== false,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
@@ -1847,6 +1871,16 @@ export class Orchestrator {
       ruleUncited = rc.uncitedCount;
     }
 
+    // Non-convergence #1: FLAG (never demote) a finding whose region was already raised in an
+    // EARLIER iteration this cycle, so the agent verifies it is genuinely NEW before re-fixing a
+    // re-litigated line. Advisory only; the location-recurrence escalation handles the loop.
+    const priorLocSet = new Set(opts.priorLocations ?? []);
+    if (priorLocSet.size > 0) {
+      reportFindings = reportFindings.map((f) =>
+        priorLocSet.has(locationKey(f.file, f.line_start)) ? { ...f, location_recurred: true } : f,
+      );
+    }
+
     await this.writeReport(
       opts,
       start,
@@ -1955,6 +1989,7 @@ export class Orchestrator {
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
+      locationsThisIter: agg.dedupedFindings.map((f) => locationKey(f.file, f.line_start)).sort(),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",

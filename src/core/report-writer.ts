@@ -42,11 +42,19 @@ export function findingBadges(f: Finding): string | null {
     badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
   if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
+  if (f.hypothetical_demoted)
+    badges.push(
+      "⏳ demoted CRITICAL→WARN — reviewer text is hypothetical/future, not a present defect",
+    );
   if (f.scope_demoted) badges.push("📍 outside changed lines");
   if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
   if (f.redaction_demoted)
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
+    );
+  if (f.location_recurred)
+    badges.push(
+      "🔁 this region was raised in an earlier iteration this cycle — verify it is a genuinely NEW issue before re-fixing (possible reviewer contradiction)",
     );
   if (f.rule_citation_unverified)
     badges.push(

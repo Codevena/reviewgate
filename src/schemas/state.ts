@@ -26,6 +26,12 @@ export const EscalationReason = z.enum([
   // set churns (the whole-set stuck-signatures check misses it). Surfaced to the
   // human (block-once, like stuck-signatures); never suppresses the finding.
   "signature-recurrence",
+  // Non-convergence (field report 2026-06-17): a file:line REGION re-raised as a blocking
+  // finding across loop.maxLocationRecurrence consecutive reviewed iterations — the location
+  // treadmill where a reviewer re-litigates the same lines under a DIFFERENT signature each
+  // round (defeating every signature-keyed guard). Surfaced to the human (block-once, like
+  // signature-recurrence); never suppresses the finding.
+  "location-recurrence",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 
@@ -39,6 +45,12 @@ export const ReviewgateStateSchema = z.object({
     output: z.number().int().nonnegative(),
   }),
   signature_history: z.array(z.array(z.string())),
+  // Non-convergence (field report 2026-06-17): per-iteration finding REGION keys
+  // (`file:line-bucket`), INDEX-ALIGNED with signature_history (appended + reset at the same
+  // points). The location-keyed sibling of signature_history — lets the gate detect a region
+  // re-litigated under a churning signature, which signature_history alone misses. Reset to []
+  // on re-arm. `.default([])` for back-compat with state.json written before this field.
+  location_history: z.array(z.array(z.string())).default([]),
   // Per-iteration severity counts + verdict + cost, kept length-aligned with
   // signature_history (appended and reset at the same points). Lets the escalation
   // report show ACCURATE CRIT/WARN per iteration instead of 0 for the non-final
@@ -146,6 +158,7 @@ export function initialState(sessionId: string): ReviewgateState {
     cost_usd_so_far: 0,
     tokens_so_far: { input: 0, output: 0 },
     signature_history: [],
+    location_history: [],
     iteration_stats: [],
     fp_rejects_history: [],
     max_iterations_override: null,

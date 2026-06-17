@@ -82,6 +82,9 @@ export const defaultConfig = {
       // #6 (field report 2026-06-17): tag + count uncited project/house-rule findings
       // (instrumentation for the rule-citation directive). Non-suppressing. Default ON.
       ruleCitationCheck: true,
+      // non-convergence #2 (field report 2026-06-17): demote a currently-safe/hypothetical/future
+      // CRITICAL one step to WARN (one-step, security/correctness-exempt, fail-safe). Default ON.
+      hypotheticalSeverityGuard: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.
@@ -230,6 +233,10 @@ export const defaultConfig = {
     infraDeferMaxConsecutive: 3,
     quotaDeferMaxConsecutive: 3,
     maxSignatureRecurrence: 3,
+    // Non-convergence (field report 2026-06-17): escalate when a file:line region is re-raised as
+    // a blocking finding across this many consecutive iterations (the location treadmill under a
+    // churning signature). 0 disables; clamped > stuckThreshold in code. Default 3.
+    maxLocationRecurrence: 3,
     // Rec #3 (deep half): the installed git pre-push hook warns (never blocks) when the pushed
     // commit has no recorded clean Reviewgate PASS. Default on; set false to make it a no-op.
     prePushWarn: true,
