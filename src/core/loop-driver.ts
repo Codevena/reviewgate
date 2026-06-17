@@ -561,6 +561,27 @@ function formatCoverageNote(summary: RunSummary): string | null {
   return `reduced coverage: ${degraded} of ${total} ${word} did not complete`;
 }
 
+// #3-timing (field report 2026-06-17): a passing verdict ends the turn silently, and the
+// agent/user can then commit + push (→ Coolify auto-deploy) BEFORE a deeper review runs. The
+// gate has no authority over a later push, but it CAN label a SHALLOW pass as provisional at
+// the allow_stop boundary — the moment the agent decides "clean → confirm → push". A pass is
+// "preliminary" when no real panel ran (triage-skip / cache / checks-only) OR fewer reviewers
+// completed OK than the config asks for. NOT preliminary: a full-coverage panel pass, incl. a
+// SUPPORTED single-reviewer config (depth is ok-vs-configured, never absolute count). The
+// label is honest about uncertainty — it says "a fuller review MAY surface more", never a
+// guarantee (it cannot detect a full panel that simply got lucky on one run). Render-only:
+// it never changes the verdict or blocks; push-gating belongs in a pre-push/CI hook.
+function preliminaryReason(summary: RunSummary, configuredReviewers: number): string | null {
+  if (summary.source === "skipped") return "triage-skipped — no reviewer panel ran";
+  if (summary.source === "cache") return "served from cache — no fresh panel ran";
+  if (summary.source === "checks") return "deterministic checks only — no reviewer panel ran";
+  const okReviewers = summary.providers.filter((p) => p.runs > p.errors).length;
+  if (configuredReviewers > 0 && okReviewers < configuredReviewers) {
+    return `reviewed by ${okReviewers} of ${configuredReviewers} configured reviewers`;
+  }
+  return null;
+}
+
 // On a verdict===ERROR result, surface WHICH reviewer(s) didn't complete and
 // how long they ran, so an agent doesn't misdiagnose (real shoal case: a 300s
 // claude-code timeout was read as "subprocess failing to start" because the
@@ -1349,6 +1370,15 @@ export class LoopDriver {
       const forceSoftAck = result.verdict === "SOFT-PASS" && softPolicy === "ask-once";
       const coverage = formatCoverageNote(result.summary);
       const coverageSuffix = coverage ? ` · ⚠ ${coverage}` : "";
+      // #3-timing: label a shallow/degraded pass as PRELIMINARY at the allow_stop boundary
+      // (where the agent decides "clean → confirm → push"). Render-only — never blocks.
+      const preliminary = preliminaryReason(
+        result.summary,
+        this.i.config.phases.review.reviewers?.length ?? 0,
+      );
+      const preliminarySuffix = preliminary
+        ? ` · ⚠ PRELIMINARY (${preliminary}) — a fuller review may surface more findings; treat as NOT deploy-ready and avoid pushing/deploying on this pass alone.`
+        : "";
       const isSoft = result.verdict === "SOFT-PASS";
       const warnCount = result.summary.counts.warn;
       // A non-failing CRITICAL can reach SOFT-PASS (F-006); it must be visible in
@@ -1362,14 +1392,14 @@ export class LoopDriver {
               reason: forceSoftAck
                 ? `🟡 Reviewgate · GATE OPEN — ⚠️ SOFT-PASS (iteration ${nextIter}): ${formatPanelSummary(result.summary)}${coverageSuffix}. These are non-blocking warnings — review them in .reviewgate/pending.md, then end your turn again to accept and pass through.`
                 : coverage
-                  ? `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}) · ⚠ ${coverage}. Verdict is based on the reviewer(s) that did complete; treat as advisory if full coverage matters for this slice. End your turn again to pass through.`
-                  : `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}). Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
+                  ? `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter}) · ⚠ ${coverage}${preliminarySuffix}. Verdict is based on the reviewer(s) that did complete; treat as advisory if full coverage matters for this slice. End your turn again to pass through.`
+                  : `🟢 Reviewgate · GATE OPEN — ✅ ${result.verdict} (iteration ${nextIter})${preliminarySuffix}. Review is clean, no findings to address. No action needed: simply end your turn again to pass through (you may briefly confirm the pass to the user first).`,
             }
           : {
               kind: "allow_stop",
               reason: isSoft
-                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}. Non-blocking — see .reviewgate/pending.md.`
-                : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}. Clear to finish.`,
+                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}${preliminarySuffix}. Non-blocking — see .reviewgate/pending.md.`
+                : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}${preliminarySuffix}. Clear to finish.`,
             };
     } else if (result.verdict === "ERROR") {
       // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
