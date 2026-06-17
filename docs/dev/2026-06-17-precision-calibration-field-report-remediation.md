@@ -240,6 +240,35 @@ are used for the **DoD review gate**, not for parallel implementation.
 - T_timing = report-only label now; the pre-push/CI gate is an escalated follow-up, not
   built this batch.
 
+## Post-merge follow-ups (flashbuddy peer-review watch-items)
+
+The colleague's peer review of the shipped batch raised 3 radar items. Status:
+
+- **#2 — instrument the rule-citation directive** ✅ SHIPPED (master `28b85bb`). New
+  `src/core/rule-citation.ts`: count + tag (NON-demoting) findings asserting a project/house
+  rule without a verifiable RULE-SOURCE citation; per-run count → `RunSummary.rule_uncited` →
+  timestamped audit trail + a `reviewgate stats` "Rule citations" line + 📜 badge. Gives the #6
+  directive a before/after metric. DoD: codex caught 2 citation-precision WARNs (a bare "line N"
+  and a CODE `file:line` both point at the violation, not the rule → a citation now requires a
+  rule-source file [.md/.json/.config.*] + line); codex then hit its quota → opus senior PASS.
+- **#1 — cold-start exploration budget** ✅ SHIPPED (master `958adc3`). The #5 low-trust
+  collapse now uses the SAME `PROTECT_MIN_DECISIONS` (8) gate as the #4 protect, so a reviewer
+  in the 5-7 sample window surfaces in full (bootstrap budget) instead of being folded early.
+  Render-only. opus senior DoD PASS.
+- **#3 — timeout-cap vs the 759s observation** ✅ NO ACTION (verified safe). The 759s was the
+  total iteration wall-clock dominated by a SEQUENTIAL failover chain (primary + fallbacks, each
+  ≤ per-reviewer timeout) + research overhead — not a single review. A legitimate review is
+  130-185s, well under the 240s cap, so the cap never clips a legit run (it only bounds a
+  stalled/failing-over leg). Residual radar: the failover chain is a separate cost multiplier.
+
+## Remaining (escalated — needs a decision)
+
+**Rec #3 deep half — "deep review BEFORE push" guarantee → a pre-push / CI gate.** Structurally
+outside the Stop-hook (it fires at turn-end, no authority over a later user push). The right home
+is a pre-push hook / CI check that consults `.reviewgate/state.json` for a recent full-panel PASS
+on the pushed SHA and blocks/​warns otherwise. Not built — it adds an outward-facing surface that
+changes the user's git workflow, so it warrants a design decision (hard-block vs warn; no-CI repos).
+
 ## Definition of Done (per CLAUDE.md)
 
 Per slice: `bunx tsc --noEmit` + `bun run lint` + the slice's `bun test` green. After the
