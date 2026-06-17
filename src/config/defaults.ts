@@ -76,6 +76,9 @@ export const defaultConfig = {
       // #4 (field report 2026-06-17): protect a high-track-record reviewer's findings from
       // the soft demoters (critic/confidence). Anti-suppression; default ON.
       protectHighPrecisionReviewers: true,
+      // #3/#5 (field report 2026-06-17): fold solo low-track-record INFO into a collapsed
+      // block in pending.md (render-only; nothing dropped). Default ON.
+      collapseLowTrustSoloInfo: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.

@@ -2254,7 +2254,11 @@ export class Orchestrator {
           dirty_files: this.input.gitInfo?.dirtyFiles ?? [],
         },
       },
-      { mode: this.input.reportMode ?? "gate" },
+      {
+        mode: this.input.reportMode ?? "gate",
+        collapseLowTrustSoloInfo:
+          this.input.config.phases.review.collapseLowTrustSoloInfo !== false,
+      },
     );
   }
 }

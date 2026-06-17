@@ -86,6 +86,12 @@ export const ConfigSchema = z.object({
       // >= 0.70 with enough samples). Anti-suppression (only prevents a demote); never
       // affects hard suppressors or self-refuted findings. Default ON via defaults.ts.
       protectHighPrecisionReviewers: z.boolean().optional(),
+      // Field report 2026-06-17 #3/#5: collapse solo, low-track-record, non-security/
+      // correctness INFO notes into a single foldable block in pending.md so a noisy
+      // low-precision reviewer's advisory flood doesn't dilute the agent's read. Render-only
+      // (nothing dropped — every note stays in pending.json and the foldable block). Default
+      // ON via defaults.ts.
+      collapseLowTrustSoloInfo: z.boolean().optional(),
       // Slice 2 (field report #9): demote security findings on test/fixture files to
       // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
       // defaults.ts. Set false for repos that ship production code under a tests/ path.

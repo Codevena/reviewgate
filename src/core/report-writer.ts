@@ -149,7 +149,28 @@ function fmtFinding(f: Finding): string {
   ].join("\n");
 }
 
-function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
+// #3/#5: a reviewer is "low track record" for the collapse heuristic at precision below
+// this floor (the field report's 29%-precision reviewer is well under it). Render-only — it
+// only changes WHERE a note renders (collapsed block vs inline), never WHETHER it renders.
+const LOW_TRACK_RECORD_PRECISION = 0.4;
+
+// #3/#5 (field report 2026-06-17): a solo, low-track-record, non-security/correctness INFO is
+// noise the agent must mentally filter (the 29%-precision openrouter flood). Fold these into a
+// collapsed block so they stay present (never dropped) but don't dilute the in-scope advisory
+// list. Keys off the #8 reviewer_precision cell already attached to the finding.
+function isLowTrustSoloInfo(f: Finding): boolean {
+  if (f.severity !== "INFO") return false;
+  if (f.consensus !== "singleton" && f.consensus !== "minority") return false;
+  // Never collapse a security/correctness note, even uncorroborated INFO.
+  if (f.category === "security" || f.category === "correctness") return false;
+  if ((f.members ?? []).some((m) => m.category === "security" || m.category === "correctness")) {
+    return false;
+  }
+  const cells = f.reviewer_precision ?? [];
+  return cells.some((c) => c.precision !== null && c.precision < LOW_TRACK_RECORD_PRECISION);
+}
+
+function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust = true): string {
   // Coverage warning: any reviewer that didn't finish OK (timeout/error/etc.)
   // reduces how many independent reviewers actually saw this diff. Surface it
   // prominently — a silently degraded panel could let a PASS through with less
@@ -293,10 +314,31 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
   if (crit.length > 0) sections.push("## CRITICAL ●\n", ...crit.map(fmtFinding));
   if (warn.length > 0) sections.push("## WARN ▲\n", ...warn.map(fmtFinding));
   if (inScopeAdvisory.length > 0) {
-    sections.push(
-      "## Advisory (out of scope / known FP — no decision needed) ·\n",
-      ...inScopeAdvisory.map(fmtFinding),
-    );
+    // #3/#5: fold solo low-track-record INFO into a collapsed block (render-only; nothing
+    // dropped). The rest render inline as before.
+    const collapsed = collapseLowTrust ? inScopeAdvisory.filter(isLowTrustSoloInfo) : [];
+    const inline = inScopeAdvisory.filter((f) => !collapsed.includes(f));
+    sections.push("## Advisory (out of scope / known FP — no decision needed) ·\n");
+    if (inline.length > 0) sections.push(...inline.map(fmtFinding));
+    if (collapsed.length > 0) {
+      const provs = [
+        ...new Set(
+          collapsed.flatMap((f) =>
+            (f.reviewer_precision ?? [])
+              .filter((c) => c.precision !== null && c.precision < LOW_TRACK_RECORD_PRECISION)
+              .map(
+                (c) =>
+                  `${c.provider} ${c.precision === null ? "n/a" : `${Math.round(c.precision * 100)}%`}`,
+              ),
+          ),
+        ),
+      ].join(", ");
+      sections.push(
+        `<details>\n<summary>▸ ${collapsed.length} low-track-record advisory note(s) from ${provs} — expand if relevant</summary>\n`,
+        ...collapsed.map(fmtFinding),
+        "</details>\n",
+      );
+    }
   }
   if (outOfDiff.length > 0) {
     sections.push(
@@ -368,8 +410,12 @@ function fmtFindingWithStatus(
 export class ReportWriter {
   constructor(private readonly repoRoot: string) {}
 
-  async write(report: PendingReport, opts?: { mode?: "gate" | "one-shot" }): Promise<void> {
+  async write(
+    report: PendingReport,
+    opts?: { mode?: "gate" | "one-shot"; collapseLowTrustSoloInfo?: boolean },
+  ): Promise<void> {
     const mode = opts?.mode ?? "gate";
+    const collapseLowTrust = opts?.collapseLowTrustSoloInfo !== false;
     // One-shot reviews write to their OWN files so they never clobber the gate's
     // pending.md/json (which the Stop-hook decisions loop reads).
     const md = mode === "one-shot" ? planReviewMdPath(this.repoRoot) : pendingMdPath(this.repoRoot);
@@ -378,7 +424,7 @@ export class ReportWriter {
     ensureDir(md);
     // Atomic tmp+rename: pending.{md,json} are read cross-process by the Stop-hook
     // decisions loop — a non-atomic writeFileSync could expose a half-written file.
-    writeFileAtomic(md, renderMd(report, mode), { mode: 0o600 });
+    writeFileAtomic(md, renderMd(report, mode, collapseLowTrust), { mode: 0o600 });
     writeFileAtomic(json, JSON.stringify(report, null, 2), { mode: 0o600 });
   }
 
