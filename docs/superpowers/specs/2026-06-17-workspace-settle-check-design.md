@@ -12,8 +12,8 @@ reviewed-scope files. Reviewing that half-written snapshot produces findings abo
 incomplete code.
 
 Already shipped (P1, 2026-06-05): `collectDiff` excludes *pre-existing* untracked
-files (`mtime < base_ts`). That is about *which old files to drop*, not "is
-something writing *now*." #7's residual gap is the live-churn case.
+files (`max(mtime, ctime) < base_ts`). That is about *which old files to drop*, not
+"is something writing *now*." #7's residual gap is the live-churn case.
 
 **The crux:** the Stop hook fires *after* the agent's own (synchronous) edits
 complete, so the most-recent reviewed-scope mtime is **almost always very recent**.
@@ -59,18 +59,27 @@ export const SETTLE_MAX_MS = 1500;
 export interface SettleResult {
   settled: boolean;        // false → still advancing at the cap (churning)
   waitedMs: number;        // total time spent waiting
-  lastWriteMsAgo: number;  // now − maxMtime at the final sample (for the banner; 0 if no files)
+  lastWriteMsAgo: number;  // now − latestChange at the final sample (for the banner; 0 if no files)
 }
 
-// The reviewed-scope file NAMES: tracked changes since base + in-scope untracked
-// (mtime ≥ base_ts, mirroring P1). Best-effort → [] on any git error.
+// The reviewed-scope file NAMES: tracked changes since base + in-scope untracked.
+// Tracked: `git diff --name-only <base>` (all of them — collectDiff reviews the
+// whole tracked diff, no mtime filter). Untracked: `git ls-files --others
+// --exclude-standard`, EXACTLY mirroring collectDiff's P1 rule (git.ts:276-283) —
+// include iff `max(lstat.mtimeMs, lstat.ctimeMs) >= base_ts` (mtime alone is wrong:
+// it is back-datable via utimes/checkout/rsync, so a genuinely-new file with a
+// back-dated mtime — which collectDiff WILL review — would be missed; ctime catches
+// it). With a null/epoch-0 base_ts → no untracked filter (include all), like P1.
+// Best-effort → [] on any git error.
 export async function reviewedScopeFiles(
   repoRoot: string, baseSha: string | null, baseTs: string | null,
 ): Promise<string[]>;
 
-// Max lstat mtime (ms) across files; best-effort (skip unstattable / racing unlink).
-// Returns 0 for an empty / all-unstattable set.
-export function maxMtimeMs(repoRoot: string, files: string[]): number;
+// The latest change time (ms) across files = max over files of
+// max(lstat.mtimeMs, lstat.ctimeMs) — consistent with the scope rule and more
+// sensitive than mtime alone (catches a write OR a create/metadata change). Best-
+// effort (skip unstattable / racing unlink). Returns 0 for an empty / all-unstattable set.
+export function latestChangeMs(repoRoot: string, files: string[]): number;
 
 // Bounded settle loop. now()/sleep() are injected for deterministic tests.
 export async function awaitWorkspaceSettle(opts: {
@@ -87,10 +96,10 @@ export async function awaitWorkspaceSettle(opts: {
 
 `awaitWorkspaceSettle` logic:
 1. `files = await reviewedScopeFiles(...)`. If empty → `{ settled: true, waitedMs: 0, lastWriteMsAgo: 0 }`.
-2. `last = maxMtimeMs(files)`. If `now() − last ≥ quietWindowMs` → already quiescent → `{ settled: true, waitedMs: 0, lastWriteMsAgo: now()−last }` (no `sleep` call).
+2. `last = latestChangeMs(files)`. If `now() − last ≥ quietWindowMs` → already quiescent → `{ settled: true, waitedMs: 0, lastWriteMsAgo: now()−last }` (no `sleep` call).
 3. Loop while `waited < maxSettleMs`:
    - `const step = min(settleIntervalMs, maxSettleMs − waited)`; `await sleep(step)`; `waited += step`.
-   - **re-enumerate** `files` (catches a writer *creating* new files) and `cur = maxMtimeMs(files)`.
+   - **re-enumerate** `files` (catches a writer *creating* new files) and `cur = latestChangeMs(files)`.
    - if `cur ≤ last` → settled → `{ settled: true, waitedMs: waited, lastWriteMsAgo: now()−cur }`.
    - else `last = cur` (advanced — keep waiting).
 4. Cap hit, still advancing → `{ settled: false, waitedMs: waited, lastWriteMsAgo: now()−last }`.
@@ -182,12 +191,12 @@ constants (YAGNI; promote to config later if a repo needs them).
 ## Testing
 
 Unit (`awaitWorkspaceSettle`, injected `now`/`sleep`, with `reviewedScopeFiles`/
-`maxMtimeMs` exercised against a temp git repo whose files have controlled mtimes):
-1. last write ≥ quietWindow ago → `settled:true`, `waitedMs:0`, `sleep` never called.
-2. recent write, mtime stable across one interval → `settled:true` after ~one interval.
-3. recent write, mtime advances every interval → `settled:false`, `waitedMs ≈ maxSettleMs`.
+`latestChangeMs` exercised against a temp git repo whose files have controlled mtimes):
+1. last change ≥ quietWindow ago → `settled:true`, `waitedMs:0`, `sleep` never called.
+2. recent change, latestChange stable across one interval → `settled:true` after ~one interval.
+3. recent change, latestChange advances every interval → `settled:false`, `waitedMs ≈ maxSettleMs`.
 4. empty scope → `settled:true`, `waitedMs:0`.
-5. `reviewedScopeFiles`: a back-dated untracked file (mtime < base_ts) is EXCLUDED; a fresh tracked change is included. `maxMtimeMs` returns the newest mtime, 0 for empty.
+5. `reviewedScopeFiles`: an untracked file with BOTH mtime AND ctime back-dated below base_ts is EXCLUDED; a fresh untracked file is included; a back-dated-mtime-but-recent-ctime untracked file is INCLUDED (the `max(mtime,ctime)` rule — mirrors P1). `latestChangeMs` returns the newest `max(mtime,ctime)`, 0 for empty.
 
 report-writer: `workspace_unsettled` present → banner rendered; absent → no banner.
 
@@ -203,7 +212,7 @@ Plus: `bunx tsc --noEmit`, `bun run lint`, `bun test tests/unit --timeout 20000`
 
 ## Files touched
 
-- `src/core/workspace-settle.ts` — new (enumerate + max-mtime + settle loop + constants).
+- `src/core/workspace-settle.ts` — new (enumerate + latest-change + settle loop + constants).
 - `src/cli/commands/gate.ts` — call `awaitWorkspaceSettle` in `gatherReviewContext` before `collectDiff`; add `workspaceUnsettled` to `GatheredContext`; pass it to the Orchestrator input in `runGate`.
 - `src/core/orchestrator.ts` — accept `workspaceUnsettled?` input and include it in the `PendingReport` (mirror `largeDiff`).
 - `src/schemas/pending-report.ts` — optional `workspace_unsettled` field.
