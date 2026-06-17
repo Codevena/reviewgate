@@ -106,6 +106,11 @@ export const defaultConfig = {
       // #7: wait (bounded) for the working tree to stop changing before snapshotting
       // it for review, so the panel doesn't review a half-written state. Default ON.
       settleBeforeReview: true,
+      // #4: advisory fragmentation hint in pending.md when an FP class spreads
+      // across many ledger entries on a file without promoting to auto-suppression
+      // — recommends a house rule as the durable fix. Render-only; never suppresses.
+      // Default ON. No-op unless the FP-ledger is enabled.
+      fpFragmentationHint: true,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";

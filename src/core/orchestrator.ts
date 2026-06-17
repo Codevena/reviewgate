@@ -63,6 +63,14 @@ import { type CriticVerdict, runCritic } from "./critic.ts";
 import { validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
+import {
+  FP_FRAG_MAX_REPORTED,
+  FP_FRAG_MIN_REJECTS,
+  FP_FRAG_MIN_SIGNATURES,
+  FP_FRAG_WINDOW_DAYS,
+  type FpFragmentation,
+  fragmentingFpClasses,
+} from "./fp-ledger/fragmentation.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
 import { renderHouseRules } from "./house-rules.ts";
@@ -1619,6 +1627,7 @@ export class Orchestrator {
     // attribute, invalid-attribute}) that per-signature granularity misses.
     // Best-effort: a failure must NOT block the verdict — fall back to undefined.
     let fpActiveClusters: Map<string, { key: string; member_ids: string[] }> | undefined;
+    const activeClusterFiles = new Set<string>();
     if (fpFullSnapshot) {
       try {
         const clusters = computeFpClusters(fpFullSnapshot.entries, now.toISOString());
@@ -1626,11 +1635,38 @@ export class Orchestrator {
         for (const c of clusters) {
           if (c.stage === "active" || c.stage === "sticky") {
             map.set(c.key, { key: c.key, member_ids: c.member_ids });
+            activeClusterFiles.add(c.file);
           }
         }
         if (map.size > 0) fpActiveClusters = map;
       } catch {
         /* best-effort */
+      }
+    }
+
+    // #4: advisory FP-fragmentation hint (gate-mode, toggle-gated, best-effort). Pure
+    // render-only metadata — never suppresses a finding. Exclude files where suppression
+    // is EFFECTIVELY ACTIVE at `now` (the windowed fpActiveSnapshot + active/sticky
+    // clusters), never the stored entry.stage.
+    let fpFragmentation: FpFragmentation[] | undefined;
+    if (
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.fpFragmentationHint &&
+      fpFullSnapshot
+    ) {
+      try {
+        const suppressedFiles = new Set<string>(activeClusterFiles);
+        if (fpActiveSnapshot)
+          for (const e of fpActiveSnapshot.values()) suppressedFiles.add(e.file);
+        const frag = fragmentingFpClasses(fpFullSnapshot.entries, now.toISOString(), {
+          minDistinctSignatures: FP_FRAG_MIN_SIGNATURES,
+          minRejects: FP_FRAG_MIN_REJECTS,
+          windowDays: FP_FRAG_WINDOW_DAYS,
+          suppressedFiles,
+        });
+        if (frag.length > 0) fpFragmentation = frag.slice(0, FP_FRAG_MAX_REPORTED);
+      } catch (err) {
+        console.warn(`[reviewgate] fp-fragmentation hint failed (non-fatal): ${String(err)}`);
       }
     }
 
@@ -1729,6 +1765,7 @@ export class Orchestrator {
       agg.counts,
       criticInfo ? { ...criticInfo, demoted } : undefined,
       panelNote,
+      fpFragmentation,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2102,6 +2139,7 @@ export class Orchestrator {
       demoted: number;
     },
     panelNote?: string,
+    fpFragmentation?: FpFragmentation[],
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -2146,6 +2184,7 @@ export class Orchestrator {
         ...(critic ? { critic } : {}),
         ...(panelNote ? { panel_note: panelNote } : {}),
         ...(this.input.largeDiff ? { large_diff: this.input.largeDiff } : {}),
+        ...(fpFragmentation ? { fp_fragmentation: fpFragmentation } : {}),
         ...(this.input.workspaceUnsettled
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),

@@ -133,6 +133,11 @@ export const ConfigSchema = z.object({
       // session may still be writing), so the panel reviews a quiescent snapshot.
       // Bounded and fail-safe: only delays a review, never skips it. Default on.
       settleBeforeReview: z.boolean().optional(),
+      // #4: surface an advisory hint in pending.md when a false-positive class is
+      // fragmenting across many FP-ledger entries on a file but not promoting to
+      // auto-suppression — recommending a house rule (the durable fix). Render-only;
+      // never suppresses a finding. Default on. (No-op unless the FP-ledger is enabled.)
+      fpFragmentationHint: z.boolean().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
