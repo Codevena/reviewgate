@@ -110,8 +110,29 @@ separate advisory-first slice once G0 matures.
   precisely because the signature ones returned []). Honor `protectHighPrecisionReviewers`
   precedence in G3 (skip demote on a protected finding).
 
+## Decision-schema gap (flashbuddy follow-up — IMPORTANT)
+
+The colleague found the `decisions/*.jsonl` records only `{finding_id, verdict, action,
+files_touched}` — **no file:line, no rule_id**; location data lives only in pending.json. So a
+location-keyed detector can't be built from the decision stream alone (it needs the
+decisions⋈pending join, which `priorAdjudications` already does). **Our design sidesteps this
+entirely:** `location_history` is built from the FINDINGS (which carry file:line) at the same
+state.update as `signature_history` — NOT from the decision stream — so it needs no join and no
+agent cooperation (more robust than relying on the agent to enrich decisions). The colleague's
+"write the location into the decision record" is a valid *observability* win (self-contained
+decision stream) but is not required for the detector; noted as a possible follow-up.
+
 ## Status
 - [x] Investigation (4-agent workflow) + cross-check
 - [x] Plan (this doc)
-- [ ] G3 / G0 / G2 / G1 / (G3b deferred)
+- [x] **G3** hypothetical/future CRITICAL→WARN demote (`feat(nonconvergence #2)`)
+- [x] **G0+G2** `location_history` + location-recurrence escalation + churnProgressing fix (`feat(nonconvergence #1/#3)`)
+- [x] **G1** contradiction flag (`location_recurred` badge) (`feat(nonconvergence #1)`)
+- [ ] G3b stable-code-guard — DEFERRED (advisory; needs per-iteration baseline plumbing)
 - [ ] DoD (opus senior — codex quota-locked) · merge · push · deploy
+
+### Maps to the gold-case
+- iter-2 finding on iter-1's region → **G1 flag** (🔁 badge: verify it's new).
+- iter-3 (3rd hit on the region under churning signatures) → **G2 location-recurrence escalation**
+  (and for a small diff, the **churnProgressing fix** escalates even earlier at the soft cap).
+- iter-4 CRITICAL "currently safe … if a future change" on stable test code → **G3** CRITICAL→WARN.
