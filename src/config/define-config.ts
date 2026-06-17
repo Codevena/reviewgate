@@ -314,6 +314,12 @@ export const ConfigSchema = z.object({
     // Mirrors infraDeferMaxConsecutive. 0 disables the defer (escalate immediately
     // even when degraded — prior behavior).
     quotaDeferMaxConsecutive: z.number().int().nonnegative().default(3),
+    // #5: escalate when a single BLOCKING finding's signature recurs across this many
+    // consecutive reviewed iterations (a treadmill where one finding sticks while the
+    // set churns — the whole-set stuckThreshold check misses it). Fail-safe (surfaces
+    // to the human, never suppresses). 0 disables. The loop-driver clamps the effective
+    // value to > stuckThreshold so a low mis-config can't make per-signature the eager trigger.
+    maxSignatureRecurrence: z.number().int().nonnegative().default(3),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

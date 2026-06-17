@@ -212,6 +212,7 @@ export const defaultConfig = {
     // surfaced, not silently waved through. Set 0 to restore the old hard-block.
     infraDeferMaxConsecutive: 3,
     quotaDeferMaxConsecutive: 3,
+    maxSignatureRecurrence: 3,
   },
   sandbox: {
     // Default 'off' = opt-in isolation. 'strict'/'permissive' DO isolate the
