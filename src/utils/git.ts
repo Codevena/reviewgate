@@ -337,11 +337,11 @@ export async function collectDiff(
 export async function workingTreeDirtyFiles(repoRoot: string): Promise<string[]> {
   const out = new Set<string>();
   const tracked = await git(repoRoot, ["diff", "--name-only", "-z", "HEAD"]);
-  if (tracked.status === 0) {
+  if (tracked.status === 0 && !tracked.timedOut && !tracked.truncated) {
     for (const f of tracked.stdout.split("\0")) if (f.length > 0) out.add(f);
   }
   const untracked = await git(repoRoot, ["ls-files", "-z", "--others", "--exclude-standard"]);
-  if (untracked.status === 0) {
+  if (untracked.status === 0 && !untracked.timedOut && !untracked.truncated) {
     for (const f of untracked.stdout.split("\0")) if (f.length > 0) out.add(f);
   }
   return [...out];
