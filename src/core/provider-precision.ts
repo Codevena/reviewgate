@@ -14,6 +14,12 @@ import { normalizeProviders } from "./decision-outcome.ts";
 
 export const PROVIDER_PRECISION_WINDOW_DAYS = 90;
 export const PROVIDER_PRECISION_MIN_DECISIONS = 5;
+// #4: a reviewer is "high track record" (protected from the soft demoters) at precision
+// >= floor with >= minDecisions blocking-decision samples. The sample floor (8, mirroring
+// reputation.minSamples) keeps a 1/1=100% newcomer from being mislabeled trusted; precision
+// is a decayed, NON-gameable signal (unlike a reviewer's self-reported confidence).
+export const HIGH_PRECISION_FLOOR = 0.7;
+export const PROTECT_MIN_DECISIONS = 8;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface ProviderPrecision {
@@ -58,6 +64,22 @@ export function loadProviderPrecision(
   } catch {
     return new Map();
   }
+}
+
+// #4: base-provider keys whose precision is >= floor with >= minDecisions samples — the
+// "high track record" set whose findings the soft demoters (critic likely_fp / confidence-
+// floor) must NOT silently downgrade. Anti-suppression: membership only PREVENTS a demote.
+export function highPrecisionProviders(
+  precision: Map<string, ProviderPrecision>,
+  opts: { floor: number; minDecisions: number },
+): Set<string> {
+  const out = new Set<string>();
+  for (const [p, pr] of precision) {
+    if (pr.precision !== null && pr.tp + pr.fp >= opts.minDecisions && pr.precision >= opts.floor) {
+      out.add(p);
+    }
+  }
+  return out;
 }
 
 // Attach reviewer_precision to each finding for its contributing base providers

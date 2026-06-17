@@ -52,6 +52,8 @@ export function findingBadges(f: Finding): string | null {
   if (f.fp_cluster_match?.suppressed)
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
+  if (f.protected_high_precision)
+    badges.push("🛡 kept blocking — high-track-record reviewer (soft demote overridden)");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
   if (f.claimed_fixed_recurred)
     // A pinned recurrence that survived the demote chain (CRITICAL/WARN) is blocking →

@@ -7,6 +7,7 @@ import type { Verdict } from "../schemas/pending-report.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
 import { isHarnessConfigPath } from "../utils/git.ts";
 import type { CriticVerdict } from "./critic.ts";
+import { normalizeProviders } from "./decision-outcome.ts";
 import { ruleIdToken0 } from "./fp-ledger/clusters.ts";
 
 export interface AggregateInput {
@@ -50,6 +51,13 @@ export interface AggregateInput {
   // security is never softened; correctness goes to INFO (advisory) when demoteCorrectness is on;
   // pure quality/style is demoted one step (CRITICAL→WARN, WARN→INFO). Empty/absent → off.
   repUnreliable?: Set<string>;
+  // #4 (field report 2026-06-17): base-provider keys with a high historical precision
+  // (>= HIGH_PRECISION_FLOOR, >= PROTECT_MIN_DECISIONS samples). A BLOCKING finding whose
+  // every contributing base provider is in this set is EXEMPT from the two SOFT demoters
+  // (critic likely_fp + confidence-floor) — it stays at full severity + is tagged
+  // protected_high_precision. Anti-suppression: only ever PREVENTS a demote, never drops or
+  // softens. NEVER protects a self_refuted finding (T1) or any HARD suppressor. Empty/absent → off.
+  protectedReviewers?: Set<string>;
   // When true, a lone unreliable reviewer's uncorroborated CORRECTNESS finding is
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
   // (preserves the pre-feature behavior; production passes true from config).
@@ -456,6 +464,16 @@ export function aggregate(input: AggregateInput): AggregateResult {
       : deduped;
 
   const critic = input.critic;
+  // #4: a BLOCKING finding whose every contributing base provider is high-precision is
+  // protected from the SOFT demoters. Never protects a self_refuted (T1) or INFO finding —
+  // only a real, blocking finding from a trusted reviewer. Anti-suppression by construction.
+  const protectedReviewers = input.protectedReviewers;
+  const isProtected = (f: Finding): boolean => {
+    if (!protectedReviewers || protectedReviewers.size === 0) return false;
+    if (f.severity === "INFO" || f.self_refuted === true) return false;
+    const provs = normalizeProviders(f);
+    return provs.length > 0 && provs.every((p) => protectedReviewers.has(p));
+  };
   const survivors: Finding[] = [];
   const criticDropped: Finding[] = [];
   for (const f of taggedFindings) {
@@ -478,6 +496,14 @@ export function aggregate(input: AggregateInput): AggregateResult {
       // demote tiers already exempt majority. Mirror that here so the critic
       // can't silently flip a corroborated FAIL into a SOFT-PASS.
       const isCorroborated = f.consensus === "unanimous" || f.consensus === "majority";
+      // #4: a high-precision reviewer's blocking finding is kept at full severity even when
+      // the critic calls it likely_fp — the dangerous direction is a demoted TRUE positive
+      // (field report F-005). Tag it so the agent sees WHY it stayed blocking; do NOT set
+      // critic_verdict (that renders the dismissive "likely FP" badge).
+      if (!isCriticalSecurity && !isCorroborated && isProtected(f)) {
+        survivors.push({ ...f, protected_high_precision: true });
+        continue;
+      }
       if (!isCriticalSecurity && !isCorroborated) {
         const next = DEMOTE[f.severity];
         if (next === "drop") {
@@ -602,6 +628,9 @@ export function aggregate(input: AggregateInput): AggregateResult {
           if (maxConfidence >= floor) return f;
           if (f.consensus === "unanimous" || f.consensus === "majority") return f;
           if (f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f)) return f;
+          // #4: a high-precision reviewer's blocking finding is not demoted for low
+          // self-reported confidence — its track record outweighs one low confidence call.
+          if (isProtected(f)) return { ...f, protected_high_precision: true };
           if (f.severity === "INFO") return { ...f, low_confidence: true };
           const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — advisory only.`;
           // Truncate the ORIGINAL (not the note) so the explanation is never lost

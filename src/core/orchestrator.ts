@@ -77,9 +77,13 @@ import { renderHouseRules } from "./house-rules.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
+  HIGH_PRECISION_FLOOR,
+  PROTECT_MIN_DECISIONS,
   PROVIDER_PRECISION_MIN_DECISIONS,
   PROVIDER_PRECISION_WINDOW_DAYS,
+  type ProviderPrecision,
   annotateFindingsWithPrecision,
+  highPrecisionProviders,
   loadProviderPrecision,
 } from "./provider-precision.ts";
 import {
@@ -1702,6 +1706,36 @@ export class Orchestrator {
         .catch(() => undefined);
     }
 
+    // #4 + #8: load per-provider precision ONCE here (reused for the #4 protect-set below AND
+    // the #8 annotation after aggregate), so the gate scans the audit window only once. Gate
+    // mode only; best-effort (empty/undefined on any error → both features simply no-op).
+    const wantPrecision =
+      this.input.reportMode !== "one-shot" &&
+      (this.input.config.phases.review.protectHighPrecisionReviewers !== false ||
+        this.input.config.phases.review.providerPrecisionContext === true);
+    let providerPrecision: Map<string, ProviderPrecision> | undefined;
+    if (wantPrecision) {
+      try {
+        providerPrecision = loadProviderPrecision(repo, {
+          windowDays: PROVIDER_PRECISION_WINDOW_DAYS,
+          now,
+        });
+      } catch {
+        providerPrecision = undefined;
+      }
+    }
+    // #4: protect high-track-record reviewers' blocking findings from the soft demoters.
+    const protectedReviewers =
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.protectHighPrecisionReviewers !== false &&
+      providerPrecision &&
+      providerPrecision.size > 0
+        ? highPrecisionProviders(providerPrecision, {
+            floor: HIGH_PRECISION_FLOOR,
+            minDecisions: PROTECT_MIN_DECISIONS,
+          })
+        : undefined;
+
     const agg = aggregate({
       findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
@@ -1723,6 +1757,7 @@ export class Orchestrator {
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
       ...(repUnreliable && repUnreliable.size > 0 ? { repUnreliable } : {}),
+      ...(protectedReviewers && protectedReviewers.size > 0 ? { protectedReviewers } : {}),
       ...(opts.cycleRejectedSignatures && opts.cycleRejectedSignatures.length > 0
         ? { cycleRejected: new Set(opts.cycleRejectedSignatures) }
         : {}),
@@ -1763,10 +1798,11 @@ export class Orchestrator {
       this.input.config.phases.review.providerPrecisionContext
     ) {
       try {
-        const precision = loadProviderPrecision(repo, {
-          windowDays: PROVIDER_PRECISION_WINDOW_DAYS,
-          now,
-        });
+        // Reuse the precision map already loaded for #4 (same audit window) — only fall
+        // back to a fresh load if it wasn't loaded (e.g. protect disabled but context on).
+        const precision =
+          providerPrecision ??
+          loadProviderPrecision(repo, { windowDays: PROVIDER_PRECISION_WINDOW_DAYS, now });
         reportFindings = annotateFindingsWithPrecision(reportFindings, precision, {
           minDecisions: PROVIDER_PRECISION_MIN_DECISIONS,
         });

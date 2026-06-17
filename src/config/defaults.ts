@@ -73,6 +73,9 @@ export const defaultConfig = {
       // #1 (field report 2026-06-17): demote a finding whose own conclusion retracts it
       // ("…appears safe", "No issue") to INFO. Deterministic, demote-only, fail-safe.
       selfRefutationFilter: true,
+      // #4 (field report 2026-06-17): protect a high-track-record reviewer's findings from
+      // the soft demoters (critic/confidence). Anti-suppression; default ON.
+      protectHighPrecisionReviewers: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.

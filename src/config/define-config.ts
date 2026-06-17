@@ -81,6 +81,11 @@ export const ConfigSchema = z.object({
       // OWN conclusion retracts it ("…appears safe", "No issue", "No defect"). Deterministic,
       // demote-only, fail-safe (positive-signal + negation backstop). Default ON via defaults.ts.
       selfRefutationFilter: z.boolean().optional(),
+      // Field report 2026-06-17 #4: do NOT let the SOFT demoters (critic likely_fp /
+      // confidence-floor) downgrade a finding from a high-track-record reviewer (precision
+      // >= 0.70 with enough samples). Anti-suppression (only prevents a demote); never
+      // affects hard suppressors or self-refuted findings. Default ON via defaults.ts.
+      protectHighPrecisionReviewers: z.boolean().optional(),
       // Slice 2 (field report #9): demote security findings on test/fixture files to
       // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
       // defaults.ts. Set false for repos that ship production code under a tests/ path.
