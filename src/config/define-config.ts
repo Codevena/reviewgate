@@ -77,6 +77,10 @@ export const ConfigSchema = z.object({
       // M5 Part A: demote findings outside the changed hunks to INFO (advisory).
       // Default ON via defaults.ts (deep-merged) — the gate primarily reviews the change.
       scopeToDiff: z.boolean().optional(),
+      // Field report 2026-06-17 #1: demote a finding to INFO (advisory) when the reviewer's
+      // OWN conclusion retracts it ("…appears safe", "No issue", "No defect"). Deterministic,
+      // demote-only, fail-safe (positive-signal + negation backstop). Default ON via defaults.ts.
+      selfRefutationFilter: z.boolean().optional(),
       // Slice 2 (field report #9): demote security findings on test/fixture files to
       // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
       // defaults.ts. Set false for repos that ship production code under a tests/ path.

@@ -70,6 +70,9 @@ export const defaultConfig = {
       fileContextPerFileBytes: 8_000,
       fileContextWindowLines: 40,
       scopeToDiff: true,
+      // #1 (field report 2026-06-17): demote a finding whose own conclusion retracts it
+      // ("…appears safe", "No issue") to INFO. Deterministic, demote-only, fail-safe.
+      selfRefutationFilter: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.

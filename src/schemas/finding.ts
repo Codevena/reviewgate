@@ -79,6 +79,12 @@ export const FindingSchema = z.object({
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),
+  // Field report 2026-06-17 #1: set true when the deterministic self-refutation pass
+  // demoted this finding to INFO because the reviewer's OWN conclusion clause retracts it
+  // ("…appears safe", "No issue", "No defect", "Safe."). Demote-only, category-independent
+  // (a first-party retraction, like fact_invalid), fail-safe (positive-signal + negation
+  // backstop). Advisory, non-blocking.
+  self_refuted: z.boolean().optional(),
   // Slice 1 (field report #1): set true when the aggregator demoted this finding to INFO
   // because its subject (message/suggested_fix) targets Reviewgate's own <REDACTED:…>
   // placeholder — almost always the reviewer mistaking a stripped secret for broken code.

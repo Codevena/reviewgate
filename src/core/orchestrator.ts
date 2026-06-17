@@ -92,6 +92,7 @@ import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
 import { buildRunSummary } from "./run-summary.ts";
+import { demoteSelfRefuting } from "./self-refutation.ts";
 
 // Persist the SSRF fetcher's per-attempt egress log (Gate 9) to the hash-chained
 // audit trail — one `brain.egress` event per fetch attempt (allow or deny, with
@@ -1525,10 +1526,18 @@ export class Orchestrator {
     // the gate on a phantom (both 2026-06-05 field reports). Demote-only + fail-safe:
     // any fs uncertainty leaves the finding blocking. Does NOT exempt security/
     // correctness — a non-existent line is a fabrication in any category.
-    const allFindings = validateFindingFacts(
+    const factCheckedFindings = validateFindingFacts(
       symbolFindings,
       this.input.repoRoot,
       parseDeletedPaths(this.input.diff),
+    );
+    // #1 (field report 2026-06-17): demote a finding whose OWN conclusion retracts it
+    // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
+    // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
+    // signal → category-independent; deterministic, demote-only, fail-safe.
+    const allFindings = demoteSelfRefuting(
+      factCheckedFindings,
+      this.input.config.phases.review.selfRefutationFilter !== false,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
