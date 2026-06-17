@@ -9,6 +9,12 @@ import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import { StateStore } from "../../core/state-store.ts";
 import {
+  SETTLE_INTERVAL_MS,
+  SETTLE_MAX_MS,
+  SETTLE_QUIET_WINDOW_MS,
+  awaitWorkspaceSettle,
+} from "../../core/workspace-settle.ts";
+import {
   BASE_TS_NO_SCOPING_SENTINEL,
   handleReset,
   handleTrigger,
@@ -55,6 +61,9 @@ interface ReviewContext {
   // was recovered against a wider fallback base — surfaced to reviewers so the diff
   // isn't trusted as a complete picture even when collectDiff didn't itself truncate.
   diffIncomplete: boolean;
+  // #7: set when the pre-review settle-check hit its cap without the working tree
+  // going quiet (a writer was still active). Render-only banner downstream.
+  workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
 }
 
 // Everything produced by the pre-loop setup phase, bundled so it can be computed
@@ -423,13 +432,36 @@ export async function resolveReviewBase(
 // HEAD-advanced synthesis path). Extracted so runStopGate can bound it with a
 // setup budget (M-A0.2). The git helpers are injected so the budget path can be
 // exercised deterministically in tests.
-async function gatherReviewContext(
+export async function gatherReviewContext(
   input: GateInput,
   state: StateStore,
   gitInfoFn: typeof collectGitInfo,
   diffFn: typeof collectDiff,
+  settleBeforeReview: boolean,
 ): Promise<ReviewContext> {
   const gitInfo = await gitInfoFn(input.repoRoot);
+  // #7: before snapshotting the working tree (either diffFn call below), wait
+  // (bounded ≤ SETTLE_MAX_MS) for it to stop changing so we don't review a
+  // half-written state. Best-effort and fail-safe — it NEVER blocks/skips the
+  // review; on a churning tree it only records a banner. Runs inside the gate's
+  // setup budget; a thrown error is swallowed (review proceeds, no banner).
+  let workspaceUnsettled: { last_write_ms_ago: number; waited_ms: number } | undefined;
+  if (settleBeforeReview) {
+    try {
+      const r = await awaitWorkspaceSettle({
+        repoRoot: input.repoRoot,
+        quietWindowMs: SETTLE_QUIET_WINDOW_MS,
+        settleIntervalMs: SETTLE_INTERVAL_MS,
+        maxSettleMs: SETTLE_MAX_MS,
+        now: () => Date.now(),
+        sleep: (ms) => new Promise((res) => setTimeout(res, ms)),
+      });
+      if (!r.settled)
+        workspaceUnsettled = { last_write_ms_ago: r.lastWriteMsAgo, waited_ms: r.waitedMs };
+    } catch {
+      /* best-effort: a settle failure must never block or skip the review */
+    }
+  }
   // Review base: the pre-batch HEAD captured in dirty.flag, so commit-per-task
   // work (committed mid-batch) is reviewed too — not just the working tree.
   const dp = dirtyFlagPath(input.repoRoot);
@@ -526,7 +558,13 @@ async function gatherReviewContext(
   }
   const diff =
     precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
-  return { gitInfo, diff, reviewBase, diffIncomplete: dirtyFlagUnparsed };
+  return {
+    gitInfo,
+    diff,
+    reviewBase,
+    diffIncomplete: dirtyFlagUnparsed,
+    ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
+  };
 }
 
 // The stop-hook review pipeline, run under the gate lock by runGate. Split out so
@@ -562,7 +600,13 @@ async function runStopGate(
         hookStdin: parsedStdin as { session?: { model?: string } } | null,
       });
       const adapters = buildAdapters(cfg, input.providerOverrides);
-      const ctx = await gatherReviewContext(input, state, gitInfoFn, diffFn);
+      const ctx = await gatherReviewContext(
+        input,
+        state,
+        gitInfoFn,
+        diffFn,
+        cfg.phases.review.settleBeforeReview ?? false,
+      );
       return { host, adapters, ctx };
     })();
     setup =
@@ -575,7 +619,7 @@ async function runStopGate(
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
   const { host, adapters, ctx } = setup;
-  const { gitInfo, diff, reviewBase } = ctx;
+  const { gitInfo, diff, reviewBase, workspaceUnsettled } = ctx;
   // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
   // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
   // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never
@@ -609,6 +653,7 @@ async function runStopGate(
     // corrupt dirty.flag — isn't trusted as complete.
     diffIncomplete,
     ...(largeDiff ? { largeDiff } : {}),
+    ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
   });
 
   const driver = new LoopDriver({
