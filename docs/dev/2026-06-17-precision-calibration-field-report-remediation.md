@@ -256,8 +256,40 @@ whole-branch)** must PASS — then merge + (with permission) push + `bun run bui
 - [x] **T_timing** preliminary-pass label (commit `feat(#3-timing)`)
 - [x] **T3** solo low-track-record INFO collapse (commit `feat(#3,#5)`)
 - [x] **T7** size-aware reviewer timeout cap (commit `feat(#7)`)
-- [ ] DoD review gate (codex + opus)
+- [x] **DoD review gate (codex + opus)** — 4 real findings caught + fixed; 1 rejected (below)
 - [ ] Merge + push + deploy (await user OK)
+
+### DoD review outcome (codex foreground + opus whole-branch agent)
+
+Both reviewers ran `bunx tsc --noEmit` + `bun run lint` + `bun test` themselves. Real findings,
+all **fixed + regression-tested**:
+
+1. **[CRITICAL, opus]** self-refutation fail-open: the matcher demoted imperative-mood
+   recommendations ("Verify the path is safe", "Ensure the chain is valid", "Make sure the
+   encoding is correct") → de-gated real bugs. **Fix:** dropped the ambiguous correctness
+   adjectives (correct/valid/sound/secure/…) from the all-clear family (clearance signal is
+   safety/no-issue, not correctness) + a RECOMMENDATION/imperative guard. (`fix(#1,#6)`)
+2. **[WARN, codex]** self-refuted finding could be DROPPED end-to-end (critic INFO+likely_fp →
+   drop), breaking the "demote-to-INFO, never drop, stays visible" contract. **Fix:** the
+   critic pass now skips `self_refuted` findings. (`fix(#1)`)
+3. **[WARN, codex]** `protected_high_precision` stamped before the hard suppressors → a later
+   scope/fp demote to INFO left a misleading "🛡 kept blocking" badge. **Fix:** gate the badge
+   on a non-INFO severity. (`fix(#4)`)
+4. **[WARN, opus+codex]** the #6 prompt directive wasn't in the cache key (only RG_VERSION on
+   deploy). **Fix:** fold the preamble sha256 into the cache key. (`fix(#1,#6)`)
+
+**Rejected (reviewer_was_wrong):** codex's final WARN — "`reviewer_precision` in pending.json
+violates render-only" — is **pre-existing #8 behavior** (master `orchestrator.ts:1749` +
+`finding.ts:105`, shipped `f39bf98 feat(#8)`), NOT introduced by this branch: T4 only *reused*
+the already-loaded precision map, so pending.json is byte-identical to master's #8 output.
+`reviewer_precision` is intentional, schema-documented **advisory** metadata that never affects
+the verdict/gating. The "render-only / pending.json unchanged" claim applies to the new render
+slices (T2/T3/T8/T_timing), which touch **pending.md only**; #8's advisory annotation is the
+sole (pre-existing, by-design) pending.json writer. Opus (senior tiebreaker) confirmed #8
+render-only/verdict-unchanged and returned **PASS** after fix #1.
+
+Final: `bunx tsc --noEmit` clean · `bun run lint` clean · `bun test tests/unit` = **1918 pass /
+0 fail**.
 
 ### Scope decisions taken during implementation
 
