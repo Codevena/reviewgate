@@ -128,6 +128,11 @@ export const ConfigSchema = z.object({
       // (tp/fp) of the provider(s) that raised it — ADVISORY context for the agent's
       // accept/reject decision; never changes severity/verdict. Default on.
       providerPrecisionContext: z.boolean().optional(),
+      // #7: before collectDiff snapshots the working tree, briefly wait (≤ ~1.5s) for
+      // working-tree files to stop changing (a background build/codegen or a parallel
+      // session may still be writing), so the panel reviews a quiescent snapshot.
+      // Bounded and fail-safe: only delays a review, never skips it. Default on.
+      settleBeforeReview: z.boolean().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })

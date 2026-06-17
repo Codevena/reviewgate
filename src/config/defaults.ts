@@ -103,6 +103,9 @@ export const defaultConfig = {
       // provider(s) — ADVISORY context for the agent's accept/reject decision.
       // Never changes severity or verdict. Default ON.
       providerPrecisionContext: true,
+      // #7: wait (bounded) for the working tree to stop changing before snapshotting
+      // it for review, so the panel doesn't review a half-written state. Default ON.
+      settleBeforeReview: true,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
