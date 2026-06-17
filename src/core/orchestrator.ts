@@ -1035,6 +1035,12 @@ export class Orchestrator {
     ): Promise<ReviewerRun> => {
       const adapter = this.input.adapters[provider];
       const reviewStart = Date.now();
+      // #7: clamp this reviewer's per-run timeout to the triage cap for a small diff (never
+      // ABOVE the provider's own timeout). The full panel still runs — only the wall-clock
+      // ceiling drops, so a tiny change can't stall behind one slow slot for the full default.
+      const capMs = triage.reviewerTimeoutCapMs ?? null;
+      const effectiveTimeoutMs =
+        capMs !== null ? Math.min(providerCfg.timeoutMs, capMs) : providerCfg.timeoutMs;
       if (!adapter) {
         return {
           res: {
@@ -1072,7 +1078,7 @@ export class Orchestrator {
                 workingDir: repo,
                 findingsPath,
                 tmpDir,
-                walltimeMs: providerCfg.timeoutMs,
+                walltimeMs: effectiveTimeoutMs,
                 writablePaths: this.input.config.sandbox.writablePaths,
                 deniedReads: this.input.config.sandbox.deniedReads,
               }),
@@ -1080,7 +1086,7 @@ export class Orchestrator {
             };
       try {
         const res = await adapter.review({
-          cfg: { ...providerCfg, model },
+          cfg: { ...providerCfg, model, timeoutMs: effectiveTimeoutMs },
           reviewerId: `${provider}-${persona}`,
           promptFile,
           workingDir: repo,
@@ -1264,9 +1270,15 @@ export class Orchestrator {
           // reviewer that hit its OWN timeoutMs gets the configured timeout cooldown
           // (loop.timeoutCooldownMs; 0 keeps timeouts immediately retryable). Falls
           // back to the module constant for a config written before the field existed.
-          const timeoutCooldownMs = opts.signal?.aborted
-            ? 0
-            : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
+          // #7: when a triage timeout cap is active, a `timeout` may be the GATE's
+          // lowered ceiling tearing the run down (not the provider's fault) — same posture
+          // as the gate self-deadline abort. Suppress the cooldown so a small-diff cap never
+          // wrongly cools/penalises a healthy reviewer.
+          const triageCapActive = (triage.reviewerTimeoutCapMs ?? null) !== null;
+          const timeoutCooldownMs =
+            opts.signal?.aborted || triageCapActive
+              ? 0
+              : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
           // F-01: anchor each effect at a FRESH clock read (the run has just
           // settled), not the pre-panel `now` — a parsed relative reset
           // ("retry after N seconds") anchored at panel START would under-cool
