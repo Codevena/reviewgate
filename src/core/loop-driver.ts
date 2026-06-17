@@ -1225,6 +1225,7 @@ export class LoopDriver {
         cycleRejectedSignatures: state.cycle_rejected_signatures,
         claimedFixedSignatures: state.claimed_fixed_signatures,
         priorAdjudications: priorAdjs,
+        priorLocations: [...new Set(state.location_history.flat())],
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -1281,6 +1282,7 @@ export class LoopDriver {
         cycleRejectedSignatures: state.cycle_rejected_signatures,
         claimedFixedSignatures: state.claimed_fixed_signatures,
         priorAdjudications: priorAdjs,
+        priorLocations: [...new Set(state.location_history.flat())],
       });
     }
 

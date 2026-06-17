@@ -52,6 +52,10 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
     );
+  if (f.location_recurred)
+    badges.push(
+      "🔁 this region was raised in an earlier iteration this cycle — verify it is a genuinely NEW issue before re-fixing (possible reviewer contradiction)",
+    );
   if (f.rule_citation_unverified)
     badges.push(
       "📜 asserts a project/house rule without a file:line citation — verify the rule exists",

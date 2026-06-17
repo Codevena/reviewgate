@@ -104,6 +104,12 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // Non-convergence #1 (field report 2026-06-17): set true when this finding's file:line region
+  // was already raised as a finding in an EARLIER iteration of the current review cycle. ADVISORY
+  // flag only — never demotes — so the agent verifies it is a genuinely NEW issue before
+  // re-fixing (a reviewer re-litigating a settled line under a fresh signature is the treadmill;
+  // the location-recurrence escalation fires once it recurs maxLocationRecurrence times).
+  location_recurred: z.boolean().optional(),
   // #6 instrumentation (field report 2026-06-17): set true when this finding asserts a
   // project/house rule (e.g. "CLAUDE.md says…") WITHOUT a verifiable file:line citation. Tag +
   // count ONLY — never demotes (non-suppressing). Rendered as an advisory badge; the per-run

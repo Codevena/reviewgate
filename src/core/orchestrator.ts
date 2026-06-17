@@ -221,6 +221,10 @@ export interface IterationRunner {
     // agent reason) rendered into the reviewer prompt so it does not re-litigate settled
     // regions. Hashed into the cache key so a changed adjudication set re-runs the panel.
     priorAdjudications?: Adjudication[];
+    // Non-convergence #1: region keys (`file:line-bucket`) raised in EARLIER iterations this
+    // cycle (state.location_history flattened). A current finding on one of these is FLAGGED
+    // (advisory badge, never demoted) so the agent doesn't blindly re-fix a re-litigated line.
+    priorLocations?: string[];
   }): Promise<IterationResult>;
 }
 
@@ -493,6 +497,7 @@ export class Orchestrator {
     cycleRejectedSignatures?: string[];
     claimedFixedSignatures?: Record<string, number>;
     priorAdjudications?: Adjudication[];
+    priorLocations?: string[];
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1864,6 +1869,16 @@ export class Orchestrator {
       const rc = tagUncitedRuleClaims(reportFindings);
       reportFindings = rc.findings;
       ruleUncited = rc.uncitedCount;
+    }
+
+    // Non-convergence #1: FLAG (never demote) a finding whose region was already raised in an
+    // EARLIER iteration this cycle, so the agent verifies it is genuinely NEW before re-fixing a
+    // re-litigated line. Advisory only; the location-recurrence escalation handles the loop.
+    const priorLocSet = new Set(opts.priorLocations ?? []);
+    if (priorLocSet.size > 0) {
+      reportFindings = reportFindings.map((f) =>
+        priorLocSet.has(locationKey(f.file, f.line_start)) ? { ...f, location_recurred: true } : f,
+      );
     }
 
     await this.writeReport(
