@@ -51,8 +51,10 @@ grounding/critic/aggregate so the demoted INFO flows through severity counting.
 - **Negation/conditional backstop:** abort the demote if a trailing
   `but/however/unless/if/except/not ` precedes the benign token → "this WOULD be safe IF
   X but X is missing" never matches.
-- Category-independent (a self-retracted finding is non-actionable in any category —
-  same posture as `fact-check`, which is the first-party-signal precedent).
+- **Security/correctness EXEMPT** (dogfood-gate DoD CRITICAL): unlike `fact-check` (provable
+  ground truth), this keys on the reviewer's UNTRUSTED prose, so a confused/injected reviewer
+  could retract a real vuln. The hard-veto categories stay blocking (matches reputation/
+  grounding/critic). Other categories demote regardless of severity.
 - Flag `phases.review.selfRefutationFilter` (default true; `z.boolean().optional()` + defaults.ts).
 - **Files:** `src/core/self-refutation.ts` (new), `orchestrator.ts`, `schemas/finding.ts`
   (`self_refuted?`), `config/{defaults,define-config}.ts`, `report-writer.ts` (note).
