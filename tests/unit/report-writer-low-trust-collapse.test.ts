@@ -98,6 +98,22 @@ describe("renderMd low-track-record collapse (#3/#5)", () => {
     expect(out).toContain("F-LOW");
   });
 
+  it("#1 cold-start: a low-precision reviewer still in its exploration budget (<8 samples) is NOT collapsed", async () => {
+    // 2 TP / 4 FP = 33% but only 6 decisions → below the calibration threshold → surfaces in
+    // full so a new-but-correct reviewer can bootstrap (watch-item #1). 17-sample reviewer IS.
+    const sixSamples = [{ provider: "newcomer", tp: 2, fp: 4, precision: 2 / 6 }];
+    const out = await md([f({ id: "F-NEW", reviewer_precision: sixSamples })]);
+    expect(out).not.toContain("<details>");
+    expect(out).toContain("F-NEW");
+  });
+
+  it("#1 cold-start: once calibrated (≥8 samples) a low-precision reviewer's solo INFO IS collapsed", async () => {
+    const eightSamples = [{ provider: "calibrated", tp: 2, fp: 6, precision: 2 / 8 }];
+    const out = await md([f({ id: "F-CAL", reviewer_precision: eightSamples })]);
+    expect(out).toContain("<details>");
+    expect(out).toContain("F-CAL");
+  });
+
   it("#4: a protected finding later hard-demoted to INFO does NOT render 'kept blocking' (codex DoD)", async () => {
     // protected_high_precision is stamped before the hard suppressors; if scopeToDiff later
     // demotes the finding to advisory INFO, the "kept blocking" badge would be a lie.

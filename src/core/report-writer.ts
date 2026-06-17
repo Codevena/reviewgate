@@ -13,6 +13,7 @@ import {
   planReviewJsonPath,
   planReviewMdPath,
 } from "../utils/paths.ts";
+import { PROTECT_MIN_DECISIONS } from "./provider-precision.ts";
 
 function ensureDir(p: string): void {
   const d = dirname(p);
@@ -161,6 +162,14 @@ function fmtFinding(f: Finding): string {
 // this floor (the field report's 29%-precision reviewer is well under it). Render-only — it
 // only changes WHERE a note renders (collapsed block vs inline), never WHETHER it renders.
 const LOW_TRACK_RECORD_PRECISION = 0.4;
+// Cold-start / exploration budget (flashbuddy peer-review watch-item #1): a reviewer only
+// becomes collapse-eligible once it is CALIBRATED — i.e. it has the SAME minimum number of
+// decisions the #4 protect path requires (PROTECT_MIN_DECISIONS). Below that, all its findings
+// surface in full so a new-but-correct reviewer can bootstrap a track record instead of being
+// pre-emptively folded on a noisy first few calls. Sharing the protect threshold keeps a single
+// "is this reviewer calibrated?" definition for both the low-trust collapse and the high-trust
+// protect (symmetric: < floor ⇒ collapse, ≥ high-water ⇒ protect, in between ⇒ neither).
+const COLLAPSE_MIN_DECISIONS = PROTECT_MIN_DECISIONS;
 
 // #3/#5 (field report 2026-06-17): a solo, low-track-record, non-security/correctness INFO is
 // noise the agent must mentally filter (the 29%-precision openrouter flood). Fold these into a
@@ -175,7 +184,14 @@ function isLowTrustSoloInfo(f: Finding): boolean {
     return false;
   }
   const cells = f.reviewer_precision ?? [];
-  return cells.some((c) => c.precision !== null && c.precision < LOW_TRACK_RECORD_PRECISION);
+  // Require a CALIBRATED track record (≥ COLLAPSE_MIN_DECISIONS samples) before collapsing —
+  // a reviewer still inside its exploration budget surfaces in full (watch-item #1).
+  return cells.some(
+    (c) =>
+      c.precision !== null &&
+      c.precision < LOW_TRACK_RECORD_PRECISION &&
+      c.tp + c.fp >= COLLAPSE_MIN_DECISIONS,
+  );
 }
 
 function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust = true): string {
