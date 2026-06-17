@@ -7,8 +7,15 @@ import type { Finding } from "../schemas/finding.ts";
 // 2026-06-17: ~6/14 findings self-refuted). Nothing downstream reads the finding's own
 // conclusion, so a self-contradicting WARN/CRITICAL lands in pending.md as a blocking
 // finding the agent must fix-or-reject. This pass demotes such a finding to INFO
-// (advisory). The reviewer's OWN terminal retraction is a FIRST-PARTY signal — like
-// fact-check's provably-non-existent line — so the demote is category-independent.
+// (advisory). The reviewer's OWN terminal retraction is a first-party signal.
+//
+// SECURITY/CORRECTNESS ARE EXEMPT (dogfood DoD CRITICAL): unlike fact-check — which demotes on
+// PROVABLE ground truth (the cited line does not exist) — this pass keys on the reviewer's
+// untrusted PROSE. A confused or prompt-injected reviewer could append "No vulnerability here"
+// to a REAL security/correctness finding, so demoting those on self-text would fail the gate
+// OPEN on the highest-risk categories. The whole codebase already refuses to soften
+// security/correctness on an untrusted signal (reputation never demotes security; grounding +
+// critic exempt CRITICAL security/correctness) — self-refutation follows suit.
 //
 // FAIL-SAFE by construction (a suppressor MUST fail safe):
 //   • POSITIVE-signal only — demote ONLY when the finding's CONCLUSION clause IS a benign
@@ -112,6 +119,10 @@ export function demoteSelfRefuting(findings: Finding[], enabled = true): Finding
   return findings.map((f) => {
     if (f.severity === "INFO") return f; // already advisory — idempotent no-op
     if (f.deterministic) return f; // check-tier ground truth — never demote
+    // Never soften a security/correctness finding on the reviewer's own untrusted prose
+    // (dogfood DoD: a confused/injected reviewer could retract a real vuln). Hard-veto
+    // categories stay blocking — the agent dispositions them with a decision instead.
+    if (f.category === "security" || f.category === "correctness") return f;
     if (isSelfRefutingText(f.message) || isSelfRefutingText(f.details)) {
       return demote(f, NOTE);
     }

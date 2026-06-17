@@ -46,19 +46,11 @@ describe("demoteSelfRefuting — POSITIVE (must demote to INFO)", () => {
       { details: "The value is validated before use, so this is safe." },
     ],
     [
-      "CRITICAL self-refute",
+      "CRITICAL (non-hard-veto) self-refute",
       {
         severity: "CRITICAL",
-        category: "security",
-        details: "On closer look the input is sanitized. No vulnerability here.",
-      },
-    ],
-    [
-      "correctness self-refute",
-      {
-        severity: "CRITICAL",
-        category: "correctness",
-        details: "Traced the index math carefully. This is fine.",
+        category: "performance",
+        details: "On closer look this allocation is pooled. No issue here.",
       },
     ],
   ];
@@ -124,6 +116,24 @@ describe("demoteSelfRefuting — NEGATIVE (must stay blocking)", () => {
     [
       "imperative: make sure the encoding is correct",
       { details: "Make sure the encoding is correct." },
+    ],
+    // dogfood DoD CRITICAL: never soften a security/correctness finding on the reviewer's own
+    // untrusted prose — a confused/injected reviewer could retract a real vuln. Exempt always.
+    [
+      "security CRITICAL self-refute is EXEMPT",
+      {
+        severity: "CRITICAL",
+        category: "security",
+        details: "On closer look the input is sanitized. No vulnerability here.",
+      },
+    ],
+    [
+      "correctness WARN self-refute is EXEMPT",
+      {
+        severity: "WARN",
+        category: "correctness",
+        details: "Traced the index math carefully. This is fine.",
+      },
     ],
   ];
   for (const [name, over] of negatives) {
