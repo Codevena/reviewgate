@@ -104,6 +104,11 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // #6 instrumentation (field report 2026-06-17): set true when this finding asserts a
+  // project/house rule (e.g. "CLAUDE.md says…") WITHOUT a verifiable file:line citation. Tag +
+  // count ONLY — never demotes (non-suppressing). Rendered as an advisory badge; the per-run
+  // count is persisted in RunSummary so the #6 directive's effect is measurable over time.
+  rule_citation_unverified: z.boolean().optional(),
   // #4 (field report 2026-06-17): set true when a SOFT demoter (critic likely_fp or the
   // confidence-floor) WOULD have demoted this finding but it was kept at full blocking
   // severity because its sole contributing reviewer has a high historical precision

@@ -174,5 +174,16 @@ export function renderStats(report: StatsReport): string {
   }
   out += "  (precision = real / (real + FP), windowed by decision time — a rate, not per-run)\n";
 
+  // ── Rule citations (#6 instrumentation) ─────────────────────────────────────
+  if (report.ruleCitation) {
+    out += section("Rule citations");
+    out += row(
+      "uncited rule claims",
+      `${report.ruleCitation.uncitedTotal} across ${report.ruleCitation.panelRuns} panel run(s)`,
+    );
+    out +=
+      "  (findings asserting a project/house rule with no file:line citation — directive signal)\n";
+  }
+
   return out;
 }

@@ -490,6 +490,40 @@ describe("aggregate", () => {
   });
 });
 
+describe("ruleCitation (#6 instrumentation)", () => {
+  const mkRun = (
+    id: string,
+    source: LoadedRun["summary"]["source"],
+    ruleUncited?: number,
+  ): LoadedRun => ({
+    ts: "2026-01-01T10:00:00.000Z",
+    run_id: id,
+    iter: 1,
+    summary: {
+      verdict: "FAIL",
+      source,
+      counts: { critical: 0, warn: 0, info: 0 },
+      cost_usd: 0,
+      duration_ms: 1,
+      demoted: 0,
+      signatures: [],
+      providers: [],
+      ...(ruleUncited !== undefined ? { rule_uncited: ruleUncited } : {}),
+    },
+  });
+
+  it("sums rule_uncited over PANEL runs only (cache excluded), defaulting missing to 0", () => {
+    const r = aggregate(
+      [mkRun("a", "panel", 2), mkRun("b", "panel"), mkRun("c", "cache", 5)],
+      0,
+      [],
+      [],
+    );
+    expect(r.ruleCitation?.uncitedTotal).toBe(2); // 2 + 0 (missing) ; cache's 5 excluded
+    expect(r.ruleCitation?.panelRuns).toBe(2);
+  });
+});
+
 describe("precision", () => {
   const decisions: DecisionOutcome[] = [
     { finding_id: "F-1", severity: "CRITICAL", bucket: "tp", providers: ["codex"] },

@@ -79,6 +79,9 @@ export const defaultConfig = {
       // #3/#5 (field report 2026-06-17): fold solo low-track-record INFO into a collapsed
       // block in pending.md (render-only; nothing dropped). Default ON.
       collapseLowTrustSoloInfo: true,
+      // #6 (field report 2026-06-17): tag + count uncited project/house-rule findings
+      // (instrumentation for the rule-citation directive). Non-suppressing. Default ON.
+      ruleCitationCheck: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.

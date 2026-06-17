@@ -95,6 +95,7 @@ import {
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
+import { tagUncitedRuleClaims } from "./rule-citation.ts";
 import { buildRunSummary } from "./run-summary.ts";
 import { demoteSelfRefuting } from "./self-refutation.ts";
 
@@ -1832,6 +1833,20 @@ export class Orchestrator {
       }
     }
 
+    // #6 instrumentation: tag + COUNT findings that assert a project/house rule without a
+    // verifiable file:line citation (the F-004 class). Non-suppressing — only a badge + the
+    // per-run count below; the count rides RunSummary into the timestamped audit trail so the
+    // rule-citation directive's effect is measurable over time (before/after deploy).
+    let ruleUncited = 0;
+    if (
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.ruleCitationCheck !== false
+    ) {
+      const rc = tagUncitedRuleClaims(reportFindings);
+      reportFindings = rc.findings;
+      ruleUncited = rc.uncitedCount;
+    }
+
     await this.writeReport(
       opts,
       start,
@@ -1948,6 +1963,7 @@ export class Orchestrator {
         criticCostUsd,
         findings: agg.dedupedFindings,
         runs: reviewerOutcomes,
+        ruleUncited,
       }),
     };
   }

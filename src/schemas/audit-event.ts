@@ -96,6 +96,10 @@ export const RunSummarySchema = z.object({
   demoted: z.number().int().nonnegative(),
   signatures: z.array(z.string()),
   providers: z.array(ProviderStatSchema),
+  // #6 instrumentation: count of findings this run that asserted a project/house rule WITHOUT
+  // a verifiable file:line citation (the F-004 class). Persisted here so the audit trail gives
+  // a timestamped before/after signal for the rule-citation directive. Optional/back-compat.
+  rule_uncited: z.number().int().nonnegative().optional(),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type ProviderStat = z.infer<typeof ProviderStatSchema>;

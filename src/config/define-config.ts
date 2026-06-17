@@ -92,6 +92,12 @@ export const ConfigSchema = z.object({
       // (nothing dropped — every note stays in pending.json and the foldable block). Default
       // ON via defaults.ts.
       collapseLowTrustSoloInfo: z.boolean().optional(),
+      // Field report 2026-06-17 #6 (instrumentation): tag + COUNT findings that assert a
+      // project/house rule without a verifiable file:line citation (the F-004 class). Adds a
+      // pending.md badge + a per-run count in RunSummary/audit — NON-suppressing (never demotes).
+      // The count gives the rule-citation prompt directive a measurable before/after signal.
+      // Default ON via defaults.ts.
+      ruleCitationCheck: z.boolean().optional(),
       // Slice 2 (field report #9): demote security findings on test/fixture files to
       // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
       // defaults.ts. Set false for repos that ship production code under a tests/ path.
