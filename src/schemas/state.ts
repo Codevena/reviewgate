@@ -21,6 +21,11 @@ export const EscalationReason = z.enum([
   // to the human so a persistent provider outage / misconfig is never silently
   // deferred forever — distinct from a code-quality FAIL.
   "infra-unavailable",
+  // A single BLOCKING finding's signature recurred across loop.maxSignatureRecurrence
+  // consecutive reviewed iterations — a treadmill where one finding sticks while the
+  // set churns (the whole-set stuck-signatures check misses it). Surfaced to the
+  // human (block-once, like stuck-signatures); never suppresses the finding.
+  "signature-recurrence",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 

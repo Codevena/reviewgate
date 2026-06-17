@@ -30,6 +30,7 @@ import { QuotaCooldownStore } from "./quota-cooldown.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { learnReputationFromDecisions } from "./reputation/learn.ts";
 import { ReputationStore } from "./reputation/store.ts";
+import { recurringBlockingSignatures } from "./signature-recurrence.ts";
 import type { StateStore } from "./state-store.ts";
 
 // Minimum decisions this cycle before the reject-rate circuit-breaker can fire,
@@ -908,6 +909,45 @@ export class LoopDriver {
         `Findings unchanged across ${stuckN} iterations.`,
         true,
       );
+    }
+
+    // #5: per-signature recurrence — break the treadmill where ONE blocking finding
+    // recurs amid a churning set (the whole-set stuck check above misses it). Fail-safe:
+    // escalate (surface to the human), never suppress.
+    const sigRecurCfg = this.i.config.loop.maxSignatureRecurrence;
+    if (sigRecurCfg > 0) {
+      // Clamp strictly above the (clamped) whole-set stuck threshold so a total stall
+      // always escalates faster via stuck-signatures and a low mis-config can't make
+      // per-signature the eager dominant trigger.
+      const stuckClamp = Math.max(2, this.i.config.loop.stuckThreshold);
+      const sigRecurThreshold = Math.max(sigRecurCfg, stuckClamp + 1);
+      // Off-ramp grace: exclude signatures the agent rejected (reviewer_was_wrong) in
+      // the just-completed iteration — pending.json still lists them as CRITICAL/WARN,
+      // but cycleRejected will demote them on the NEXT panel run; escalating here would
+      // preempt the off-ramp. (A persistently-rejected-yet-blocking finding is surfaced
+      // by reviewer-fp-streak instead.)
+      const justRejected = new Set(
+        priorIterationRejectedSignatures(this.i.repoRoot, state.iteration),
+      );
+      const blocking = new Set(
+        readPendingReport(this.i.repoRoot)
+          .findings.filter((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+          .map((f) => f.signature)
+          .filter((s) => !justRejected.has(s)),
+      );
+      const recurring = recurringBlockingSignatures(
+        state.signature_history,
+        blocking,
+        sigRecurThreshold,
+      );
+      if (recurring.length > 0) {
+        return this.escalateAndDecide(
+          state,
+          "signature-recurrence",
+          `${recurring.length} blocking finding(s) recurred across ${sigRecurThreshold} consecutive reviews without resolving (e.g. \`${recurring[0]}\`). To converge: fix each definitively, or — if it is a false positive — reject it (reviewer_was_wrong) so it is suppressed on recurrence. Further edits spawn fresh reviews and prolong the loop.`,
+          true,
+        );
+      }
     }
 
     // If a prior iter exists, both the decisions-gate and the reject-rate

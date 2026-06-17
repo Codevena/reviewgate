@@ -194,6 +194,14 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
           "",
           "Reviewgate refuses to unblock until every CRITICAL/WARN finding ID has a decision.",
           "",
+          // #5: converging off-ramp — surfaced once the loop is iterating, to break the
+          // treadmill where re-editing spawns fresh reviews instead of converging.
+          ...(r.iter >= 2
+            ? [
+                `> ⤷ **Converging tip (iteration ${r.iter}):** prefer fixing a finding definitively or rejecting it (reviewer_was_wrong) over adding new code — each new edit spawns a fresh review and can prolong this loop. A finding you reject as a false positive is suppressed if it recurs.`,
+                "",
+              ]
+            : []),
         ];
   const head = [
     `# Reviewgate Report — iteration ${r.iter} of ${r.max_iter}`,
