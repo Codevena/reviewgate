@@ -66,6 +66,35 @@ export function findingBadges(f: Finding): string | null {
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 
+// #8 bundling (field report 2026-06-17): when the aggregator folds findings of >1 category
+// under one representative, the agent must disposition ALL folded concerns with one decision.
+// The aggregator already appends a "merges concerns categorized as: …" sentence to details;
+// this turns that buried prose into an explicit, scannable checklist of the distinct concerns
+// (category · rule_id · provider), so the agent can tick each off. Render-only — the merge,
+// verdict and decision-fold accounting are unchanged (one finding_id still dispositions all).
+function renderFoldedConcerns(f: Finding): string | null {
+  const members = f.members ?? [];
+  const cats = new Set<string>([f.category, ...members.map((m) => m.category)]);
+  if (cats.size <= 1 || members.length === 0) return null;
+  const seen = new Set<string>();
+  const items: string[] = [];
+  const add = (category: string, ruleId: string, provider: string) => {
+    const key = `${category}::${ruleId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(
+      `- **${category}** · \`${neutralizeInjectionMarkers(ruleId)}\` (reported by ${neutralizeInjectionMarkers(provider)})`,
+    );
+  };
+  add(f.category, f.rule_id, f.reviewer.provider);
+  for (const m of members) add(m.category, m.rule_id, m.provider);
+  if (items.length <= 1) return null;
+  return [
+    "**Folded concerns — one decision on this finding dispositions ALL of them:**",
+    ...items,
+  ].join("\n");
+}
+
 function fmtFinding(f: Finding): string {
   const sym = f.severity === "CRITICAL" ? "●" : f.severity === "WARN" ? "▲" : "·";
   const consEmoji = consensusEmoji(f.consensus);
@@ -102,6 +131,7 @@ function fmtFinding(f: Finding): string {
           )
           .join(" · ")}`
       : null;
+  const foldedConcerns = renderFoldedConcerns(f);
   return [
     `### ${f.id}  ${sym} ${f.severity} ${consEmoji}  ·  ${f.file}:${loc}  ·  ${f.rule_id}`,
     `**Category:** ${f.category}  ·  **Consensus:** ${f.consensus}  ·  **Confidence:** ${f.confidence.toFixed(2)}${consNote}${confirmed}`,
@@ -111,6 +141,7 @@ function fmtFinding(f: Finding): string {
     message,
     "",
     details,
+    ...(foldedConcerns ? ["", foldedConcerns] : []),
     suggestedFix ? `\n**Suggested fix:**\n\`\`\`\n${suggestedFix}\n\`\`\`` : "",
     "",
   ].join("\n");
@@ -244,31 +275,46 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     f.fp_ledger_match?.suppressed === true ||
     f.fp_cluster_match?.suppressed === true;
   const blocking = r.findings.filter((f) => !isAdvisory(f));
-  const advisory = r.findings.filter(isAdvisory);
+  const advisoryAll = r.findings.filter(isAdvisory);
+  // #2 (field report 2026-06-17): hard-separate repo-wide (out-of-diff) findings from the
+  // agent's own in-scope advisory list. scope_demoted is the repo-wide marker — these are
+  // findings on files/lines the change never touched (e.g. SQL/Redis issues in untouched
+  // files). They are ALREADY non-blocking + decision-free (aggregator verdict counting +
+  // the loop-driver decision gate scope to CRITICAL/WARN), so this is a pure presentation
+  // split that stops the agent's must-read list from being diluted by pre-existing code.
+  const outOfDiff = advisoryAll.filter((f) => f.scope_demoted === true);
+  const inScopeAdvisory = advisoryAll.filter((f) => f.scope_demoted !== true);
 
   const sections: string[] = [];
   const crit = blocking.filter((f) => f.severity === "CRITICAL");
   const warn = blocking.filter((f) => f.severity === "WARN");
   if (crit.length > 0) sections.push("## CRITICAL ●\n", ...crit.map(fmtFinding));
   if (warn.length > 0) sections.push("## WARN ▲\n", ...warn.map(fmtFinding));
-  if (advisory.length > 0) {
+  if (inScopeAdvisory.length > 0) {
     sections.push(
       "## Advisory (out of scope / known FP — no decision needed) ·\n",
-      ...advisory.map(fmtFinding),
+      ...inScopeAdvisory.map(fmtFinding),
     );
-    // Optional learn-loop hint — only emitted in the agent-loop mode (NOT in
-    // one-shot review-plan reports). Advisory findings carry no gating
-    // semantics, but if the agent notices a reviewer hallucinated one, a
-    // single optional decision line teaches the FP-ledger + reputation. The
-    // signal would otherwise be lost: pre-this-hint a "F-XYZ halluziniert"
-    // observation in chat just dies because INFO requires no decision.
-    if (mode !== "one-shot") {
-      sections.push(
-        "### Optional: train Reviewgate on advisory hallucinations\n",
-        "If you identify any advisory finding above as a reviewer hallucination, you may optionally write a decision line — it feeds the FP-ledger and reviewer reputation. No gating effect either way. `reason` must be ≥20 characters explaining why the reviewer was wrong:\n",
-        '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`\n',
-      );
-    }
+  }
+  if (outOfDiff.length > 0) {
+    sections.push(
+      "## Existing code (advisory — pre-existing, not introduced by this change; NOT gated) 📍\n",
+      "These findings are on files/lines your change did not touch. They are advisory only and require NO decision — fix them separately if you choose.\n",
+      ...outOfDiff.map(fmtFinding),
+    );
+  }
+  // Optional learn-loop hint — only emitted in the agent-loop mode (NOT in
+  // one-shot review-plan reports). Advisory findings carry no gating
+  // semantics, but if the agent notices a reviewer hallucinated one, a
+  // single optional decision line teaches the FP-ledger + reputation. The
+  // signal would otherwise be lost: pre-this-hint a "F-XYZ halluziniert"
+  // observation in chat just dies because INFO requires no decision.
+  if (advisoryAll.length > 0 && mode !== "one-shot") {
+    sections.push(
+      "### Optional: train Reviewgate on advisory hallucinations\n",
+      "If you identify any advisory finding above as a reviewer hallucination, you may optionally write a decision line — it feeds the FP-ledger and reviewer reputation. No gating effect either way. `reason` must be ≥20 characters explaining why the reviewer was wrong:\n",
+      '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`\n',
+    );
   }
 
   return head + sections.join("\n");

@@ -43,17 +43,48 @@ function report(): PendingReport {
 }
 
 describe("renderMd advisory section", () => {
-  it("renders scope_demoted findings under Advisory, not the decision flow", async () => {
+  it("renders a scope_demoted finding under 'Existing code', not the decision flow (#2)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-rwadv-"));
     await new ReportWriter(dir).write(report());
     const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
-    expect(md).toContain("Advisory");
-    // The advisory (F-002) and blocking (F-001) are both present.
-    expect(md).toContain("F-002");
+    // #2: out-of-diff (scope_demoted) findings go into the fenced "Existing code" section,
+    // NOT the in-scope Advisory list.
+    expect(md).toContain("## Existing code");
+    const existingIdx = md.indexOf("## Existing code");
+    expect(md.indexOf("F-002")).toBeGreaterThan(existingIdx); // F-002 under Existing code
     expect(md).toContain("F-001");
     // Decision instruction scopes to blocking findings, not "each finding".
     expect(md).toContain("CRITICAL/WARN");
     expect(md).not.toContain("For each finding below");
+  });
+
+  it("keeps in-scope INFO under '## Advisory' and out-of-diff INFO under '## Existing code' (#2)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-rwadv-"));
+    const r = report();
+    const base = r.findings[0];
+    if (!base) throw new Error("fixture changed");
+    r.findings = [
+      { ...base, id: "F-001", severity: "CRITICAL" as const, scope_demoted: undefined },
+      { ...base, id: "F-INFO", severity: "INFO" as const, scope_demoted: undefined, file: "a.ts" },
+      {
+        ...base,
+        id: "F-REPO",
+        severity: "INFO" as const,
+        scope_demoted: true,
+        file: "untouched.ts",
+      },
+    ];
+    r.counts = { critical: 1, warn: 0, info: 2 };
+    await new ReportWriter(dir).write(r);
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    const advIdx = md.indexOf("## Advisory");
+    const repoIdx = md.indexOf("## Existing code");
+    expect(advIdx).toBeGreaterThan(-1);
+    expect(repoIdx).toBeGreaterThan(advIdx); // Existing code comes after in-scope Advisory
+    // F-INFO (in-scope) under Advisory, before Existing code; F-REPO under Existing code.
+    expect(md.indexOf("F-INFO")).toBeGreaterThan(advIdx);
+    expect(md.indexOf("F-INFO")).toBeLessThan(repoIdx);
+    expect(md.indexOf("F-REPO")).toBeGreaterThan(repoIdx);
   });
 
   it("emits the optional 'train Reviewgate' hint when advisory findings exist", async () => {
@@ -84,7 +115,9 @@ describe("renderMd advisory section", () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-rwadv-"));
     await new ReportWriter(dir).write(report(), { mode: "one-shot" });
     const md = readFileSync(planReviewMdPath(dir), "utf8");
-    expect(md).toContain("## Advisory"); // section header still rendered
+    // The fixture's lone advisory (F-002) is scope_demoted → "Existing code" section is
+    // still rendered in one-shot; only the agent-loop train hint is suppressed.
+    expect(md).toContain("## Existing code");
     expect(md).not.toContain("train Reviewgate on advisory hallucinations");
   });
 
