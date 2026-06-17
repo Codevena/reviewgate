@@ -3,7 +3,7 @@
 **Date:** 2026-06-16
 **Source:** A field report from running the deployed Reviewgate binary on the **flashbuddy** project (a ~10-iteration session: 170-file audit PR + 23-PR test-backlog merge). The report praised the real bugs caught but flagged high false-positive rate, context-blind reviews, an iteration treadmill, and timeouts on large PRs, with 10 prioritised recommendations.
 
-This doc tracks each recommendation → triage verdict → ship status. **9 of 10 shipped** (#1, #2, #3, #6, #9, #10, #8, #7, #5); 1 remains (#4).
+This doc tracks each recommendation → triage verdict → ship status. **10 of 10 shipped** (#1–#10) — the flashbuddy field-report remediation is **COMPLETE**.
 
 ## Shipped
 
@@ -18,14 +18,21 @@ This doc tracks each recommendation → triage verdict → ship status. **9 of 1
 | **8** | Calibrate confidence per provider/persona (openrouter minority ≠ codex unanimous) | **Advisory context (Option A — pivoted from a literal precision-demoter, which would duplicate the reputation demoter whose trust score is already a smoothed precision ratio):** annotate each finding in `pending.md`/`pending.json` with the contributing provider(s)' historical precision (`tp/(tp+fp)` from the `decision.applied` audit events) as a **Reviewer track record** metadata line — informs the agent's accept/reject decision, **never** changes severity/verdict/consensus/cache or any learning signal (annotation is report-only; verdict path uses the unannotated findings). New `src/core/provider-precision.ts` (`perProviderPrecision`/`loadProviderPrecision`/`annotateFindingsWithPrecision`), optional `reviewer_precision` finding field, `phases.review.providerPrecisionContext` toggle (default true). 90-day window, ≥5-decision floor. | master `de9bcd2` (merge). `src/core/provider-precision.ts`, `report-writer.ts`, `orchestrator.ts`, `schemas/finding.ts`, `config/{define-config,defaults}.ts`. |
 | **10** | Don't escalate on a quota-degraded panel — defer instead | **Bounded defer (Approach 1, defer-only):** when a give-up escalation (the soft `max-iterations` non-progressing case, or `stuck-signatures`) would fire while a configured reviewer is in cooldown (quota cap **or** timeout/error backoff — `quotaDegradationNote`), `escalateAndDecide` DEFERS instead: `allow_stop`, dirty flag KEPT, `iteration` NOT advanced, no escalation state set. Bounded by a new `consecutive_quota_defers` counter + `loop.quotaDeferMaxConsecutive` (default 3, `0` disables) → escalates as a fail-closed backstop once the cap is exhausted; resets on escalation-proceed + on the normal post-review update. New `deferableOnQuota` param on `escalateAndDecide`, set `true` at ONLY the soft-max-iter + stuck call sites (hard-cap/cost-cap/decisions-unaddressed/timeout/infra/fp-streak/reject-rate stay non-deferable). Mirrors the infra-defer pattern. | master `742a26d` (merge). `src/core/loop-driver.ts` `escalateAndDecide`; `src/schemas/state.ts`; `src/config/{define-config,defaults}.ts`. |
 | **3** | Ground "API doesn't exist" claims against the installed dependency version | **SOFT injection** (pivoted from an unsound hard-verify demote — a `.d.ts` grep can't prove member-of-binding without TS type resolution → would suppress real findings): inject the installed package's export surface as ADVISORY reviewer context. `collectDepSurface` (entry resolution + bounded re-exports; IDENT-whitelisted names + best-effort members; injection-proof). Config `depSurface` (default true) / `depSurfaceBudgetBytes` (4000). | master `d993737`. `src/research/dep-surface.ts`, `imports.ts`. |
+| **4** | Persist adjudications across diff changes / fix the FP-ledger signature fragmentation | **Advisory surfacing (Option B — pivoted from the literal auto-suppressor, which FAILS OPEN: auto-suppressing a fragmented *single-reject* class would let the agent kill a real CRITICAL by rejecting it once; the `≥3-reject/≥2-provider` floor is the deliberate guard, and the codebase documents a maintainer **house rule** as the durable fix).** When a false-positive class is fragmenting on a file (≥3 distinct candidate FP-ledger signatures + ≥3 in-window rejects) but not auto-suppressed (fragmented rule_ids / single-reviewer floor) and not cluster-suppressed, the gate surfaces a render-only banner in `pending.md` recommending a `phases.review.houseRules` entry — making the documented durable fix discoverable at gate-time (it was CLI-only). NON-suppressing; suppressed-file exclusion uses the WINDOWED views (`fpActiveSnapshot` + active/sticky `FpCluster.file`), never the stale stored stage; reviewer-sourced file/rule_ids neutralized. New `src/core/fp-ledger/fragmentation.ts`, `fp_fragmentation` report field, `phases.review.fpFragmentationHint` toggle (default true). | master `82333c2` (merge). `src/core/fp-ledger/fragmentation.ts`, `orchestrator.ts`, `report-writer.ts`, `schemas/pending-report.ts`, `config/*`. |
 
 All five went through the full chain: brainstorm → spec → codex(+opus) spec review → plan → subagent-driven build (per-task spec+quality review) → final opus whole-branch review → dogfood gate. Each merged + pushed + dist deployed.
 
-## Remaining (next-roadmap candidates)
+## Remaining
 
-| # | Recommendation | Notes / partial state |
-|---|---|---|
-| **4** | Persist adjudications across diff changes (a rejected FP must not return as a fresh CRITICAL) | Partial today: `renderAdjudications` injects prior-iteration decisions (prompt-soft) + FP-ledger. Real residual: the **FP-ledger signature fragmentation** (a hallucination class whose `rule_id`/signature fragments so the ledger never promotes+suppresses it — documented in `house-rules.ts`). A durable fix likely needs signature-class clustering or a stronger cross-iteration suppressor. |
+**None — all 10 recommendations are shipped.** Three of them (#3, #8, #4) were
+deliberately **pivoted from their literal framing to a non-suppressing form** once
+the literal version was found to fail open or duplicate an existing mechanism: #3
+(hard-verify demote → advisory dep-surface injection), #8 (precision-weighted
+block-force → advisory precision context; the reputation demoter already covers it),
+and #4 (auto-suppress a fragmented single-reject class → advisory house-rule
+surfacing; the `≥3-reject/≥2-provider` floor must not be weakened). The recurring
+principle: **a suppressor must fail safe; when the sound version needs a signal out of
+reach, pivot to non-suppressing context/advisory rather than ship an unsound demote.**
 
 ## Recurring engineering lessons from this remediation
 
