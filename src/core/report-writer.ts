@@ -174,6 +174,13 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
         "",
       ]
     : [];
+  // #7: workspace-not-quiescent warning (the settle-check hit its cap). Advisory.
+  const unsettledBanner = r.workspace_unsettled
+    ? [
+        `> ⚠ **Workspace not quiescent:** a file was still being written ~${r.workspace_unsettled.last_write_ms_ago}ms before this review (waited ${r.workspace_unsettled.waited_ms}ms for it to settle). This review may reflect a HALF-FINISHED state — if findings look spurious, let the writer (a background build/codegen or a parallel session) finish, then re-run.`,
+        "",
+      ]
+    : [];
   const actions =
     mode === "one-shot"
       ? []
@@ -198,6 +205,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot"): string {
     ...coverageBanner,
     ...singleReviewerBanner,
     ...largeDiffBanner,
+    ...unsettledBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",

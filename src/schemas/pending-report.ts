@@ -41,6 +41,15 @@ export const PendingReportSchema = z.object({
   large_diff: z
     .object({ files: z.number().int().nonnegative(), bytes: z.number().int().nonnegative() })
     .optional(),
+  // #7: set when the working tree was still being written when the panel ran (the
+  // settle-check hit its cap without the tree going quiet). Render-only / advisory —
+  // the verdict is unaffected; warns the agent the review may reflect a half-finished state.
+  workspace_unsettled: z
+    .object({
+      last_write_ms_ago: z.number().int().nonnegative(),
+      waited_ms: z.number().int().nonnegative(),
+    })
+    .optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)
