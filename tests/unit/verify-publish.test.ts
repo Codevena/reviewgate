@@ -18,7 +18,7 @@ describe("verifyDist (prepublishOnly guard)", () => {
     mkdirSync(join(root, "dist/bin-templates"), { recursive: true });
     writeFileSync(join(root, "dist/reviewgate"), "");
     writeFileSync(join(root, "dist/grammars/web-tree-sitter.wasm"), "");
-    for (const sh of ["gate.sh", "trigger.sh", "reset.sh"]) {
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
       writeFileSync(join(root, `dist/bin-templates/${sh}`), "");
     }
     expect(verifyDist(root).ok).toBe(true);
@@ -28,7 +28,7 @@ describe("verifyDist (prepublishOnly guard)", () => {
     const root = mkdtempSync(join(tmpdir(), "rg-vp-"));
     mkdirSync(join(root, "dist/bin-templates"), { recursive: true });
     writeFileSync(join(root, "dist/reviewgate"), "");
-    for (const sh of ["gate.sh", "trigger.sh", "reset.sh"]) {
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
       writeFileSync(join(root, `dist/bin-templates/${sh}`), "");
     }
     const r = verifyDist(root);

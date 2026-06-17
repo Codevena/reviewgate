@@ -15,6 +15,7 @@ import {
 import { runGate, runGateSafe } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
+import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
@@ -34,11 +35,12 @@ const init = defineCommand({
   meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
   args: { mode: { type: "string", default: "agent-loop" } },
   async run({ args }) {
-    const { bakedBin } = await runInit({
+    const { bakedBin, prePushHook } = await runInit({
       repoRoot: process.cwd(),
       mode: args.mode as "agent-loop",
     });
     process.stdout.write("Reviewgate installed.\n");
+    process.stdout.write(`${prePushHook.installed ? "✔" : "ℹ"} pre-push: ${prePushHook.note}\n`);
     // The #1 first-run failure is the gate hook not finding the `reviewgate`
     // binary (silent no-op gate). Surface exactly what was wired + next steps.
     if (bakedBin) {
@@ -101,6 +103,22 @@ const gate = defineCommand({
     // under a real piped hook so the hook protocol is never polluted.
     const feedback = hookFeedbackMessage(hook, Boolean(process.stdout.isTTY));
     if (feedback) process.stdout.write(`${feedback}\n`);
+    process.exit(res.exitCode);
+  },
+});
+
+const prePush = defineCommand({
+  meta: {
+    name: "pre-push",
+    description:
+      "Git pre-push hook entry point: WARN (never block) when the pushed commit has no recorded clean Reviewgate PASS.",
+  },
+  async run() {
+    // git feeds the pre-push hook its ref lines on stdin; read them (best-effort —
+    // a TTY/no-stdin invocation just yields no shas → no warning). Always exit 0.
+    const raw = await readHookStdin();
+    const res = await runPrePush({ repoRoot: process.cwd(), stdinRaw: raw });
+    if (res.stderr) process.stderr.write(res.stderr);
     process.exit(res.exitCode);
   },
 });
@@ -394,6 +412,7 @@ const main = defineCommand({
   subCommands: {
     init,
     gate,
+    "pre-push": prePush,
     "review-plan": reviewPlan,
     doctor,
     reset,
