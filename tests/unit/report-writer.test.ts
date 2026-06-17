@@ -186,6 +186,13 @@ describe("ReportWriter", () => {
       expect(md).not.toContain("📒");
       expect(md).not.toContain("🎯");
       expect(md).not.toContain("📉");
+      expect(md).not.toContain("📜");
+    });
+
+    it("#6: rule_citation_unverified → 📜 badge (non-demoting)", async () => {
+      const md = await renderFinding({ rule_citation_unverified: true });
+      expect(md).toContain("📜");
+      expect(md).toContain("without a file:line citation");
     });
 
     it("fact_invalid finding renders the hallucination badge", async () => {

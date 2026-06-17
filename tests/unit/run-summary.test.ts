@@ -74,6 +74,21 @@ describe("buildRunSummary", () => {
     expect(s.signatures.sort()).toEqual(["s1"]);
   });
 
+  it("#6: passes ruleUncited through to rule_uncited (omitted when not provided)", () => {
+    const base = {
+      verdict: "PASS" as const,
+      source: "panel" as const,
+      counts: { critical: 0, warn: 0, info: 0 },
+      durationMs: 10,
+      criticCostUsd: 0,
+      findings: [],
+      runs: [run("codex", "security", "ok", 0.01, 50)],
+    };
+    expect(buildRunSummary({ ...base, ruleUncited: 3 }).rule_uncited).toBe(3);
+    expect(buildRunSummary({ ...base, ruleUncited: 0 }).rule_uncited).toBe(0);
+    expect(buildRunSummary(base).rule_uncited).toBeUndefined();
+  });
+
   it("groups multiple personas of one provider into one row with runs/errors", () => {
     const s = buildRunSummary({
       verdict: "PASS",

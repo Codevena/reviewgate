@@ -20,6 +20,9 @@ export interface BuildRunSummaryInput {
   criticCostUsd: number;
   findings: Finding[];
   runs: ReviewerOutcome[];
+  // #6 instrumentation: count of uncited project/house-rule findings this run. Omitted on the
+  // non-panel paths (skip/cache/error) where no reviewer findings were produced.
+  ruleUncited?: number;
 }
 
 function isDemoted(f: Finding): boolean {
@@ -78,5 +81,6 @@ export function buildRunSummary(input: BuildRunSummaryInput): RunSummary {
     demoted: input.findings.filter(isDemoted).length,
     signatures,
     providers: [...byProvider.values()],
+    ...(input.ruleUncited !== undefined ? { rule_uncited: input.ruleUncited } : {}),
   };
 }

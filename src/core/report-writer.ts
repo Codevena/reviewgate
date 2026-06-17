@@ -47,6 +47,10 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
     );
+  if (f.rule_citation_unverified)
+    badges.push(
+      "📜 asserts a project/house rule without a file:line citation — verify the rule exists",
+    );
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
   if (f.fp_cluster_match?.suppressed)

@@ -33,6 +33,10 @@ export interface StatsReport {
     perProviderConfirmed: Record<string, number>;
   };
   brain: { byStatus: Record<string, number>; byType: Record<string, number> };
+  // #6 instrumentation: uncited project/house-rule findings across panel runs (the F-004
+  // class). The measurable signal for the rule-citation directive's effect over time.
+  // Optional for back-compat with hand-built StatsReport fixtures; aggregate() always sets it.
+  ruleCitation?: { uncitedTotal: number; panelRuns: number };
   precision: {
     overall: PrecisionCell;
     bySeverity: { CRITICAL: PrecisionCell; WARN: PrecisionCell };
@@ -262,5 +266,10 @@ export function aggregate(
       byType,
     },
     precision: { overall, bySeverity, byProvider },
+    // #6 instrumentation: sum the per-run uncited rule-claim counts over panel runs.
+    ruleCitation: {
+      uncitedTotal: panel.reduce((sum, r) => sum + (r.summary.rule_uncited ?? 0), 0),
+      panelRuns: panelCount,
+    },
   };
 }
