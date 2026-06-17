@@ -97,4 +97,14 @@ describe("renderMd low-track-record collapse (#3/#5)", () => {
     expect(out).not.toContain("<details>");
     expect(out).toContain("F-LOW");
   });
+
+  it("#4: a protected finding later hard-demoted to INFO does NOT render 'kept blocking' (codex DoD)", async () => {
+    // protected_high_precision is stamped before the hard suppressors; if scopeToDiff later
+    // demotes the finding to advisory INFO, the "kept blocking" badge would be a lie.
+    const out = await md([
+      f({ id: "F-PROT", severity: "INFO", scope_demoted: true, protected_high_precision: true }),
+    ]);
+    expect(out).not.toContain("kept blocking");
+    expect(out).toContain("F-PROT"); // still rendered (in the Existing-code section)
+  });
 });

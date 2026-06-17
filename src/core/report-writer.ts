@@ -52,7 +52,11 @@ export function findingBadges(f: Finding): string | null {
   if (f.fp_cluster_match?.suppressed)
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
   if (f.low_confidence) badges.push("🎯 below confidence floor");
-  if (f.protected_high_precision)
+  // #4: only assert "kept blocking" while the finding IS still blocking. The protect flag is
+  // stamped in the critic pass BEFORE the hard suppressors (scopeToDiff/fpActive/cycleRejected)
+  // run; if one of them later demotes this finding to advisory INFO, the "kept blocking" badge
+  // would be a lie (codex DoD) — so gate it on a non-INFO severity.
+  if (f.protected_high_precision && f.severity !== "INFO")
     badges.push("🛡 kept blocking — high-track-record reviewer (soft demote overridden)");
   if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
   if (f.claimed_fixed_recurred)
