@@ -84,6 +84,21 @@ describe("tagUncitedRuleClaims — does NOT flag (#6)", () => {
     const { f: out } = tag({ details: "Per the house rule on line 5 of CLAUDE.md, avoid this." });
     expect(out?.rule_citation_unverified).toBeUndefined();
   });
+
+  it("a CODE file:line is NOT a rule citation (points at the violation, not the rule) (codex DoD)", () => {
+    const { f: out, count } = tag({
+      message: "CLAUDE.md says no comments; src/foo.ts:42 has one",
+    });
+    expect(out?.rule_citation_unverified).toBe(true);
+    expect(count).toBe(1);
+  });
+
+  it("accepts a config-file citation (reviewgate.config.ts:5 where houseRules live)", () => {
+    const { f: out } = tag({
+      details: "The repo convention is set in reviewgate.config.ts:5 — follow it.",
+    });
+    expect(out?.rule_citation_unverified).toBeUndefined();
+  });
 });
 
 describe("tagUncitedRuleClaims — counting + toggle", () => {

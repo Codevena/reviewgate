@@ -18,12 +18,21 @@ import type { Finding } from "../schemas/finding.ts";
 const RULE_ASSERTION =
   /\b(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|COPILOT\.md|house[\s-]*rules?|repo(?:sitory)?[\s-]+(?:convention|rule|standard|guideline)s?|project[\s-]+(?:convention|rule|standard|guideline)s?|coding[\s-]+(?:standard|convention|guideline)s?|style[\s-]*guide|the\s+(?:repo|project|team)\s+convention|per\s+(?:the|our|your)\s+(?:convention|guidelines?|standards?|style\s*guide|coding\s+standard))\b/i;
 
-// A verifiable citation to WHERE the rule is written: a `path.ext:line` token, or a file
-// reference paired with a line ("CLAUDE.md line 5", "line 5 of CLAUDE.md"). A BARE "line N" is
-// deliberately NOT accepted — it usually points at the CODE location to fix, not the rule
-// source, so accepting it would let an uncited rule claim escape the count (codex DoD).
-const CITATION =
-  /\b[\w./-]+\.[a-z][a-z0-9]*:\d+|\b[\w./-]+\.[a-z][a-z0-9]*\s+lines?\s+\d+|\blines?\s+\d+\s+(?:of|in)\s+[\w./-]+\.[a-z][a-z0-9]*/i;
+// A path that can plausibly HOLD a written rule/convention — a docs file (.md/.rst/…), a data/
+// config file (.json/.yaml/.toml/…), or a `*.config.*` (e.g. reviewgate.config.ts where
+// houseRules live). NOT an arbitrary code file: citing `src/foo.ts:42` points at the VIOLATION
+// site, not at where the rule is written, so it must not count as a rule citation (codex DoD).
+const RULE_SOURCE = String.raw`[\w./-]*(?:\.(?:md|mdx|markdown|rst|txt|json|jsonc|ya?ml|toml|ini|cfg)|\.config\.[a-z0-9]+)`;
+
+// A verifiable citation to WHERE the rule is written: a rule-source `file:line`, or a rule-source
+// file paired with a line ("CLAUDE.md line 5", "line 5 of CLAUDE.md"). A BARE "line N" or a code
+// file:line is deliberately NOT accepted — both point at the violation, not the rule (codex DoD).
+const CITATION = new RegExp(
+  `(?:${RULE_SOURCE}):\\d+` +
+    `|(?:${RULE_SOURCE})\\s+lines?\\s+\\d+` +
+    `|\\blines?\\s+\\d+\\s+(?:of|in)\\s+(?:${RULE_SOURCE})`,
+  "i",
+);
 
 export interface RuleCitationResult {
   findings: Finding[];
