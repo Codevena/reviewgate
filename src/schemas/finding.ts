@@ -110,6 +110,11 @@ export const FindingSchema = z.object({
   // re-fixing (a reviewer re-litigating a settled line under a fresh signature is the treadmill;
   // the location-recurrence escalation fires once it recurs maxLocationRecurrence times).
   location_recurred: z.boolean().optional(),
+  // Stable-Code-Guard (field report 2026-06-17, #2 bonus): set true when this finding is on a file
+  // the agent did NOT edit this cycle while it WAS editing others — the code under it is unchanged
+  // across the loop, so a fresh finding on it is likely reviewer non-determinism. ADVISORY flag
+  // only — never demotes (a real new bug on stable code stays blocking, now with context).
+  stable_code: z.boolean().optional(),
   // #6 instrumentation (field report 2026-06-17): set true when this finding asserts a
   // project/house rule (e.g. "CLAUDE.md says…") WITHOUT a verifiable file:line citation. Tag +
   // count ONLY — never demotes (non-suppressing). Rendered as an advisory badge; the per-run
