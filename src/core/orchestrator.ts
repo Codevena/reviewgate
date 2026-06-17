@@ -246,6 +246,15 @@ export const REVIEW_PROMPT_PREAMBLE = [
   "may never reach the deploy path. Review every change for real CODE issues, but do NOT assert",
   "that a file is 'committed', 'already in the deploy diff', or that it 'breaks the deploy' — you",
   "cannot determine commit/deploy state from this diff. Judge the code on its own merits.",
+  // #6 (field report 2026-06-17): a reviewer cited a non-existent CLAUDE.md rule ("DO NOT
+  // ADD ANY COMMENTS") — its training prior, not this repo's rule. Require a citation so a
+  // rule-based finding is falsifiable by the agent.
+  'If a finding relies on a PROJECT or HOUSE rule/convention (phrases like "CLAUDE.md says",',
+  '"the repo convention is", "house rule", "per the style guide/coding standard"), you MUST',
+  "quote the exact file and line in THIS repo where that rule is written. The well-known Claude",
+  "Code / assistant defaults (e.g. 'do not add comments unless asked') are NOT this repo's rules",
+  "unless written in its CLAUDE.md/config. If you cannot cite where the rule is stated, do not",
+  "assert it as a rule — raise it at most as an INFO suggestion, never a blocking finding.",
 ].join("\n");
 
 const DOC_REVIEW_PROMPT_PREAMBLE = [
@@ -260,6 +269,9 @@ const DOC_REVIEW_PROMPT_PREAMBLE = [
   "verifiability/testability, unrealistic assumptions, missing migration/rollback,",
   "and wrong file/symbol references. Report every real issue. Use verdict PASS",
   "with an empty findings array only if the plan is genuinely sound.",
+  // #6: a rule-based finding must cite where the rule is written (see REVIEW_PROMPT_PREAMBLE).
+  "If a finding relies on a project/house rule or convention, quote the exact file and line in",
+  "THIS repo where it is written; do not assert assistant-default conventions as repo rules.",
 ].join("\n");
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
