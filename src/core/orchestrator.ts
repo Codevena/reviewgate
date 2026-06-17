@@ -880,6 +880,13 @@ export class Orchestrator {
     const conventionsSegment = `|conv:${createHash("sha256")
       .update(conventions.summary)
       .digest("hex")}`;
+    // #6: the reviewer prompt preamble (e.g. the rule-citation directive) is a code constant
+    // not covered by configHash. Fold its sha256 in so a preamble change re-runs the panel
+    // instead of serving a verdict produced under the OLD instructions — independent of an
+    // RG_VERSION bump (so it also invalidates correctly when dogfooding from source).
+    const promptSegment = `|pre:${createHash("sha256")
+      .update(`${REVIEW_PROMPT_PREAMBLE}\n${DOC_REVIEW_PROMPT_PREAMBLE}`)
+      .digest("hex")}`;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
@@ -889,7 +896,7 @@ export class Orchestrator {
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${promptSegment}`,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });

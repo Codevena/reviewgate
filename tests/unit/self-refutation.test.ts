@@ -58,7 +58,7 @@ describe("demoteSelfRefuting — POSITIVE (must demote to INFO)", () => {
       {
         severity: "CRITICAL",
         category: "correctness",
-        message: "Off-by-one? No — the index is correct.",
+        details: "Traced the index math carefully. This is fine.",
       },
     ],
   ];
@@ -102,6 +102,28 @@ describe("demoteSelfRefuting — NEGATIVE (must stay blocking)", () => {
         severity: "CRITICAL",
         details: "This would be safe if the caller escaped the value; it does not.",
       },
+    ],
+    // opus DoD: imperative-mood recommendations are NOT clearances — they imply the property
+    // might not hold. These must stay blocking (the fail-open the brief asked us to close).
+    [
+      "imperative: verify the path is safe",
+      {
+        severity: "CRITICAL",
+        details: "Builds a path from untrusted input. Verify the path is safe.",
+      },
+    ],
+    ["imperative: make sure this is safe", { details: "Make sure this is safe." }],
+    [
+      "imperative: ensure the chain is valid",
+      { severity: "CRITICAL", details: "Ensure the certificate chain is valid." },
+    ],
+    [
+      "ambiguous correctness adjective is not a clearance",
+      { severity: "CRITICAL", details: "Off-by-one in the loop. The bound is correct." },
+    ],
+    [
+      "imperative: make sure the encoding is correct",
+      { details: "Make sure the encoding is correct." },
     ],
   ];
   for (const [name, over] of negatives) {
