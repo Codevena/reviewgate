@@ -328,6 +328,25 @@ export async function collectDiff(
   return out;
 }
 
+// #7: working-tree-dirty file paths, base-independent — `git diff --name-only -z HEAD`
+// (tracked uncommitted changes) ∪ `git ls-files -z --others --exclude-standard`
+// (untracked, non-ignored). Used ONLY by the pre-review settle-check to detect an
+// active writer; NOT a review scope (so no base/base_ts filter). `-z` → raw NUL-
+// separated paths (lstat-safe). Each git call is independent + best-effort; union,
+// dedupe. Returns [] if both fail (e.g. a non-git dir, or a fresh repo with no HEAD).
+export async function workingTreeDirtyFiles(repoRoot: string): Promise<string[]> {
+  const out = new Set<string>();
+  const tracked = await git(repoRoot, ["diff", "--name-only", "-z", "HEAD"]);
+  if (tracked.status === 0) {
+    for (const f of tracked.stdout.split("\0")) if (f.length > 0) out.add(f);
+  }
+  const untracked = await git(repoRoot, ["ls-files", "-z", "--others", "--exclude-standard"]);
+  if (untracked.status === 0) {
+    for (const f of untracked.stdout.split("\0")) if (f.length > 0) out.add(f);
+  }
+  return [...out];
+}
+
 // The full current content of every changed (non-reviewgate, non-deleted) file,
 // labeled per file and capped by a total byte budget. Reviewers get this ALONGSIDE
 // the diff so they can verify a symbol exists before reporting it as missing — the
