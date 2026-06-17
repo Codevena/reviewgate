@@ -18,7 +18,8 @@ export function verifyDist(root: string): { ok: boolean; missing: string[] } {
   };
   must("dist/reviewgate");
   must("dist/grammars/web-tree-sitter.wasm");
-  for (const sh of ["gate.sh", "trigger.sh", "reset.sh"]) must(`dist/bin-templates/${sh}`);
+  for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
+    must(`dist/bin-templates/${sh}`);
   return { ok: missing.length === 0, missing };
 }
 

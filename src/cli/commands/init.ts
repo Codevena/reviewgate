@@ -1,4 +1,12 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 // POSIX single-quote escaping for the binary path interpolated into the shim's
@@ -82,6 +90,60 @@ export interface InitInput {
   mode: "agent-loop";
 }
 
+const GIT_HOOK_MARKER = "Reviewgate-managed git pre-push hook";
+
+// Install a WARN-ONLY git pre-push hook that delegates to .reviewgate/bin/pre-push. Conservative
+// by design: only into a real `.git/hooks` directory (skips worktrees/submodules where `.git`
+// is a file, and bare/absent repos), and NEVER clobbers a foreign existing pre-push hook — it
+// only overwrites a previously Reviewgate-managed one (idempotent update). The hook itself can
+// never block a push (the shim is `|| true; exit 0`). Returns a status note for the init output.
+export function installGitPrePushHook(
+  repoRoot: string,
+  shimPath: string,
+): { installed: boolean; note: string } {
+  const gitDir = join(repoRoot, ".git");
+  let isDir = false;
+  try {
+    isDir = statSync(gitDir).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    return {
+      installed: false,
+      note: "skipped the git pre-push hook (no plain .git/ directory — worktree/submodule or non-git). Add it manually for push-time warnings.",
+    };
+  }
+  const hooksDir = join(gitDir, "hooks");
+  if (!existsSync(hooksDir)) mkdirSync(hooksDir, { recursive: true });
+  const hookPath = join(hooksDir, "pre-push");
+  if (existsSync(hookPath)) {
+    let existing = "";
+    try {
+      existing = readFileSync(hookPath, "utf8");
+    } catch {
+      existing = "";
+    }
+    if (!existing.includes(GIT_HOOK_MARKER)) {
+      return {
+        installed: false,
+        note: `left your existing .git/hooks/pre-push untouched. To enable the warn-only push check, append:  '${shimPath}' "$@"`,
+      };
+    }
+  }
+  const body = [
+    "#!/usr/bin/env bash",
+    `# ${GIT_HOOK_MARKER} (warn-only). Do not edit by hand.`,
+    `SHIM='${shSingleQuote(shimPath)}'`,
+    '[ -x "$SHIM" ] && "$SHIM" "$@"',
+    "exit 0",
+    "",
+  ].join("\n");
+  writeFileSync(hookPath, body);
+  chmodSync(hookPath, 0o755);
+  return { installed: true, note: `installed warn-only git pre-push hook → ${hookPath}` };
+}
+
 // True when the Reviewgate hooks are actually wired into .claude/settings.json
 // (detected by a hook command pointing at .reviewgate/bin/). `setup` writes only
 // the config; the gate is not armed until `init` installs these hooks — so setup
@@ -106,7 +168,9 @@ export function hooksInstalled(repoRoot: string): boolean {
   }
 }
 
-export async function runInit(input: InitInput): Promise<{ bakedBin: string }> {
+export async function runInit(
+  input: InitInput,
+): Promise<{ bakedBin: string; prePushHook: { installed: boolean; note: string } }> {
   if (input.mode !== "agent-loop") {
     throw new Error(`invalid --mode "${input.mode}": the only supported value is "agent-loop"`);
   }
@@ -137,7 +201,7 @@ export async function runInit(input: InitInput): Promise<{ bakedBin: string }> {
   // bun runtime, not a usable `reviewgate`, so leave it empty and let the shim
   // fall back to PATH (and, for the gate, FAIL CLOSED if nothing resolves).
   const bakedBin = /reviewgate/i.test(basename(process.execPath)) ? process.execPath : "";
-  for (const name of ["trigger", "gate", "reset"]) {
+  for (const name of ["trigger", "gate", "reset", "pre-push"]) {
     const src = join(tplDir, `${name}.sh`);
     const dst = join(binDir, name);
     const tpl = readFileSync(src, "utf8");
@@ -270,5 +334,9 @@ export async function runInit(input: InitInput): Promise<{ bakedBin: string }> {
     writeFileSync(cfgPath, starter);
   }
 
-  return { bakedBin };
+  // 5. Install the warn-only git pre-push hook (Rec #3 deep half), delegating to the
+  // .reviewgate/bin/pre-push shim written in step 1. Conservative + no-clobber; never blocks.
+  const prePushHook = installGitPrePushHook(input.repoRoot, join(binDir, "pre-push"));
+
+  return { bakedBin, prePushHook };
 }

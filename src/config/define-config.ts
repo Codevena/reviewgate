@@ -346,6 +346,12 @@ export const ConfigSchema = z.object({
     // to the human, never suppresses). 0 disables. The loop-driver clamps the effective
     // value to > stuckThreshold so a low mis-config can't make per-signature the eager trigger.
     maxSignatureRecurrence: z.number().int().nonnegative().default(3),
+    // Rec #3 (deep half): the installed git pre-push hook WARNS (never blocks; exit 0) when the
+    // commit being pushed has no recorded clean Reviewgate PASS — closing the "a clean turn-end
+    // pass got pushed before a deep review" gap for push-to-deploy setups. The Stop-hook can't
+    // gate a later push, so this is a fail-safe nudge; the hard guarantee belongs in CI (docs).
+    // false → the installed hook no-ops. Default true.
+    prePushWarn: z.boolean().default(true),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),
