@@ -482,6 +482,14 @@ export function aggregate(input: AggregateInput): AggregateResult {
       survivors.push(f);
       continue;
     }
+    // #1: a self-refuted finding (T1) is already demoted to advisory INFO. The critic's
+    // INFO+likely_fp → DROP would erase it, violating self-refutation's "demote-to-INFO,
+    // never drop — stays visible/attributable" fail-safe contract end-to-end. Keep it as a
+    // visible advisory survivor (it is already non-blocking, so nothing is gained by dropping).
+    if (f.self_refuted === true) {
+      survivors.push(f);
+      continue;
+    }
     // Scan the representative AND every merged member signature (mirror the
     // fp_ledger_match pass): the critic may have keyed its verdict on a member's
     // signature, not the promoted representative's — checking only f.signature

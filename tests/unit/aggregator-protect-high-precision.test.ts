@@ -59,8 +59,11 @@ describe("aggregate — protect high-precision reviewers (#4) — critic", () =>
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
   });
 
-  it("never protects a self_refuted finding (T1 retraction wins)", () => {
-    const f = fin({ signature: "sigC", severity: "WARN", self_refuted: true });
+  it("never protects a self_refuted finding (T1 retraction wins; stays advisory INFO)", () => {
+    // A self_refuted finding is always INFO (T1). It must never be tagged
+    // protected_high_precision even from a protected reviewer — the reviewer's own
+    // retraction outranks its track record — and it stays a visible advisory INFO.
+    const f = fin({ signature: "sigC", severity: "INFO", self_refuted: true });
     const r = aggregate({
       findings: [f],
       reviewersTotal: 1,
@@ -79,6 +82,22 @@ describe("aggregate — protect high-precision reviewers (#4) — critic", () =>
       critic: new Map([["sigD", { verdict: "likely_fp" }]]),
     });
     expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+  });
+
+  it("#1: a self_refuted INFO the critic calls likely_fp is KEPT visible, not dropped", () => {
+    // Codex DoD finding: T1 demotes a self-refuting finding to INFO; the critic's
+    // INFO+likely_fp → drop would erase it end-to-end, breaking the 'never drop / stays
+    // visible' contract. It must survive as an advisory INFO instead.
+    const f = fin({ signature: "sigSR", severity: "INFO", self_refuted: true });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      critic: new Map([["sigSR", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings).toHaveLength(1);
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.self_refuted).toBe(true);
+    expect(r.criticDropped).toHaveLength(0);
   });
 });
 
