@@ -82,6 +82,9 @@ export const defaultConfig = {
       // #6 (field report 2026-06-17): tag + count uncited project/house-rule findings
       // (instrumentation for the rule-citation directive). Non-suppressing. Default ON.
       ruleCitationCheck: true,
+      // non-convergence #2 (field report 2026-06-17): demote a currently-safe/hypothetical/future
+      // CRITICAL one step to WARN (one-step, security/correctness-exempt, fail-safe). Default ON.
+      hypotheticalSeverityGuard: true,
       demoteTestSecurity: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.

@@ -92,6 +92,11 @@ export const ConfigSchema = z.object({
       // (nothing dropped — every note stays in pending.json and the foldable block). Default
       // ON via defaults.ts.
       collapseLowTrustSoloInfo: z.boolean().optional(),
+      // Field report 2026-06-17 (non-convergence #2): demote a CRITICAL one step to WARN when the
+      // reviewer's own text frames it as currently-safe / hypothetical / future fragility (no
+      // present demonstrable defect). Deterministic, one-step, demote-only, security/correctness-
+      // exempt, fail-safe. Default ON via defaults.ts.
+      hypotheticalSeverityGuard: z.boolean().optional(),
       // Field report 2026-06-17 #6 (instrumentation): tag + COUNT findings that assert a
       // project/house rule without a verifiable file:line citation (the F-004 class). Adds a
       // pending.md badge + a per-run count in RunSummary/audit — NON-suppressing (never demotes).

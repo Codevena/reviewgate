@@ -74,6 +74,7 @@ import {
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
 import { renderHouseRules } from "./house-rules.ts";
+import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
@@ -1571,9 +1572,16 @@ export class Orchestrator {
     // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
     // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
     // signal → category-independent; deterministic, demote-only, fail-safe.
-    const allFindings = demoteSelfRefuting(
+    const selfScreenedFindings = demoteSelfRefuting(
       factCheckedFindings,
       this.input.config.phases.review.selfRefutationFilter !== false,
+    );
+    // non-convergence #2: demote a CRITICAL the reviewer's own text frames as currently-safe /
+    // hypothetical / future fragility (no present defect) one step to WARN — pre-aggregate, like
+    // self-refutation/grounding. One-step, security/correctness-exempt, fail-safe.
+    const allFindings = demoteHypotheticalCriticals(
+      selfScreenedFindings,
+      this.input.config.phases.review.hypotheticalSeverityGuard !== false,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding

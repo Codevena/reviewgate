@@ -130,6 +130,11 @@ export const FindingSchema = z.object({
       }),
     )
     .optional(),
+  // #2 severity floor (field report 2026-06-17 non-convergence): set true when a CRITICAL was
+  // demoted one step to WARN because the reviewer's OWN text frames it as currently-safe /
+  // hypothetical / future fragility (no present demonstrable defect). Demote-only, one-step,
+  // security/correctness-exempt; the finding still surfaces as a blocking WARN.
+  hypothetical_demoted: z.boolean().optional(),
   // S6 grounding (layer 1): set true when the grounding pass demoted this finding
   // one severity step (CRITICAL→WARN) because it cited a code-shaped token (CSS
   // custom property or backtick code-span) that is wholly absent from the reviewed
