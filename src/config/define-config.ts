@@ -293,8 +293,18 @@ export const ConfigSchema = z.object({
     .object({ enabled: z.boolean(), reviewTtlDays: z.number().int().positive() })
     .default({ enabled: true, reviewTtlDays: 7 }),
   research: z
-    .object({ languages: z.array(z.string()) })
-    .default({ languages: ["typescript", "tsx", "python"] }),
+    .object({
+      languages: z.array(z.string()),
+      // P10: advisory monorepo path → app → framework block. Optional (so partial configs
+      // without it still parse); default-on via defaults.ts. Render-only / fail-safe.
+      appTopology: z
+        .object({ enabled: z.boolean(), maxApps: z.number().int().positive() })
+        .optional(),
+    })
+    .default({
+      languages: ["typescript", "tsx", "python"],
+      appTopology: { enabled: true, maxApps: 12 },
+    }),
   notify: z.object({ desktop: z.boolean() }).default({ desktop: false }),
   loop: z.object({
     maxIterations: z.number().int().positive(),

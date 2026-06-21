@@ -4,10 +4,33 @@ import { dirname, join } from "node:path";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { TriageDecision } from "../schemas/triage.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
+import type { AppTopologyEntry } from "./app-topology.ts";
 import type { RenderedContextDocs } from "./context7.ts";
 import type { Conventions } from "./conventions.ts";
 import type { DiffFacts } from "./diff-facts.ts";
 import type { SymbolGraph } from "./symbol-graph.ts";
+
+// P10: render a monorepo path → app → framework map as TRUSTED context, so a reviewer can
+// attribute a file/route to the right app (the field-report FP conflated a Vite SPA with a
+// Next.js app). Only render when there's genuine multi-app ambiguity (>= 2 detected apps) —
+// a single-app repo adds noise. ADVISORY only: never touches the verdict/suppression path.
+export function renderAppTopologySection(entries: AppTopologyEntry[]): string[] {
+  if (entries.length < 2) return [];
+  const lines = entries.map((e) => {
+    // package.json name + dir are repo-content (attacker-controllable) and land in this
+    // TRUSTED section BEFORE the untrusted-diff fence — neutralize markers + strip newlines,
+    // exactly like the changed-files paths. The framework label is a fixed allowlist → inert.
+    const dir = neutralizeInjectionMarkers(e.dir || ".").replace(/[\r\n]+/g, " ");
+    const name = neutralizeInjectionMarkers(e.name).replace(/[\r\n]+/g, " ");
+    return `- \`${dir}/**\` — ${name} (${e.framework})`;
+  });
+  return [
+    "## App topology (TRUSTED — repo structure)",
+    "_Path prefix → app → framework. Attribute each changed file/route to the right app; do NOT assume one framework spans the whole monorepo._",
+    ...lines,
+    "",
+  ];
+}
 
 export interface ResearchInput {
   repoRoot: string;
@@ -15,6 +38,8 @@ export interface ResearchInput {
   triage: TriageDecision;
   symbolGraph: SymbolGraph;
   conventions: Conventions;
+  /** P10: monorepo path → app → framework map (advisory; rendered only when >= 2 apps). */
+  appTopology?: AppTopologyEntry[] | undefined;
   /** M6: current library docs to inject (untrusted, opt-in). */
   contextDocs?: RenderedContextDocs | undefined;
   /** TOTAL byte cap for the rendered docs section (per-lib cap applied upstream). */
@@ -159,6 +184,7 @@ export async function writeResearch(input: ResearchInput): Promise<string> {
     // markers and collapse code fences so it cannot break out of this trusted section.
     neutralizeFences(neutralizeInjectionMarkers(input.conventions.summary)),
     "",
+    ...renderAppTopologySection(input.appTopology ?? []),
   ];
   if (input.contextDocs) {
     lines.push(

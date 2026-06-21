@@ -24,6 +24,7 @@ import { isProviderAvailable } from "../providers/availability.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
 import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
+import { type AppTopologyEntry, loadAppTopology } from "../research/app-topology.ts";
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
 import { collectDepSurface } from "../research/dep-surface.ts";
@@ -859,6 +860,18 @@ export class Orchestrator {
     // reuse the SAME object for writeResearch below, so the hash and the injected
     // context can never drift. `summary` is the only field that reaches a reviewer.
     const conventions = loadConventions(repo);
+    // P10: monorepo app-topology — advisory TRUSTED context (path → app → framework) so a
+    // reviewer doesn't conflate two frontends in a monorepo. Best-effort + gated (default-on);
+    // load once HERE alongside conventions so its hash and the injected block can't drift.
+    const topoCfg = this.input.config.research?.appTopology;
+    let appTopology: AppTopologyEntry[] = [];
+    if (topoCfg?.enabled !== false) {
+      try {
+        appTopology = loadAppTopology(repo, topoCfg?.maxApps ?? 12);
+      } catch {
+        appTopology = [];
+      }
+    }
     const behaviorHash = computeBehaviorHash({
       brain: brainEngine
         ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
@@ -901,6 +914,11 @@ export class Orchestrator {
     const conventionsSegment = `|conv:${createHash("sha256")
       .update(conventions.summary)
       .digest("hex")}`;
+    // P10: the app-topology block is injected context not covered by the diff hash — fold its
+    // sha256 in so a package.json/framework change re-runs the panel (empty → omitted segment).
+    const appTopologySegment = appTopology.length
+      ? `|topo:${createHash("sha256").update(JSON.stringify(appTopology)).digest("hex")}`
+      : "";
     // #6: the reviewer prompt preamble (e.g. the rule-citation directive) is a code constant
     // not covered by configHash. Fold its sha256 in so a preamble change re-runs the panel
     // instead of serving a verdict produced under the OLD instructions — independent of an
@@ -917,7 +935,7 @@ export class Orchestrator {
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${promptSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}`,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -994,6 +1012,7 @@ export class Orchestrator {
       triage,
       symbolGraph,
       conventions,
+      appTopology,
       contextDocs,
       contextDocsBudgetBytes: docsCfg?.budgetBytes,
       signal: opts.signal,

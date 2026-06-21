@@ -184,7 +184,10 @@ export const defaultConfig = {
     implicitOutcomes: { enabled: true, cap: 5000 },
   },
   cache: { enabled: true, reviewTtlDays: 7 },
-  research: { languages: ["typescript", "tsx", "python"] },
+  research: {
+    languages: ["typescript", "tsx", "python"],
+    appTopology: { enabled: true, maxApps: 12 },
+  },
   // Completion signal: the gate always writes a one-line summary to stderr; set
   // notify.desktop=true to also fire a macOS/Linux desktop notification when a
   // review finishes (so "green" isn't silent).
