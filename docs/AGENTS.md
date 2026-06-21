@@ -201,6 +201,34 @@ just end your turn again — Reviewgate will let you stop.
   sandbox mode it cannot satisfy). You are blocked, fail-closed. Tell the human to
   run `reviewgate doctor`; do not treat this as a pass.
 
+## Demoted-from-CRITICAL findings (⬇ badge) — decision-required on SOFT-PASS
+
+A finding tagged `⬇ was CRITICAL, one-step-demoted` was raised as a **CRITICAL** and then
+softened **one step to WARN** by a *value-judgment* pass (the reviewer's own text framed it as
+hypothetical/future; a grounding judge found a cited token absent; the critic called it a likely
+FP; the reviewer's reputation is low; or its self-reported confidence was below the floor).
+Previously such a finding could **SOFT-PASS and silently re-arm** under the default policy,
+auto-hiding a possibly-real CRITICAL. Now it **blocks like a FAIL until you decide it** — even on
+an otherwise-passing SOFT-PASS. **Do not reflexively acknowledge it.**
+
+Three ways out, in order of preference:
+
+- **Fix it** — the next panel doesn't reproduce it → the gate re-arms.
+- **Reject it** with `reviewer_was_wrong: true` and a real, specific reason (≥ 20 chars) — next
+  round it demotes to advisory INFO (the per-cycle `cycleRejected` off-ramp) and drops out of the
+  required-decision set; converges in ≤ 3 iterations.
+- **`acknowledged-low-value`** — permitted here, because a demoted-from-CRITICAL finding is
+  **never** `security`/`correctness` by construction (those categories are exempt from every
+  value-judgment demote). **Caveat:** an ack does **not** fold into a suppressor, so the finding
+  **re-appears in the next panel** and you must re-ack it each iteration until the iteration-cap
+  escalation fires (bounded — it cannot loop forever). Prefer **reject or fix** over repeated acks.
+
+**Friction path (rare, fail-safe):** if such a finding wording-merges into a cluster that also
+contains a `security`/`correctness` concern, the merged finding becomes high-stakes — its reject
+off-ramp is refused (the gate will not auto-hide a security/correctness signature) and
+`acknowledged-low-value` is forbidden. It then converges by **fix only**, else loops to the
+iteration-cap escalation. This is deliberate: it stays blocking and is never auto-hidden.
+
 ## Worktrees (coverage limitation)
 
 Reviewgate is armed **per checkout**. A `git worktree` shares only `.git` — it has no

@@ -242,6 +242,18 @@ describe("ReportWriter", () => {
       expect(md).toContain("🌫 cited token absent from corpus — likely fabricated");
     });
 
+    it("demoted_from_critical (blocking) → ⬇ badge (G0)", async () => {
+      const md = await renderFinding({ demoted_from_critical: true, severity: "WARN" });
+      expect(md).toContain("⬇ was CRITICAL, one-step-demoted");
+    });
+
+    it("demoted_from_critical badge is hidden once the finding is suppressed to INFO (G0)", async () => {
+      // A from-CRITICAL further suppressed to INFO by a structural/agent off-ramp (e.g. reject →
+      // cycleRejected) is no longer decision-required — "decide before passing" would mislead.
+      const md = await renderFinding({ demoted_from_critical: true, severity: "INFO" });
+      expect(md).not.toContain("⬇ was CRITICAL");
+    });
+
     it("defangs injection markers in reviewer message/details/suggested_fix", async () => {
       // Reviewer free text is untrusted LLM output rendered into pending.md, which the
       // agent reads with its Read tool — live markers must be defanged so a
