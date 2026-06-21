@@ -20,10 +20,13 @@ export function renderAppTopologySection(entries: AppTopologyEntry[]): string[] 
     // package.json name + dir are repo-content (attacker-controllable) and land in this
     // TRUSTED section BEFORE the untrusted-diff fence — neutralize markers + strip newlines,
     // exactly like the changed-files paths. The framework label is a fixed allowlist → inert.
-    // `dir` is rendered inside an inline-code span, so also strip backticks (beyond newlines)
-    // so a backtick in a directory name can't malform the span. `name` is plain text.
+    // Strip backticks from BOTH `dir` and `name` (beyond newlines): `dir` sits inside an
+    // inline-code span (a backtick would close it early), and `name` is plain text where a
+    // lone backtick would open a stray code span across the rest of the block. Consistent
+    // neutralization of the two attacker-controllable fields (a valid npm name can't contain
+    // a backtick anyway; this only hardens a malformed package.json).
     const dir = neutralizeInjectionMarkers(e.dir || ".").replace(/[\r\n`]+/g, " ");
-    const name = neutralizeInjectionMarkers(e.name).replace(/[\r\n]+/g, " ");
+    const name = neutralizeInjectionMarkers(e.name).replace(/[\r\n`]+/g, " ");
     return `- \`${dir}/**\` — ${name} (${e.framework})`;
   });
   return [

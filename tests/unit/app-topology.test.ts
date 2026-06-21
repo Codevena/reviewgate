@@ -96,4 +96,14 @@ describe("renderAppTopologySection (P10)", () => {
     // the raw injection marker must not survive verbatim in the trusted section
     expect(out).not.toContain("### Instruction:");
   });
+
+  it("strips backticks from BOTH name and dir so they can't open/close a stray code span", () => {
+    const out = renderAppTopologySection([
+      { dir: "ok", name: "fine", framework: "Vite" },
+      { dir: "ev`il", name: "na`me", framework: "Next.js" },
+    ]).join("\n");
+    // only the deliberate `dir/**` code-span backticks remain — no attacker backtick survives.
+    expect(out).not.toContain("ev`il");
+    expect(out).not.toContain("na`me");
+  });
 });
