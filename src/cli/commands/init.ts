@@ -65,7 +65,46 @@ const HOOKS_TEMPLATE = {
   ],
 };
 
+// Patterns are UN-ANCHORED (leading `**/`) so they also cover NESTED .reviewgate/
+// dirs (e.g. backend/.reviewgate/) — a root-anchored `.reviewgate/...` would only match
+// the repo-root copy and leak nested runtime state into commits (field report 2026-06-21).
+// Cassettes use the CONTENTS-form `**/.reviewgate/cassettes/*` (NOT the dir-form), because
+// a trailing-slash dir-exclude excludes the directory NODE and git then cannot re-include a
+// child of an excluded dir — so the golden re-include would silently fail. The contents-form
+// + `!**/.reviewgate/cassettes/golden/` keeps golden cassettes trackable at root AND nested.
+// The committed brain memory (brain.json/brain.md) lives INSIDE .reviewgate/brain/ and must
+// stay trackable, so only the brain RUNTIME subdirs are ignored, never the brain/ dir itself.
 const GITIGNORE_LINES = [
+  "# Reviewgate (auto-added; edit reviewgate.config.ts to override)",
+  "# Un-anchored (**/) so nested .reviewgate/ dirs (e.g. backend/.reviewgate/) are covered too.",
+  "**/.reviewgate/audit/",
+  "**/.reviewgate/cassettes/*",
+  "!**/.reviewgate/cassettes/golden/",
+  "**/.reviewgate/reports/",
+  "**/.reviewgate/pending.*",
+  "**/.reviewgate/plan-review.*",
+  "**/.reviewgate/decisions/",
+  "**/.reviewgate/state.json",
+  "**/.reviewgate/research.md",
+  "**/.reviewgate/dirty.flag",
+  "**/.reviewgate/ESCALATION.md",
+  "**/.reviewgate/.lock",
+  "**/.reviewgate/cache/",
+  "**/.reviewgate/learnings/",
+  "**/.reviewgate/reputation.json",
+  "**/.reviewgate/quota-cooldowns.json",
+  "**/.reviewgate/brain/proposals/",
+  "**/.reviewgate/brain/snapshots/",
+  "# Antigravity CLI (agy) working-tree artifact",
+  ".antigravitycli",
+];
+
+// The exact prior root-anchored Reviewgate strings (pre-2026-06-21). The .gitignore writer is
+// append-only, so a repo init'd before P9 keeps these; the stale `.reviewgate/cassettes/`
+// dir-exclude in particular would re-break ROOT golden tracking under the new patterns. The
+// writer strips any of these (plus the current managed set) before re-appending the new block,
+// so an upgrade is clean + idempotent and never leaves a conflicting stale line.
+const OLD_GITIGNORE_LINES = [
   "# Reviewgate (auto-added; edit reviewgate.config.ts to override)",
   ".reviewgate/audit/",
   ".reviewgate/cassettes/",
@@ -81,8 +120,6 @@ const GITIGNORE_LINES = [
   ".reviewgate/cache/",
   ".reviewgate/brain/proposals/",
   ".reviewgate/brain/snapshots/",
-  "# Antigravity CLI (agy) working-tree artifact",
-  ".antigravitycli",
 ];
 
 export interface InitInput {
@@ -255,14 +292,20 @@ export async function runInit(
   // (which would silently disarm every hook in the project, including foreign ones).
   writeFileAtomic(settingsPath, JSON.stringify(settings, null, 2));
 
-  // 3. Append .gitignore (idempotent: skip lines that already exist verbatim)
+  // 3. Reconcile .gitignore (idempotent migration, not blind append). The prior writer only
+  // APPENDED, so a repo init'd before P9 keeps stale root-anchored lines — and the stale
+  // `.reviewgate/cassettes/` dir-exclude would re-break ROOT golden tracking under the new
+  // un-anchored patterns. Strip every Reviewgate-managed line (the current set + the OLD set),
+  // preserving ALL unrelated user lines and their order, then append the fresh managed block.
+  // Atomic write (tmp+rename) so an interrupted write can't truncate the user's .gitignore.
   const giPath = join(input.repoRoot, ".gitignore");
   const existingGi = existsSync(giPath) ? readFileSync(giPath, "utf8") : "";
-  const existingLines = new Set(existingGi.split("\n").map((l) => l.trim()));
-  const toAppend = GITIGNORE_LINES.filter((l) => !existingLines.has(l.trim()));
-  if (toAppend.length > 0) {
-    const sep = existingGi.length > 0 && !existingGi.endsWith("\n") ? "\n" : "";
-    writeFileSync(giPath, `${existingGi + sep + toAppend.join("\n")}\n`);
+  const managed = new Set([...OLD_GITIGNORE_LINES, ...GITIGNORE_LINES].map((l) => l.trim()));
+  const keptLines = existingGi.split("\n").filter((l) => !managed.has(l.trim()));
+  const keptBody = keptLines.join("\n").replace(/\n+$/, "");
+  const out = `${keptBody ? `${keptBody}\n` : ""}${GITIGNORE_LINES.join("\n")}\n`;
+  if (out !== existingGi) {
+    writeFileAtomic(giPath, out);
   }
 
   // 4. Write a starter reviewgate.config.ts if none exists.
@@ -292,11 +335,20 @@ export async function runInit(
       "    review: {",
       "      reviewers: [",
       "        // `fallback` = quota-failover chain: if codex hits its usage cap, the",
-      "        // gate auto-re-runs this review on gemini, then claude-code (both",
-      "        // OAuth/$0), then openrouter (paid, last resort). Each runs only if",
-      "        // available. Reorder/trim to taste.",
-      '        { provider: "codex", persona: "security", fallback: ["gemini", "claude-code", "openrouter"] },',
-      '        // { provider: "openrouter", persona: "security" },',
+      "        // gate auto-re-runs this review on gemini, then claude-code — both",
+      "        // OAuth/$0. Each runs only if available. Reorder/trim to taste.",
+      "        // NOTE: openrouter (deepseek-flash) is deliberately NOT in the failover —",
+      "        // it's a low-precision PAID reviewer; it stays enabled below for the brain's",
+      "        // embeddings only. Append it to `fallback` only if you want a paid last resort.",
+      '        { provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] },',
+      "        // 👉 CONSENSUS — the strongest false-positive suppressor: add a 2nd strong,",
+      "        //    independent reviewer so a finding BOTH raise is high-confidence and a LONE",
+      "        //    one is demotable (and the FP-ledger/reputation machinery, inert on 1",
+      "        //    reviewer, starts working). Both OAuth/$0, but uses 2x your subscription",
+      '        //    quota per review. Uncomment (then drop "claude-code" from codex\'s fallback',
+      "        //    above, since it becomes a primary):",
+      '        // { provider: "claude-code", persona: "security", fallback: ["gemini"] },',
+      "        // Or add a different-angle reviewer instead (less consensus overlap, more coverage):",
       '        // { provider: "gemini", persona: "architecture" },',
       '        // { provider: "claude-code", persona: "adversarial" },',
       "      ],",

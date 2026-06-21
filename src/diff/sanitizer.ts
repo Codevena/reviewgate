@@ -46,6 +46,12 @@ function stripControlBytes(s: string): string {
 // (an inline literal would be an invisible byte sequence in this file).
 const ZERO_WIDTH_SPACE = String.fromCharCode(0x200b);
 
+// The trust-boundary fence delimiters. Attacker-influenced text rendered into the TRUSTED
+// section (conventions, changed-file paths, symbol names, P10 app-topology) — or into the
+// untrusted diff body — must never contain a live copy of these, or it could spoof the
+// boundary and make following text read as trusted. Single source of truth for both paths.
+export const FENCE_DELIMITERS = ["<<UNTRUSTED_DIFF>>", "<<END_UNTRUSTED>>"] as const;
+
 export function neutralizeInjectionMarkers(text: string): string {
   let body = stripControlBytes(text).normalize("NFKC");
   for (const re of INJECTION_MARKERS) {
@@ -53,6 +59,11 @@ export function neutralizeInjectionMarkers(text: string): string {
       if (m.includes("<") || m.includes(">")) return escapeAngles(m);
       return m.length > 1 ? `${m[0]}${ZERO_WIDTH_SPACE}${m.slice(1)}` : m;
     });
+  }
+  // Defang the trust-boundary fence delimiters too (F-032 parity with sanitizeDiff, codex DoD):
+  // a trusted-section string rendered BEFORE the diff fence must not spoof the boundary.
+  for (const fence of FENCE_DELIMITERS) {
+    body = body.split(fence).join(escapeAngles(fence));
   }
   return body;
 }
@@ -157,7 +168,7 @@ export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
 
   // Neutralise the fence delimiters if they appear in the untrusted body, so a
   // diff cannot spoof the boundary and have following text read as trusted.
-  for (const fence of ["<<UNTRUSTED_DIFF>>", "<<END_UNTRUSTED>>"]) {
+  for (const fence of FENCE_DELIMITERS) {
     const parts = body.split(fence);
     flagged += parts.length - 1;
     body = parts.join(escapeAngles(fence));

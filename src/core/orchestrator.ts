@@ -23,6 +23,7 @@ import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers
 import { isProviderAvailable } from "../providers/availability.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
+import { type AppTopologyEntry, loadAppTopology } from "../research/app-topology.ts";
 import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
@@ -396,17 +397,16 @@ export function applyCooldownEffects(
   }
 }
 
-// Deterministic order for last-resort failover (OAuth/$0 providers first, the
-// paid API provider last). Used only after a reviewer slot's DECLARED fallback
-// chain is exhausted — to recruit any other enabled+available reviewer rather
-// than collapse the panel to zero on a quota outage.
-const LAST_RESORT_ORDER: ProviderId[] = [
-  "claude-code",
-  "codex",
-  "gemini",
-  "opencode",
-  "openrouter",
-];
+// Deterministic order for last-resort failover (OAuth/$0 providers only). Used after a
+// reviewer slot's DECLARED fallback chain is exhausted — to recruit any other
+// enabled+available OAuth reviewer rather than collapse the panel to zero on a quota outage.
+// openrouter is DELIBERATELY EXCLUDED: it's a low-precision PAID model (deepseek-flash,
+// ~23% precision in the dogfood repo) that stays `enabled` only for the brain's embeddings —
+// auto-recruiting it as a reviewer just because it's enabled is exactly the field-report bug
+// (codex quota-capped → openrouter runs solo and pays for noise). It is only ever a reviewer
+// if EXPLICITLY listed in a slot's reviewers/fallback; otherwise the gate fails CLOSED, which
+// is the safe posture (a blocked turn beats a 23%-precision paid review).
+const LAST_RESORT_ORDER: ProviderId[] = ["claude-code", "codex", "gemini", "opencode"];
 
 // Number of DISTINCT reviewer identities (provider:persona) in the ok-run panel.
 // Used as `reviewersTotal` for the singleton-CRITICAL failsafe instead of the raw
@@ -859,6 +859,18 @@ export class Orchestrator {
     // reuse the SAME object for writeResearch below, so the hash and the injected
     // context can never drift. `summary` is the only field that reaches a reviewer.
     const conventions = loadConventions(repo);
+    // P10: monorepo app-topology — advisory TRUSTED context (path → app → framework) so a
+    // reviewer doesn't conflate two frontends in a monorepo. Best-effort + gated (default-on);
+    // load once HERE alongside conventions so its hash and the injected block can't drift.
+    const topoCfg = this.input.config.research?.appTopology;
+    let appTopology: AppTopologyEntry[] = [];
+    if (topoCfg?.enabled !== false) {
+      try {
+        appTopology = loadAppTopology(repo, topoCfg?.maxApps ?? 12);
+      } catch {
+        appTopology = [];
+      }
+    }
     const behaviorHash = computeBehaviorHash({
       brain: brainEngine
         ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
@@ -901,6 +913,11 @@ export class Orchestrator {
     const conventionsSegment = `|conv:${createHash("sha256")
       .update(conventions.summary)
       .digest("hex")}`;
+    // P10: the app-topology block is injected context not covered by the diff hash — fold its
+    // sha256 in so a package.json/framework change re-runs the panel (empty → omitted segment).
+    const appTopologySegment = appTopology.length
+      ? `|topo:${createHash("sha256").update(JSON.stringify(appTopology)).digest("hex")}`
+      : "";
     // #6: the reviewer prompt preamble (e.g. the rule-citation directive) is a code constant
     // not covered by configHash. Fold its sha256 in so a preamble change re-runs the panel
     // instead of serving a verdict produced under the OLD instructions — independent of an
@@ -917,7 +934,7 @@ export class Orchestrator {
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${promptSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}`,
       reviewgateVersion: RG_VERSION,
       schemaVersion: "reviewgate.pending.v1",
     });
@@ -994,6 +1011,7 @@ export class Orchestrator {
       triage,
       symbolGraph,
       conventions,
+      appTopology,
       contextDocs,
       contextDocsBudgetBytes: docsCfg?.budgetBytes,
       signal: opts.signal,
@@ -1908,6 +1926,10 @@ export class Orchestrator {
       criticInfo ? { ...criticInfo, demoted } : undefined,
       panelNote,
       fpFragmentation,
+      // P11: label a PURE docs-only review so a prose finding reads as a spec/docs review,
+      // not a code-review CRITICAL. riskClass "docs" requires facts.docOnly (a mixed docs+code
+      // diff is "default"), so this never relaxes the framing on a commit that touches code.
+      triage.riskClass === "docs",
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2284,6 +2306,7 @@ export class Orchestrator {
     },
     panelNote?: string,
     fpFragmentation?: FpFragmentation[],
+    docsReview = false,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -2332,6 +2355,7 @@ export class Orchestrator {
         ...(this.input.workspaceUnsettled
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),
+        ...(docsReview ? { docs_review: true } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

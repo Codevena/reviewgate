@@ -50,6 +50,11 @@ export const PendingReportSchema = z.object({
       waited_ms: z.number().int().nonnegative(),
     })
     .optional(),
+  // P11: set when this is a PURE docs-only review (triage riskClass "docs" — every changed
+  // file is prose/markdown). Render-only — drives a "spec/docs review" framing banner so the
+  // agent reads a prose finding as a prose review (e.g. verify a framework attribution) rather
+  // than code-review CRITICAL weight. The verdict/severity are unaffected.
+  docs_review: z.boolean().optional(),
   // #4: advisory — files where a false-positive class is fragmenting across many
   // FP-ledger entries but not promoting to auto-suppression (fragmented rule_ids /
   // single-reviewer ≥2-provider floor). Render-only; recommends a house rule. The

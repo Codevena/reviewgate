@@ -13,7 +13,7 @@ import {
   planReviewJsonPath,
   planReviewMdPath,
 } from "../utils/paths.ts";
-import { PROTECT_MIN_DECISIONS } from "./provider-precision.ts";
+import { PROTECT_MIN_DECISIONS, lowPrecisionAdvisory } from "./provider-precision.ts";
 
 function ensureDir(p: string): void {
   const d = dirname(p);
@@ -86,6 +86,15 @@ export function findingBadges(f: Finding): string | null {
         ? `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — recurred (advisory: out of scope or known FP)`
         : `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — still present; the fix did not resolve it`,
     );
+  // P1 (field report 2026-06-21): a GATING (CRITICAL/WARN) finding raised SOLELY by
+  // low-precision reviewer(s) gets a loud up-front advisory so the agent verifies it cheaply
+  // before an expensive caller sweep. Render-only — severity/verdict unchanged; a
+  // high-precision corroborator clears it. (Demoting it would fail open under the default
+  // soft-pass policy, so we annotate rather than demote.)
+  if (f.severity !== "INFO") {
+    const adv = lowPrecisionAdvisory(f);
+    if (adv) badges.push(`⚠ ${adv}`);
+  }
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 
@@ -271,6 +280,15 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
         "",
       ]
     : [];
+  // P11: a PURE docs-only review (every changed file is prose/markdown) — frame it as a
+  // spec/docs review so a prose finding (e.g. a framework misread in a design doc) reads with
+  // prose-review weight, not code-review CRITICAL weight. Render-only; the verdict is unchanged.
+  const docsReviewBanner = r.docs_review
+    ? [
+        "> 📄 **Spec / docs review** (prose, not code): every changed file is documentation. Findings are about the PROSE — verify any framework/library attribution before treating a finding as blocking, and don't expect typecheck/lint to apply. The verdict/severity are unchanged.",
+        "",
+      ]
+    : [];
   // #4: advisory hint when a false-positive class is fragmenting on a file but not
   // auto-suppressing — recommend a house rule (the durable fix).
   // file + rule_ids are reviewer-SUPPLIED (stored verbatim in the FP-ledger), so
@@ -280,8 +298,29 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     const ruleIds = f.sample_rule_ids
       .map((id) => `\`${neutralizeInjectionMarkers(id)}\``)
       .join(", ");
+    // P2 (field report 2026-06-21): an auto-suppressor for these recurring classes can't be
+    // made fail-safe (it would hide a future real finding), so the durable fix stays the
+    // explicit house rule — but emit it as a PASTE-READY snippet so it's one copy-paste, not
+    // a per-run "go configure it yourself" chore. Reviewer-supplied file/rule_ids are embedded
+    // inside a TS string literal here, so strip quotes/backticks/newlines (beyond the injection
+    // neutralize) so a hostile name can't break the snippet's syntax.
+    const snippetSafe = (s: string) =>
+      neutralizeInjectionMarkers(s)
+        .replace(/[`"\\\r\n]+/g, " ")
+        .trim();
+    const fileLit = snippetSafe(f.file);
+    const ruleIdsLit = f.sample_rule_ids.map(snippetSafe).join(", ");
     return [
-      `> ⚠ **Fragmenting false-positive class:** \`${file}\` has ${f.distinct_signatures} distinct rejected-FP findings (e.g. ${ruleIds}; ${f.total_rejects} rejects) that aren't promoting to auto-suppression (fragmented rule_ids / single reviewer). The durable fix is a **house rule** in \`phases.review.houseRules\` (reviewgate.config.ts) asserting the repo's ground truth — it suppresses the class at the source and invalidates cached verdicts.`,
+      `> ⚠ **Fragmenting false-positive class:** \`${file}\` has ${f.distinct_signatures} distinct rejected-FP findings (e.g. ${ruleIds}; ${f.total_rejects} rejects) that aren't promoting to auto-suppression (fragmented rule_ids / single reviewer). The durable, fail-safe fix is a **house rule** asserting the repo's ground truth — it suppresses the class AT THE SOURCE (the reviewer stops hallucinating it) and invalidates cached verdicts. Paste this into \`reviewgate.config.ts\` and replace the placeholder with the real ground truth:`,
+      "",
+      "```ts",
+      "// reviewgate.config.ts",
+      "export default {",
+      "  phases: { review: { houseRules: [",
+      `    "In ${fileLit}: <state the repo's ground truth here> — reviewers keep flagging ${ruleIdsLit} as false positives.",`,
+      "  ] } },",
+      "};",
+      "```",
       "",
     ];
   });
@@ -295,6 +334,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
           '- For a cosmetic WARN nit you won\'t fix (NOT security/correctness, NOT CRITICAL): `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"acknowledged-low-value"}` — do NOT use this to wave away a real bug.',
+          '- For a VALID concern you VERIFIED does not apply here (the reviewer was right to raise it, but you checked — e.g. against prod — and it\'s moot; allowed even on CRITICAL/security): `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"verified-not-applicable","reason":"the verification evidence, >=20 chars"}` — the reason is REQUIRED; this is reputation-NEUTRAL and is NOT an FP claim (don\'t use reviewer_was_wrong when the reviewer wasn\'t wrong).',
           "",
           "Reviewgate refuses to unblock until every CRITICAL/WARN finding ID has a decision.",
           "",
@@ -315,6 +355,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
     ...coverageBanner,
+    ...docsReviewBanner,
     ...singleReviewerBanner,
     ...largeDiffBanner,
     ...unsettledBanner,

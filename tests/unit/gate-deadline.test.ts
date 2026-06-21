@@ -59,6 +59,29 @@ class SlowOrchestrator {
 // Models a run whose panel + writeReport COMPLETED, with only bounded
 // post-verdict bookkeeping (curator/cache) overrunning the deadline: it ignores
 // the abort and resolves a real verdict slightly after the deadline fired.
+// A COMPLETED, FULL-COVERAGE PASS (the configured codex reviewer actually ran ok), so the
+// pass is NOT labelled PRELIMINARY — distinct from PASS_SUMMARY's empty providers (which the
+// timeout/incomplete tests reuse). This makes the stub match this test's stated intent ("the
+// review actually completed") so the P4 preliminary "did not complete" WHY does not fire.
+const PASS_RESULT_COVERED: IterationResult = {
+  ...PASS_RESULT,
+  summary: {
+    ...PASS_SUMMARY,
+    providers: [
+      {
+        provider: "codex",
+        personas: ["security"],
+        runs: 1,
+        errors: 0,
+        findings: 0,
+        demoted: 0,
+        cost_usd: 0,
+        duration_ms: 1,
+      },
+    ],
+  },
+};
+
 class VerdictDoneOrchestrator {
   async runIteration(_opts: {
     runId: string;
@@ -66,7 +89,7 @@ class VerdictDoneOrchestrator {
     signal?: AbortSignal;
   }): Promise<IterationResult> {
     await new Promise((r) => setTimeout(r, 120));
-    return PASS_RESULT;
+    return PASS_RESULT_COVERED;
   }
 }
 

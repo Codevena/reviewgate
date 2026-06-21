@@ -71,3 +71,31 @@ describe("report-writer renders reviewer_precision (#8)", () => {
     expect(md).not.toContain("Reviewer track record:");
   });
 });
+
+describe("report-writer P1 low-precision advisory", () => {
+  it("renders a loud advisory for a CRITICAL raised SOLELY by a low-precision reviewer", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-pp-lo-"));
+    const f0 = report.findings[0];
+    if (!f0) throw new Error("fixture");
+    const lowFinding = {
+      ...f0,
+      reviewer: { provider: "openrouter", model: "m", persona: "security" },
+      reviewer_precision: [{ provider: "openrouter", tp: 8, fp: 12, precision: 0.4 }],
+    };
+    await new ReportWriter(dir).write({ ...report, findings: [lowFinding] });
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    expect(md).toContain("low-precision reviewer");
+    expect(md).toContain("openrouter 40%");
+    expect(md).toContain("verify the cited code");
+    // The finding is NOT demoted — it still renders as a gated CRITICAL.
+    expect(md).toContain("CRITICAL");
+  });
+
+  it("does NOT add the advisory when a high-precision reviewer also raised it (corroboration)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-pp-hi-"));
+    // the default fixture: codex 88% + openrouter 41% → corroborated → no advisory
+    await new ReportWriter(dir).write(report);
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    expect(md).not.toContain("low-precision reviewer");
+  });
+});

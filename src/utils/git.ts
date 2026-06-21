@@ -1,6 +1,6 @@
 // src/utils/git.ts
 import { lstatSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { safeReadContained } from "./safe-read.ts";
 import { spawnCapture } from "./spawn-capture.ts";
 
@@ -106,6 +106,38 @@ export function isHarnessConfigPath(path: string): boolean {
 // files are excluded explicitly (they aren't all gitignored, e.g. .reviewgate/bin).
 // Current HEAD sha, or null if there is none (e.g. an empty repo). Used to anchor
 // a review BASE in dirty.flag so commit-per-task work is still reviewed.
+export interface WorktreeInfo {
+  // True for a `git worktree`-linked checkout (git-dir resolves under the main
+  // .git/worktrees/<name> while git-common-dir points at the shared main .git).
+  // False for the main checkout, a submodule (git-dir == git-common-dir), or a
+  // non-git dir (fail-safe: treat as a normal repo so detection never blocks).
+  isLinkedWorktree: boolean;
+  gitDir: string | null;
+  commonDir: string | null;
+}
+
+// Detect whether `repoRoot` is a LINKED git worktree. Reviewgate arms per-checkout
+// (.reviewgate/ + the .claude/settings.json hooks), and a worktree shares only .git — so
+// a worktree created AFTER the main-clone `init` has NO hooks and the Stop gate never
+// fires there (the worktree-blindness blind spot, field report 2026-06-21). `doctor` uses
+// this to fail LOUD. A linked worktree has `--git-dir` != `--git-common-dir`; the main
+// checkout and a submodule have them equal, so neither false-positives.
+export async function worktreeInfo(repoRoot: string): Promise<WorktreeInfo> {
+  const r = await git(repoRoot, ["rev-parse", "--git-dir", "--git-common-dir"]);
+  if (r.status !== 0) return { isLinkedWorktree: false, gitDir: null, commonDir: null };
+  const [gitDir, commonDir] = r.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (!gitDir || !commonDir) {
+    return { isLinkedWorktree: false, gitDir: gitDir ?? null, commonDir: commonDir ?? null };
+  }
+  // git may print these relative to CWD or absolute — resolve both against repoRoot so
+  // the comparison is path-form-independent.
+  const isLinkedWorktree = resolve(repoRoot, gitDir) !== resolve(repoRoot, commonDir);
+  return { isLinkedWorktree, gitDir, commonDir };
+}
+
 export async function gitHeadSha(repoRoot: string): Promise<string | null> {
   const r = await git(repoRoot, ["rev-parse", "HEAD"]);
   const sha = r.stdout.trim();

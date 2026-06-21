@@ -7,6 +7,7 @@ import {
   annotateFindingsWithPrecision,
   highPrecisionProviders,
   loadProviderPrecision,
+  lowPrecisionAdvisory,
   perProviderPrecision,
 } from "../../src/core/provider-precision.ts";
 import type { DecisionOutcome } from "../../src/schemas/audit-event.ts";
@@ -37,6 +38,49 @@ function finding(provider: string): Finding {
     consensus: "singleton",
   };
 }
+
+describe("lowPrecisionAdvisory (P1)", () => {
+  const withPrec = (
+    cells: NonNullable<Finding["reviewer_precision"]>,
+    severity: Finding["severity"] = "CRITICAL",
+  ): Finding => ({ ...finding("openrouter"), severity, reviewer_precision: cells });
+
+  it("flags a finding raised solely by a sub-50% reviewer with >= 8 samples", () => {
+    const adv = lowPrecisionAdvisory(
+      withPrec([{ provider: "openrouter", tp: 8, fp: 12, precision: 0.4 }]),
+    );
+    expect(adv).not.toBeNull();
+    expect(adv).toContain("40%");
+    expect(adv).toContain("openrouter");
+  });
+
+  it("returns null when the reviewer is at/above the floor", () => {
+    expect(
+      lowPrecisionAdvisory(withPrec([{ provider: "codex", tp: 12, fp: 8, precision: 0.6 }])),
+    ).toBeNull();
+  });
+
+  it("returns null below the min-decisions sample floor (cold-start never flagged)", () => {
+    expect(
+      lowPrecisionAdvisory(withPrec([{ provider: "x", tp: 1, fp: 3, precision: 0.25 }])),
+    ).toBeNull();
+  });
+
+  it("returns null when a high-precision provider also raised it (corroboration clears it)", () => {
+    expect(
+      lowPrecisionAdvisory(
+        withPrec([
+          { provider: "openrouter", tp: 8, fp: 12, precision: 0.4 },
+          { provider: "codex", tp: 18, fp: 2, precision: 0.9 },
+        ]),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null with no precision data at all", () => {
+    expect(lowPrecisionAdvisory(finding("openrouter"))).toBeNull();
+  });
+});
 
 describe("perProviderPrecision", () => {
   it("computes tp/(tp+fp) per provider, excludes INFO and declined", () => {

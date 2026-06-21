@@ -574,6 +574,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
       ? fpScoped.map((f) => {
           const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
           if (!sigs.some((s) => cycleRejected.has(s))) return f;
+          // G0b ceiling (codex DoD 2026-06-21): NEVER auto-hide a CRITICAL or any
+          // security/correctness finding via cycleRejected. One false reviewer_was_wrong
+          // rejection must not silence a later REAL CRITICAL of the same signature this cycle
+          // (a fail-open); it re-surfaces for an explicit per-iteration decision instead.
+          if (f.severity === "CRITICAL" || touchesSecurityOrCorrectness(f)) return f;
           return f.severity === "INFO"
             ? f
             : {

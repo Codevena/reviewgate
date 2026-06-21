@@ -55,4 +55,26 @@ describe("aggregate cycleRejected suppression", () => {
     });
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
   });
+
+  // G0b ceiling (codex DoD): one false reviewer_was_wrong rejection must NOT auto-hide a later
+  // real CRITICAL or security/correctness finding of the same signature in the same cycle.
+  it("does NOT demote a CRITICAL whose signature was rejected this cycle (stays blocking)", () => {
+    const f = fin({ signature: "sig-rej", severity: "CRITICAL", category: "correctness" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      cycleRejected: new Set(["sig-rej"]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+  });
+
+  it("does NOT demote a security/correctness finding whose signature was rejected this cycle", () => {
+    const f = fin({ signature: "sig-rej", severity: "WARN", category: "security" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 1,
+      cycleRejected: new Set(["sig-rej"]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+  });
 });

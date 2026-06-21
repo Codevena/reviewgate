@@ -116,7 +116,7 @@ unchanged.
 
 - `action` is required for accepted decisions: one of
   `"fixed"`, `"addressed-elsewhere"`, `"deferred-with-followup"`,
-  `"acknowledged-low-value"`.
+  `"acknowledged-low-value"`, `"verified-not-applicable"`.
 - `files_touched` and `commit_message_hint` are optional.
 
 **Off-ramp — `"acknowledged-low-value"`** (a cosmetic nit you do not intend to fix,
@@ -127,6 +127,19 @@ adds to the reject-rate **denominator** (so acknowledging a nit, rather than fal
 rejecting it, does not inflate the confirmed-false-positive rate that trips the breaker).
 A **CRITICAL**, or any **security/correctness** finding (including one that rides as a
 merged member), can **never** be acknowledged away — fix it or reject it with a real reason.
+
+**Verified-not-applicable — `"verified-not-applicable"`** (the reviewer was **right** to
+raise the concern, but you **verified** — with evidence — that it does not apply here, and
+no code change is warranted; e.g. a reviewer feared a prod-DB row overrides a code default,
+and you checked the row is already correct). It **requires** a `reason` ≥ 20 characters
+carrying the verification evidence (missing/short → the finding stays blocking). Unlike
+`acknowledged-low-value`, it **is** allowed on a **CRITICAL/security/correctness** finding
+(that is the point). It is **reputation-neutral** and is **not** a false-positive claim —
+use it instead of a dishonest `reviewer_was_wrong` when the reviewer was not actually wrong.
+
+```json
+{"schema":"reviewgate.decision.v1","finding_id":"F-003","verdict":"accepted","action":"verified-not-applicable","reason":"Checked prod DB: the feature-flag override row is true/100, so the code default never applies here."}
+```
 
 **Rejected (the reviewer is wrong):**
 
@@ -187,6 +200,15 @@ just end your turn again — Reviewgate will let you stop.
 - **ERROR** (🔴 GATE CLOSED) — the reviewer could not run (crash/timeout, or a
   sandbox mode it cannot satisfy). You are blocked, fail-closed. Tell the human to
   run `reviewgate doctor`; do not treat this as a pass.
+
+## Worktrees (coverage limitation)
+
+Reviewgate is armed **per checkout**. A `git worktree` shares only `.git` — it has no
+`.reviewgate/` and no `.claude/settings.json` hooks, so the Stop gate **does not fire
+inside a worktree** and that work ends un-reviewed. If you do implementation in a worktree
+(the subagent/isolation workflows often do), either run `reviewgate init` **inside the
+worktree** to gate it, or do the work in / merge it back to the gated main checkout so it
+gets reviewed there. `reviewgate doctor` will **FAIL** when run inside an un-gated worktree.
 
 ## Rules
 
