@@ -13,7 +13,7 @@ import {
   planReviewJsonPath,
   planReviewMdPath,
 } from "../utils/paths.ts";
-import { PROTECT_MIN_DECISIONS } from "./provider-precision.ts";
+import { PROTECT_MIN_DECISIONS, lowPrecisionAdvisory } from "./provider-precision.ts";
 
 function ensureDir(p: string): void {
   const d = dirname(p);
@@ -86,6 +86,15 @@ export function findingBadges(f: Finding): string | null {
         ? `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — recurred (advisory: out of scope or known FP)`
         : `⚠ claimed fixed @ iter ${f.claimed_fixed_recurred.iter} — still present; the fix did not resolve it`,
     );
+  // P1 (field report 2026-06-21): a GATING (CRITICAL/WARN) finding raised SOLELY by
+  // low-precision reviewer(s) gets a loud up-front advisory so the agent verifies it cheaply
+  // before an expensive caller sweep. Render-only — severity/verdict unchanged; a
+  // high-precision corroborator clears it. (Demoting it would fail open under the default
+  // soft-pass policy, so we annotate rather than demote.)
+  if (f.severity !== "INFO") {
+    const adv = lowPrecisionAdvisory(f);
+    if (adv) badges.push(`⚠ ${adv}`);
+  }
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 

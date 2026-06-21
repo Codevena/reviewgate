@@ -82,6 +82,30 @@ export function highPrecisionProviders(
   return out;
 }
 
+// P1 (field report 2026-06-21): a sub-50%-precision reviewer (the report's openrouter at
+// 8 TP / 12 FP) should not silently cost the agent a full verification sweep. The gating-path
+// demote is REJECTED as fail-open (a demoted lone CRITICAL→WARN soft-passes under the default
+// allow-policy and auto-hides), so this is RENDER-ONLY: a loud up-front advisory on a GATING
+// finding raised SOLELY by low-precision reviewer(s), so the agent verifies cheaply first.
+export const LOW_PRECISION_FLOOR = 0.5;
+
+// Returns the advisory text, or null when the finding has a high/unknown-precision contributor
+// (a corroborator clears it) or no qualifying low-precision cell. A cell qualifies only with
+// >= PROTECT_MIN_DECISIONS samples (cold-start reviewers are never flagged). NEVER affects
+// severity/verdict — purely informational.
+export function lowPrecisionAdvisory(f: Finding, floor = LOW_PRECISION_FLOOR): string | null {
+  const judged = (f.reviewer_precision ?? []).filter(
+    (c) => c.precision !== null && c.tp + c.fp >= PROTECT_MIN_DECISIONS,
+  );
+  if (judged.length === 0) return null;
+  // EVERY judged contributor must be low-precision — one high-precision reviewer raising the
+  // same finding is corroboration and clears the advisory.
+  if (!judged.every((c) => (c.precision ?? 1) < floor)) return null;
+  const worst = judged.reduce((a, b) => ((a.precision ?? 1) <= (b.precision ?? 1) ? a : b));
+  const pct = Math.round((worst.precision ?? 0) * 100);
+  return `from a low-precision reviewer (${worst.provider} ${pct}% · ${worst.tp} TP / ${worst.fp} FP) — verify the cited code before a full sweep; consider requiring a 2nd reviewer`;
+}
+
 // Attach reviewer_precision to each finding for its contributing base providers
 // (normalizeProviders) that have >= minDecisions samples (tp+fp). Immutable: a
 // finding with no qualifying provider is returned unchanged.
