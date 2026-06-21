@@ -1,5 +1,6 @@
 // src/research/app-topology.ts
-import { dirname } from "node:path";
+import { type Dirent, readdirSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { safeReadContained } from "../utils/safe-read.ts";
 
 export interface AppTopologyEntry {
@@ -15,14 +16,63 @@ export interface AppTopologyEntry {
 // contained, size-capped read (a package.json could be a symlink pointing outside the repo).
 const PKG_CAP = 64 * 1024;
 
-// Mirror the symbol-graph walk exclusions, plus common build dirs. Applied to the relative
-// glob path so we never read a vendored/built package.json as a repo "app".
-const EXCLUDE =
-  /(?:^|\/)(?:node_modules|\.git|\.reviewgate|\.antigravitycli|dist|build|out|\.next|\.nuxt|\.svelte-kit|coverage)\//;
+// Directory names we never descend into. Bun.Glob's `**/package.json` cannot PRUNE the walk,
+// so it would synchronously traverse a huge node_modules/vendor tree on the Stop-hook hot path
+// (codex DoD) — instead we hand-walk and skip these (+ all dot-dirs) so node_modules is never
+// entered at all.
+const EXCLUDE_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".reviewgate",
+  ".antigravitycli",
+  "dist",
+  "build",
+  "out",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  "coverage",
+  "vendor",
+]);
+// Hot-path bounds: the gate's research phase runs under the self-deadline, so the pruned walk
+// is hard-capped on depth, directories visited, and package.json candidates collected.
+const MAX_DEPTH = 6;
+const MAX_DIRS_WALKED = 2000;
+const MAX_PKG_CANDIDATES = 400;
 
-// Bound the FS walk: Bun.Glob cannot prune node_modules from the walk itself, so cap the
-// number of package.json paths we consider (this runs on the gate's timed research path).
-const SCAN_CAP = 5000;
+// Pruned, bounded, depth-limited package.json walk. NEVER descends into node_modules/build/
+// dot-dirs (so it can't block on a giant vendor tree) and does NOT follow symlinked dirs
+// (isDirectory() is false for a symlink — avoids loops + repo escape). Returns repo-relative
+// paths. Iterative (explicit stack) so a deep tree can't blow the call stack.
+function findPackageJsons(repoRoot: string): string[] {
+  const out: string[] = [];
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: repoRoot, depth: 0 }];
+  let walked = 0;
+  while (stack.length > 0 && out.length < MAX_PKG_CANDIDATES && walked < MAX_DIRS_WALKED) {
+    const top = stack.pop();
+    if (!top) break;
+    walked++;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(top.dir, { withFileTypes: true });
+    } catch {
+      continue; // unreadable dir (permissions / race) — skip, best-effort
+    }
+    for (const e of entries) {
+      if (e.isFile()) {
+        if (e.name === "package.json") out.push(relative(repoRoot, join(top.dir, "package.json")));
+      } else if (
+        e.isDirectory() &&
+        top.depth < MAX_DEPTH &&
+        !e.name.startsWith(".") &&
+        !EXCLUDE_DIRS.has(e.name)
+      ) {
+        stack.push({ dir: join(top.dir, e.name), depth: top.depth + 1 });
+      }
+    }
+  }
+  return out;
+}
 
 // Ordered framework detection: META-frameworks first (so Next wins over its bundled React,
 // SvelteKit over Svelte), then bundlers, then server frameworks, then bare libraries. First
@@ -55,17 +105,8 @@ function detectFramework(deps: string[]): string | null {
 // FP where a reviewer conflated a Vite SPA with a Next.js app). ADVISORY only — purely
 // informational trusted context; it never touches the verdict/suppression path.
 export function loadAppTopology(repoRoot: string, maxApps = 12): AppTopologyEntry[] {
-  let matches: string[];
-  try {
-    matches = [...new Bun.Glob("**/package.json").scanSync({ cwd: repoRoot })];
-  } catch {
-    return [];
-  }
   const entries: AppTopologyEntry[] = [];
-  let scanned = 0;
-  for (const rel of matches) {
-    if (++scanned > SCAN_CAP) break;
-    if (EXCLUDE.test(rel)) continue;
+  for (const rel of findPackageJsons(repoRoot)) {
     const raw = safeReadContained(repoRoot, rel, PKG_CAP);
     if (raw === null) continue;
     let pkg: { name?: unknown; dependencies?: unknown; devDependencies?: unknown };

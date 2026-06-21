@@ -39,14 +39,19 @@ describe("loadAppTopology (P10)", () => {
     expect(byDir.site).toBe("SvelteKit");
   });
 
-  it("excludes node_modules / .git / .reviewgate / dist from the scan", () => {
+  it("never descends into node_modules / .git / dist (pruned walk — incl. deeply nested)", () => {
     const repo = tmp();
     writePkg(repo, "node_modules/foo", { name: "foo", dependencies: { next: "^14" } });
+    // a DEEPLY nested vendored package.json must also be skipped (the walk prunes node_modules
+    // entirely rather than walking it and filtering matches).
+    writePkg(repo, "node_modules/a/node_modules/b", { name: "b", dependencies: { next: "^14" } });
     writePkg(repo, "dist", { name: "built", dependencies: { vite: "^5" } });
+    writePkg(repo, ".git/hooks", { name: "git", dependencies: { vite: "^5" } });
     writePkg(repo, "app", { name: "admin", dependencies: { vite: "^5" } });
     const t = loadAppTopology(repo);
     expect(t.every((e) => !e.dir.includes("node_modules") && !e.dir.includes("dist"))).toBe(true);
     expect(t).toHaveLength(1);
+    expect(t[0]?.dir).toBe("app");
   });
 
   it("skips packages with no recognizable framework", () => {
