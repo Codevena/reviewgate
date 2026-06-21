@@ -188,6 +188,15 @@ just end your turn again — Reviewgate will let you stop.
   sandbox mode it cannot satisfy). You are blocked, fail-closed. Tell the human to
   run `reviewgate doctor`; do not treat this as a pass.
 
+## Worktrees (coverage limitation)
+
+Reviewgate is armed **per checkout**. A `git worktree` shares only `.git` — it has no
+`.reviewgate/` and no `.claude/settings.json` hooks, so the Stop gate **does not fire
+inside a worktree** and that work ends un-reviewed. If you do implementation in a worktree
+(the subagent/isolation workflows often do), either run `reviewgate init` **inside the
+worktree** to gate it, or do the work in / merge it back to the gated main checkout so it
+gets reviewed there. `reviewgate doctor` will **FAIL** when run inside an un-gated worktree.
+
 ## Rules
 
 - **Never** edit, delete, or game `.reviewgate/` to escape the gate.

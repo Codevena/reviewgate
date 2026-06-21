@@ -14,7 +14,9 @@ import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
 import { sandboxRuntimeAvailable } from "../../sandbox/availability.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
+import { worktreeInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
+import { hooksInstalled } from "./init.ts";
 
 export interface Check {
   name: string;
@@ -375,6 +377,31 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
 // absolute path into the shim and the shim fails closed; this verifies what the
 // installed shim will actually invoke. Returns null when the Stop hook isn't
 // wired. `runs` is injected for testability (prod probes the real binary).
+// Worktree blindness (P8, field report 2026-06-21): Reviewgate arms per-checkout, but a
+// git worktree shares only .git — it has NO .reviewgate/ and NO .claude/settings.json hooks,
+// so the Stop gate never fires there and worktree work ends UN-reviewed (fail-open). The
+// main checkout's hooks do NOT propagate into a linked worktree. When `doctor` is run INSIDE
+// a linked worktree that lacks the reviewgate hooks, FAIL loudly — a silent-OK doctor here
+// is exactly the trap. Returns null outside a linked worktree (nothing to check).
+export async function worktreeGatedCheck(repoRoot: string): Promise<Check | null> {
+  const info = await worktreeInfo(repoRoot);
+  if (!info.isLinkedWorktree) return null;
+  if (hooksInstalled(repoRoot)) {
+    return {
+      name: "worktree gating",
+      status: "ok",
+      detail: "inside a git worktree with the Reviewgate hooks installed here",
+    };
+  }
+  return {
+    name: "worktree gating",
+    status: "fail",
+    detail:
+      "you are inside a git WORKTREE with NO Reviewgate hooks — the gate is OFF here, so worktree edits end UN-reviewed (fail-open). A worktree shares only .git; the main checkout's hooks do not propagate.",
+    hint: "Run `reviewgate init` in this worktree to gate it, or do the work in (or merge to) the gated main checkout.",
+  };
+}
+
 export function gateBinaryReachableCheck(
   repoRoot: string,
   runs: (bin: string) => boolean = (bin) => {
@@ -619,6 +646,11 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   } catch {
     // ignore — quota hint is advisory
   }
+
+  // Worktree blindness (P8): loud FAIL when run inside an un-gated linked worktree.
+  // Outside the config try so it surfaces even when reviewgate.config.ts fails to load.
+  const wt = await worktreeGatedCheck(input.repoRoot);
+  if (wt) checks.push(wt);
 
   // Active quota cooldowns (remembered reset time → auto-skip to fallback).
   const cd = quotaCooldownCheck(input.repoRoot, new Date());
