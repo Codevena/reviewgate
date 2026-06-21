@@ -1475,8 +1475,12 @@ export class LoopDriver {
         result.summary,
         this.i.config.phases.review.reviewers?.length ?? 0,
       );
+      // P4: name WHY each missing reviewer didn't run (quota/disabled/didn't-complete) so a
+      // partial pass is actionable, and reconcile the old "GATE OPEN … not deploy-ready"
+      // contradiction by deferring deploy-readiness to the pre-push check (the real authority).
+      const preliminaryWhy = preliminary ? this.preliminaryWhy(result.summary, new Date()) : "";
       const preliminarySuffix = preliminary
-        ? ` · ⚠ PRELIMINARY (${preliminary}) — a fuller review may surface more findings; treat as NOT deploy-ready and avoid pushing/deploying on this pass alone.`
+        ? ` · ⚠ PRELIMINARY (${preliminary})${preliminaryWhy ? ` — missing: ${preliminaryWhy}` : ""}. A fuller review may surface more findings; deploy-readiness is gated by the pre-push check (it warns if this SHA isn't recorded clean), not by this pass alone.`
         : "";
       const isSoft = result.verdict === "SOFT-PASS";
       const warnCount = result.summary.counts.warn;
@@ -1714,6 +1718,32 @@ export class LoopDriver {
       kind: "block",
       reason: `🔴 Reviewgate · GATE CLOSED — the review did not complete within ${dur} and was aborted (it would otherwise be killed by the Stop-hook timeout, ending your turn UN-reviewed). End your turn again to re-run the review. If it keeps timing out, raise the Stop-hook \`timeout\` in .claude/settings.json AND \`loop.runTimeoutMs\`, or check \`reviewgate doctor\` for a slow/hanging provider.`,
     };
+  }
+
+  // P4: name WHY each missing CONFIGURED reviewer didn't run on a PRELIMINARY pass, so the
+  // bare "N of M" count becomes actionable: quota until <iso> (transient — wait/re-run) /
+  // disabled in config (structural — enable or remove it) / didn't complete this turn.
+  // Render-only; "" when there's no per-reviewer detail (source skip/cache/checks).
+  private preliminaryWhy(summary: RunSummary, now: Date): string {
+    if (summary.source !== "panel") return "";
+    const okProviders = new Set(
+      summary.providers.filter((p) => p.runs > p.errors).map((p) => p.provider),
+    );
+    const configured = [
+      ...new Set((this.i.config.phases.review.reviewers ?? []).map((r) => r.provider)),
+    ];
+    const missing = configured.filter((p) => !okProviders.has(p));
+    if (missing.length === 0) return "";
+    const store = new QuotaCooldownStore(this.i.repoRoot);
+    const providers = this.i.config.providers as Record<string, { enabled?: boolean } | undefined>;
+    return missing
+      .map((p) => {
+        const until = store.activeUntil(p, now);
+        if (until) return `${p}: quota until ${until}`;
+        if (providers[p]?.enabled === false) return `${p}: disabled in config`;
+        return `${p}: did not complete this turn (see pending.md)`;
+      })
+      .join(", ");
   }
 
   // Diagnostic: if a CONFIGURED reviewer is currently quota-capped, the panel that
