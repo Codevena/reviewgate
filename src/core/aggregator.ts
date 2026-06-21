@@ -92,6 +92,24 @@ const DEMOTE: Record<Finding["severity"], Finding["severity"] | "drop"> = {
   INFO: "drop",
 };
 
+// G0 (field report 2026-06-21): a VALUE-JUDGMENT one-step demote that never pushes a
+// finding derived from a CRITICAL below WARN, and carries demoted_from_critical provenance
+// forward. A finding is "from CRITICAL" if it IS a CRITICAL now (this pass lowers it) OR a
+// prior value-judgment pass already lowered it (flag set). Clamping at WARN keeps it
+// SOFT-PASS-blocking + decision-required — a non-blocking INFO/PASS would auto-hide a
+// possibly-real CRITICAL under the default softPassPolicy. A genuine never-CRITICAL finding
+// demotes normally (WARN→INFO→drop). Used by the critic-likely_fp and reputation-pure-quality
+// passes; the two direct-INFO passes (confidence-floor, reputation-correctness) clamp inline.
+function demoteOneStep(f: Finding): {
+  severity: Finding["severity"] | "drop";
+  demoted_from_critical: boolean;
+} {
+  const fromCritical = f.demoted_from_critical === true || f.severity === "CRITICAL";
+  const next = DEMOTE[f.severity];
+  if (fromCritical && next !== "WARN") return { severity: "WARN", demoted_from_critical: true };
+  return { severity: next, demoted_from_critical: fromCritical };
+}
+
 function computeConsensus(flagged: number, total: number): Consensus {
   if (total >= 3 && flagged === total) return "unanimous";
   if (flagged >= 2) return "majority";
@@ -513,14 +531,16 @@ export function aggregate(input: AggregateInput): AggregateResult {
         continue;
       }
       if (!isCriticalSecurity && !isCorroborated) {
-        const next = DEMOTE[f.severity];
-        if (next === "drop") {
+        const demoted = demoteOneStep(f);
+        if (demoted.severity === "drop") {
           criticDropped.push(f); // INFO likely_fp dropped entirely — keep it attributable
           continue;
         }
         survivors.push({
           ...f,
-          severity: next,
+          severity: demoted.severity,
+          // G0: a critic likely_fp that lowers a from-CRITICAL keeps it ≥WARN + decision-required.
+          ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
           critic_verdict: "likely_fp",
           ...(cv.reason ? { critic_reason: cv.reason } : {}),
         });
@@ -645,6 +665,21 @@ export function aggregate(input: AggregateInput): AggregateResult {
           // self-reported confidence — its track record outweighs one low confidence call.
           if (isProtected(f)) return { ...f, protected_high_precision: true };
           if (f.severity === "INFO") return { ...f, low_confidence: true };
+          // G0: this pass sends a non-security/correctness low-confidence CRITICAL DIRECTLY to
+          // INFO (not via DEMOTE) — that would flip a sole demoted-from-CRITICAL finding to a
+          // non-blocking INFO/PASS and auto-hide a possibly-real CRITICAL. CLAMP a from-CRITICAL
+          // at WARN (kept blocking + decision-required) and stamp provenance; a genuine
+          // never-CRITICAL WARN still demotes to INFO as before.
+          if (f.demoted_from_critical === true || f.severity === "CRITICAL") {
+            const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — demoted CRITICAL→WARN; kept blocking pending your decision.`;
+            return {
+              ...f,
+              severity: "WARN" as const,
+              low_confidence: true,
+              demoted_from_critical: true,
+              details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+            };
+          }
           const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — advisory only.`;
           // Truncate the ORIGINAL (not the note) so the explanation is never lost
           // — mirrors scopeFindings' demote() and stays within the 2000-char cap.
@@ -688,6 +723,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
             // refuses to demote CRITICAL correctness at all (F-022). Only WARN
             // correctness softens to advisory INFO.
             if (f.severity === "CRITICAL") return f;
+            // G0: a from-CRITICAL finding that wording-merged into a correctness cluster
+            // (touchesCorrectness) must not be pushed below WARN by this value-judgment demote —
+            // keep it a blocking WARN (decision-required), do not soften to advisory INFO.
+            if (f.demoted_from_critical === true) return f;
             // Advisory tier: a chronically-wrong lone reviewer's WARN correctness
             // finding goes to INFO (non-blocking). Mirrors the FP-ledger advisory demote.
             const note =
@@ -699,14 +738,18 @@ export function aggregate(input: AggregateInput): AggregateResult {
               details: `${f.details.slice(0, 2000 - note.length)}${note}`,
             };
           }
-          // Pure quality/style: existing one-step demote (CRITICAL→WARN, WARN→INFO).
-          const next = DEMOTE[f.severity];
-          if (next === "drop") return f;
-          const note = "\n\n↓ low reviewer reputation — advisory only.";
+          // Pure quality/style: existing one-step demote (CRITICAL→WARN, WARN→INFO),
+          // clamped by G0 so a from-CRITICAL stays ≥WARN (decision-required) instead of INFO.
+          const demoted = demoteOneStep(f);
+          if (demoted.severity === "drop") return f;
+          const note = demoted.demoted_from_critical
+            ? "\n\n↓ low reviewer reputation — demoted CRITICAL→WARN; kept blocking pending your decision."
+            : "\n\n↓ low reviewer reputation — advisory only.";
           return {
             ...f,
-            severity: next,
+            severity: demoted.severity,
             reputation_demoted: true,
+            ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
             details: `${f.details.slice(0, 2000 - note.length)}${note}`,
           };
         })

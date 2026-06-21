@@ -61,6 +61,38 @@ describe("aggregate confidence demote", () => {
     expect(r.verdict).toBe("FAIL");
   });
 
+  it("G0: clamps a low-confidence non-security CRITICAL to WARN (not INFO) + stamps demoted_from_critical", () => {
+    const r = aggregate({
+      findings: [
+        f({ severity: "CRITICAL", category: "quality", confidence: 0.1, consensus: "singleton" }),
+      ],
+      reviewersTotal: 2,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+    expect(r.dedupedFindings[0]?.low_confidence).toBe(true);
+    expect(r.verdict).toBe("SOFT-PASS");
+  });
+
+  it("G0: clamps a from-CRITICAL WARN below the floor at WARN (not INFO)", () => {
+    const r = aggregate({
+      findings: [
+        f({
+          severity: "WARN",
+          category: "quality",
+          confidence: 0.1,
+          consensus: "singleton",
+          demoted_from_critical: true,
+        }),
+      ],
+      reviewersTotal: 2,
+      confidenceFloor: 0.5,
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+  });
+
   it("does NOT demote a corroborated (majority/unanimous) low-confidence finding", () => {
     // Two reviewers independently reported it → consensus overrides one reviewer's
     // low self-rated confidence.
