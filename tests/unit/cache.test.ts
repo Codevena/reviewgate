@@ -19,6 +19,10 @@ describe("cache", () => {
     expect(computeCacheKey({ ...base, diff: "d2" })).not.toBe(k1);
     expect(computeCacheKey({ ...base, configHash: "c2" })).not.toBe(k1);
     expect(computeCacheKey({ ...base, providerVersions: "p2" })).not.toBe(k1);
+    // G0: the schemaVersion participates in the key, so bumping it (…v1 → …v2) invalidates
+    // ALL pre-G0 entries — incl. a stale clean PASS produced under the old per-finding semantics.
+    expect(computeCacheKey({ ...base, schemaVersion: "v2" })).not.toBe(k1);
+    expect(computeCacheKey({ ...base, reviewgateVersion: "0.2" })).not.toBe(k1);
   });
   it("round-trips a cached review verdict", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-cache-"));

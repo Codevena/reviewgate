@@ -172,15 +172,17 @@ describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
     });
   }
 
-  it("a lone WARN finding yields SOFT-PASS and is cached", async () => {
+  it("a lone WARN finding yields SOFT-PASS; G0 re-runs the panel (SOFT-PASS never served counts-only)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-orch-soft-"));
     writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
     const r1 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 1 });
     expect(r1.verdict).toBe("SOFT-PASS");
     expect(r1.summary.source).toBe("panel");
-    // Second identical run under the SAME (allow) policy is served from cache.
+    // G0: a second identical run does NOT serve the counts-only cached SOFT-PASS (that would
+    // yield from_critical_demoted=0 → fail-open). It re-runs the panel to repopulate findings.
     const r2 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 2 });
-    expect(r2.summary.source).toBe("cache");
+    expect(r2.summary.source).toBe("panel");
+    expect(r2.verdict).toBe("SOFT-PASS");
   });
 
   it("does NOT serve a cached SOFT-PASS under softPassPolicy=block (re-runs the panel)", async () => {
