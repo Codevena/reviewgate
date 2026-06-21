@@ -22,6 +22,10 @@ function groundingDemote(f: Finding, note: string): Finding {
     ...f,
     severity: "WARN" as const,
     grounding_demoted: true,
+    // G0: both grounding layers reach this helper ONLY for a CRITICAL (callers guard
+    // severity), so the demote is always a value-judgment CRITICAL→WARN → stamp provenance
+    // so a sole grounding-demoted finding stays decision-required on SOFT-PASS.
+    demoted_from_critical: true,
     details: `${f.details.slice(0, 2000 - note.length)}${note}`,
   };
 }

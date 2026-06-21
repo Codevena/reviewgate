@@ -144,6 +144,15 @@ describe("grounding judge (S6 layer 2)", () => {
     expect(out[0]?.details).toContain("not an HTML sink");
   });
 
+  it("G0: stamps demoted_from_critical provenance on a layer-2 demote (non-exempt category)", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "CRITICAL", category: "quality" })],
+      new Map([["s1", { grounded: false, reason: "not present in code" }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.demoted_from_critical).toBe(true);
+  });
+
   it("applyGroundingJudgeVerdicts keeps grounded CRITICALs and findings absent from the map", () => {
     const out = applyGroundingJudgeVerdicts(
       [

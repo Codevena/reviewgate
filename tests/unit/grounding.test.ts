@@ -42,6 +42,15 @@ describe("groundFindings (S6 layer 1)", () => {
     expect(out[0]?.details).toContain("not found");
   });
 
+  it("G0: stamps demoted_from_critical provenance when demoting a CRITICAL", () => {
+    const out = groundFindings(
+      [mk({ details: "The token --muted-bg: 210 40% 96.1% breaks dark mode." })],
+      CORPUS,
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.demoted_from_critical).toBe(true);
+  });
+
   it("keeps a CRITICAL whose cited CSS var IS in the corpus", () => {
     const out = groundFindings([mk({ details: "The --muted token is wrong." })], CORPUS);
     expect(out[0]?.severity).toBe("CRITICAL");

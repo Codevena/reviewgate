@@ -35,6 +35,10 @@ function demote(f: Finding, note: string): Finding {
     ...f,
     severity: "WARN" as const,
     hypothetical_demoted: true,
+    // G0: this helper is reached ONLY for a CRITICAL (the caller guards severity), so the
+    // demote is always FROM CRITICAL by a value judgment → stamp provenance so it stays
+    // decision-required on SOFT-PASS instead of silently re-arming.
+    demoted_from_critical: true,
     details: `${f.details.slice(0, Math.max(0, 2000 - note.length))}${note}`,
   };
 }
