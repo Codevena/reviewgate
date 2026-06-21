@@ -156,6 +156,40 @@ describe("buildRunSummary", () => {
       demoted: 0,
       signatures: [],
       providers: [],
+      // G0: always present (the SOFT-PASS re-arm gate reads it; 0 = nothing to decide).
+      from_critical_demoted: 0,
     });
+  });
+
+  it("G0: counts from_critical_demoted = CRITICAL-or-WARN findings with demoted_from_critical only", () => {
+    const findings = [
+      finding({ signature: "a", severity: "WARN", demoted_from_critical: true }), // counts
+      finding({ signature: "b", severity: "CRITICAL", demoted_from_critical: true }), // counts
+      finding({ signature: "c", severity: "INFO", demoted_from_critical: true }), // NOT (INFO = suppressed off-ramp)
+      finding({ signature: "d", severity: "WARN" }), // NOT (no flag)
+    ];
+    const s = buildRunSummary({
+      verdict: "SOFT-PASS",
+      source: "panel",
+      counts: { critical: 1, warn: 2, info: 1 },
+      durationMs: 1,
+      criticCostUsd: 0,
+      findings,
+      runs: [run("codex", "security", "ok", 0, 1)],
+    });
+    expect(s.from_critical_demoted).toBe(2);
+  });
+
+  it("G0: from_critical_demoted is 0 (present) when there are no value-judgment-from-CRITICAL findings", () => {
+    const s = buildRunSummary({
+      verdict: "SOFT-PASS",
+      source: "panel",
+      counts: { critical: 0, warn: 1, info: 0 },
+      durationMs: 1,
+      criticCostUsd: 0,
+      findings: [finding({ signature: "x", severity: "WARN" })],
+      runs: [run("codex", "security", "ok", 0, 1)],
+    });
+    expect(s.from_critical_demoted).toBe(0);
   });
 });

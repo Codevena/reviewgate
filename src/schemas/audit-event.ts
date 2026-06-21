@@ -100,6 +100,14 @@ export const RunSummarySchema = z.object({
   // a verifiable file:line citation (the F-004 class). Persisted here so the audit trail gives
   // a timestamped before/after signal for the rule-citation directive. Optional/back-compat.
   rule_uncited: z.number().int().nonnegative().optional(),
+  // G0 (field report 2026-06-21): count of CRITICAL-or-WARN findings in the written report that
+  // a VALUE-JUDGMENT demoter lowered from a CRITICAL (demoted_from_critical). This is the
+  // SOFT-PASS re-arm gate signal: > 0 ⇒ the SOFT-PASS stays decision-required instead of silently
+  // re-arming (loop-driver). `.optional()` (not `.default(0)`): old persisted events stay valid AND
+  // the loop-driver can fail-CLOSED (treat a missing count as > 0) on a malformed summary — a
+  // `.default(0)` would silently coerce a missing count to 0 = fail-OPEN. buildRunSummary ALWAYS
+  // emits it (0 when none), so a real summary is never missing it.
+  from_critical_demoted: z.number().int().nonnegative().optional(),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type ProviderStat = z.infer<typeof ProviderStatSchema>;
