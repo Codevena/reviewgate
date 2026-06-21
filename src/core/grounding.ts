@@ -224,12 +224,19 @@ export async function judgeGrounding(
 // Demote-only, CRITICAL-only, fail-safe. A CRITICAL the judge marked grounded:false →
 // WARN (grounding_demoted). A finding absent from the map, marked grounded:true, or
 // non-CRITICAL is returned UNCHANGED.
+//
+// G0 (field report 2026-06-21): SECURITY/CORRECTNESS ARE EXEMPT here too — matching layer-1.
+// The judge reads the UNTRUSTED reviewed code (and the finding text is reviewer-LLM output over
+// the attacker diff), so a judge verdict steered by injected "grounded:false" could downgrade
+// a REAL security/correctness CRITICAL — the unconditional hard-FAIL class. A genuinely
+// fabricated high-stakes CRITICAL stays blocking and is dispositioned by a human decision,
+// never auto-demoted (strictly fail-closed; only lower-harm categories may be judge-demoted).
 export function applyGroundingJudgeVerdicts(
   findings: Finding[],
   map: Map<string, GroundingVerdict>,
 ): Finding[] {
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL") return f;
+    if (f.severity !== "CRITICAL" || isSecurityOrCorrectness(f)) return f;
     const v = map.get(f.signature);
     if (!v || v.grounded !== false) return f;
     const note = `\n\n↓ grounding judge: the claim is not supported by the reviewed code${
