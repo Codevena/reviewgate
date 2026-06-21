@@ -1373,7 +1373,20 @@ export class LoopDriver {
     // demotes it to a FAIL-like blocking outcome (advance the counter, require a
     // decision per WARN). PASS always passes regardless of policy.
     const softPolicy = this.i.config.loop.softPassPolicy;
-    const softPassBlocks = result.verdict === "SOFT-PASS" && softPolicy === "block";
+    // G0 (field report 2026-06-21): a SOFT-PASS that contains a finding a VALUE-JUDGMENT demoter
+    // lowered from a CRITICAL (from_critical_demoted > 0) must stay decision-required regardless of
+    // policy — under "allow"/"ask-once" it would otherwise re-arm with no forced decision and
+    // auto-hide a possibly-real CRITICAL. Treat it EXACTLY like softPassPolicy:"block" (advance the
+    // counter, keep the dirty flag + decisions → next stop iteration>0 → the decisions-gate requires
+    // a decision per CRITICAL/WARN). This rides the existing block path + the iteration-cap
+    // escalation ladder (no new termination path); it also UPGRADES "ask-once" here away from its
+    // one-time-ack (which deletes the dirty flag + re-arms — that would re-open the hole), because
+    // passed=false skips the forceSoftAck branch below. Fail-CLOSED: a summary missing the count
+    // (malformed/legacy; a real buildRunSummary always emits it) is treated as > 0 (block once) —
+    // never re-arm a SOFT-PASS we cannot classify.
+    const fromCriticalDemoted = result.summary.from_critical_demoted ?? 1;
+    const softPassBlocks =
+      result.verdict === "SOFT-PASS" && (softPolicy === "block" || fromCriticalDemoted > 0);
     const passed = (result.verdict === "PASS" || result.verdict === "SOFT-PASS") && !softPassBlocks;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
