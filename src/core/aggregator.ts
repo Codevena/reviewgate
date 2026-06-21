@@ -226,6 +226,10 @@ function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
     rule_id: f.rule_id,
     category: f.category,
     confidence: f.confidence,
+    // G0: carry each member's value-judgment CRITICAL→ provenance so the representative
+    // can OR it in (a flagged member merged under an unflagged equal-severity rep must not
+    // silently lose the flag). Only set when true so members[] stays minimal otherwise.
+    ...(f.demoted_from_critical === true ? { demoted_from_critical: true } : {}),
   };
 }
 
@@ -444,12 +448,21 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const details = suffix
       ? `${sample.details.slice(0, Math.max(0, 2000 - suffix.length))}${suffix.slice(-2000)}`
       : sample.details;
+    // G0: the representative's value-judgment CRITICAL→ provenance = OR(rep, all members).
+    // Load-bearing: a CRITICAL-demoted member merged under an unflagged equal-severity WARN
+    // representative (ties-keep-first) would otherwise silently lose the flag = fail-open.
+    // OR is exactly right because STRUCTURAL demoters never set the flag, so it carries only
+    // genuine value-judgment provenance (no original_severity-style contamination).
+    const demotedFromCritical =
+      sample.demoted_from_critical === true ||
+      members.some((m) => m.demoted_from_critical === true);
     deduped.push({
       ...sample,
       details: details.slice(0, 2000),
       confirmed_by: reviewers,
       consensus,
       members,
+      ...(demotedFromCritical ? { demoted_from_critical: true } : {}),
     });
   }
 
