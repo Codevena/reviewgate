@@ -91,6 +91,30 @@ describe("DecisionEntrySchema", () => {
     ).toThrow();
   });
 
+  it("rejects 'verified-not-applicable' with a whitespace-only reason (20 spaces is not evidence)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-015",
+        verdict: "accepted",
+        action: "verified-not-applicable",
+        reason: " ".repeat(25),
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a rejection with a whitespace-only reason (20 spaces must not pin an FP)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-016",
+        verdict: "rejected",
+        reason: " ".repeat(25),
+        reviewer_was_wrong: true,
+      }),
+    ).toThrow();
+  });
+
   it("still accepts 'fixed' / 'acknowledged-low-value' WITHOUT a reason (reason only required for verified-not-applicable)", () => {
     expect(() =>
       DecisionEntrySchema.parse({

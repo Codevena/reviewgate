@@ -45,18 +45,27 @@ const Rejected = Base.extend({
 export const DecisionEntrySchema = z
   .discriminatedUnion("verdict", [Accepted, Rejected])
   .superRefine((d, ctx) => {
-    // P6: a verified-not-applicable disposition must carry the verification evidence
-    // (>= 20 chars), exactly like a rejection reason. Missing/short → invalid → the finding
-    // stays blocking (fail-closed), so a lazy/empty "it's fine" can never unblock.
+    // P6: a verified-not-applicable disposition must carry the verification evidence —
+    // >= 20 NON-whitespace chars (20 spaces is not evidence and must not unblock a
+    // CRITICAL/security finding, codex DoD). Missing/blank → invalid → stays blocking.
     if (d.verdict === "accepted" && d.action === "verified-not-applicable") {
-      if (typeof d.reason !== "string" || d.reason.length < 20) {
+      if (typeof d.reason !== "string" || d.reason.trim().length < 20) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["reason"],
           message:
-            "verified-not-applicable requires a reason of >= 20 chars documenting why the finding does not apply here",
+            "verified-not-applicable requires a reason of >= 20 non-whitespace chars documenting why the finding does not apply here",
         });
       }
+    }
+    // A rejection reason must be substantive too: a 20-space string passes .min(20) but (with
+    // reviewer_was_wrong) would pin a REAL finding as a false positive in the FP-ledger.
+    if (d.verdict === "rejected" && d.reason.trim().length < 20) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["reason"],
+        message: "reason must be >= 20 non-whitespace chars",
+      });
     }
   });
 export type DecisionEntry = z.infer<typeof DecisionEntrySchema>;
