@@ -106,7 +106,12 @@ function demoteOneStep(f: Finding): {
 } {
   const fromCritical = f.demoted_from_critical === true || f.severity === "CRITICAL";
   const next = DEMOTE[f.severity];
-  if (fromCritical && next !== "WARN") return { severity: "WARN", demoted_from_critical: true };
+  // The clamp only ever LOWERS (CRITICAL/WARN → WARN); it must never RAISE an already-INFO
+  // finding. An INFO carrying the flag (a value-judgment WARN later suppressed to INFO by a
+  // structural/agent off-ramp) demotes normally (→ drop), never re-promotes to a blocking WARN.
+  if (fromCritical && f.severity !== "INFO" && next !== "WARN") {
+    return { severity: "WARN", demoted_from_critical: true };
+  }
   return { severity: next, demoted_from_critical: fromCritical };
 }
 
