@@ -76,7 +76,10 @@ export function loadAppTopology(repoRoot: string, maxApps = 12): AppTopologyEntr
     }
     const depObj = (o: unknown): string[] =>
       o && typeof o === "object" ? Object.keys(o as Record<string, unknown>) : [];
-    const framework = detectFramework([...depObj(pkg.dependencies), ...depObj(pkg.devDependencies)]);
+    const framework = detectFramework([
+      ...depObj(pkg.dependencies),
+      ...depObj(pkg.devDependencies),
+    ]);
     if (!framework) continue; // a package with no recognizable framework adds no signal
     const dir = rel === "package.json" ? "" : dirname(rel);
     const name = typeof pkg.name === "string" && pkg.name.trim() ? pkg.name : dir || "(root)";

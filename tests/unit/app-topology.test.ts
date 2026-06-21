@@ -18,7 +18,10 @@ describe("loadAppTopology (P10)", () => {
   it("maps each app directory to its framework from package.json deps (the field-report case)", () => {
     const repo = tmp();
     writePkg(repo, "app", { name: "admin", dependencies: { vite: "^5", react: "^18" } });
-    writePkg(repo, "dealbarg", { name: "public-site", dependencies: { next: "^14", react: "^18" } });
+    writePkg(repo, "dealbarg", {
+      name: "public-site",
+      dependencies: { next: "^14", react: "^18" },
+    });
     const byDir = Object.fromEntries(loadAppTopology(repo).map((e) => [e.dir, e.framework]));
     expect(byDir.app).toBe("Vite");
     expect(byDir.dealbarg).toBe("Next.js");
@@ -27,7 +30,10 @@ describe("loadAppTopology (P10)", () => {
   it("prefers a meta-framework over the underlying library (Next over React, SvelteKit over Svelte)", () => {
     const repo = tmp();
     writePkg(repo, "web", { name: "web", dependencies: { next: "^14", react: "^18" } });
-    writePkg(repo, "site", { name: "site", devDependencies: { "@sveltejs/kit": "^2", svelte: "^4" } });
+    writePkg(repo, "site", {
+      name: "site",
+      devDependencies: { "@sveltejs/kit": "^2", svelte: "^4" },
+    });
     const byDir = Object.fromEntries(loadAppTopology(repo).map((e) => [e.dir, e.framework]));
     expect(byDir.web).toBe("Next.js");
     expect(byDir.site).toBe("SvelteKit");
@@ -64,7 +70,9 @@ describe("loadAppTopology (P10)", () => {
 
 describe("renderAppTopologySection (P10)", () => {
   it("renders nothing for a single-app repo (no ambiguity to disambiguate)", () => {
-    expect(renderAppTopologySection([{ dir: "app", name: "admin", framework: "Vite" }])).toEqual([]);
+    expect(renderAppTopologySection([{ dir: "app", name: "admin", framework: "Vite" }])).toEqual(
+      [],
+    );
     expect(renderAppTopologySection([])).toEqual([]);
   });
 

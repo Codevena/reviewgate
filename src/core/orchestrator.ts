@@ -23,8 +23,8 @@ import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers
 import { isProviderAvailable } from "../providers/availability.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
-import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
 import { type AppTopologyEntry, loadAppTopology } from "../research/app-topology.ts";
+import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
 import { type RenderedContextDocs, fetchLibraryDocs } from "../research/context7.ts";
 import { loadConventions } from "../research/conventions.ts";
 import { collectDepSurface } from "../research/dep-surface.ts";
