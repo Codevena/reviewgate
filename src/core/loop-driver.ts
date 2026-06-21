@@ -1726,24 +1726,33 @@ export class LoopDriver {
   // Render-only; "" when there's no per-reviewer detail (source skip/cache/checks).
   private preliminaryWhy(summary: RunSummary, now: Date): string {
     if (summary.source !== "panel") return "";
-    const okProviders = new Set(
-      summary.providers.filter((p) => p.runs > p.errors).map((p) => p.provider),
-    );
-    const configured = [
-      ...new Set((this.i.config.phases.review.reviewers ?? []).map((r) => r.provider)),
-    ];
-    const missing = configured.filter((p) => !okProviders.has(p));
-    if (missing.length === 0) return "";
-    const store = new QuotaCooldownStore(this.i.repoRoot);
-    const providers = this.i.config.providers as Record<string, { enabled?: boolean } | undefined>;
-    return missing
-      .map((p) => {
-        const until = store.activeUntil(p, now);
-        if (until) return `${p}: quota until ${until}`;
-        if (providers[p]?.enabled === false) return `${p}: disabled in config`;
-        return `${p}: did not complete this turn (see pending.md)`;
-      })
-      .join(", ");
+    // Advisory only — a corrupt cooldowns file / config edge must NEVER throw on the
+    // allow/block message path (that would break the Stop decision). Fail to "" (no WHY).
+    try {
+      const okProviders = new Set(
+        summary.providers.filter((p) => p.runs > p.errors).map((p) => p.provider),
+      );
+      const configured = [
+        ...new Set((this.i.config.phases.review.reviewers ?? []).map((r) => r.provider)),
+      ];
+      const missing = configured.filter((p) => !okProviders.has(p));
+      if (missing.length === 0) return "";
+      const store = new QuotaCooldownStore(this.i.repoRoot);
+      const providers = this.i.config.providers as Record<
+        string,
+        { enabled?: boolean } | undefined
+      >;
+      return missing
+        .map((p) => {
+          const until = store.activeUntil(p, now);
+          if (until) return `${p}: quota until ${until}`;
+          if (providers[p]?.enabled === false) return `${p}: disabled in config`;
+          return `${p}: did not complete this turn (see pending.md)`;
+        })
+        .join(", ");
+    } catch {
+      return "";
+    }
   }
 
   // Diagnostic: if a CONFIGURED reviewer is currently quota-capped, the panel that
