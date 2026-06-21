@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -176,5 +177,93 @@ describe("runInit", () => {
     // deepseek/* to an arbitrary (expensive) upstream — real money.
     expect(cfg.providers.openrouter?.model).toBe("deepseek/deepseek-v4-flash");
     expect(cfg.providers.openrouter?.openrouterProvider).toEqual({ only: ["alibaba"] });
+  });
+});
+
+describe("runInit .gitignore — nested coverage + migration (P9)", () => {
+  function gitInit(repo: string) {
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+  }
+  // git check-ignore -q exits 0 when the path IS ignored, 1 when it is not.
+  function isIgnored(repo: string, path: string): boolean {
+    try {
+      execFileSync("git", ["check-ignore", "-q", "--", path], { cwd: repo });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("ignores nested AND top-level .reviewgate/ runtime state, keeping golden cassettes trackable at every depth", async () => {
+    const repo = tmp();
+    gitInit(repo);
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    // nested runtime state must be ignored (the field-report leak)
+    expect(isIgnored(repo, "backend/.reviewgate/state.json")).toBe(true);
+    expect(isIgnored(repo, "backend/.reviewgate/audit/x.json")).toBe(true);
+    expect(isIgnored(repo, "packages/api/.reviewgate/cache/y.json")).toBe(true);
+    // top-level runtime state still ignored
+    expect(isIgnored(repo, ".reviewgate/state.json")).toBe(true);
+    expect(isIgnored(repo, ".reviewgate/cassettes/run1.json")).toBe(true);
+    // golden cassettes remain trackable at root AND nested (the re-include trap)
+    expect(isIgnored(repo, ".reviewgate/cassettes/golden/g.json")).toBe(false);
+    expect(isIgnored(repo, "backend/.reviewgate/cassettes/golden/g.json")).toBe(false);
+    // committed brain memory stays trackable (must NOT be ignored)
+    expect(isIgnored(repo, ".reviewgate/brain/brain.json")).toBe(false);
+    expect(isIgnored(repo, ".reviewgate/brain/brain.md")).toBe(false);
+    // but brain runtime subdirs are ignored
+    expect(isIgnored(repo, ".reviewgate/brain/proposals/pool/p.json")).toBe(true);
+  });
+
+  it("ignores the field-reported newly-leaking artifacts (reputation.json, quota-cooldowns.json, learnings/, plan-review.*)", async () => {
+    const repo = tmp();
+    gitInit(repo);
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    expect(isIgnored(repo, ".reviewgate/reputation.json")).toBe(true);
+    expect(isIgnored(repo, ".reviewgate/quota-cooldowns.json")).toBe(true);
+    expect(isIgnored(repo, ".reviewgate/learnings/x.json")).toBe(true);
+    expect(isIgnored(repo, ".reviewgate/plan-review.md")).toBe(true);
+    expect(isIgnored(repo, "backend/.reviewgate/reputation.json")).toBe(true);
+  });
+
+  it("migrates a pre-P9 root-anchored .gitignore: strips stale lines, preserves user lines + order, idempotent", async () => {
+    const repo = tmp();
+    gitInit(repo);
+    // Simulate a repo init'd before P9: the prior root-anchored block + unrelated user lines.
+    await Bun.write(
+      join(repo, ".gitignore"),
+      [
+        "node_modules",
+        ".env",
+        "# Reviewgate (auto-added; edit reviewgate.config.ts to override)",
+        ".reviewgate/audit/",
+        ".reviewgate/cassettes/",
+        "!.reviewgate/cassettes/golden/",
+        ".reviewgate/state.json",
+        "dist/",
+        "",
+      ].join("\n"),
+    );
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const gi = readFileSync(join(repo, ".gitignore"), "utf8");
+    const lines = gi.split("\n");
+    // Unrelated user lines survive, in their original relative order.
+    expect(lines).toContain("node_modules");
+    expect(lines).toContain(".env");
+    expect(lines).toContain("dist/");
+    expect(lines.indexOf("node_modules")).toBeLessThan(lines.indexOf(".env"));
+    // The stale root-anchored dir-exclude is removed (it would re-break root golden tracking).
+    expect(lines.filter((l) => l.trim() === ".reviewgate/cassettes/")).toHaveLength(0);
+    expect(lines.filter((l) => l.trim() === ".reviewgate/audit/")).toHaveLength(0);
+    // The new un-anchored form is present.
+    expect(gi).toContain("**/.reviewgate/state.json");
+    expect(gi).toContain("**/.reviewgate/cassettes/*");
+    // Golden still trackable at root after the migration.
+    expect(isIgnored(repo, ".reviewgate/cassettes/golden/g.json")).toBe(false);
+    // Second init does not duplicate the managed block.
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    const gi2 = readFileSync(join(repo, ".gitignore"), "utf8");
+    expect((gi2.match(/\*\*\/\.reviewgate\/state\.json/g) ?? []).length).toBe(1);
+    expect((gi2.match(/node_modules/g) ?? []).length).toBe(1);
   });
 });
