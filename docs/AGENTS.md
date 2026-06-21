@@ -116,7 +116,7 @@ unchanged.
 
 - `action` is required for accepted decisions: one of
   `"fixed"`, `"addressed-elsewhere"`, `"deferred-with-followup"`,
-  `"acknowledged-low-value"`.
+  `"acknowledged-low-value"`, `"verified-not-applicable"`.
 - `files_touched` and `commit_message_hint` are optional.
 
 **Off-ramp — `"acknowledged-low-value"`** (a cosmetic nit you do not intend to fix,
@@ -127,6 +127,19 @@ adds to the reject-rate **denominator** (so acknowledging a nit, rather than fal
 rejecting it, does not inflate the confirmed-false-positive rate that trips the breaker).
 A **CRITICAL**, or any **security/correctness** finding (including one that rides as a
 merged member), can **never** be acknowledged away — fix it or reject it with a real reason.
+
+**Verified-not-applicable — `"verified-not-applicable"`** (the reviewer was **right** to
+raise the concern, but you **verified** — with evidence — that it does not apply here, and
+no code change is warranted; e.g. a reviewer feared a prod-DB row overrides a code default,
+and you checked the row is already correct). It **requires** a `reason` ≥ 20 characters
+carrying the verification evidence (missing/short → the finding stays blocking). Unlike
+`acknowledged-low-value`, it **is** allowed on a **CRITICAL/security/correctness** finding
+(that is the point). It is **reputation-neutral** and is **not** a false-positive claim —
+use it instead of a dishonest `reviewer_was_wrong` when the reviewer was not actually wrong.
+
+```json
+{"schema":"reviewgate.decision.v1","finding_id":"F-003","verdict":"accepted","action":"verified-not-applicable","reason":"Checked prod DB: the feature-flag override row is true/100, so the code default never applies here."}
+```
 
 **Rejected (the reviewer is wrong):**
 

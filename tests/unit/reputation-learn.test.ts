@@ -280,6 +280,49 @@ describe("learnReputationFromDecisions", () => {
     expect(snap.reviewers["codex:quality"]).toBeUndefined(); // no reputation event at all
   });
 
+  it("does NOT credit a reviewer for a verified-not-applicable disposition (neutral, P6)", async () => {
+    // The reviewer raised a legitimate concern the agent VERIFIED does not apply here —
+    // neither validated-correct (no defect confirmed) nor wrong → reputation-NEUTRAL.
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-vna-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "codex", persona: "security" },
+            confirmed_by: ["codex:security"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "verified-not-applicable",
+        reason: "Verified against prod DB: the override row is true/100, so the finding is moot",
+      })}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    expect((await store.snapshot()).reviewers["codex:security"]).toBeUndefined(); // no event
+  });
+
   it("does NOT mint a 'wrong' event for a plain rejection (reviewer_was_wrong unset)", async () => {
     // A rejection without reviewer_was_wrong:true is a non-signal (e.g. won't-fix /
     // disagree-but-not-a-hallucination) and must not debit the reviewer — debiting it

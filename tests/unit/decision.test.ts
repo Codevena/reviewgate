@@ -54,4 +54,59 @@ describe("DecisionEntrySchema", () => {
       }),
     ).toThrow();
   });
+
+  // P6: "valid finding, verified not-applicable" — the reviewer was right to raise it but
+  // the agent verified (with evidence) it does not apply here. Requires a reason >= 20.
+  it("accepts the P6 'verified-not-applicable' action WITH a >= 20-char reason", () => {
+    const d: DecisionEntry = {
+      schema: "reviewgate.decision.v1",
+      finding_id: "F-010",
+      verdict: "accepted",
+      action: "verified-not-applicable",
+      reason: "Checked prod DB: the override row is true/100, so the default is irrelevant here",
+    };
+    expect(() => DecisionEntrySchema.parse(d)).not.toThrow();
+  });
+
+  it("rejects 'verified-not-applicable' with NO reason (fail-closed → stays blocking)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-011",
+        verdict: "accepted",
+        action: "verified-not-applicable",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects 'verified-not-applicable' with a too-short reason", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-012",
+        verdict: "accepted",
+        action: "verified-not-applicable",
+        reason: "nope",
+      }),
+    ).toThrow();
+  });
+
+  it("still accepts 'fixed' / 'acknowledged-low-value' WITHOUT a reason (reason only required for verified-not-applicable)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-013",
+        verdict: "accepted",
+        action: "fixed",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-014",
+        verdict: "accepted",
+        action: "acknowledged-low-value",
+      }),
+    ).not.toThrow();
+  });
 });

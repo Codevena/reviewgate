@@ -295,6 +295,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"fixed","files_touched":[...]}`',
           '- `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"rejected","reason":"...","reviewer_was_wrong":true}`',
           '- For a cosmetic WARN nit you won\'t fix (NOT security/correctness, NOT CRITICAL): `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"acknowledged-low-value"}` — do NOT use this to wave away a real bug.',
+          '- For a VALID concern you VERIFIED does not apply here (the reviewer was right to raise it, but you checked — e.g. against prod — and it\'s moot; allowed even on CRITICAL/security): `{"schema":"reviewgate.decision.v1","finding_id":"F-XYZ","verdict":"accepted","action":"verified-not-applicable","reason":"the verification evidence, >=20 chars"}` — the reason is REQUIRED; this is reputation-NEUTRAL and is NOT an FP claim (don\'t use reviewer_was_wrong when the reviewer wasn\'t wrong).',
           "",
           "Reviewgate refuses to unblock until every CRITICAL/WARN finding ID has a decision.",
           "",

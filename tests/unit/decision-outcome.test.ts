@@ -67,6 +67,17 @@ describe("classifyDecision", () => {
       } as DecisionEntry),
     ).toBe("declined");
   });
+  it("accepted+verified-not-applicable → declined (P6: valid concern, no defect, not a TP/FP)", () => {
+    expect(
+      classifyDecision({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "verified-not-applicable",
+        reason: "x".repeat(20),
+      } as DecisionEntry),
+    ).toBe("declined");
+  });
   it("rejected+reviewer_was_wrong:true → fp", () => {
     expect(
       classifyDecision({

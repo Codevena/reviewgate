@@ -53,8 +53,17 @@ export async function learnReputationFromDecisions(input: {
     // N2 off-ramp: "acknowledged-low-value" is reputation-NEUTRAL — the agent did not
     // validate the finding as correct, only chose not to fix a cosmetic nit. Crediting it
     // would inflate a reviewer's trust for findings nobody acted on. (It is also not a
-    // rejection, so it never debits.) Every OTHER accepted action still credits (F-023).
-    if (d.verdict === "accepted" && d.action !== "acknowledged-low-value") outcome = "correct";
+    // rejection, so it never debits.)
+    // P6: "verified-not-applicable" is likewise NEUTRAL — the reviewer raised a legitimate
+    // concern that the agent VERIFIED does not apply here, so no defect was confirmed
+    // (crediting "correct" would over-credit a non-issue) and the reviewer wasn't wrong
+    // (debiting is impossible — it's not a rejection). Every OTHER accepted action credits (F-023).
+    if (
+      d.verdict === "accepted" &&
+      d.action !== "acknowledged-low-value" &&
+      d.action !== "verified-not-applicable"
+    )
+      outcome = "correct";
     else if (d.verdict === "rejected" && d.reviewer_was_wrong === true) outcome = "wrong";
     if (!outcome) continue;
     const fallbackKey =

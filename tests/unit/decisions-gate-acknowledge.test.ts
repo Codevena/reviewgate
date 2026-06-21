@@ -147,3 +147,75 @@ describe("decisions-gate acknowledged-low-value (N2)", () => {
     expect(gate.addressed).toBe(true);
   });
 });
+
+describe("decisions-gate verified-not-applicable (P6)", () => {
+  function setupP6(
+    finding: { id: string; severity: string; category: string },
+    decision: Record<string, unknown>,
+  ): { repo: string; iter: number } {
+    const repo = mkdtempSync(join(tmpdir(), "rg-vna-"));
+    mkdirSync(dirname(pendingJsonPath(repo)), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: finding.id,
+            signature: `sig-${finding.id}`,
+            severity: finding.severity,
+            category: finding.category,
+            rule_id: "r",
+            file: "a.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.9,
+            consensus: "singleton",
+          },
+        ],
+        counts: { critical: 0, warn: 0, info: 0 },
+      }),
+    );
+    const iter = 1;
+    mkdirSync(dirname(decisionsPath(repo, iter)), { recursive: true });
+    writeFileSync(
+      decisionsPath(repo, iter),
+      `${JSON.stringify({ schema: "reviewgate.decision.v1", finding_id: finding.id, ...decision })}\n`,
+    );
+    return { repo, iter };
+  }
+
+  it("addresses a CRITICAL/security finding WITH a >= 20-char reason (allowed on high-stakes — the point)", () => {
+    const { repo, iter } = setupP6(
+      { id: "F-001", severity: "CRITICAL", category: "security" },
+      {
+        verdict: "accepted",
+        action: "verified-not-applicable",
+        reason: "Verified prod DB: override row is true/100, so the code default is irrelevant",
+      },
+    );
+    const gate = evaluateDecisions(repo, iter, ["F-001"]);
+    expect(gate.addressed).toBe(true);
+    expect(gate.invalid).toHaveLength(0);
+  });
+
+  it("does NOT address it WITHOUT a reason (schema-invalid → stays blocking, fail-closed)", () => {
+    const { repo, iter } = setupP6(
+      { id: "F-001", severity: "CRITICAL", category: "security" },
+      { verdict: "accepted", action: "verified-not-applicable" },
+    );
+    const gate = evaluateDecisions(repo, iter, ["F-001"]);
+    expect(gate.addressed).toBe(false);
+  });
+
+  it("does NOT address it with a too-short reason (fail-closed)", () => {
+    const { repo, iter } = setupP6(
+      { id: "F-001", severity: "WARN", category: "quality" },
+      { verdict: "accepted", action: "verified-not-applicable", reason: "nope" },
+    );
+    const gate = evaluateDecisions(repo, iter, ["F-001"]);
+    expect(gate.addressed).toBe(false);
+  });
+});
