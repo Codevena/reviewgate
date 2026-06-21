@@ -2,12 +2,12 @@
 // init` writes for new users (1 primary reviewer + fallback chain + brain +
 // FP-ledger), so we're testing what we ship — not a bespoke superset.
 //
-// Single-primary on purpose: cross-run quorum (PR #35) is most interesting
-// when each run is single-provider. The fallback chain (codex → gemini →
-// claude-code) gives the provider variation ACROSS runs that lets candidates
-// from one run match a later run's proposal from a DIFFERENT provider and
-// finally promote. (openrouter is NOT in the chain — low-precision paid model;
-// embeddings only.)
+// CONSENSUS panel (codex + claude-code, both security): two strong independent
+// reviewers so the FP-suppression machinery (consensus, FP-ledger ≥2-provider
+// promotion, reputation cross-check) is actually exercised — all of it is INERT
+// on a single reviewer. Decouples the gate from codex's flaky quota too (a codex
+// cap degrades to gemini+claude, not codex-solo→nothing). openrouter is NOT a
+// reviewer here (low-precision paid model; embeddings/grounding only).
 //
 // Plain default-export object — NOT `defineConfig` from a bare "reviewgate"
 // import — so the loader's deep-merge over defaults works.
@@ -48,15 +48,14 @@ export default {
   phases: {
     review: {
       reviewers: [
-        {
-          provider: "codex",
-          persona: "security",
-          // openrouter (deepseek-flash) removed from the failover: it's a low-precision PAID
-          // reviewer (~23% in this repo, 3 TP / 10 FP) and running it solo when codex is
-          // quota-capped just pays for noise. The free OAuth chain covers failover; openrouter
-          // stays enabled below for the brain's embeddings/grounding only.
-          fallback: ["gemini", "claude-code"],
-        },
+        // CONSENSUS panel — two strong, INDEPENDENT reviewers (different vendors). A finding
+        // BOTH raise is high-confidence; a LONE one is demotable, and the FP-ledger promotion
+        // (≥2-provider floor) + reputation cross-check finally work (all inert on 1 reviewer).
+        // Both OAuth/$0. Each falls to gemini under a quota cap so the panel stays size-2; they
+        // do NOT fall to each other (a primary) or to openrouter (low-precision paid, embeddings
+        // only). claude-code in slot 2 is NOT in codex's fallback to avoid a double-claude.
+        { provider: "codex", persona: "security", fallback: ["gemini"] },
+        { provider: "claude-code", persona: "security", fallback: ["gemini"] },
       ],
     },
     // FP-ledger: learns which finding signatures you reject as false
