@@ -1927,6 +1927,10 @@ export class Orchestrator {
       criticInfo ? { ...criticInfo, demoted } : undefined,
       panelNote,
       fpFragmentation,
+      // P11: label a PURE docs-only review so a prose finding reads as a spec/docs review,
+      // not a code-review CRITICAL. riskClass "docs" requires facts.docOnly (a mixed docs+code
+      // diff is "default"), so this never relaxes the framing on a commit that touches code.
+      triage.riskClass === "docs",
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2303,6 +2307,7 @@ export class Orchestrator {
     },
     panelNote?: string,
     fpFragmentation?: FpFragmentation[],
+    docsReview = false,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -2351,6 +2356,7 @@ export class Orchestrator {
         ...(this.input.workspaceUnsettled
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),
+        ...(docsReview ? { docs_review: true } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

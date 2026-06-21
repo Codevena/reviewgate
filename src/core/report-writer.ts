@@ -280,6 +280,15 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
         "",
       ]
     : [];
+  // P11: a PURE docs-only review (every changed file is prose/markdown) — frame it as a
+  // spec/docs review so a prose finding (e.g. a framework misread in a design doc) reads with
+  // prose-review weight, not code-review CRITICAL weight. Render-only; the verdict is unchanged.
+  const docsReviewBanner = r.docs_review
+    ? [
+        "> 📄 **Spec / docs review** (prose, not code): every changed file is documentation. Findings are about the PROSE — verify any framework/library attribution before treating a finding as blocking, and don't expect typecheck/lint to apply. The verdict/severity are unchanged.",
+        "",
+      ]
+    : [];
   // #4: advisory hint when a false-positive class is fragmenting on a file but not
   // auto-suppressing — recommend a house rule (the durable fix).
   // file + rule_ids are reviewer-SUPPLIED (stored verbatim in the FP-ledger), so
@@ -346,6 +355,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     `**Cost:** $${r.cost_usd_total.toFixed(2)}  ·  **Duration:** ${(r.duration_ms_total / 1000).toFixed(1)}s  ·  **Git:** ${r.git.branch}@${r.git.sha.slice(0, 7)}`,
     "",
     ...coverageBanner,
+    ...docsReviewBanner,
     ...singleReviewerBanner,
     ...largeDiffBanner,
     ...unsettledBanner,
