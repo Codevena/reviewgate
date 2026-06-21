@@ -397,17 +397,16 @@ export function applyCooldownEffects(
   }
 }
 
-// Deterministic order for last-resort failover (OAuth/$0 providers first, the
-// paid API provider last). Used only after a reviewer slot's DECLARED fallback
-// chain is exhausted — to recruit any other enabled+available reviewer rather
-// than collapse the panel to zero on a quota outage.
-const LAST_RESORT_ORDER: ProviderId[] = [
-  "claude-code",
-  "codex",
-  "gemini",
-  "opencode",
-  "openrouter",
-];
+// Deterministic order for last-resort failover (OAuth/$0 providers only). Used after a
+// reviewer slot's DECLARED fallback chain is exhausted — to recruit any other
+// enabled+available OAuth reviewer rather than collapse the panel to zero on a quota outage.
+// openrouter is DELIBERATELY EXCLUDED: it's a low-precision PAID model (deepseek-flash,
+// ~23% precision in the dogfood repo) that stays `enabled` only for the brain's embeddings —
+// auto-recruiting it as a reviewer just because it's enabled is exactly the field-report bug
+// (codex quota-capped → openrouter runs solo and pays for noise). It is only ever a reviewer
+// if EXPLICITLY listed in a slot's reviewers/fallback; otherwise the gate fails CLOSED, which
+// is the safe posture (a blocked turn beats a 23%-precision paid review).
+const LAST_RESORT_ORDER: ProviderId[] = ["claude-code", "codex", "gemini", "opencode"];
 
 // Number of DISTINCT reviewer identities (provider:persona) in the ok-run panel.
 // Used as `reviewersTotal` for the singleton-CRITICAL failsafe instead of the raw

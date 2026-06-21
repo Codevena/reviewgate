@@ -100,4 +100,50 @@ describe("orchestrator last-resort failover", () => {
       true,
     );
   });
+
+  it("does NOT auto-recruit openrouter as a last-resort reviewer (low-precision paid model; fail closed instead)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lr-or-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const config = {
+      ...defaultConfig,
+      providers: {
+        ...defaultConfig.providers,
+        // openrouter ENABLED + available (it powers the brain's embeddings) but must NEVER be
+        // pulled into the reviewer panel just for being enabled — only if explicitly declared.
+        openrouter: {
+          enabled: true,
+          auth: "openrouter" as const,
+          model: "deepseek/deepseek-v4-flash",
+          apiKeyEnv: "OPENROUTER_API_KEY",
+          timeoutMs: 1000,
+        },
+      },
+      phases: {
+        ...defaultConfig.phases,
+        // codex only, no fallback; codex quota-locked; NO OAuth reviewer available.
+        review: { reviewers: [{ provider: "codex" as const, persona: "security", fallback: [] }] },
+        critic: null,
+        triage: null,
+      },
+    };
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config,
+      adapters: {
+        codex: quotaStub("codex"),
+        openrouter: okStub("openrouter", []), // would produce a review IF (wrongly) recruited
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+      providerAvailable: () => true,
+    });
+    const result = await orch.runIteration({ runId: "RUN", iter: 1 });
+    // openrouter must NOT be recruited → no usable reviewer → fail CLOSED (ERROR), not a paid 23% review.
+    expect(result.summary.providers.some((p) => p.provider === "openrouter" && p.runs > 0)).toBe(
+      false,
+    );
+    expect(result.verdict).toBe("ERROR");
+  });
 });
