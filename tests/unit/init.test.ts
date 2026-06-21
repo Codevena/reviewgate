@@ -177,6 +177,13 @@ describe("runInit", () => {
     // deepseek/* to an arbitrary (expensive) upstream — real money.
     expect(cfg.providers.openrouter?.model).toBe("deepseek/deepseek-v4-flash");
     expect(cfg.providers.openrouter?.openrouterProvider).toEqual({ only: ["alibaba"] });
+    // openrouter (deepseek-flash) is a low-precision PAID model — it must NOT be a reviewer
+    // failover by default (new users shouldn't fall to it when codex is quota'd). The free
+    // OAuth chain covers failover; openrouter stays enabled for EMBEDDINGS only. Matches the
+    // defaults.ts + setup-wizard chain.
+    const codexReviewer = cfg.phases.review.reviewers?.[0];
+    expect(codexReviewer?.fallback ?? []).toEqual(["gemini", "claude-code"]);
+    expect(codexReviewer?.fallback ?? []).not.toContain("openrouter");
   });
 });
 

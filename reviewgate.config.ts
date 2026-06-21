@@ -4,9 +4,10 @@
 //
 // Single-primary on purpose: cross-run quorum (PR #35) is most interesting
 // when each run is single-provider. The fallback chain (codex → gemini →
-// claude-code → openrouter) gives the provider variation ACROSS runs that
-// lets candidates from one run match a later run's proposal from a DIFFERENT
-// provider and finally promote.
+// claude-code) gives the provider variation ACROSS runs that lets candidates
+// from one run match a later run's proposal from a DIFFERENT provider and
+// finally promote. (openrouter is NOT in the chain — low-precision paid model;
+// embeddings only.)
 //
 // Plain default-export object — NOT `defineConfig` from a bare "reviewgate"
 // import — so the loader's deep-merge over defaults works.
@@ -25,8 +26,8 @@ export default {
       model: "claude-sonnet-4-6",
       timeoutMs: 300_000,
     },
-    // openrouter powers the brain's embeddings (and is the paid last-resort
-    // fallback in the reviewer chain). Needs OPENROUTER_API_KEY in env.
+    // openrouter powers the brain's embeddings + grounding ONLY (NOT a reviewer
+    // fallback — deepseek-flash is low-precision). Needs OPENROUTER_API_KEY in env.
     openrouter: {
       enabled: true,
       auth: "openrouter",
@@ -50,7 +51,11 @@ export default {
         {
           provider: "codex",
           persona: "security",
-          fallback: ["gemini", "claude-code", "openrouter"],
+          // openrouter (deepseek-flash) removed from the failover: it's a low-precision PAID
+          // reviewer (~23% in this repo, 3 TP / 10 FP) and running it solo when codex is
+          // quota-capped just pays for noise. The free OAuth chain covers failover; openrouter
+          // stays enabled below for the brain's embeddings/grounding only.
+          fallback: ["gemini", "claude-code"],
         },
       ],
     },
