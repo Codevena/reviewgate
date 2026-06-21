@@ -24,6 +24,31 @@ describe("FindingSchema scope_demoted", () => {
   });
 });
 
+describe("FindingSchema demoted_from_critical (G0)", () => {
+  it("accepts demoted_from_critical:true at the top level and defaults to absent", () => {
+    expect(
+      FindingSchema.parse({ ...base, demoted_from_critical: true }).demoted_from_critical,
+    ).toBe(true);
+    expect(FindingSchema.parse(base).demoted_from_critical).toBeUndefined();
+  });
+
+  it("preserves demoted_from_critical on a member (not stripped by safeParse)", () => {
+    const f = FindingSchema.parse({
+      ...base,
+      members: [
+        {
+          signature: "m1",
+          provider: "codex",
+          rule_id: "r",
+          category: "quality",
+          demoted_from_critical: true,
+        },
+      ],
+    });
+    expect(f.members?.[0]?.demoted_from_critical).toBe(true);
+  });
+});
+
 describe("claimed_fixed_recurred tag", () => {
   it("accepts an optional { iter } tag with a positive iter", () => {
     const f = FindingSchema.parse({ ...base, claimed_fixed_recurred: { iter: 2 } });
