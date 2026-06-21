@@ -52,6 +52,27 @@ describe("report-writer fp_fragmentation banner (#4)", () => {
     expect(md).toContain("houseRules");
   });
 
+  it("emits a paste-ready houseRules config snippet (P2: frictionless durable fix)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-frag3-"));
+    await new ReportWriter(dir).write({
+      ...base,
+      fp_fragmentation: [
+        {
+          file: "src/proxy.ts",
+          distinct_signatures: 5,
+          total_rejects: 8,
+          sample_rule_ids: ["proxy-rule"],
+        },
+      ],
+    });
+    const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
+    // A copy-paste config block, not just prose telling the agent to "add a house rule".
+    expect(md).toContain("```");
+    expect(md).toContain("phases:");
+    expect(md).toContain("houseRules:");
+    expect(md).toContain("src/proxy.ts"); // referenced in the placeholder
+  });
+
   it("omits the banner when fp_fragmentation is absent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-frag2-"));
     await new ReportWriter(dir).write(base);

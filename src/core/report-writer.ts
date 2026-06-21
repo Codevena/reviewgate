@@ -289,8 +289,29 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     const ruleIds = f.sample_rule_ids
       .map((id) => `\`${neutralizeInjectionMarkers(id)}\``)
       .join(", ");
+    // P2 (field report 2026-06-21): an auto-suppressor for these recurring classes can't be
+    // made fail-safe (it would hide a future real finding), so the durable fix stays the
+    // explicit house rule — but emit it as a PASTE-READY snippet so it's one copy-paste, not
+    // a per-run "go configure it yourself" chore. Reviewer-supplied file/rule_ids are embedded
+    // inside a TS string literal here, so strip quotes/backticks/newlines (beyond the injection
+    // neutralize) so a hostile name can't break the snippet's syntax.
+    const snippetSafe = (s: string) =>
+      neutralizeInjectionMarkers(s)
+        .replace(/[`"\\\r\n]+/g, " ")
+        .trim();
+    const fileLit = snippetSafe(f.file);
+    const ruleIdsLit = f.sample_rule_ids.map(snippetSafe).join(", ");
     return [
-      `> ⚠ **Fragmenting false-positive class:** \`${file}\` has ${f.distinct_signatures} distinct rejected-FP findings (e.g. ${ruleIds}; ${f.total_rejects} rejects) that aren't promoting to auto-suppression (fragmented rule_ids / single reviewer). The durable fix is a **house rule** in \`phases.review.houseRules\` (reviewgate.config.ts) asserting the repo's ground truth — it suppresses the class at the source and invalidates cached verdicts.`,
+      `> ⚠ **Fragmenting false-positive class:** \`${file}\` has ${f.distinct_signatures} distinct rejected-FP findings (e.g. ${ruleIds}; ${f.total_rejects} rejects) that aren't promoting to auto-suppression (fragmented rule_ids / single reviewer). The durable, fail-safe fix is a **house rule** asserting the repo's ground truth — it suppresses the class AT THE SOURCE (the reviewer stops hallucinating it) and invalidates cached verdicts. Paste this into \`reviewgate.config.ts\` and replace the placeholder with the real ground truth:`,
+      "",
+      "```ts",
+      "// reviewgate.config.ts",
+      "export default {",
+      "  phases: { review: { houseRules: [",
+      `    "In ${fileLit}: <state the repo's ground truth here> — reviewers keep flagging ${ruleIdsLit} as false positives.",`,
+      "  ] } },",
+      "};",
+      "```",
       "",
     ];
   });
