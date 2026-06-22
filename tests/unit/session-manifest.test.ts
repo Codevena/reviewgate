@@ -6,7 +6,14 @@
 // to non-foreign → reviewed. Plus: idempotent baseline (resume-safe), session-keying, prune.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -103,6 +110,36 @@ describe("session-manifest baseline-delta ownership", () => {
     expect(computeForeignFiles(repo, "agentB").has("f.ts")).toBe(true);
     // unknown session → no manifest → nothing foreign (fail-closed full review).
     expect(computeForeignFiles(repo, "ghost").size).toBe(0);
+  });
+
+  test("baseline EXCLUDES reviewgate-managed paths (.reviewgate/, .review/) — only real files", async () => {
+    // The reset itself creates .reviewgate/gate.lock (and other state churns), and those paths
+    // are excluded from review entirely — they must not bloat the baseline (live-e2e regression).
+    const repo = tmpRepo();
+    commit(repo, "src.ts", "export const a = 1;\n");
+    writeFileSync(join(repo, "src.ts"), "export const a = 2;\n"); // real dirty file
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(join(repo, ".reviewgate", "gate.lock"), "lock\n"); // managed, untracked
+    mkdirSync(join(repo, ".review"), { recursive: true });
+    writeFileSync(join(repo, ".review", "scratch.md"), "scratch\n"); // DoD scratch, untracked
+    await captureSessionBaseline(repo, "sessX", new Date().toISOString());
+    const baseline = readSessionManifest(repo, "sessX")?.baseline ?? {};
+    expect(baseline["src.ts"]).toBeDefined();
+    expect(Object.keys(baseline).some((k) => k.startsWith(".reviewgate/"))).toBe(false);
+    expect(Object.keys(baseline).some((k) => k.startsWith(".review/"))).toBe(false);
+  });
+
+  test("recordSessionOwned handles an absolute path under a SYMLINKED root (realpath belt)", async () => {
+    // macOS /tmp→/private/tmp (and symlinked checkouts): the gate may resolve repoRoot to a
+    // different symlink form than the absolute tool file_path, which would drop the entry from
+    // `owned` without realpath canonicalization (live-e2e regression).
+    const real = tmpRepo();
+    commit(real, "x.ts", "export const x = 1;\n");
+    const link = `${real}-link`;
+    symlinkSync(real, link);
+    // repoRoot via the symlink, the absolute file path via the real dir → different prefixes.
+    recordSessionOwned(link, "sessSym", [join(real, "x.ts")]);
+    expect(readSessionManifest(link, "sessSym")?.owned).toContain("x.ts");
   });
 
   test("pruneOldSessionManifests drops manifests past the TTL, keeps fresh ones", async () => {

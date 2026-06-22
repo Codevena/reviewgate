@@ -17,15 +17,16 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { type SessionManifest, SessionManifestSchema } from "../schemas/session-manifest.ts";
-import { workingTreeDirtyFiles } from "../utils/git.ts";
+import { isExcludedFromReview, workingTreeDirtyFiles } from "../utils/git.ts";
 import { sessionManifestPath, sessionsDir } from "../utils/paths.ts";
 import { safeReadContained } from "../utils/safe-read.ts";
 
@@ -46,10 +47,41 @@ function hashContent(s: string): string {
 // Repo-relative + traversal-safe, or null to skip. Tool paths can be absolute; baseline
 // paths come from git (already relative). Anything that can't be relativized into the repo
 // is dropped (M10: never store an absolute path that would make every finding look foreign).
+// An ABSOLUTE path is canonicalized against the realpath'd repo root first, so a symlinked
+// root (macOS /tmp→/private/tmp, or a symlinked checkout) doesn't make an in-repo file look
+// like it escapes — without this, an absolute tool file_path under such a root is wrongly
+// dropped from `owned` (the content-hash baseline still covers it, so this is a belt fix).
+function inRepo(rel: string): boolean {
+  return rel.length > 0 && !isAbsolute(rel) && !rel.startsWith("/") && !rel.startsWith("..");
+}
 function safeRel(repoRoot: string, p: string): string | null {
-  const rel = normalizeRepoPath(p, repoRoot);
-  if (!rel || rel.startsWith("/") || rel.startsWith("..")) return null;
-  return rel;
+  // Try the RAW form first: handles the common case where the caller's path and repoRoot share
+  // the same symlink form (incl. a not-yet-existent file), and the relative side never wrongly
+  // escapes. Only realpath-canonicalize when the raw form escapes — that is the symlinked-root
+  // mismatch (macOS /tmp→/private/tmp, a symlinked checkout) where one side differs.
+  const raw = normalizeRepoPath(p, repoRoot);
+  if (inRepo(raw)) return raw;
+  if (isAbsolute(p)) {
+    try {
+      const root = realpathSync(repoRoot);
+      let abs = p;
+      try {
+        abs = realpathSync(p); // file exists (trigger time) → canonicalize symlinks
+      } catch {
+        // File gone/not-yet-created → canonicalize its existing parent dir + re-append basename.
+        try {
+          abs = join(realpathSync(dirname(p)), basename(p));
+        } catch {
+          abs = p;
+        }
+      }
+      const rel = normalizeRepoPath(abs, root);
+      if (inRepo(rel)) return rel;
+    } catch {
+      /* unresolvable root → fall through to null */
+    }
+  }
+  return null;
 }
 
 export function readSessionManifest(repoRoot: string, sessionId: string): SessionManifest | null {
@@ -99,6 +131,11 @@ export async function captureSessionBaseline(
     if (count >= MAX_BASELINE_FILES) break;
     const rel = safeRel(repoRoot, f);
     if (!rel) continue;
+    // Reviewgate's own managed files (.reviewgate/, incl. the transient gate.lock the reset
+    // itself just created) and .review/.antigravitycli scratch are excluded from review
+    // entirely, so they can never produce a finding to demote — keep them out of the baseline
+    // too (no point hashing churning state files; mirrors the reviewed-diff exclusion).
+    if (isExcludedFromReview(rel)) continue;
     const content = safeReadContained(repoRoot, rel, MAX_BASELINE_FILE_BYTES);
     if (content === null) continue; // unreadable/oversize/binary → omit → reviewed (safe)
     baseline[rel] = hashContent(content);
