@@ -72,6 +72,15 @@ export function buildRunSummary(input: BuildRunSummaryInput): RunSummary {
     .map((f) => f.signature)
     .slice(0, SIGNATURE_CAP);
 
+  // G0: a finding a VALUE-JUDGMENT demoter lowered from a CRITICAL is BLOCKING only while it is
+  // CRITICAL/WARN. An INFO-flagged finding has been further suppressed by a structural/agent/
+  // ledger demoter (e.g. cycleRejected = the reject off-ramp) → excluded, which is exactly how
+  // reject/out-of-diff/known-FP converge out of the gate. Always emitted (0 when none) so the
+  // loop-driver re-arm gate never reads a missing count on a real summary.
+  const fromCriticalDemoted = input.findings.filter(
+    (f) => (f.severity === "CRITICAL" || f.severity === "WARN") && f.demoted_from_critical === true,
+  ).length;
+
   return {
     verdict: input.verdict,
     source: input.source,
@@ -81,6 +90,7 @@ export function buildRunSummary(input: BuildRunSummaryInput): RunSummary {
     demoted: input.findings.filter(isDemoted).length,
     signatures,
     providers: [...byProvider.values()],
+    from_critical_demoted: fromCriticalDemoted,
     ...(input.ruleUncited !== undefined ? { rule_uncited: input.ruleUncited } : {}),
   };
 }

@@ -146,6 +146,16 @@ export const FindingSchema = z.object({
   // hypothetical / future fragility (no present demonstrable defect). Demote-only, one-step,
   // security/correctness-exempt; the finding still surfaces as a blocking WARN.
   hypothetical_demoted: z.boolean().optional(),
+  // G0 (field report 2026-06-21 soft-pass fail-open): set true ONLY by a VALUE-JUDGMENT
+  // demoter (hypothetical / grounding L1+L2 / critic likely_fp / reputation pure-quality /
+  // reputation-correctness / confidence-floor) that lowered this finding from a CRITICAL by
+  // one step. It is the SINGLE source of truth for "this WARN/CRITICAL was a CRITICAL a
+  // value judgment softened" — NOT original_severity (which max()-propagates through merge and
+  // would be contaminated by a structurally-demoted member). Structural/agent/ledger demoters
+  // (scope/fact_invalid/redaction/self_refuted/cycleRejected/fp_ledger/fp_cluster/test_severity)
+  // NEVER set it. OR-propagated through the dedup merge. Drives the from_critical_demoted count
+  // → keeps a sole demoted-from-CRITICAL finding decision-required on SOFT-PASS (no silent re-arm).
+  demoted_from_critical: z.boolean().optional(),
   // S6 grounding (layer 1): set true when the grounding pass demoted this finding
   // one severity step (CRITICAL→WARN) because it cited a code-shaped token (CSS
   // custom property or backtick code-span) that is wholly absent from the reviewed
@@ -176,6 +186,10 @@ export const FindingSchema = z.object({
         // cluster MAX (a co-located high-confidence member isn't masked by a
         // low-confidence representative). Optional for backward-compat.
         confidence: z.number().min(0).max(1).optional(),
+        // G0: per-member provenance of a value-judgment CRITICAL→ demote, so the dedup
+        // merge can OR-propagate it to the representative (a demoted member merged under
+        // an unflagged equal-severity representative must not silently lose the flag).
+        demoted_from_critical: z.boolean().optional(),
       }),
     )
     .optional(),

@@ -31,7 +31,55 @@ describe("aggregator reputation demote", () => {
     const f = agg.dedupedFindings[0];
     expect(f?.severity).toBe("WARN");
     expect(f?.reputation_demoted).toBe(true);
+    // G0: the CRITICAL→WARN is a value judgment → provenance stamped.
+    expect(f?.demoted_from_critical).toBe(true);
     expect(agg.verdict).toBe("SOFT-PASS");
+  });
+
+  it("G0: clamps a from-CRITICAL WARN at WARN (no 2nd-demote to INFO via reputation)", () => {
+    const agg = aggregate({
+      findings: [finding({ severity: "WARN", demoted_from_critical: true })],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+    });
+    const f = agg.dedupedFindings[0];
+    expect(f?.severity).toBe("WARN");
+    expect(f?.demoted_from_critical).toBe(true);
+    expect(agg.verdict).toBe("SOFT-PASS");
+  });
+
+  it("G0: clamps a from-CRITICAL finding wording-merged into a correctness cluster to WARN", () => {
+    // A non-high-stakes from-CRITICAL quality WARN wording-merges with a correctness WARN
+    // (same reviewer, same line, identical wording → wording-merge crosses the stakes
+    // boundary). The representative touchesCorrectness, so the reputation-correctness branch
+    // would push WARN→INFO; G0 clamps it at a blocking WARN (decision-required).
+    const a = finding({
+      signature: "sig-qa",
+      severity: "WARN",
+      category: "quality",
+      rule_id: "a-quality",
+      message: "null pointer dereference on the user record here",
+      demoted_from_critical: true,
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const b = finding({
+      signature: "sig-qa",
+      severity: "WARN",
+      category: "correctness",
+      rule_id: "b-correctness",
+      message: "null pointer dereference on the user record here",
+      reviewer: { provider: "gemini", model: "x", persona: "security" },
+    });
+    const agg = aggregate({
+      findings: [a, b],
+      reviewersTotal: 2,
+      repUnreliable: new Set(["gemini:security"]),
+      demoteCorrectness: true,
+    });
+    const f = agg.dedupedFindings[0];
+    expect(f?.members?.length).toBe(2); // wording-merged
+    expect(f?.severity).toBe("WARN");
+    expect(f?.demoted_from_critical).toBe(true);
   });
 
   it("NEVER demotes a security CRITICAL even from an unreliable provider", () => {

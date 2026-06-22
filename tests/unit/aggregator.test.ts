@@ -82,6 +82,86 @@ describe("aggregate", () => {
     expect(r.counts).toEqual({ critical: 1, warn: 0, info: 0 });
   });
 
+  it("G0: OR-propagates a member's demoted_from_critical to an equal-severity representative", () => {
+    // A value-judgment-demoted member (WARN, flagged) merges under an UNFLAGGED equal-severity
+    // WARN representative (ties-keep-first picks the unflagged seed). Without OR-propagation the
+    // representative silently loses the flag = fail-open.
+    const rep = fin({
+      signature: "sig-rep",
+      severity: "WARN",
+      category: "quality",
+      rule_id: "a-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+    });
+    const member = fin({
+      signature: "sig-mem",
+      severity: "WARN",
+      category: "quality",
+      rule_id: "b-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+      demoted_from_critical: true,
+    });
+    const r = aggregate({ findings: [rep, member], reviewersTotal: 2 });
+    expect(r.dedupedFindings.length).toBe(1); // merged
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+    expect(r.dedupedFindings[0]?.members?.some((m) => m.demoted_from_critical)).toBe(true);
+  });
+
+  it("G0: OR-propagates to a CRITICAL representative (stays CRITICAL + flagged → SOFT-PASS)", () => {
+    // A demoted WARN member merged under a genuine non-security CRITICAL rep: the rep is
+    // CRITICAL + flagged via OR, and a lone non-security CRITICAL is itself a SOFT-PASS that
+    // must stay decision-required (counted by from_critical_demoted in slice 6).
+    const rep = fin({
+      signature: "sig-crit",
+      severity: "CRITICAL",
+      category: "quality",
+      rule_id: "a-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+    });
+    const member = fin({
+      signature: "sig-mem",
+      severity: "WARN",
+      category: "quality",
+      rule_id: "b-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+      demoted_from_critical: true,
+    });
+    const r = aggregate({ findings: [rep, member], reviewersTotal: 2 });
+    expect(r.dedupedFindings[0]?.severity).toBe("CRITICAL");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+    expect(r.verdict).toBe("SOFT-PASS");
+  });
+
+  it("G0: does NOT propagate from a structurally-demoted member (scope_demoted INFO, no flag)", () => {
+    // A member that WAS a CRITICAL but a STRUCTURAL demoter sent to INFO carries NO
+    // demoted_from_critical (only value-judgment demoters set it). Keying on the boolean
+    // (not max(original_severity)) means it must NOT contaminate a genuine WARN representative.
+    const rep = fin({
+      signature: "sig-rep",
+      severity: "WARN",
+      category: "quality",
+      rule_id: "a-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+    });
+    const structurallyDemoted = fin({
+      signature: "sig-mem",
+      severity: "INFO",
+      category: "quality",
+      rule_id: "b-rule",
+      message: "same wording at this region now",
+      line_start: 10,
+      scope_demoted: true,
+    });
+    const r = aggregate({ findings: [rep, structurallyDemoted], reviewersTotal: 2 });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBeUndefined();
+  });
+
   it("multi-category masking warning survives the 2000-char details cap (F-08)", () => {
     // Representative's details are already AT the schema cap; the merged-categories
     // warning (and the other reviewers' wordings) must still survive — truncate the

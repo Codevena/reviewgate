@@ -18,11 +18,22 @@ import { safeJsonParse } from "../utils/safe-json.ts";
 // FindingSchema's 2000-char cap (truncate the original, never the note). Shared by
 // both grounding layers.
 function groundingDemote(f: Finding, note: string): Finding {
+  // Cap the note so the appended explanation ALONE can never exceed FindingSchema's 2000-char
+  // details ceiling — a layer-2 note carries the UNTRUSTED, uncapped judge `reason`. Math.max
+  // keeps the original-details slice non-negative (a >2000 note would otherwise make
+  // `2000 - note.length` negative → slice takes a tail and the concatenation overflows 2000 →
+  // safeParse rejects the finding and it silently vanishes = fail-open). Together they
+  // guarantee details ≤ 2000 regardless of caller.
+  const cappedNote = note.slice(0, 2000);
   return {
     ...f,
     severity: "WARN" as const,
     grounding_demoted: true,
-    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+    // G0: both grounding layers reach this helper ONLY for a CRITICAL (callers guard
+    // severity), so the demote is always a value-judgment CRITICAL→WARN → stamp provenance
+    // so a sole grounding-demoted finding stays decision-required on SOFT-PASS.
+    demoted_from_critical: true,
+    details: `${f.details.slice(0, Math.max(0, 2000 - cappedNote.length))}${cappedNote}`,
   };
 }
 
@@ -220,16 +231,26 @@ export async function judgeGrounding(
 // Demote-only, CRITICAL-only, fail-safe. A CRITICAL the judge marked grounded:false →
 // WARN (grounding_demoted). A finding absent from the map, marked grounded:true, or
 // non-CRITICAL is returned UNCHANGED.
+//
+// G0 (field report 2026-06-21): SECURITY/CORRECTNESS ARE EXEMPT here too — matching layer-1.
+// The judge reads the UNTRUSTED reviewed code (and the finding text is reviewer-LLM output over
+// the attacker diff), so a judge verdict steered by injected "grounded:false" could downgrade
+// a REAL security/correctness CRITICAL — the unconditional hard-FAIL class. A genuinely
+// fabricated high-stakes CRITICAL stays blocking and is dispositioned by a human decision,
+// never auto-demoted (strictly fail-closed; only lower-harm categories may be judge-demoted).
 export function applyGroundingJudgeVerdicts(
   findings: Finding[],
   map: Map<string, GroundingVerdict>,
 ): Finding[] {
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL") return f;
+    if (f.severity !== "CRITICAL" || isSecurityOrCorrectness(f)) return f;
     const v = map.get(f.signature);
     if (!v || v.grounded !== false) return f;
+    // Bound the UNTRUSTED judge reason so truncation lands on it (not on the finding's own
+    // details) and the note stays well within the 2000-char cap; groundingDemote caps again
+    // as a backstop.
     const note = `\n\n↓ grounding judge: the claim is not supported by the reviewed code${
-      v.reason ? ` — ${v.reason}` : ""
+      v.reason ? ` — ${v.reason.slice(0, 300)}` : ""
     }; likely fabricated, demoted to advisory.`;
     return groundingDemote(f, note);
   });

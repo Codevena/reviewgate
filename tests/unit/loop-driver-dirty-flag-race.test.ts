@@ -40,6 +40,9 @@ function summaryOf(verdict: RunSummary["verdict"], critical = 0, warn = 0): RunS
     demoted: 0,
     signatures: [],
     providers: [],
+    // G0: clean summary — these fixtures cover genuine (never-demoted) verdicts incl. a
+    // natively-non-failing CRITICAL (F-06), which is NOT a value-judgment demote → 0.
+    from_critical_demoted: 0,
   };
 }
 

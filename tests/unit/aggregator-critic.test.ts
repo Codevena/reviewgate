@@ -34,6 +34,53 @@ describe("aggregate with critic", () => {
     expect(r.verdict).toBe("PASS");
   });
 
+  it("G0: stamps demoted_from_critical when the critic demotes a CRITICAL→WARN", () => {
+    const f = fin({ signature: "sigG0c", severity: "CRITICAL", category: "quality" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigG0c", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+    expect(r.verdict).toBe("SOFT-PASS");
+  });
+
+  it("G0: clamps a from-CRITICAL WARN at WARN (no 2nd-demote to INFO via critic)", () => {
+    const f = fin({
+      signature: "sigG0w",
+      severity: "WARN",
+      category: "quality",
+      demoted_from_critical: true,
+    });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigG0w", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.demoted_from_critical).toBe(true);
+  });
+
+  it("G0: a critic likely_fp on an INFO+flagged finding does NOT promote it back to WARN", () => {
+    // demoteOneStep must never RAISE severity: an already-INFO finding carrying the flag (a
+    // value-judgment WARN later suppressed to INFO by a structural/agent off-ramp) hit by a critic
+    // likely_fp should drop/stay advisory, never be re-promoted to a blocking WARN.
+    const f = fin({
+      signature: "sigInfoFlag",
+      severity: "INFO",
+      category: "quality",
+      demoted_from_critical: true,
+    });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigInfoFlag", { verdict: "likely_fp" }]]),
+    });
+    const found = r.dedupedFindings.find((x) => x.signature === "sigInfoFlag");
+    expect(found?.severity).not.toBe("WARN");
+  });
+
   it("never demotes a CRITICAL security finding even if critic says likely_fp", () => {
     const f = fin({ signature: "sigB", severity: "CRITICAL", category: "security" });
     const r = aggregate({

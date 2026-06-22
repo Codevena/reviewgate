@@ -172,15 +172,17 @@ describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
     });
   }
 
-  it("a lone WARN finding yields SOFT-PASS and is cached", async () => {
+  it("a lone WARN finding yields SOFT-PASS; G0 re-runs the panel (SOFT-PASS never served counts-only)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-orch-soft-"));
     writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
     const r1 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 1 });
     expect(r1.verdict).toBe("SOFT-PASS");
     expect(r1.summary.source).toBe("panel");
-    // Second identical run under the SAME (allow) policy is served from cache.
+    // G0: a second identical run does NOT serve the counts-only cached SOFT-PASS (that would
+    // yield from_critical_demoted=0 → fail-open). It re-runs the panel to repopulate findings.
     const r2 = await orchFor(repo, "allow").runIteration({ runId: "01HXQA", iter: 2 });
-    expect(r2.summary.source).toBe("cache");
+    expect(r2.summary.source).toBe("panel");
+    expect(r2.verdict).toBe("SOFT-PASS");
   });
 
   it("does NOT serve a cached SOFT-PASS under softPassPolicy=block (re-runs the panel)", async () => {
@@ -198,7 +200,7 @@ describe("Orchestrator SOFT-PASS cache guard (softPassPolicy=block)", () => {
 });
 
 describe("Orchestrator S6 grounding (end-to-end)", () => {
-  it("demotes a fabricated correctness CRITICAL to WARN → SOFT-PASS, not FAIL", async () => {
+  it("demotes a fabricated quality CRITICAL to WARN → SOFT-PASS, not FAIL (layer-1)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-orch-ground-"));
     writeFileSync(join(repo, "foo.ts"), "const a = 2;\n");
     const bin = join(repo, "fake-codex-hallu.sh");
@@ -214,8 +216,10 @@ describe("Orchestrator S6 grounding (end-to-end)", () => {
       reasonOnFailEnabled: true,
     });
     const result = await orch.runIteration({ runId: "01HXQGRND", iter: 1 });
-    // The reviewer cited `--ghost-token`, absent from foo.ts + the diff → grounding
-    // breaks the otherwise-unconditional correctness-CRITICAL hard-FAIL.
+    // The reviewer cited `--ghost-token` (a quality finding), absent from foo.ts + the diff →
+    // layer-1 grounding demotes it to WARN, breaking the lone-reviewer singleton-CRITICAL
+    // hard-FAIL. (Category is quality — security/correctness are exempt from layer-1; the
+    // layer-2 security/correctness exemption is covered in grounding-judge.test.ts.)
     expect(result.verdict).not.toBe("FAIL");
     const report = JSON.parse(readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8")) as {
       findings: Array<{ severity: string; grounding_demoted?: boolean }>;

@@ -46,6 +46,14 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "⏳ demoted CRITICAL→WARN — reviewer text is hypothetical/future, not a present defect",
     );
+  // G0 (field report 2026-06-21): a finding a VALUE-JUDGMENT demoter lowered from a CRITICAL stays
+  // decision-required on SOFT-PASS (it does NOT silently re-arm). Render only while still blocking
+  // (CRITICAL/WARN): an INFO one was further suppressed by a structural/agent off-ramp (e.g. the
+  // reject → cycleRejected path) and no longer needs a decision, so the prompt would mislead.
+  if (f.demoted_from_critical && f.severity !== "INFO")
+    badges.push(
+      "⬇ was CRITICAL, one-step-demoted — decide before passing (don't reflexively acknowledge)",
+    );
   if (f.scope_demoted) badges.push("📍 outside changed lines");
   if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
   if (f.redaction_demoted)

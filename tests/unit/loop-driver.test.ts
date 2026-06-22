@@ -2768,6 +2768,7 @@ describe("LoopDriver softPassPolicy", () => {
     demoted: 0,
     signatures: ["sig-w1"],
     providers: [],
+    from_critical_demoted: 0, // clean SOFT-PASS — nothing demoted from a CRITICAL
   };
   const SOFT_RESULT: IterationResult = {
     verdict: "SOFT-PASS",
@@ -2822,6 +2823,111 @@ describe("LoopDriver softPassPolicy", () => {
     expect(decision.reason).toContain("SOFT-PASS");
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
     expect((await state.load()).iteration).toBe(0);
+  });
+});
+
+describe("LoopDriver softPassPolicy — G0 demoted-from-CRITICAL", () => {
+  const FROMCRIT_SUMMARY: RunSummary = {
+    verdict: "SOFT-PASS",
+    source: "panel",
+    counts: { critical: 0, warn: 1, info: 0 },
+    cost_usd: 0,
+    duration_ms: 1,
+    demoted: 0,
+    signatures: ["sig-fc1"],
+    providers: [],
+    from_critical_demoted: 1, // a value-judgment demoter lowered a CRITICAL → WARN
+  };
+  const FROMCRIT_RESULT: IterationResult = {
+    verdict: "SOFT-PASS",
+    costUsd: 0,
+    durationMs: 1,
+    signaturesThisIter: ["sig-fc1"],
+    summary: FROMCRIT_SUMMARY,
+  };
+  const fromCritOrch = { runIteration: async () => FROMCRIT_RESULT };
+
+  function driver(repo: string, state: StateStore, policy: "allow" | "block" | "ask-once") {
+    return new LoopDriver({
+      repoRoot: repo,
+      config: { ...defaultConfig, loop: { ...defaultConfig.loop, softPassPolicy: policy } },
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: fromCritOrch,
+      stopHookActive: false,
+    });
+  }
+
+  it("allow: a from-CRITICAL SOFT-PASS BLOCKS (GATE CLOSED), keeps dirty, advances iteration — no silent re-arm", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQG0ALLOW");
+    writeDirty(repo);
+    const decision = await driver(repo, state, "allow").run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("GATE CLOSED");
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    expect((await state.load()).iteration).toBe(1);
+  });
+
+  it("ask-once: a from-CRITICAL SOFT-PASS is UPGRADED to the decision-block (keeps dirty, advances iteration — NOT the one-time ack)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQG0ASK");
+    writeDirty(repo);
+    const decision = await driver(repo, state, "ask-once").run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toContain("GATE CLOSED");
+    // Upgrade: the dirty flag is KEPT (not deleted) and iteration advances → next stop
+    // runs the decisions-gate. The one-time-ack path would have deleted the flag + re-armed.
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    expect((await state.load()).iteration).toBe(1);
+  });
+
+  it("block: a from-CRITICAL SOFT-PASS blocks (unchanged)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQG0BLOCK");
+    writeDirty(repo);
+    const decision = await driver(repo, state, "block").run();
+    expect(decision.kind).toBe("block");
+    expect((await state.load()).iteration).toBe(1);
+  });
+
+  it("fail-closed: a SOFT-PASS summary MISSING from_critical_demoted blocks under allow", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQG0FC");
+    writeDirty(repo);
+    const summaryNoCount = {
+      verdict: "SOFT-PASS",
+      source: "panel",
+      counts: { critical: 0, warn: 1, info: 0 },
+      cost_usd: 0,
+      duration_ms: 1,
+      demoted: 0,
+      signatures: ["sig-x"],
+      providers: [],
+    } as RunSummary; // from_critical_demoted intentionally absent (malformed/legacy)
+    const orch = {
+      runIteration: async (): Promise<IterationResult> => ({
+        verdict: "SOFT-PASS",
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: ["sig-x"],
+        summary: summaryNoCount,
+      }),
+    };
+    const d = new LoopDriver({
+      repoRoot: repo,
+      config: { ...defaultConfig, loop: { ...defaultConfig.loop, softPassPolicy: "allow" } },
+      state,
+      audit: new AuditLogger(auditDir(repo)),
+      orchestrator: orch,
+      stopHookActive: false,
+    });
+    const decision = await d.run();
+    expect(decision.kind).toBe("block");
   });
 });
 
@@ -2958,6 +3064,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
       duration_ms: 1,
       demoted: 0,
       signatures: warn > 0 ? ["sig-w1"] : [],
+      from_critical_demoted: 0, // clean summary — nothing demoted from a CRITICAL
       providers: providers.map((p) => ({
         ...p,
         personas: ["security"],

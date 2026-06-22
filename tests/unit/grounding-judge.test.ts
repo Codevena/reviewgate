@@ -5,7 +5,7 @@ import {
   judgeGrounding,
   parseGroundingOutput,
 } from "../../src/core/grounding.ts";
-import type { Finding } from "../../src/schemas/finding.ts";
+import { type Finding, FindingSchema } from "../../src/schemas/finding.ts";
 
 function mk(over: Partial<Finding> = {}): Finding {
   return {
@@ -134,14 +134,84 @@ describe("grounding judge (S6 layer 2)", () => {
     expect(called).toBe(false);
   });
 
-  it("applyGroundingJudgeVerdicts demotes an ungrounded CRITICAL to WARN", () => {
+  it("applyGroundingJudgeVerdicts demotes a non-exempt (quality) ungrounded CRITICAL to WARN", () => {
     const out = applyGroundingJudgeVerdicts(
-      [mk({ signature: "s1", severity: "CRITICAL" })],
+      [mk({ signature: "s1", severity: "CRITICAL", category: "quality" })],
       new Map([["s1", { grounded: false, reason: "not an HTML sink" }]]),
     );
     expect(out[0]?.severity).toBe("WARN");
     expect(out[0]?.grounding_demoted).toBe(true);
     expect(out[0]?.details).toContain("not an HTML sink");
+  });
+
+  // G0 (field report 2026-06-21): layer-2 must EXEMPT security/correctness, matching layer-1.
+  // The judge reads the (untrusted) reviewed code; demoting the unconditional hard-FAIL category
+  // on a judge verdict steered by attacker-influenced finding/corpus text is a fail-open. A
+  // genuinely fabricated security/correctness CRITICAL stays blocking and is dispositioned by a
+  // human decision, never auto-demoted.
+  it("G0: EXEMPTS a security CRITICAL even when the judge marks it ungrounded", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "CRITICAL", category: "security" })],
+      new Map([["s1", { grounded: false, reason: "no outerHTML sink" }]]),
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
+  });
+
+  it("G0: EXEMPTS a correctness CRITICAL even when the judge marks it ungrounded", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "CRITICAL", category: "correctness" })],
+      new Map([["s1", { grounded: false, reason: "value not present" }]]),
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.grounding_demoted).toBeUndefined();
+  });
+
+  // A security CRITICAL clustered under a non-security representative must also be exempt —
+  // touchesSecurityOrCorrectness looks past the representative category (mirrors layer-1).
+  it("G0: EXEMPTS a CRITICAL whose security concern rides as a merged member", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [
+        mk({
+          signature: "s1",
+          severity: "CRITICAL",
+          category: "quality",
+          members: [{ signature: "m1", provider: "codex", rule_id: "r", category: "security" }],
+        }),
+      ],
+      new Map([["s1", { grounded: false, reason: "fabricated" }]]),
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+  });
+
+  it("G0: stamps demoted_from_critical provenance on a layer-2 demote (non-exempt category)", () => {
+    const out = applyGroundingJudgeVerdicts(
+      [mk({ signature: "s1", severity: "CRITICAL", category: "quality" })],
+      new Map([["s1", { grounded: false, reason: "not present in code" }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.demoted_from_critical).toBe(true);
+  });
+
+  it("caps details at 2000 even with a very long (untrusted) judge reason — no schema overflow", () => {
+    // v.reason is untrusted LLM output with no length cap. A pathological reason must not push
+    // the appended note past FindingSchema's 2000-char details ceiling (a negative slice would
+    // otherwise yield over-length details → safeParse rejects the finding → it silently vanishes).
+    const longReason = "x".repeat(5000);
+    const out = applyGroundingJudgeVerdicts(
+      [
+        mk({
+          signature: "s1",
+          severity: "CRITICAL",
+          category: "quality",
+          details: "y".repeat(1990),
+        }),
+      ],
+      new Map([["s1", { grounded: false, reason: longReason }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.details.length ?? 0).toBeLessThanOrEqual(2000);
+    expect(() => FindingSchema.parse(out[0])).not.toThrow();
   });
 
   it("applyGroundingJudgeVerdicts keeps grounded CRITICALs and findings absent from the map", () => {

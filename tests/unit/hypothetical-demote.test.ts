@@ -42,6 +42,12 @@ describe("demoteHypotheticalCriticals — POSITIVE (CRITICAL→WARN)", () => {
       expect(out?.hypothetical_demoted).toBe(true);
     });
   }
+
+  it("G0: stamps demoted_from_critical provenance on the CRITICAL→WARN demote", () => {
+    const out = one({ details: "Currently safe, but a future change could reorder these." });
+    expect(out?.severity).toBe("WARN");
+    expect(out?.demoted_from_critical).toBe(true);
+  });
 });
 
 describe("demoteHypotheticalCriticals — NEGATIVE (stays CRITICAL)", () => {

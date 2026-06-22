@@ -936,7 +936,14 @@ export class Orchestrator {
       // are not captured by configHash or the diff hash.
       providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}`,
       reviewgateVersion: RG_VERSION,
-      schemaVersion: "reviewgate.pending.v1",
+      // G0 (field report 2026-06-21): bumped v1 → v2 to invalidate ALL pre-G0 cache entries.
+      // G0 changes per-finding semantics (value-judgment demoters now clamp a from-CRITICAL at
+      // WARN + stamp provenance), so a result cached under the OLD behavior — e.g. a confidence-
+      // floor CRITICAL→INFO sole finding that produced a clean PASS — must not be served after
+      // deploy (it would allow-stop and auto-hide the from-CRITICAL). The softPassNeedsFindings
+      // change below only covers SOFT-PASS; a stale PASS bypasses it, so the schema bump is the
+      // correct one-time invalidation (same pattern as the prompt-preamble sha fold).
+      schemaVersion: "reviewgate.pending.v2",
     });
 
     if (cacheEnabled) {
@@ -946,20 +953,16 @@ export class Orchestrator {
         this.input.config.cache.reviewTtlDays * 24 * 60 * 60 * 1000,
       );
       // A cached SOFT-PASS stores only counts, not findings, so serving it writes
-      // pending.json with no findings. Two policies need the real WARN findings:
-      //   - "block" — the decisions-gate requires a decision per WARN finding.
-      //   - "ask-once" — the one-time acknowledge block tells the agent to "review
-      //     them in .reviewgate/pending.md", but an empty findings list makes that
-      //     prompt point at warnings that aren't there.
-      // For BOTH, fall through to a real panel run that repopulates pending.json.
-      // Only "allow" (silent pass, no acknowledge block) is safe to serve empty.
-      const softPassNeedsFindings =
-        this.input.config.loop.softPassPolicy === "block" ||
-        this.input.config.loop.softPassPolicy === "ask-once";
-      if (
-        cached &&
-        (cached.verdict === "PASS" || (cached.verdict === "SOFT-PASS" && !softPassNeedsFindings))
-      ) {
+      // pending.json with no findings. G0 (field report 2026-06-21): that path is a fail-open —
+      // a counts-only SOFT-PASS yields from_critical_demoted=0 (no findings to count), so the
+      // loop-driver re-arm would auto-hide a possibly-real value-judgment-demoted CRITICAL. So a
+      // SOFT-PASS is NEVER served counts-only: re-run the panel to produce the real findings +
+      // the real count. This also subsumes the prior "block"/"ask-once" need for the real WARN
+      // findings in pending.json. Only PASS is served from cache — and a from-CRITICAL is always
+      // clamped to ≥WARN, so a genuine PASS provably has none. (The SOFT-PASS counts-only cache
+      // was a minor optimization; correctness wins. A future optimization could persist
+      // from_critical_demoted in the cache entry and short-circuit while carrying the count.)
+      if (cached && cached.verdict === "PASS") {
         await this.writeReport(opts, start, [], [], cached.verdict, cached.counts);
         return {
           verdict: cached.verdict,
