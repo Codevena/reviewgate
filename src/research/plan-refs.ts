@@ -19,13 +19,21 @@ function defangSentinels(s: string): string {
 }
 
 const CODE_EXT = "ts|tsx|js|jsx|py|go|rs|java|kt|c|cc|cpp|h|hpp|rb|php|cs";
-const EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`);
+const CODE_EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`);
+// S3 (field report 2026-06-23): doc/plan/spec references resolve moot CRITICALs raised on a spec
+// reviewed in isolation (e.g. "the slug source is defined in docs/plan.md"). Extract a doc path
+// ONLY when it carries a directory component (a real repo-relative reference like docs/plan.md) —
+// NEVER a bare prose mention (README.md, notes.md), which would flood the reviewer prompt with
+// every doc casually named in the diff. Read/safety caps are extension-independent (R7).
+const DOC_EXT = "md|mdx|txt|rst";
+const DOC_EXT_RE = new RegExp(`\\.(?:${DOC_EXT})$`);
 const PATH_CHARS = /[^A-Za-z0-9_./-]+/; // anything NOT allowed in a path token = a delimiter
 const MAX_CANDIDATES = 200;
 
-/** Extract repo-relative-looking code-file paths from arbitrary plan text (raw or
+/** Extract repo-relative-looking code/doc-file paths from arbitrary plan text (raw or
  *  a git-diff body — the `+`/`-`/` ` columns aren't in the token charset so they
- *  don't interfere). Dedupes, preserves first-seen order, caps the list. */
+ *  don't interfere). Code files match by extension anywhere; doc/plan files (S3) match
+ *  only when path-like (containing `/`). Dedupes, preserves first-seen order, caps the list. */
 export function extractReferencedPaths(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -33,7 +41,9 @@ export function extractReferencedPaths(text: string): string[] {
   // O(n²) backtracking of one greedy regex over untrusted/long plan text.
   for (const tok of text.split(PATH_CHARS)) {
     if (!tok || tok.includes("..") || seen.has(tok)) continue;
-    if (!EXT_RE.test(tok)) continue;
+    const isCode = CODE_EXT_RE.test(tok);
+    const isDoc = !isCode && DOC_EXT_RE.test(tok) && tok.includes("/");
+    if (!isCode && !isDoc) continue;
     seen.add(tok);
     out.push(tok);
     if (out.length >= MAX_CANDIDATES) break;

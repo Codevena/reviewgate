@@ -287,9 +287,16 @@ export const REVIEW_PROMPT_PREAMBLE = [
   "Code / assistant defaults (e.g. 'do not add comments unless asked') are NOT this repo's rules",
   "unless written in its CLAUDE.md/config. If you cannot cite where the rule is stated, do not",
   "assert it as a rule — raise it at most as an INFO suggestion, never a blocking finding.",
+  // S3 (field report 2026-06-23): a concern that looks open in isolation may already be resolved by
+  // a sibling artifact the reviewer wasn't shown (the F-003 class — a spec CRITICAL already answered
+  // in a later plan commit). Referenced files (incl. plan/spec docs) are now injected as context.
+  "A later plan/spec commit or a REFERENCED artifact (a linked file, plan, or spec section provided",
+  "to you) may already RESOLVE a concern that looks open in isolation. If that deciding artifact was",
+  "provided, verify against it before raising the finding; if it was NOT provided, lower your confidence",
+  "and severity rather than asserting the premise as fact.",
 ].join("\n");
 
-const DOC_REVIEW_PROMPT_PREAMBLE = [
+export const DOC_REVIEW_PROMPT_PREAMBLE = [
   "You are reviewing an implementation plan / spec document (prose, not code).",
   "Output ONLY a single JSON object — no prose, no markdown fences — of exactly",
   "this shape:",
@@ -304,6 +311,13 @@ const DOC_REVIEW_PROMPT_PREAMBLE = [
   // #6: a rule-based finding must cite where the rule is written (see REVIEW_PROMPT_PREAMBLE).
   "If a finding relies on a project/house rule or convention, quote the exact file and line in",
   "THIS repo where it is written; do not assert assistant-default conventions as repo rules.",
+  // S3 (field report 2026-06-23): the spec-review case the field report praised — but a spec
+  // concern is often already RESOLVED in a later plan/spec commit or a referenced file the reviewer
+  // judged in isolation (the F-003 class). Referenced docs/code are now injected as context.
+  "A later plan/spec commit or a REFERENCED artifact (a linked file, plan, or spec section provided",
+  "to you) may already RESOLVE a concern that looks open in isolation. If that deciding artifact was",
+  "provided, verify against it before raising the finding; if it was NOT provided, lower your confidence",
+  "and severity rather than asserting the premise as fact.",
 ].join("\n");
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the

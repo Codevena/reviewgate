@@ -155,7 +155,7 @@ Independent. Real fix for P3/P4. Non-suppressing (additive context only).
 ### Tasks
 **Task S3.1 — markdown refs (default ON)**: test extract+inject a referenced `.md` (fenced/defanged), still drop `.reviewgate/`/gitignored/oversize, reject `..`. Implement `DOC_EXT`. Commit.
 **Task S3.2 — preamble directive (default ON)**: test the rendered preamble contains the "later plan/spec commit may resolve … lower confidence if not provided" directive. Implement. Commit.
-**Task S3.3 — sibling-commit walk (default OFF)**: test flag ON → plan/spec files in `base..HEAD` injected; OFF (default) → nothing extra; git error → nothing. Implement behind the flag. Commit.
+**Task S3.3 — sibling-commit walk (default OFF) — DEFERRED.** On honest analysis the value is marginal and the mechanism fuzzy: at spec-review time the *resolving* plan commit usually does not exist yet, and a sibling commit already in `base..HEAD` is in the reviewed diff already — so the walk rarely surfaces a NEW resolving artifact. It also touches base/commit-walk logic (the Plan-Gate flagged it "speculative — gate OFF until proven"). Deferred as a follow-up rather than shipping default-OFF code of unproven value. S3.1 (referenced doc/plan injection) + S3.2 (the directive) deliver the sound P3/P4 win.
 
 ---
 

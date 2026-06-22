@@ -27,6 +27,18 @@ describe("extractReferencedPaths", () => {
     const r = extractReferencedPaths("docs at https://github.com/o/r/x.ts and `src/y.ts`");
     expect(r).toContain("src/y.ts");
   });
+  it("S3: extracts a doc/plan path WITH a directory component, ignores bare prose .md", () => {
+    const r = extractReferencedPaths(
+      "resolved in `docs/superpowers/plans/p.md`; see notes.md and src/a.ts",
+    );
+    expect(r).toContain("docs/superpowers/plans/p.md");
+    expect(r).toContain("src/a.ts");
+    expect(r).not.toContain("notes.md"); // bare prose mention → ignored (no directory component)
+  });
+  it("S3: extracts .txt/.rst/.mdx only with a directory component", () => {
+    const r = extractReferencedPaths("`docs/a.txt` `spec/b.rst` `c.mdx` `pkg/d.mdx`");
+    expect(r).toEqual(["docs/a.txt", "spec/b.rst", "pkg/d.mdx"]);
+  });
 });
 
 function repoWith(files: Record<string, string>): string {
@@ -53,6 +65,26 @@ describe("collectReferencedFileContents — resolution & safety", () => {
     expect(out).toContain("### src/a.ts");
     expect(out).toContain("export const A = 1;");
     expect(out).toContain("### src/b.ts");
+  });
+  it("S3: renders a referenced doc/plan markdown as a fenced block (the resolving artifact)", async () => {
+    const repo = repoWith({ "docs/plan.md": "## Task 3\nD3 slug derives from offer.id" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "the slug source is resolved in `docs/plan.md`",
+      budgetBytes: 32_000,
+    });
+    expect(out).toContain("### docs/plan.md");
+    expect(out).toContain("D3 slug derives from offer.id");
+  });
+  it("S3/R7: a referenced doc under .reviewgate/ is excluded, same as code (caps are ext-independent)", async () => {
+    const repo = repoWith({ ".reviewgate/secret.md": "RGDOC", "docs/ok.md": "OKDOC" });
+    const out = await collectReferencedFileContents({
+      repoRoot: repo,
+      planText: "`.reviewgate/secret.md` and `docs/ok.md`",
+      budgetBytes: 32_000,
+    });
+    expect(out).toContain("OKDOC");
+    expect(out).not.toContain("RGDOC");
   });
   it("rejects ../ traversal (4)", async () => {
     const repo = repoWith({ "src/a.ts": "x" });
