@@ -572,6 +572,12 @@ export class ReportWriter {
       rows,
       "",
       "## Suggested human actions",
+      ...(input.reasonCode === "findings-out-of-scope"
+        ? [
+            "- These findings are on files the reporting session did NOT author (a parallel agent's / pre-existing uncommitted work in a shared checkout). The agent correctly declined to edit foreign code — route them to the owning agent/session, or review them yourself.",
+            "- To avoid this in multi-agent runs, isolate work per `git worktree` (each its own `reviewgate init`), or keep foreign findings advisory (the default `outOfDiffBlocking: []`).",
+          ]
+        : []),
       "- Review the listed findings yourself before committing.",
       "- To make a finding a sticky known-false-positive: find its id with `reviewgate fp list`, then `reviewgate fp pin --id <FP-id>`.",
       "- If the panel diverges from your intent systematically, edit `reviewgate.config.ts` (e.g. adjust reviewers/personas) and run `reviewgate doctor` to validate.",

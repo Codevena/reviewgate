@@ -166,6 +166,79 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("P3: routes to findings-out-of-scope (allow_stop) when unaddressed findings are all FOREIGN", async () => {
+    // stop_hook_active=true + a blocking finding flagged foreign_to_session + NO decisions.
+    // The agent correctly declined to edit a parallel agent's code — this must NOT be framed as
+    // the accusatory decisions-unaddressed block; it escalates findings-out-of-scope and ALLOWS
+    // the stop (the finding is surfaced to the human via ESCALATION.md).
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQFOREIGN");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [{ id: "F-001", severity: "CRITICAL", foreign_to_session: true }],
+      }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop"); // not blocked for foreign code
+    expect(decision.reason).toMatch(/findings-out-of-scope/);
+    expect(decision.reason).toMatch(/did not author/);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("P3: an OWNED unaddressed finding still uses the firm decisions-unaddressed escalation", async () => {
+    // Same setup but the finding is NOT foreign → it is the agent's own code → the firm path.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQOWNED");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({ findings: [{ id: "F-001", severity: "CRITICAL" }] }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block"); // own code → still firm
+    expect(decision.reason).toMatch(/decisions-unaddressed/);
+  });
+
   it("treats a malformed/incomplete decision as unaddressed (fail-closed)", async () => {
     // A decision line that is valid JSON but not a valid DecisionEntry (no
     // verdict/action) must NOT satisfy the gate — otherwise an agent could

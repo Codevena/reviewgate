@@ -21,12 +21,21 @@ const Accepted = Base.extend({
   // below) and — UNLIKE acknowledged-low-value — IS allowed on CRITICAL/security/correctness
   // (that is the point). It is reputation-NEUTRAL (the reviewer was neither validated-correct
   // nor wrong) and never pins an FP, so it can't be abused to punish a correct reviewer.
+  // P2 (field report 2026-06-22): "out-of-scope" is the honest "not mine" disposition for a
+  // finding on a file THIS session did not author (a parallel agent's / pre-existing work in a
+  // shared checkout). It is NOT a false-positive claim (the reviewer may be RIGHT) and NOT a
+  // verification ("doesn't apply") — it is "correct, but not my code to touch". REQUIRES a
+  // `reason` >= 20 (the union superRefine below). The decisions-gate accepts it ONLY when the
+  // finding is flagged `foreign_to_session` (Slice A's ownership snapshot) — so it can never be
+  // used to wave away a finding on the agent's OWN code (fail-CLOSED without that flag). It is
+  // reputation-NEUTRAL (excluded in reputation/learn.ts) and never pins an FP.
   action: z.enum([
     "fixed",
     "addressed-elsewhere",
     "deferred-with-followup",
     "acknowledged-low-value",
     "verified-not-applicable",
+    "out-of-scope",
   ]),
   // Optional in the branch shape; REQUIRED (>= 20) only for "verified-not-applicable" via the
   // union superRefine. (A superRefine returns a ZodEffects, which z.discriminatedUnion's raw
@@ -55,6 +64,18 @@ export const DecisionEntrySchema = z
           path: ["reason"],
           message:
             "verified-not-applicable requires a reason of >= 20 non-whitespace chars documenting why the finding does not apply here",
+        });
+      }
+    }
+    // P2: out-of-scope must carry a substantive reason (>= 20 non-whitespace chars) naming why
+    // this file isn't yours / who owns it — a bare disposition must not silence a foreign finding.
+    if (d.verdict === "accepted" && d.action === "out-of-scope") {
+      if (typeof d.reason !== "string" || d.reason.trim().length < 20) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["reason"],
+          message:
+            "out-of-scope requires a reason of >= 20 non-whitespace chars (why this file is not yours / who owns it)",
         });
       }
     }

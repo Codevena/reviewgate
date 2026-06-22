@@ -323,6 +323,51 @@ describe("learnReputationFromDecisions", () => {
     expect((await store.snapshot()).reviewers["codex:security"]).toBeUndefined(); // no event
   });
 
+  it("does NOT credit a reviewer for an out-of-scope disposition (neutral, P2/M6)", async () => {
+    // The finding is on a file this session did not author; the reviewer may be right, but the
+    // agent neither confirmed a defect in its own work nor rejected it → reputation-NEUTRAL.
+    // (Crediting would let an agent inflate a noisy reviewer's trust by out-of-scoping foreign
+    // findings — reputation poisoning.)
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-oos-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            severity: "CRITICAL",
+            reviewer: { provider: "codex", persona: "security" },
+            confirmed_by: ["codex:security"],
+            members: [],
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "out-of-scope",
+        reason: "This file belongs to the parallel sitemap agent; not my change to touch here.",
+      })}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    expect((await store.snapshot()).reviewers["codex:security"]).toBeUndefined(); // no event
+  });
+
   it("does NOT mint a 'wrong' event for a plain rejection (reviewer_was_wrong unset)", async () => {
     // A rejection without reviewer_was_wrong:true is a non-signal (e.g. won't-fix /
     // disagree-but-not-a-hallucination) and must not debit the reviewer — debiting it

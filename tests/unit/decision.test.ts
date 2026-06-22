@@ -103,6 +103,37 @@ describe("DecisionEntrySchema", () => {
     ).toThrow();
   });
 
+  it("accepts the P2 'out-of-scope' action WITH a >= 20-char reason", () => {
+    const d: DecisionEntry = {
+      schema: "reviewgate.decision.v1",
+      finding_id: "F-020",
+      verdict: "accepted",
+      action: "out-of-scope",
+      reason: "This file is the parallel sitemap agent's uncommitted work; not mine to edit.",
+    };
+    expect(() => DecisionEntrySchema.parse(d)).not.toThrow();
+  });
+
+  it("rejects 'out-of-scope' with NO reason and with a whitespace-only reason (fail-closed)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-021",
+        verdict: "accepted",
+        action: "out-of-scope",
+      }),
+    ).toThrow();
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-022",
+        verdict: "accepted",
+        action: "out-of-scope",
+        reason: " ".repeat(25),
+      }),
+    ).toThrow();
+  });
+
   it("rejects a rejection with a whitespace-only reason (20 spaces must not pin an FP)", () => {
     expect(() =>
       DecisionEntrySchema.parse({

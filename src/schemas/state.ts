@@ -32,6 +32,13 @@ export const EscalationReason = z.enum([
   // round (defeating every signature-keyed guard). Surfaced to the human (block-once, like
   // signature-recurrence); never suppresses the finding.
   "location-recurrence",
+  // P3 (field report 2026-06-22): the still-unaddressed BLOCKING findings are all on files this
+  // session did not author (foreign_to_session) — e.g. a parallel agent's uncommitted work in a
+  // shared checkout. NOT the agent ignoring its own work: it correctly declined to edit foreign
+  // code. Surfaced to the human (allow-stop, non-accusatory) instead of the "you ignored this"
+  // decisions-unaddressed framing. Only reached when foreign findings are kept BLOCKING (the
+  // outOfDiffBlocking opt-in); by default Slice A demotes them to advisory and this never fires.
+  "findings-out-of-scope",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 
