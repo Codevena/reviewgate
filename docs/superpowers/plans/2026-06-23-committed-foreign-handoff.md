@@ -166,8 +166,8 @@ Render-only — zero severity change. Makes the P4 moot/good split visible (S3 i
 ### Design
 1. `REVIEW_OUTPUT_SCHEMA` (`review-output.ts`): add OPTIONAL nullable FLAT `evidence_line` (`type:["string","null"]`, listed in `required`, parent keeps `additionalProperties:false`). Update structural guard test.
 2. Preamble: "For any CRITICAL/WARN, quote in `evidence_line` the exact source line you rely on. If the deciding line/artifact was NOT provided, set it null and lower confidence — do not assert a blocking defect on absent context."
-3. `fact-check.ts` (`validateFindingFacts`): `evidence_line` non-null AND cited line exists → whitespace-normalized compare vs the working-tree line. CLEAR mismatch → render-only badge `evidence_mismatch`. Null on a blocking finding → badge `self-attested: deciding context not provided — verify`. **NO severity change.** Any ambiguity (line absent, moved/deleted pre-image line that exists elsewhere in the diff, whitespace/encoding, null on non-blocking) → no badge.
-4. Defang `evidence_line` via `neutralizeInjectionMarkers`/`neutralizeFences` before compare/render.
+3. `fact-check.ts` (`attestEvidence`, a NEW render-only pass, separate from the demote-direction `validateFindingFacts`): badge `evidence_mismatch` ONLY when the (defanged, whitespace-normalized) `evidence_line` matches **NO line of the cited file** — a strong stale/absent/fabricated-context signal. A match at the cited line, a match at ANY other line (a moved/deleted pre-image the agent relocated), out-of-range, unreadable, or absent `evidence_line` → no badge. **NO severity change.** **R6: the null-evidence `self-attested` badge was DROPPED** — it would spam every real CRITICAL a non-strict reviewer left null; the directive's confidence-drop is the signal instead. `evidence_mismatch` is precise → default-on (no config flag).
+4. Defang `evidence_line` via `neutralizeInjectionMarkers`/`neutralizeFences` before compare (the badge text is fixed — no reviewer content rendered).
 
 ### Files
 - Modify: `src/providers/review-output.ts` (schema + parsed type)
