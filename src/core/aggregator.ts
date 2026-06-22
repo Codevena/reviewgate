@@ -73,6 +73,14 @@ export interface AggregateInput {
   // so it stays SOFT-PASS-blocking + decision-required (G0). Absent/false → no-op
   // (production passes the config value, default true). File-class-keyed, not category.
   capDocsSeverity?: boolean;
+  // Slice A (P1, field report 2026-06-22): repo-relative paths FOREIGN to this session
+  // (byte-identical to its SessionStart baseline, not tool-owned — provably not authored by
+  // it). A blocking finding on such a file is demoted to advisory INFO + tagged
+  // foreign_to_session, so a parallel agent's uncommitted work / pre-existing dirty state
+  // can't block this session's turn. STRUCTURAL scope demote (like out-of-diff): → INFO,
+  // never sets demoted_from_critical (G0-EXEMPT). Honors the outOfDiffBlocking escape hatch.
+  // Absent/empty → no scoping (full review = fail-closed default).
+  foreignFiles?: Set<string> | null;
   // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
   // an EARLIER iteration of the current cycle → earliest claimed iter. A deduped
   // finding whose representative OR any member signature matches (and whose
@@ -599,13 +607,43 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // anchored to a declaration above the edit whose range overlaps the change.
   const scoped: Finding[] = scopeFindings(survivors, input);
 
+  // Slice A (P1) — session-ownership demote. A blocking finding on a file FOREIGN to this
+  // session (provably byte-identical to its SessionStart baseline, not tool-owned) is demoted
+  // to advisory INFO + tagged foreign_to_session (the ownership snapshot the out-of-scope
+  // decision gate reads — no live re-derive). STRUCTURAL scope demote: goes to INFO and NEVER
+  // sets demoted_from_critical (G0-EXEMPT — foreign = out of scope, not a value judgment, so it
+  // correctly converges OUT of the gate). Honors the SAME outOfDiffBlocking escape hatch: a
+  // category the maintainer chose to keep blocking across files stays blocking even when
+  // foreign (still tagged, so the agent can dispose it via an out-of-scope decision). Done as
+  // an INDEPENDENT pass (not inside scopeFindings, which early-returns when scopeToDiff is off).
+  const foreignFiles = input.foreignFiles;
+  const foreignScoped: Finding[] =
+    foreignFiles && foreignFiles.size > 0
+      ? scoped.map((f) => {
+          if (!foreignFiles.has(normalizeRepoPath(f.file))) return f;
+          const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+          const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+          // Escape hatch: keep blocking, but still tag so out-of-scope is available.
+          if (categories.some((c) => blocking.has(c))) return { ...f, foreign_to_session: true };
+          if (f.severity === "INFO") return { ...f, foreign_to_session: true };
+          const note =
+            "\n\n↓ on a file this session did not author (parallel agent / pre-existing) — advisory only.";
+          return {
+            ...f,
+            severity: "INFO" as const,
+            foreign_to_session: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : scoped;
+
   // M5 Part B1 — reactive FP-ledger demote: a finding whose representative
   // signature (or any merged member signature) matches an active/sticky FP entry
   // is demoted to INFO + tagged. Never dropped — stays visible in the advisory
   // section, and the decisions-gate already ignores INFO.
   const fpActive = input.fpActive;
   const fpScoped: Finding[] = fpActive
-    ? scoped.map((f) => {
+    ? foreignScoped.map((f) => {
         // Representative first, then members; dedup so a member equal to the
         // representative is not double-counted.
         const sigs = [...new Set([f.signature, ...(f.members?.map((m) => m.signature) ?? [])])];
@@ -623,7 +661,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
           },
         };
       })
-    : scoped;
+    : foreignScoped;
 
   // Per-cycle suppression: a finding whose representative OR any member signature
   // the agent already rejected (reviewer_was_wrong) earlier this cycle is demoted

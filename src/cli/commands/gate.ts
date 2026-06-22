@@ -7,6 +7,7 @@ import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
+import { computeForeignFiles } from "../../core/session-manifest.ts";
 import { StateStore } from "../../core/state-store.ts";
 import {
   SETTLE_INTERVAL_MS,
@@ -64,6 +65,11 @@ interface ReviewContext {
   // #7: set when the pre-review settle-check hit its cap without the working tree
   // going quiet (a writer was still active). Render-only banner downstream.
   workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
+  // Slice A (P1): files FOREIGN to this session (in its baseline, unchanged since, not
+  // tool-owned) → demoted to advisory in the aggregator. null = no scoping (no session_id /
+  // empty baseline / synthesized-flag review) → full review (fail-closed). Folded into the
+  // review cache key so a scoped result can't be served to a differently-scoped run.
+  foreignFiles?: Set<string> | null;
 }
 
 // Everything produced by the pre-loop setup phase, bundled so it can be computed
@@ -256,7 +262,9 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
         "🟠 Reviewgate · reset ran WITHOUT the gate lock (a review is in flight on this checkout); state may be briefly inconsistent until the in-flight review finishes.";
     }
     try {
-      await handleReset({ repoRoot: input.repoRoot });
+      // Pass the SessionStart stdin so handleReset can capture this session's ownership
+      // baseline (Slice A / P1) keyed by its session_id.
+      await handleReset({ repoRoot: input.repoRoot, hookStdinRaw: input.hookStdinRaw });
     } finally {
       if (resetLock) await resetLock.release();
     }
@@ -438,6 +446,7 @@ export async function gatherReviewContext(
   gitInfoFn: typeof collectGitInfo,
   diffFn: typeof collectDiff,
   settleBeforeReview: boolean,
+  scopeToSession = false,
 ): Promise<ReviewContext> {
   const gitInfo = await gitInfoFn(input.repoRoot);
   // #7: before snapshotting the working tree (either diffFn call below), wait
@@ -558,12 +567,32 @@ export async function gatherReviewContext(
   }
   const diff =
     precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
+  // Slice A (P1): files FOREIGN to this session (byte-identical to its SessionStart baseline,
+  // not tool-owned). Computed from the per-session manifest, keyed by the session_id in the
+  // Stop stdin. No session_id / empty baseline (single-agent, clean start) / scoping disabled
+  // → null = full review (fail-closed). Committed/HEAD-advanced files are never in the
+  // working-tree baseline → never foreign, so the synthesized-diff paths are safe unchanged.
+  let foreignFiles: Set<string> | null = null;
+  if (scopeToSession) {
+    try {
+      const parsedForScope = parseHookStdin(input.hookStdinRaw) as { session_id?: unknown } | null;
+      const sessionId =
+        typeof parsedForScope?.session_id === "string" ? parsedForScope.session_id : "";
+      if (sessionId) {
+        const set = computeForeignFiles(input.repoRoot, sessionId);
+        if (set.size > 0) foreignFiles = set;
+      }
+    } catch {
+      foreignFiles = null; // any failure → no scoping → full review (fail-closed)
+    }
+  }
   return {
     gitInfo,
     diff,
     reviewBase,
     diffIncomplete: dirtyFlagUnparsed,
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
+    foreignFiles,
   };
 }
 
@@ -606,6 +635,7 @@ async function runStopGate(
         gitInfoFn,
         diffFn,
         cfg.phases.review.settleBeforeReview ?? false,
+        cfg.phases.review.scopeToSession ?? true,
       );
       return { host, adapters, ctx };
     })();
@@ -619,7 +649,7 @@ async function runStopGate(
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
   const { host, adapters, ctx } = setup;
-  const { gitInfo, diff, reviewBase, workspaceUnsettled } = ctx;
+  const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles } = ctx;
   // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
   // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
   // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never
@@ -654,6 +684,8 @@ async function runStopGate(
     diffIncomplete,
     ...(largeDiff ? { largeDiff } : {}),
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
+    // Slice A (P1): files this session did not author → demoted to advisory in the aggregator.
+    ...(foreignFiles ? { foreignFiles } : {}),
   });
 
   const driver = new LoopDriver({

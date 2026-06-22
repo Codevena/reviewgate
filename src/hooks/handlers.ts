@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
+import {
+  captureSessionBaseline,
+  pruneOldSessionManifests,
+  recordSessionOwned,
+} from "../core/session-manifest.ts";
 import { gitHeadSha } from "../utils/git.ts";
 import {
   decisionsDir,
@@ -19,6 +24,35 @@ import {
 export interface TriggerInput {
   repoRoot: string;
   hookStdinRaw: string;
+}
+
+// Slice A (P1): the Claude Code session_id carried in every hook's stdin payload, or "" when
+// absent (older CLI / unparseable) — in which case the gate fail-closes to a full review.
+function sessionIdOf(parsed: unknown): string {
+  const o = parsed as { session_id?: unknown } | null;
+  return typeof o?.session_id === "string" ? o.session_id : "";
+}
+
+// Slice A (P1): the file paths an edit-tool PostToolUse event touched. Covers Write/Edit
+// (`file_path`), NotebookEdit (`notebook_path`), and MultiEdit (`edits[].file_path`). Other
+// tools (Bash, Read, …) carry none → []; their working-tree effects are caught by the
+// content-hash baseline instead (a Bash edit changes the hash → not foreign → reviewed).
+function editedPathsOf(parsed: unknown): string[] {
+  const ti = (parsed as { tool_input?: Record<string, unknown> } | null)?.tool_input;
+  if (!ti || typeof ti !== "object") return [];
+  const out: string[] = [];
+  const fp = (ti as { file_path?: unknown }).file_path;
+  if (typeof fp === "string" && fp) out.push(fp);
+  const np = (ti as { notebook_path?: unknown }).notebook_path;
+  if (typeof np === "string" && np) out.push(np);
+  const edits = (ti as { edits?: unknown }).edits;
+  if (Array.isArray(edits)) {
+    for (const e of edits) {
+      const efp = (e as { file_path?: unknown })?.file_path;
+      if (typeof efp === "string" && efp) out.push(efp);
+    }
+  }
+  return out;
 }
 
 // base_ts is captured at the FIRST trigger (PostToolUse), which fires AFTER the edit
@@ -103,10 +137,26 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
   writeFileSync(tmp, body, { mode: 0o600 });
   const { renameSync } = await import("node:fs");
   renameSync(tmp, p);
+
+  // Slice A (P1): record the files this session edited via a captured tool (ownership
+  // belt over the content-hash baseline). Best-effort — never let it break the trigger.
+  try {
+    const parsed = parseHookStdin(input.hookStdinRaw);
+    const sid = sessionIdOf(parsed);
+    const files = editedPathsOf(parsed);
+    if (sid && files.length > 0) recordSessionOwned(input.repoRoot, sid, files);
+  } catch {
+    /* best-effort ownership recording */
+  }
 }
 
 export interface ResetInput {
   repoRoot: string;
+  // The SessionStart hook stdin (carries session_id). Absent for the manual
+  // `reviewgate reset` CLI (no stdin) → no baseline capture, which is correct: an
+  // existing session manifest is preserved and a manual reset never folds the
+  // session's own edits into a fresh baseline.
+  hookStdinRaw?: string;
 }
 
 export interface ResetSummary {
@@ -157,6 +207,20 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   }
   clearAllProposalPools(input.repoRoot);
   if (poolPresent) cleared.push("proposal pools");
+
+  // Slice A (P1): on SessionStart, prune stale session manifests and capture THIS session's
+  // ownership baseline (the working-tree-dirty files at session start, before it edits
+  // anything). Best-effort + idempotent (an existing baseline is preserved on resume / manual
+  // reset). No session_id (manual `reviewgate reset` CLI) → no capture. Deliberately does NOT
+  // appear in `cleared` — it's a capture, not a clear, and runs even when nothing was cleared.
+  try {
+    pruneOldSessionManifests(input.repoRoot, Date.now());
+    const sid = sessionIdOf(parseHookStdin(input.hookStdinRaw ?? ""));
+    if (sid) await captureSessionBaseline(input.repoRoot, sid, new Date().toISOString());
+  } catch {
+    /* best-effort: a baseline-capture failure just means the next review is unscoped (full) */
+  }
+
   return { cleared };
 }
 

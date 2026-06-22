@@ -87,6 +87,7 @@ const GITIGNORE_LINES = [
   "**/.reviewgate/state.json",
   "**/.reviewgate/research.md",
   "**/.reviewgate/dirty.flag",
+  "**/.reviewgate/sessions/",
   "**/.reviewgate/ESCALATION.md",
   "**/.reviewgate/.lock",
   "**/.reviewgate/cache/",

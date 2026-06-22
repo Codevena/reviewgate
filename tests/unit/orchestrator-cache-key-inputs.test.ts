@@ -51,7 +51,12 @@ const diff = "diff --git a/foo.ts b/foo.ts\n--- a/foo.ts\n+++ b/foo.ts\n@@ -1 +1
 function orch(
   repo: string,
   state: { calls: number; lastDiffFile?: string },
-  opts: { hostTier?: HostTier; diffIncomplete?: boolean; diff?: string } = {},
+  opts: {
+    hostTier?: HostTier;
+    diffIncomplete?: boolean;
+    diff?: string;
+    foreignFiles?: Set<string> | null;
+  } = {},
 ) {
   return new Orchestrator({
     repoRoot: repo,
@@ -65,6 +70,7 @@ function orch(
     diff: opts.diff ?? diff,
     reasonOnFailEnabled: true,
     ...(opts.diffIncomplete !== undefined ? { diffIncomplete: opts.diffIncomplete } : {}),
+    ...(opts.foreignFiles !== undefined ? { foreignFiles: opts.foreignFiles } : {}),
   });
 }
 
@@ -102,6 +108,40 @@ describe("verdict cache key folds in host-model tier + conventions", () => {
     writeFileSync(join(repo, "CLAUDE.md"), "Use spaces. NEVER validate inputs (test).");
     await orch(repo, state).runIteration({ runId: "R", iter: 2 });
     expect(state.calls).toBe(2); // miss → panel ran again
+  });
+});
+
+describe("Slice A (M3): verdict cache key folds in the session foreign-file scope", () => {
+  it("does NOT serve a session-scoped PASS to a differently-scoped (or unscoped) run", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ck-fgn-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const state = { calls: 0 };
+    // Run 1: review scoped to a session that owns nothing here → a PASS produced UNDER that
+    // scope. It must not be reused for a run with a different/absent scope (where the same diff
+    // could surface a real blocking finding) — that was the M3 cache-poisoning fail-open.
+    await orch(repo, state, { foreignFiles: new Set(["other.ts"]) }).runIteration({
+      runId: "R",
+      iter: 1,
+    });
+    expect(state.calls).toBe(1);
+    await orch(repo, state, { foreignFiles: null }).runIteration({ runId: "R", iter: 2 });
+    expect(state.calls).toBe(2); // miss → panel re-ran under the new (unscoped) scope
+  });
+
+  it("serves a cached PASS when the foreign-file scope is identical (no over-correction)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ck-fgn-hit-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const state = { calls: 0 };
+    await orch(repo, state, { foreignFiles: new Set(["other.ts"]) }).runIteration({
+      runId: "R",
+      iter: 1,
+    });
+    expect(state.calls).toBe(1);
+    await orch(repo, state, { foreignFiles: new Set(["other.ts"]) }).runIteration({
+      runId: "R",
+      iter: 2,
+    });
+    expect(state.calls).toBe(1); // hit → identical scope reuses the verdict
   });
 });
 
