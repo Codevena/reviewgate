@@ -62,6 +62,11 @@ const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<Escalation
   // agent's / pre-existing work). Blocking the agent's turn for code it correctly declined to
   // touch is the exact mis-fire the field report hit — surface to the human, allow the stop.
   "findings-out-of-scope",
+  // S2 (field report 2026-06-23): the COMMITTED-foreign analog — the agent honestly disowned the
+  // whole change-set (a parallel agent's already-merged commits) and the session produced zero
+  // uncommitted work in the diff. Same safe floor as findings-out-of-scope: loud human ESCALATION
+  // (never a faked PASS), allow the stop instead of trapping the agent on foreign committed code.
+  "session-disowned",
 ]);
 
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
@@ -150,6 +155,42 @@ function foreignFlagsById(repoRoot: string): Map<string, boolean> {
     }
   } catch {
     /* malformed → empty map → firm path (fail-safe) */
+  }
+  return out;
+}
+
+// S2 (field report 2026-06-23): the report-level whole_diff_attributable flag, read loosely from
+// pending.json. POLARITY TRAP (Plan-Gate v2): unlike foreignFlagsById's absent→false default, this
+// defaults absent / missing-file / malformed → TRUE (the session has skin in the diff → the
+// out-of-session disown is UNAVAILABLE). readPendingReport strips this top-level field, so it must
+// be read raw here. Single-agent runs, cache-hit PASS and ERROR writes all omit it → fail-CLOSED.
+export function wholeDiffAttributable(repoRoot: string): boolean {
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return true;
+  try {
+    const report = JSON.parse(readFileSync(p, "utf8")) as { whole_diff_attributable?: unknown };
+    return report.whole_diff_attributable !== false; // only an explicit false unlocks disown
+  } catch {
+    return true; // malformed → fail-closed
+  }
+}
+
+// S2: a loose map of finding id → session_attributable from pending.json (mirrors foreignFlagsById
+// for the routing path). POLARITY: a MISSING per-finding flag defaults to TRUE (attributable →
+// non-disownable) — the fail-closed direction, OPPOSITE to foreignFlagsById's false default.
+export function sessionAttributableById(repoRoot: string): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return out;
+  try {
+    const report = JSON.parse(readFileSync(p, "utf8")) as {
+      findings?: Array<{ id?: string; session_attributable?: boolean }>;
+    };
+    for (const f of report.findings ?? []) {
+      if (typeof f.id === "string") out.set(f.id, f.session_attributable !== false);
+    }
+  } catch {
+    /* malformed → empty map → callers default to attributable (fail-closed) */
   }
   return out;
 }
@@ -498,12 +539,31 @@ export function evaluateDecisions(
   // acknowledged away). Read from the same pending.json the required ids came from.
   let findingMeta: Map<
     string,
-    { severity: string; highStakes: boolean; deterministic: boolean; foreign: boolean }
+    {
+      severity: string;
+      highStakes: boolean;
+      deterministic: boolean;
+      foreign: boolean;
+      attributable: boolean;
+    }
   > | null = null;
+  // S2 (R4): memoize the report-level whole_diff_attributable read ONCE per call (used by the
+  // out-of-session accept branch), so the gate never reads pending.json per decision line.
+  let wholeDiffAttr: boolean | null = null;
+  const isWholeDiffAttributable = (): boolean => {
+    if (wholeDiffAttr === null) wholeDiffAttr = wholeDiffAttributable(repoRoot);
+    return wholeDiffAttr;
+  };
   const metaOf = (
     id: string,
   ):
-    | { severity: string; highStakes: boolean; deterministic: boolean; foreign: boolean }
+    | {
+        severity: string;
+        highStakes: boolean;
+        deterministic: boolean;
+        foreign: boolean;
+        attributable: boolean;
+      }
     | undefined => {
     if (!findingMeta) {
       findingMeta = new Map(
@@ -525,6 +585,9 @@ export function evaluateDecisions(
             // P2: Slice A's persisted ownership snapshot — the SINGLE source for the
             // out-of-scope gate (read here, not re-derived live → no review/decision drift).
             foreign: f.foreign_to_session === true,
+            // S2: this session is responsible for the finding's file (uncommitted skin). Absent →
+            // TRUE (attributable → non-disownable) = fail-closed, OPPOSITE polarity to `foreign`.
+            attributable: f.session_attributable !== false,
           },
         ]),
       );
@@ -566,6 +629,29 @@ export function evaluateDecisions(
           invalidIds.add(res.data.finding_id);
           invalid.push(
             `${res.data.finding_id}: action — "out-of-scope" is only valid for a finding on a file this session did not author (flagged 👥 foreign); fix it or reject it (reviewer_was_wrong) instead`,
+          );
+          continue;
+        }
+      }
+      // S2: an "out-of-session" disposition (the COMMITTED-foreign honest handoff) is valid ONLY
+      // when (a) the finding is NOT session-attributable AND (b) the WHOLE diff has zero session-
+      // attributable files (whole_diff_attributable === false) — so the session produced no
+      // uncommitted work and provably can't be disowning its OWN code (Plan-Gate C4 whole-diff
+      // guard). R2: a deterministic check is ground truth and is NEVER disownable. Every gap
+      // (missing finding, attributable, whole-diff true/absent) is fail-CLOSED → REJECTED.
+      if (res.data.verdict === "accepted" && res.data.action === "out-of-session") {
+        const meta = metaOf(res.data.finding_id);
+        if (meta?.deterministic) {
+          invalidIds.add(res.data.finding_id);
+          invalid.push(
+            `${res.data.finding_id}: action — a deterministic check failure can't be disowned; fix the build/test or remove the check from reviewgate.config.ts`,
+          );
+          continue;
+        }
+        if (!meta || meta.attributable || isWholeDiffAttributable()) {
+          invalidIds.add(res.data.finding_id);
+          invalid.push(
+            `${res.data.finding_id}: action — "out-of-session" is only valid when the WHOLE change-set is NOT your session's work (you have no uncommitted file in this diff). Fix it, reject it (reviewer_was_wrong), or — if it is a parallel agent's committed work — end your turn to escalate to the human.`,
           );
           continue;
         }
@@ -1194,30 +1280,59 @@ export class LoopDriver {
           gate.invalid.length === 0 &&
           gate.missing.length > 0 &&
           gate.missing.every((id) => foreignById.get(id) === true);
+        // S2: the COMMITTED-foreign analog. The still-missing blocking findings are all NOT this
+        // session's work (session_attributable === false) AND the WHOLE diff has zero attributable
+        // files (whole_diff_attributable === false) → the session produced no uncommitted work, so
+        // it correctly declined to edit a parallel agent's already-merged commits. R3: require
+        // gate.invalid.length === 0 (mirror allUnaddressedForeign) so a malformed line keeps the
+        // firm path. Read both LOOSELY from pending.json (same source as requiredIds).
+        const attributableById = sessionAttributableById(this.i.repoRoot);
+        const wholeDiffAttr = wholeDiffAttributable(this.i.repoRoot);
+        const anyDisownableMissing =
+          !wholeDiffAttr && gate.missing.some((id) => attributableById.get(id) === false);
+        const allUnaddressedDisownable =
+          gate.invalid.length === 0 &&
+          gate.missing.length > 0 &&
+          !wholeDiffAttr &&
+          gate.missing.every((id) => attributableById.get(id) === false);
         // The decisions-gate does not advance `iteration`, so re-blocking on a
         // hook-forced continuation would loop forever (the iter-cap escalation
         // can never catch it). When stop_hook_active is set, the agent has
         // already been told to address these findings in a prior block and has
         // ended another turn without doing so — escalate to the human instead
         // of nagging indefinitely. On a fresh user-initiated stop, just block.
+        // PRECEDENCE: findings-out-of-scope (the shipped, narrower uncommitted-foreign path) wins
+        // when every missing finding is foreign_to_session; else the committed-foreign
+        // session-disowned path; else the firm decisions-unaddressed block.
         if (this.i.stopHookActive) {
-          return allUnaddressedForeign
-            ? this.escalateAndDecide(
-                state,
-                "findings-out-of-scope",
-                `${gate.missing.length} blocking finding(s) from iteration ${state.iteration} are on files this session did not author; left for the human / owning agent (the agent correctly did not edit foreign code).${detail ? ` ${detail}` : ""}`,
-              )
-            : this.escalateAndDecide(
-                state,
-                "decisions-unaddressed",
-                `Findings from iteration ${state.iteration} have no decision in .reviewgate/decisions/${state.iteration}.jsonl after a re-prompt.${detail ? ` ${detail}` : ""}`,
-              );
+          if (allUnaddressedForeign) {
+            return this.escalateAndDecide(
+              state,
+              "findings-out-of-scope",
+              `${gate.missing.length} blocking finding(s) from iteration ${state.iteration} are on files this session did not author; left for the human / owning agent (the agent correctly did not edit foreign code).${detail ? ` ${detail}` : ""}`,
+            );
+          }
+          if (allUnaddressedDisownable) {
+            return this.escalateAndDecide(
+              state,
+              "session-disowned",
+              `${gate.missing.length} blocking finding(s) from iteration ${state.iteration} are on a parallel agent's committed work that entered this session's reviewed diff; this session produced no work in the change-set, so it was honestly disowned and left for the human / owning agent.${detail ? ` ${detail}` : ""}`,
+            );
+          }
+          return this.escalateAndDecide(
+            state,
+            "decisions-unaddressed",
+            `Findings from iteration ${state.iteration} have no decision in .reviewgate/decisions/${state.iteration}.jsonl after a re-prompt.${detail ? ` ${detail}` : ""}`,
+          );
         }
-        // P3: when a foreign finding is among the missing, name the honest out-of-scope exit so
-        // the agent isn't pushed to lie (reviewer_was_wrong) or overreach into another's code.
+        // P3/S2: name the honest exit so the agent isn't pushed to lie (reviewer_was_wrong) or
+        // overreach into another's code. out-of-scope for an uncommitted-foreign file; out-of-session
+        // for a parallel agent's committed work when the WHOLE diff is not this session's.
         const oosHint = anyForeignMissing
           ? ` For a finding badged 👥 foreign (a file your session did not author): verdict=accepted action:"out-of-scope" reason:"… ≥20 chars".`
-          : "";
+          : anyDisownableMissing
+            ? ` These findings are on a parallel agent's committed work and your session produced nothing in this diff — to honestly hand off: verdict=accepted action:"out-of-session" reason:"… ≥20 chars" (this escalates to the human, it does NOT fake a pass).`
+            : "";
         return {
           kind: "block",
           reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${oosHint}${detail ? ` ${detail}` : ""}`,
@@ -1969,6 +2084,15 @@ export class LoopDriver {
         return {
           kind: "allow_stop",
           reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the remaining blocking findings are on files this session did not author (a parallel agent's / pre-existing work); NOT blocking your turn. You were right not to edit foreign code. Read .reviewgate/ESCALATION.md and hand these to the human / owning agent. (To dispose a foreign finding yourself next time, record an out-of-scope decision.)${suffix}`,
+        };
+      }
+      // S2 (R5): the COMMITTED-foreign honest handoff. NOT the panel being unreliable and NOT the
+      // agent ignoring its work — a parallel agent's already-merged commits entered this session's
+      // reviewed diff and the session produced nothing in the change-set. Non-accusatory copy.
+      if (reasonCode === "session-disowned") {
+        return {
+          kind: "allow_stop",
+          reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the remaining blocking findings are on a parallel agent's COMMITTED work that entered this session's reviewed diff in a shared checkout, and your session produced nothing in this change-set; NOT blocking your turn and NOT faking a pass. Read .reviewgate/ESCALATION.md and hand these to the human / owning agent. (To isolate work in multi-agent runs, use a per-session \`git worktree\`.)${suffix}`,
         };
       }
       return {
