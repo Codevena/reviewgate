@@ -170,6 +170,10 @@ export interface OrchestratorInput {
   // #7: set by the gate when the pre-review settle-check hit its cap without the
   // working tree going quiet. Render-only — passed straight into the PendingReport.
   workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
+  // Slice A (P1): files FOREIGN to this session (byte-identical to its SessionStart baseline,
+  // not tool-owned). Findings on these demote to advisory INFO in the aggregator. Folded into
+  // the review cache key so a scoped result can't be served to a differently-scoped run (M3).
+  foreignFiles?: Set<string> | null;
 }
 
 export interface IterationResult {
@@ -925,6 +929,15 @@ export class Orchestrator {
     const promptSegment = `|pre:${createHash("sha256")
       .update(`${REVIEW_PROMPT_PREAMBLE}\n${DOC_REVIEW_PROMPT_PREAMBLE}`)
       .digest("hex")}`;
+    // Slice A (P1, M3): the session-scope (foreign-file) set is review-scoping input NOT
+    // covered by the diff or configHash — fold its sha256 in so a manifest-demoted result can
+    // never be served to a run with a different (or absent) scope, which would re-block foreign
+    // findings or, worse, serve a scoped PASS to an unscoped run. Sorted for determinism; empty
+    // set → empty segment (identical key to today, so single-agent caching is unchanged).
+    const foreignSorted = this.input.foreignFiles ? [...this.input.foreignFiles].sort() : [];
+    const foreignSegment = foreignSorted.length
+      ? `|fgn:${createHash("sha256").update(foreignSorted.join("\n")).digest("hex")}`
+      : "";
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
@@ -934,7 +947,7 @@ export class Orchestrator {
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}`,
       reviewgateVersion: RG_VERSION,
       // G0 (field report 2026-06-21): bumped v1 → v2 to invalidate ALL pre-G0 cache entries.
       // G0 changes per-finding semantics (value-judgment demoters now clamp a from-CRITICAL at
@@ -1823,6 +1836,8 @@ export class Orchestrator {
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       demoteCorrectness: repCfg?.demoteCorrectness ?? true,
       demoteTestSecurity: this.input.config.phases.review.demoteTestSecurity ?? true,
+      capDocsSeverity: this.input.config.phases.review.capDocsSeverity ?? true,
+      ...(this.input.foreignFiles ? { foreignFiles: this.input.foreignFiles } : {}),
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),

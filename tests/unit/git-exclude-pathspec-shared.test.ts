@@ -14,7 +14,12 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EXCLUDE_PATHSPEC, collectChangedFileContents } from "../../src/utils/git.ts";
+import {
+  EXCLUDE_PATHSPEC,
+  collectChangedFileContents,
+  collectDiff,
+  isExcludedFromReview,
+} from "../../src/utils/git.ts";
 
 const GIT_SRC = fileURLToPath(new URL("../../src/utils/git.ts", import.meta.url));
 
@@ -38,11 +43,52 @@ describe("git exclude-pathspec is a single shared source", () => {
       ":(exclude)reviewgate.config.ts",
       ":(exclude).reviewgate",
       ":(exclude).reviewgate/**",
+      // P6 (field report 2026-06-22): the user's DoD scratch dir (.review/, rm -rf'd
+      // before commit) must not enter the reviewed diff or the cache key in repos that
+      // don't gitignore it.
+      ":(exclude).review",
+      ":(exclude).review/**",
+      ":(exclude)**/.review",
+      ":(exclude)**/.review/**",
       ":(exclude).antigravitycli",
       ":(exclude).antigravitycli/**",
       ":(exclude)**/.antigravitycli",
       ":(exclude)**/.antigravitycli/**",
     ]);
+  });
+
+  it("isExcludedFromReview excludes .review scratch but NOT .reviewgate-unrelated names", () => {
+    // P6: the untracked side must mirror EXCLUDE_PATHSPEC exactly.
+    expect(isExcludedFromReview(".review")).toBe(true);
+    expect(isExcludedFromReview(".review/plan-gate-prompt.txt")).toBe(true);
+    expect(isExcludedFromReview("sub/.review/codex-a-findings.md")).toBe(true);
+    // Over-broad-match guards: a file/dir that merely CONTAINS "review" is NOT excluded.
+    expect(isExcludedFromReview("review-notes.md")).toBe(false);
+    expect(isExcludedFromReview("src/review.ts")).toBe(false);
+    expect(isExcludedFromReview("docs/reviews/x.md")).toBe(false);
+    // .reviewgate stays excluded (regression).
+    expect(isExcludedFromReview(".reviewgate/state.json")).toBe(true);
+  });
+
+  it("collectDiff excludes an UNTRACKED .review scratch file even with no gitignore line", async () => {
+    // The field-report failure: F-001/F-002 were on .review/plan-gate-* in a checkout that
+    // did not gitignore .review/, so they entered the diff (and the cache key). Pure
+    // subtraction — verify the untracked side drops them and a real file still shows.
+    const repo = tmpRepo();
+    mkdirSync(join(repo, ".review"), { recursive: true });
+    writeFileSync(join(repo, ".review", "plan-gate-prompt.txt"), "stale scratch\n");
+    mkdirSync(join(repo, "sub", ".review"), { recursive: true });
+    writeFileSync(join(repo, "sub", ".review", "codex-a-findings.md"), "## FINDINGS\n");
+    writeFileSync(join(repo, "real.ts"), "export const r = 1;\n");
+    writeFileSync(join(repo, "review-notes.md"), "# kept\n");
+
+    const out = await collectDiff(repo);
+    expect(out).toContain("real.ts");
+    expect(out).toContain("review-notes.md"); // over-broad guard: NOT excluded
+    expect(out).not.toContain(".review/plan-gate-prompt.txt");
+    expect(out).not.toContain("codex-a-findings.md");
+    // Exclusion must not trip the incomplete fail-CLOSED marker.
+    expect(out).not.toContain("TRUNCATED or TIMED OUT");
   });
 
   it("does not hand-write a second copy of the exclude pathspec in git.ts", () => {

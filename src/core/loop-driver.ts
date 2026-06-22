@@ -58,6 +58,10 @@ const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<Escalation
   // loop (it can't wait out the outage). We still write ESCALATION.md + audit (the
   // human is informed) but ALLOW the stop with a loud warning instead of block-looping.
   "infra-unavailable",
+  // P3 (field report 2026-06-22): unaddressed findings are all on FOREIGN files (a parallel
+  // agent's / pre-existing work). Blocking the agent's turn for code it correctly declined to
+  // touch is the exact mis-fire the field report hit — surface to the human, allow the stop.
+  "findings-out-of-scope",
 ]);
 
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
@@ -126,6 +130,28 @@ function previousFindingIds(repoRoot: string): string[] {
   } catch {
     return [];
   }
+}
+
+// P3: a loose map of finding id → foreign_to_session (Slice A's ownership snapshot) from
+// pending.json. Read loosely (NOT via the strict FindingSchema) for the SAME reason
+// previousFindingIds is loose: the two must agree on the same finding set, so a finding that
+// fails strict validation must not lose its flag and mis-route the escalation. Missing flag →
+// false (owned) = the firm, fail-safe default. Never throws → {} on any gap.
+function foreignFlagsById(repoRoot: string): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return out;
+  try {
+    const report = JSON.parse(readFileSync(p, "utf8")) as {
+      findings?: Array<{ id?: string; foreign_to_session?: boolean }>;
+    };
+    for (const f of report.findings ?? []) {
+      if (typeof f.id === "string") out.set(f.id, f.foreign_to_session === true);
+    }
+  } catch {
+    /* malformed → empty map → firm path (fail-safe) */
+  }
+  return out;
 }
 
 // The LAST (most recent) valid decision per finding_id from decisions/<prevIter>.jsonl
@@ -472,11 +498,13 @@ export function evaluateDecisions(
   // acknowledged away). Read from the same pending.json the required ids came from.
   let findingMeta: Map<
     string,
-    { severity: string; highStakes: boolean; deterministic: boolean }
+    { severity: string; highStakes: boolean; deterministic: boolean; foreign: boolean }
   > | null = null;
   const metaOf = (
     id: string,
-  ): { severity: string; highStakes: boolean; deterministic: boolean } | undefined => {
+  ):
+    | { severity: string; highStakes: boolean; deterministic: boolean; foreign: boolean }
+    | undefined => {
     if (!findingMeta) {
       findingMeta = new Map(
         readPendingReport(repoRoot).findings.map((f) => [
@@ -494,6 +522,9 @@ export function evaluateDecisions(
                 (m) => m.category === "security" || m.category === "correctness",
               ),
             deterministic: f.deterministic === true,
+            // P2: Slice A's persisted ownership snapshot — the SINGLE source for the
+            // out-of-scope gate (read here, not re-derived live → no review/decision drift).
+            foreign: f.foreign_to_session === true,
           },
         ]),
       );
@@ -522,6 +553,22 @@ export function evaluateDecisions(
           `${res.data.finding_id}: verdict — a deterministic check failure can't be rejected; fix the build/test (it re-runs and clears automatically) or remove the check from reviewgate.config.ts`,
         );
         continue;
+      }
+      // P2: an "out-of-scope" disposition is valid ONLY for a finding flagged
+      // foreign_to_session (Slice A's ownership snapshot — a file this session did not
+      // author). On a finding that ISN'T flagged foreign — including one missing from
+      // pending, or any run where Slice A didn't tag it — it does NOT satisfy the gate
+      // (fail-CLOSED): the agent can never out-of-scope its OWN code. This is the only
+      // thing that makes out-of-scope abuse-proof.
+      if (res.data.verdict === "accepted" && res.data.action === "out-of-scope") {
+        const meta = metaOf(res.data.finding_id);
+        if (!meta || !meta.foreign) {
+          invalidIds.add(res.data.finding_id);
+          invalid.push(
+            `${res.data.finding_id}: action — "out-of-scope" is only valid for a finding on a file this session did not author (flagged 👥 foreign); fix it or reject it (reviewer_was_wrong) instead`,
+          );
+          continue;
+        }
       }
       // N2: an "acknowledged-low-value" disposition is valid ONLY for an INFO/WARN
       // finding that is not security/correctness. On a CRITICAL or security/correctness
@@ -1133,6 +1180,20 @@ export class LoopDriver {
         ]
           .filter((x): x is string => x !== null)
           .join(" · ");
+        // P3: are the still-MISSING blocking findings all on FOREIGN files (Slice A's
+        // foreign_to_session snapshot)? Then this isn't the agent ignoring its own work — it
+        // correctly declined to edit a parallel agent's code. Route to the non-accusatory
+        // findings-out-of-scope path + offer the honest out-of-scope disposition. Any invalid
+        // (mis-formatted) line, or any owned missing finding, keeps the firm decisions path.
+        // Read the foreign flag LOOSELY from pending.json (same convention as previousFindingIds,
+        // so requiredIds and the foreign map come from the SAME source — a finding that fails
+        // strict FindingSchema must not silently lose its flag and mis-route).
+        const foreignById = foreignFlagsById(this.i.repoRoot);
+        const anyForeignMissing = gate.missing.some((id) => foreignById.get(id) === true);
+        const allUnaddressedForeign =
+          gate.invalid.length === 0 &&
+          gate.missing.length > 0 &&
+          gate.missing.every((id) => foreignById.get(id) === true);
         // The decisions-gate does not advance `iteration`, so re-blocking on a
         // hook-forced continuation would loop forever (the iter-cap escalation
         // can never catch it). When stop_hook_active is set, the agent has
@@ -1140,15 +1201,26 @@ export class LoopDriver {
         // ended another turn without doing so — escalate to the human instead
         // of nagging indefinitely. On a fresh user-initiated stop, just block.
         if (this.i.stopHookActive) {
-          return this.escalateAndDecide(
-            state,
-            "decisions-unaddressed",
-            `Findings from iteration ${state.iteration} were never addressed in .reviewgate/decisions/${state.iteration}.jsonl after a forced re-prompt.${detail ? ` ${detail}` : ""}`,
-          );
+          return allUnaddressedForeign
+            ? this.escalateAndDecide(
+                state,
+                "findings-out-of-scope",
+                `${gate.missing.length} blocking finding(s) from iteration ${state.iteration} are on files this session did not author; left for the human / owning agent (the agent correctly did not edit foreign code).${detail ? ` ${detail}` : ""}`,
+              )
+            : this.escalateAndDecide(
+                state,
+                "decisions-unaddressed",
+                `Findings from iteration ${state.iteration} have no decision in .reviewgate/decisions/${state.iteration}.jsonl after a re-prompt.${detail ? ` ${detail}` : ""}`,
+              );
         }
+        // P3: when a foreign finding is among the missing, name the honest out-of-scope exit so
+        // the agent isn't pushed to lie (reviewer_was_wrong) or overreach into another's code.
+        const oosHint = anyForeignMissing
+          ? ` For a finding badged 👥 foreign (a file your session did not author): verdict=accepted action:"out-of-scope" reason:"… ≥20 chars".`
+          : "";
         return {
           kind: "block",
-          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${detail ? ` ${detail}` : ""}`,
+          reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${oosHint}${detail ? ` ${detail}` : ""}`,
         };
       }
 
@@ -1871,9 +1943,19 @@ export class LoopDriver {
     // hostage. For those we still write ESCALATION.md + audit (the human IS
     // informed) but ALLOW the stop with a loud warning instead of blocking.
     if (firstAnnounce && !ALLOW_STOP_ESCALATIONS.has(reasonCode)) {
+      // P3 (field report 2026-06-22): de-fanged framing. The old copy ("the gate gave up …
+      // is no longer reviewing your changes") read as an accusation of non-compliance — wrong
+      // when the agent acted correctly (e.g. declined to touch foreign code; foreign cases now
+      // route to the allow-stop findings-out-of-scope path). Honest, non-accusatory wording,
+      // and for decisions-unaddressed it names the out-of-scope exit so the agent isn't pushed
+      // to lie (reviewer_was_wrong) or overreach just to unblock.
+      const oos =
+        reasonCode === "decisions-unaddressed"
+          ? "Record a decision — fix, reject (reviewer_was_wrong) with a reason, or (for a file you did not author) out-of-scope — for each remaining finding, or "
+          : "";
       return {
         kind: "block",
-        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the gate gave up after repeated rounds without a clean pass and is no longer reviewing your changes. Read .reviewgate/ESCALATION.md, surface it to the human, and run \`reviewgate reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
+        reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the review did not converge after repeated rounds, so Reviewgate has paused gating this change-set and surfaced it for human review. ${oos}read .reviewgate/ESCALATION.md and resolve it with the human; run \`reviewgate reset\` (or restart the session) to re-arm. End your turn again to proceed.${suffix}`,
       };
     }
     if (firstAnnounce) {
@@ -1881,6 +1963,14 @@ export class LoopDriver {
       // reviewers down for N turns), NOT an unreliable reviewer — telling the dev to
       // "disable/replace that reviewer" would be wrong. reviewer-fp-streak IS about a
       // reviewer that kept being wrong.
+      // P3 (field report 2026-06-22): findings on FOREIGN files — the agent correctly declined
+      // to edit another session's / pre-existing work. NOT non-compliance; surface to the human.
+      if (reasonCode === "findings-out-of-scope") {
+        return {
+          kind: "allow_stop",
+          reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the remaining blocking findings are on files this session did not author (a parallel agent's / pre-existing work); NOT blocking your turn. You were right not to edit foreign code. Read .reviewgate/ESCALATION.md and hand these to the human / owning agent. (To dispose a foreign finding yourself next time, record an out-of-scope decision.)${suffix}`,
+        };
+      }
       return {
         kind: "allow_stop",
         reason:

@@ -57,11 +57,17 @@ export async function learnReputationFromDecisions(input: {
     // P6: "verified-not-applicable" is likewise NEUTRAL — the reviewer raised a legitimate
     // concern that the agent VERIFIED does not apply here, so no defect was confirmed
     // (crediting "correct" would over-credit a non-issue) and the reviewer wasn't wrong
-    // (debiting is impossible — it's not a rejection). Every OTHER accepted action credits (F-023).
+    // (debiting is impossible — it's not a rejection).
+    // P2: "out-of-scope" is also NEUTRAL — the finding is on a file this session did not
+    // author; the reviewer may be perfectly right, but the agent neither confirmed a defect in
+    // its OWN work nor rejected the finding. Crediting "correct" would let an agent inflate a
+    // noisy reviewer's trust by out-of-scoping foreign findings (reputation poisoning, M6).
+    // Every OTHER accepted action credits (F-023).
     if (
       d.verdict === "accepted" &&
       d.action !== "acknowledged-low-value" &&
-      d.action !== "verified-not-applicable"
+      d.action !== "verified-not-applicable" &&
+      d.action !== "out-of-scope"
     )
       outcome = "correct";
     else if (d.verdict === "rejected" && d.reviewer_was_wrong === true) outcome = "wrong";

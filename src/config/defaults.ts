@@ -86,6 +86,11 @@ export const defaultConfig = {
       // CRITICAL one step to WARN (one-step, security/correctness-exempt, fail-safe). Default ON.
       hypotheticalSeverityGuard: true,
       demoteTestSecurity: true,
+      // Slice D (P5): cap a CRITICAL on a docs/markdown file to WARN (sec/correctness exempt).
+      capDocsSeverity: true,
+      // Slice A (P1): demote findings on files this session did not author to advisory.
+      // Fail-safe by construction (full review when ownership is undeterminable).
+      scopeToSession: true,
       // Default: demote ALL out-of-diff findings to INFO. Add categories (e.g.
       // ["security","correctness"]) to keep genuine cross-file impact blocking.
       outOfDiffBlocking: [] as import("../schemas/finding.ts").FindingCategory[],

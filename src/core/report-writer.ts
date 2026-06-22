@@ -55,7 +55,20 @@ export function findingBadges(f: Finding): string | null {
       "⬇ was CRITICAL, one-step-demoted — decide before passing (don't reflexively acknowledge)",
     );
   if (f.scope_demoted) badges.push("📍 outside changed lines");
+  // Slice A (P1): on a file this session did not author — advisory (parallel agent / pre-existing).
+  if (f.foreign_to_session)
+    badges.push(
+      "👥 on a file this session did not edit (parallel agent / pre-existing) — advisory; if it truly isn't yours, record an out-of-scope decision",
+    );
   if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
+  // Slice D (P5): a CRITICAL on a docs/markdown file capped to WARN (stale doc ≠ data-loss bug).
+  if (f.docs_severity_capped)
+    badges.push("📝 docs file — capped CRITICAL→WARN; still decide before passing");
+  // Slice C (P4): a lone uncorroborated CRITICAL — honest framing, NOT a downgrade (still blocks).
+  if (f.lone_critical_uncorroborated)
+    badges.push(
+      "🚧 lone CRITICAL — single reviewer, uncorroborated; verify the cited code yourself, then fix (action:fixed) or reject (reviewer_was_wrong) with a concrete reason",
+    );
   if (f.redaction_demoted)
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
@@ -559,6 +572,12 @@ export class ReportWriter {
       rows,
       "",
       "## Suggested human actions",
+      ...(input.reasonCode === "findings-out-of-scope"
+        ? [
+            "- These findings are on files the reporting session did NOT author (a parallel agent's / pre-existing uncommitted work in a shared checkout). The agent correctly declined to edit foreign code — route them to the owning agent/session, or review them yourself.",
+            "- To avoid this in multi-agent runs, isolate work per `git worktree` (each its own `reviewgate init`), or keep foreign findings advisory (the default `outOfDiffBlocking: []`).",
+          ]
+        : []),
       "- Review the listed findings yourself before committing.",
       "- To make a finding a sticky known-false-positive: find its id with `reviewgate fp list`, then `reviewgate fp pin --id <FP-id>`.",
       "- If the panel diverges from your intent systematically, edit `reviewgate.config.ts` (e.g. adjust reviewers/personas) and run `reviewgate doctor` to validate.",

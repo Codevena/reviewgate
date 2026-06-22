@@ -25,6 +25,19 @@ export function dirtyFlagPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "dirty.flag");
 }
 
+// Slice A (P1, field report 2026-06-22): per-session ownership manifests live here, one
+// file per Claude Code session_id, so a parallel agent's session can't clobber this one's.
+export function sessionsDir(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "sessions");
+}
+
+// The session manifest path for `sessionId`. The id comes from hook stdin, so it is
+// sanitized to a safe basename (no path traversal / separators) before use.
+export function sessionManifestPath(repoRoot: string, sessionId: string): string {
+  const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 128) || "_";
+  return join(sessionsDir(repoRoot), `${safe}.json`);
+}
+
 // M-A2: marks that a stop turn DEFERRED its review because the gate lock was held
 // (contention). Its presence forces the next stop to take the lock and review —
 // the eventual-review guarantee — even if the dirty.flag was cleared meanwhile.

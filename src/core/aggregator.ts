@@ -66,6 +66,21 @@ export interface AggregateInput {
   // "tests" is demoted to INFO (advisory). Only security; correctness/other stay. Absent/
   // false → no-op (production passes the config value, default true). Representative-keyed.
   demoteTestSecurity?: boolean;
+  // Slice D (P5, field report 2026-06-22): when true, a CRITICAL finding whose FILE
+  // classifies as "docs" is CAPPED to WARN (a stale doc is over-severity). security/
+  // correctness (representative OR any merged member) is EXEMPT and stays CRITICAL — a
+  // markdown file can hold a leaked secret / dangerous command. Capped to WARN (not INFO)
+  // so it stays SOFT-PASS-blocking + decision-required (G0). Absent/false → no-op
+  // (production passes the config value, default true). File-class-keyed, not category.
+  capDocsSeverity?: boolean;
+  // Slice A (P1, field report 2026-06-22): repo-relative paths FOREIGN to this session
+  // (byte-identical to its SessionStart baseline, not tool-owned — provably not authored by
+  // it). A blocking finding on such a file is demoted to advisory INFO + tagged
+  // foreign_to_session, so a parallel agent's uncommitted work / pre-existing dirty state
+  // can't block this session's turn. STRUCTURAL scope demote (like out-of-diff): → INFO,
+  // never sets demoted_from_critical (G0-EXEMPT). Honors the outOfDiffBlocking escape hatch.
+  // Absent/empty → no scoping (full review = fail-closed default).
+  foreignFiles?: Set<string> | null;
   // §4.3 Fix-Verification: signatures the agent marked accepted/action:"fixed" in
   // an EARLIER iteration of the current cycle → earliest claimed iter. A deduped
   // finding whose representative OR any member signature matches (and whose
@@ -203,6 +218,22 @@ interface Cluster {
 function touchesSecurityOrCorrectness(f: Finding): boolean {
   const cats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
   return cats.some((c) => c === "security" || c === "correctness");
+}
+
+// Slice C (P4, field report 2026-06-22): the EXACT condition under which the verdict gate
+// below hard-FAILs a CRITICAL purely because it is the lone opinion on a single-reviewer panel
+// (reviewersTotal<=1) — i.e. not security/correctness (those FAIL on their own merit) and not
+// corroborated (consensus would otherwise carry it). Used ONLY to stamp a render-only badge so
+// the report can frame it honestly; the verdict math is UNCHANGED (zero PR#22 regression).
+// Shared with the verdict loop's reviewersTotal<=1 branch so the badge can never desync from it.
+function isLoneUncorroboratedCritical(f: Finding, reviewersTotal: number): boolean {
+  return (
+    f.severity === "CRITICAL" &&
+    reviewersTotal <= 1 &&
+    f.consensus !== "unanimous" &&
+    f.consensus !== "majority" &&
+    !touchesSecurityOrCorrectness(f)
+  );
 }
 
 // N6: the "high-stakes" category boundary. A correctness/security concern and a
@@ -576,13 +607,43 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // anchored to a declaration above the edit whose range overlaps the change.
   const scoped: Finding[] = scopeFindings(survivors, input);
 
+  // Slice A (P1) — session-ownership demote. A blocking finding on a file FOREIGN to this
+  // session (provably byte-identical to its SessionStart baseline, not tool-owned) is demoted
+  // to advisory INFO + tagged foreign_to_session (the ownership snapshot the out-of-scope
+  // decision gate reads — no live re-derive). STRUCTURAL scope demote: goes to INFO and NEVER
+  // sets demoted_from_critical (G0-EXEMPT — foreign = out of scope, not a value judgment, so it
+  // correctly converges OUT of the gate). Honors the SAME outOfDiffBlocking escape hatch: a
+  // category the maintainer chose to keep blocking across files stays blocking even when
+  // foreign (still tagged, so the agent can dispose it via an out-of-scope decision). Done as
+  // an INDEPENDENT pass (not inside scopeFindings, which early-returns when scopeToDiff is off).
+  const foreignFiles = input.foreignFiles;
+  const foreignScoped: Finding[] =
+    foreignFiles && foreignFiles.size > 0
+      ? scoped.map((f) => {
+          if (!foreignFiles.has(normalizeRepoPath(f.file))) return f;
+          const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+          const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+          // Escape hatch: keep blocking, but still tag so out-of-scope is available.
+          if (categories.some((c) => blocking.has(c))) return { ...f, foreign_to_session: true };
+          if (f.severity === "INFO") return { ...f, foreign_to_session: true };
+          const note =
+            "\n\n↓ on a file this session did not author (parallel agent / pre-existing) — advisory only.";
+          return {
+            ...f,
+            severity: "INFO" as const,
+            foreign_to_session: true,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : scoped;
+
   // M5 Part B1 — reactive FP-ledger demote: a finding whose representative
   // signature (or any merged member signature) matches an active/sticky FP entry
   // is demoted to INFO + tagged. Never dropped — stays visible in the advisory
   // section, and the decisions-gate already ignores INFO.
   const fpActive = input.fpActive;
   const fpScoped: Finding[] = fpActive
-    ? scoped.map((f) => {
+    ? foreignScoped.map((f) => {
         // Representative first, then members; dedup so a member equal to the
         // representative is not double-counted.
         const sigs = [...new Set([f.signature, ...(f.members?.map((m) => m.signature) ?? [])])];
@@ -600,7 +661,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
           },
         };
       })
-    : scoped;
+    : foreignScoped;
 
   // Per-cycle suppression: a finding whose representative OR any member signature
   // the agent already rejected (reviewer_was_wrong) earlier this cycle is demoted
@@ -800,12 +861,50 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : repScoped;
 
+  // Slice D (P5) — docs severity cap. A CRITICAL whose FILE classifies as "docs" is
+  // over-severity (a stale doc is not a security/data-loss bug). Cap to WARN via demoteOneStep
+  // (→ WARN + demoted_from_critical, G0-safe: stays SOFT-PASS-blocking + decision-required,
+  // never auto-hidden). EXEMPT when touchesSecurityOrCorrectness (representative OR any merged
+  // member) — a markdown file can hold a leaked secret / dangerous command. classify() checks
+  // tests BEFORE docs, so a *.md fixture under tests/ is "tests", not "docs", and is untouched.
+  // Fires BEFORE the verdict loop so a capped docs finding no longer trips the singleton
+  // reviewersTotal<=1 hard-FAIL; the sec/corr exemption preserves that path for dangerous docs.
+  const docsScoped: Finding[] =
+    input.capDocsSeverity === true
+      ? testScoped.map((f) => {
+          if (f.severity !== "CRITICAL") return f;
+          if (classify(f.file) !== "docs") return f;
+          if (touchesSecurityOrCorrectness(f)) return f;
+          const demoted = demoteOneStep(f); // CRITICAL → WARN (+ demoted_from_critical)
+          if (demoted.severity !== "WARN") return f; // defensive: only ever a one-step cap
+          const note =
+            "\n\n↓ docs/markdown file — capped CRITICAL→WARN (a stale doc is not a security/data-loss bug); kept blocking pending your decision.";
+          return {
+            ...f,
+            severity: "WARN" as const,
+            docs_severity_capped: true,
+            ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : testScoped;
+
+  // Slice C (P4) — render-only honest framing for a lone uncorroborated CRITICAL. It STILL
+  // hard-FAILs in the verdict loop below (PR#22 unchanged); the badge just tells the agent to
+  // verify the cited code itself. Stamped on the POST-demote set so a finding the
+  // confidence-floor already clamped to WARN (no longer CRITICAL) is never tagged.
+  const loneTagged: Finding[] = docsScoped.map((f) =>
+    isLoneUncorroboratedCritical(f, input.reviewersTotal)
+      ? { ...f, lone_critical_uncorroborated: true }
+      : f,
+  );
+
   let critical = 0;
   let warn = 0;
   let info = 0;
   let fail = false;
   let warnFail = false;
-  for (const f of testScoped) {
+  for (const f of loneTagged) {
     if (f.severity === "CRITICAL") {
       critical++;
       if (touchesSecurityOrCorrectness(f)) {
@@ -856,7 +955,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // numbers its own findings from F-001, so without this two distinct findings
   // could share an id — and the decisions-gate keys on finding_id, so a single
   // decision would wrongly satisfy both. Unique ids keep the gate sound.
-  const renumbered = testScoped.map((f, i) => ({
+  const renumbered = loneTagged.map((f, i) => ({
     ...f,
     id: `F-${String(i + 1).padStart(3, "0")}`,
   }));

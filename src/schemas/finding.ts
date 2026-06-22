@@ -96,6 +96,23 @@ export const FindingSchema = z.object({
   // weak password in a fixture is not a production vulnerability. Only category "security"
   // is demoted; correctness/other on a test file stay blocking. Advisory, non-blocking.
   test_severity_demoted: z.boolean().optional(),
+  // Slice D (P5, field report 2026-06-22): set true when the aggregator CAPPED a CRITICAL
+  // finding to WARN because its FILE classifies as "docs" (a stale doc is over-severity, not
+  // a security/data-loss bug). Capped to WARN (NOT INFO) so it stays SOFT-PASS-blocking +
+  // decision-required (G0); carries demoted_from_critical. security/correctness on a doc
+  // (a leaked secret / dangerous command in markdown) is EXEMPT and stays CRITICAL.
+  docs_severity_capped: z.boolean().optional(),
+  // Slice C (P4, field report 2026-06-22): set true when a CRITICAL is the ONLY (singleton,
+  // uncorroborated) blocking opinion on a single-reviewer panel AND is NOT security/correctness.
+  // Render-only honest framing — the verdict is UNCHANGED (it still hard-FAILs, PR#22); the
+  // badge tells the agent to verify the cited code itself before fix/reject.
+  lone_critical_uncorroborated: z.boolean().optional(),
+  // Slice A (P1, field report 2026-06-22): set true when the aggregator demoted this finding to
+  // INFO because its file is FOREIGN to this session (provably not authored by it — see the
+  // baseline-delta ownership model). Structural scope demote (like scope_demoted), NOT a value
+  // judgment: goes to INFO, never sets demoted_from_critical, G0-EXEMPT. Persisted in
+  // pending.json as the ownership snapshot the out-of-scope decision gate reads (no live re-derive).
+  foreign_to_session: z.boolean().optional(),
   // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).

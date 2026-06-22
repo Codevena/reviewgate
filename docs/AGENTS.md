@@ -141,6 +141,35 @@ use it instead of a dishonest `reviewer_was_wrong` when the reviewer was not act
 {"schema":"reviewgate.decision.v1","finding_id":"F-003","verdict":"accepted","action":"verified-not-applicable","reason":"Checked prod DB: the feature-flag override row is true/100, so the code default never applies here."}
 ```
 
+**Out-of-scope — `"out-of-scope"`** (the honest **"not mine"** disposition). Use it when a
+finding is on a file **this session did not author** — e.g. a parallel agent's uncommitted
+work, or pre-existing dirty state, in a shared checkout. The reviewer may be perfectly right;
+it simply isn't your code to touch. It REQUIRES a `reason` ≥ 20 characters (why the file isn't
+yours / who owns it). It is **reputation-neutral** (no `correct`/`wrong` event) and is **not** a
+false-positive claim — so it never punishes a correct reviewer the way a dishonest
+`reviewer_was_wrong` would, and never pressures you to overreach into another agent's code.
+
+It is accepted **only** for a finding Reviewgate has flagged as foreign (badged **👥 on a file
+this session did not edit** in `pending.md`); on a finding on your OWN code it is rejected and
+the finding stays blocking (you cannot out-of-scope your own work). In the default config,
+foreign findings are already demoted to **advisory** and don't block at all — so you usually
+won't need this; it exists for repos that keep foreign security/correctness findings blocking
+(`outOfDiffBlocking`). When the gate escalates with reason **`findings-out-of-scope`**, it means
+the remaining blocking findings are all foreign: you were right not to edit them — surface them
+to the human / owning agent.
+
+```json
+{"schema":"reviewgate.decision.v1","finding_id":"F-004","verdict":"accepted","action":"out-of-scope","reason":"This file is the parallel SEO-sitemap agent's uncommitted work; not my change to touch."}
+```
+
+> **Multi-agent shared checkout / `/clear`:** ownership is captured at **SessionStart** (the
+> working-tree-dirty baseline, per `session_id`). If you `/clear` (or start a fresh session)
+> with your OWN uncommitted edits still in the tree, those files become the new session's
+> baseline and — if you never touch them again — read as `👥 foreign` (advisory, never a
+> silent block). To avoid that, **commit or finish your work before `/clear`** in a shared
+> checkout, or just re-touch the file. For true isolation, give each agent its own
+> `git worktree` (each `reviewgate init`'d).
+
 **Rejected (the reviewer is wrong):**
 
 ```json
