@@ -251,6 +251,23 @@ export function computeSessionAttributableFiles(
   }
 }
 
+// S2: stamp per-finding `session_attributable` (file ∈ the attributable diff-file set) and derive
+// the report-level `wholeDiffAttributable` (the set is already ∩ diff, so any member means the
+// session has skin in the diff). Report-only metadata — NEVER changes severity (unlike the foreign
+// demote). `file` is normalizeRepoPath-canonicalized before the membership test, matching the
+// attributable set's own canonicalization (R1). Generic over the finding shape to avoid a Finding
+// import cycle.
+export function stampSessionAttribution<T extends { file: string }>(
+  findings: T[],
+  attributable: Set<string>,
+): { findings: Array<T & { session_attributable: boolean }>; wholeDiffAttributable: boolean } {
+  const stamped = findings.map((f) => ({
+    ...f,
+    session_attributable: attributable.has(normalizeRepoPath(f.file)),
+  }));
+  return { findings: stamped, wholeDiffAttributable: attributable.size > 0 };
+}
+
 // Remove session manifests older than the TTL (best-effort, by created_at). Called from
 // SessionStart so the dir self-trims; never touches another session's still-fresh manifest.
 export function pruneOldSessionManifests(repoRoot: string, nowMs: number): void {

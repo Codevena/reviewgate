@@ -101,6 +101,7 @@ import { ReputationStore } from "./reputation/store.ts";
 import { tagUncitedRuleClaims } from "./rule-citation.ts";
 import { buildRunSummary } from "./run-summary.ts";
 import { demoteSelfRefuting } from "./self-refutation.ts";
+import { computeSessionAttributableFiles, stampSessionAttribution } from "./session-manifest.ts";
 
 // Persist the SSRF fetcher's per-attempt egress log (Gate 9) to the hash-chained
 // audit trail — one `brain.egress` event per fetch attempt (allow or deny, with
@@ -174,6 +175,12 @@ export interface OrchestratorInput {
   // not tool-owned). Findings on these demote to advisory INFO in the aggregator. Folded into
   // the review cache key so a scoped result can't be served to a differently-scoped run (M3).
   foreignFiles?: Set<string> | null;
+  // S2 (field report 2026-06-23): the session_id + working-tree-dirty snapshot the gate captured,
+  // so the orchestrator can compute the SOUND uncommitted-attribution set (owned ∪ baseline-net-
+  // changed ∪ dirty-now-not-baseline) ONCE over its facts.files (the exact reviewed diff-file list)
+  // and stamp session_attributable + whole_diff_attributable into the report. null (single-agent /
+  // scoping off / no session_id / dirtyNow snapshot failed) → flags omitted → disown unavailable.
+  attribution?: { sessionId: string; dirtyNow: string[] } | null;
 }
 
 export interface IterationResult {
@@ -1934,6 +1941,26 @@ export class Orchestrator {
       );
     }
 
+    // S2 (field report 2026-06-23): stamp per-finding session_attributable + the report-level
+    // whole_diff_attributable from the SOUND uncommitted-attribution set, computed ONCE here over
+    // facts.files (the exact reviewed diff-file list — Plan-Gate C6: NOT in gate.ts, which has no
+    // parsed file list). Report-only metadata — never touches the verdict/counts/cache. The
+    // decisions-gate reads these persisted flags to gate the out-of-session honest handoff (no live
+    // re-derive). Absent attribution (single-agent / scoping off / one-shot) → flags omitted →
+    // whole_diff_attributable absent → reader treats as TRUE → disown unavailable (fail-closed).
+    let wholeDiffAttributable: boolean | undefined;
+    if (this.input.attribution && this.input.reportMode !== "one-shot") {
+      const attributable = computeSessionAttributableFiles(
+        repo,
+        this.input.attribution.sessionId,
+        facts.files.map((f) => f.path),
+        this.input.attribution.dirtyNow,
+      );
+      const stamped = stampSessionAttribution(reportFindings, attributable);
+      reportFindings = stamped.findings;
+      wholeDiffAttributable = stamped.wholeDiffAttributable;
+    }
+
     await this.writeReport(
       opts,
       start,
@@ -1948,6 +1975,7 @@ export class Orchestrator {
       // not a code-review CRITICAL. riskClass "docs" requires facts.docOnly (a mixed docs+code
       // diff is "default"), so this never relaxes the framing on a commit that touches code.
       triage.riskClass === "docs",
+      wholeDiffAttributable,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2325,6 +2353,11 @@ export class Orchestrator {
     panelNote?: string,
     fpFragmentation?: FpFragmentation[],
     docsReview = false,
+    // S2: persisted ONLY on the main aggregate path. The other writeReport sites (ERROR / early-PASS
+    // / deterministic-FAIL / cache-hit-PASS / zero-ok) omit it → absent → the decisions-gate reader
+    // treats absent as TRUE → disown unavailable (fail-closed: a PASS has no blockers to disown, an
+    // ERROR/deterministic-FAIL must not be disownable).
+    wholeDiffAttributable?: boolean,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -2374,6 +2407,9 @@ export class Orchestrator {
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),
         ...(docsReview ? { docs_review: true } : {}),
+        ...(wholeDiffAttributable !== undefined
+          ? { whole_diff_attributable: wholeDiffAttributable }
+          : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

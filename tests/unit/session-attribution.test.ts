@@ -16,6 +16,7 @@ import {
   captureSessionBaseline,
   computeSessionAttributableFiles,
   recordSessionOwned,
+  stampSessionAttribution,
 } from "../../src/core/session-manifest.ts";
 
 function tmpRepo(): string {
@@ -44,15 +45,15 @@ describe("computeSessionAttributableFiles (S2)", () => {
     await captureSessionBaseline(repo, "s", new Date().toISOString());
 
     // byte-identical to baseline → a parallel agent's untouched dirty work → NOT attributable
-    expect(
-      computeSessionAttributableFiles(repo, "s", ["pre.ts"], ["pre.ts"]).has("pre.ts"),
-    ).toBe(false);
+    expect(computeSessionAttributableFiles(repo, "s", ["pre.ts"], ["pre.ts"]).has("pre.ts")).toBe(
+      false,
+    );
 
     // now the session net-changes it → attributable
     writeFileSync(join(repo, "pre.ts"), "v2 changed by us\n");
-    expect(
-      computeSessionAttributableFiles(repo, "s", ["pre.ts"], ["pre.ts"]).has("pre.ts"),
-    ).toBe(true);
+    expect(computeSessionAttributableFiles(repo, "s", ["pre.ts"], ["pre.ts"]).has("pre.ts")).toBe(
+      true,
+    );
   });
 
   test("a dirty-now file NOT in the baseline (created/first-touched this session) is attributable", async () => {
@@ -82,6 +83,28 @@ describe("computeSessionAttributableFiles (S2)", () => {
     const repo = tmpRepo();
     const set = computeSessionAttributableFiles(repo, "", ["a.ts"], []);
     expect(set.has("a.ts")).toBe(true);
+  });
+
+  test("stampSessionAttribution stamps per-finding flag + whole_diff_attributable", () => {
+    const findings = [
+      { file: "mine.ts", id: "F1" },
+      { file: "theirs.ts", id: "F2" },
+    ];
+    const out = stampSessionAttribution(findings, new Set(["mine.ts"]));
+    expect(out.findings.find((f) => f.id === "F1")?.session_attributable).toBe(true);
+    expect(out.findings.find((f) => f.id === "F2")?.session_attributable).toBe(false);
+    expect(out.wholeDiffAttributable).toBe(true);
+  });
+
+  test("stampSessionAttribution: empty attributable set → whole_diff_attributable false, all findings false", () => {
+    const out = stampSessionAttribution([{ file: "theirs.ts" }], new Set<string>());
+    expect(out.wholeDiffAttributable).toBe(false);
+    expect(out.findings[0]?.session_attributable).toBe(false);
+  });
+
+  test("stampSessionAttribution normalizes finding.file before membership (R1)", () => {
+    const out = stampSessionAttribution([{ file: "./mine.ts" }], new Set(["mine.ts"]));
+    expect(out.findings[0]?.session_attributable).toBe(true);
   });
 
   test("R1: an OWNED file is attributable even when diff/dirty paths arrive un-normalized", async () => {
