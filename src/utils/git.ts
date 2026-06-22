@@ -63,6 +63,14 @@ export const DIFF_INCOMPLETE_MARKER =
 // aggregator instead (off-diff harness findings demoted; see scopeFindings).
 const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/i;
 
+// P6 (field report 2026-06-22): the user's DoD scratch dir `.review/` (codex/agy prompt +
+// findings files, `rm -rf`'d before commit). In a repo that doesn't gitignore it, these
+// transient files entered the reviewed diff AND the cache key and got reviewed (F-001/F-002
+// in the field report were on `.review/plan-gate-*`). Excluded at ANY depth like the
+// antigravity artifact. Matched as a DOTDIR boundary so it never catches `review-notes.md`
+// or `docs/reviews/…` (over-broad-match guard).
+const REVIEW_SCRATCH = /(^|\/)\.review(\/|$)/i;
+
 // The git-pathspec form of the same exclusion set isExcludedFromReview() applies
 // to path strings. Defined ONCE here so collectDiff and collectChangedFileContents
 // can't drift apart: adding a new reviewgate-managed / agy-artifact dir means
@@ -73,6 +81,12 @@ export const EXCLUDE_PATHSPEC = [
   ":(exclude)reviewgate.config.ts",
   ":(exclude).reviewgate",
   ":(exclude).reviewgate/**",
+  // P6: the user's DoD scratch dir — see REVIEW_SCRATCH. Mirror this set in
+  // isExcludedFromReview (the untracked side) exactly (shared-source invariant).
+  ":(exclude).review",
+  ":(exclude).review/**",
+  ":(exclude)**/.review",
+  ":(exclude)**/.review/**",
   ":(exclude).antigravitycli",
   ":(exclude).antigravitycli/**",
   ":(exclude)**/.antigravitycli",
@@ -84,6 +98,7 @@ export function isExcludedFromReview(path: string): boolean {
     path === "reviewgate.config.ts" ||
     path === ".reviewgate" ||
     path.startsWith(".reviewgate/") ||
+    REVIEW_SCRATCH.test(path) ||
     ANTIGRAVITY_ARTIFACT.test(path)
   );
 }
