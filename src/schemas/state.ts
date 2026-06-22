@@ -39,6 +39,13 @@ export const EscalationReason = z.enum([
   // decisions-unaddressed framing. Only reached when foreign findings are kept BLOCKING (the
   // outOfDiffBlocking opt-in); by default Slice A demotes them to advisory and this never fires.
   "findings-out-of-scope",
+  // S2 (field report 2026-06-23): the agent honestly disowned the whole change-set as NOT its
+  // session's work — the COMMITTED-foreign case (a parallel agent's already-merged commits that
+  // entered this session's reviewed diff in a shared checkout, which P2's byte-identity baseline
+  // can't tag foreign_to_session). Reached ONLY when the session produced zero attributable
+  // (uncommitted) work in the diff (whole_diff_attributable=false). ALLOW-STOP + non-accusatory
+  // ESCALATION.md (never a faked PASS, never re-arms) — the honest "escalate + pause" handoff.
+  "session-disowned",
 ]);
 export type EscalationReason = z.infer<typeof EscalationReason>;
 

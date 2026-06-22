@@ -134,6 +134,37 @@ describe("DecisionEntrySchema", () => {
     ).toThrow();
   });
 
+  it("accepts the S2 'out-of-session' action WITH a >= 20-char reason", () => {
+    const d: DecisionEntry = {
+      schema: "reviewgate.decision.v1",
+      finding_id: "F-030",
+      verdict: "accepted",
+      action: "out-of-session",
+      reason: "Whole change-set is the parallel SEO agent's committed work; not my session's.",
+    };
+    expect(() => DecisionEntrySchema.parse(d)).not.toThrow();
+  });
+
+  it("rejects 'out-of-session' with NO reason and with a whitespace-only reason (fail-closed)", () => {
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-031",
+        verdict: "accepted",
+        action: "out-of-session",
+      }),
+    ).toThrow();
+    expect(() =>
+      DecisionEntrySchema.parse({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-032",
+        verdict: "accepted",
+        action: "out-of-session",
+        reason: " ".repeat(25),
+      }),
+    ).toThrow();
+  });
+
   it("rejects a rejection with a whitespace-only reason (20 spaces must not pin an FP)", () => {
     expect(() =>
       DecisionEntrySchema.parse({

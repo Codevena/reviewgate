@@ -33,6 +33,14 @@ export const PendingReportSchema = z.object({
     }),
   ),
   findings: z.array(FindingSchema),
+  // S2 (field report 2026-06-23): true iff the reviewed diff contains at least one file this
+  // session is responsible for (the attributable ∩ diff set is non-empty). The load-bearing
+  // whole-diff guard for the out-of-session honest handoff: the agent may disown the change-set
+  // ONLY when this is false (the session produced zero uncommitted work in the diff). ABSENT is
+  // read as TRUE by the decisions-gate (fail-closed: disown unavailable) — note the INVERTED
+  // polarity vs the per-finding flags. Omitted on single-agent / scoping-off / non-main writeReport
+  // paths (cache-hit/ERROR/early-PASS), all of which correctly disable disown.
+  whole_diff_attributable: z.boolean().optional(),
   // Slice C: a human/agent-visible note when the reviewer panel was degraded this
   // cycle (reviewers quarantined, or all-quarantined → full panel ran anyway).
   panel_note: z.string().optional(),
