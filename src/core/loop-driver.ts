@@ -500,6 +500,11 @@ export interface DecisionsGate {
   addressed: boolean;
   missing: string[]; // required ids with no valid decision line
   invalid: string[]; // human-readable per-line reasons a present line was rejected
+  // S2: ≥1 blocking finding was addressed via an accepted "out-of-session" disown. Since that
+  // action is accepted ONLY when the WHOLE diff is non-attributable, it means the agent honestly
+  // disowned a parallel agent's committed work — the loop must ESCALATE (release + ESCALATION.md)
+  // rather than re-review, or the un-demoted committed-foreign findings re-surface and loop.
+  disowned: boolean;
 }
 
 // Evaluate the decisions file against the required finding ids. Beyond the
@@ -520,6 +525,8 @@ export function evaluateDecisions(
   // (NOT parsed back out of the human-readable `invalid` strings) so a future
   // wording change to a reason can never silently mis-attribute an id.
   const invalidIds = new Set<string>();
+  // S2: ids accepted via an "out-of-session" disown (drives the session-disowned escalation).
+  const disownedIds = new Set<string>();
   // Guard the read: an existing-but-unreadable file (or one replaced between
   // existsSync and here) leaves `seen` empty → every required id reads as missing →
   // the gate fails CLOSED (blocks), the safe direction, rather than throwing into
@@ -671,6 +678,9 @@ export function evaluateDecisions(
           continue;
         }
       }
+      if (res.data.verdict === "accepted" && res.data.action === "out-of-session") {
+        disownedIds.add(res.data.finding_id);
+      }
       seen.add(res.data.finding_id);
       continue;
     }
@@ -690,7 +700,12 @@ export function evaluateDecisions(
   // Only report a required id as missing when no VALID line addressed it, and it
   // wasn't already flagged as invalid above (so the agent sees one reason per id).
   const missing = requiredIds.filter((id) => !seen.has(id) && !invalidIds.has(id));
-  return { addressed: requiredIds.every((id) => seen.has(id)), missing, invalid };
+  return {
+    addressed: requiredIds.every((id) => seen.has(id)),
+    missing,
+    invalid,
+    disowned: disownedIds.size > 0,
+  };
 }
 
 // A compact panel breakdown for the block message — severity counts + which
@@ -1337,6 +1352,19 @@ export class LoopDriver {
           kind: "block",
           reason: `🔴 Reviewgate · GATE CLOSED — iteration ${state.iteration} · findings not yet addressed in .reviewgate/decisions/${state.iteration}.jsonl. For each finding ID, append a line with verdict=accepted (action:"fixed") OR verdict=rejected (reason:"…" ≥20 chars, reviewer_was_wrong:true).${oosHint}${detail ? ` ${detail}` : ""}`,
         };
+      }
+
+      // S2: the agent disowned blocking findings via out-of-session (accepted ONLY when the WHOLE
+      // diff is non-attributable — provably a parallel agent's committed work). Committed-foreign
+      // findings are NOT demoted, so re-reviewing would re-surface them and loop; instead escalate
+      // the honest handoff ONCE (release + ESCALATION.md, never a faked PASS), like
+      // findings-out-of-scope. Reached only when the gate is otherwise satisfied (addressed).
+      if (gate.disowned) {
+        return this.escalateAndDecide(
+          state,
+          "session-disowned",
+          `Iteration ${state.iteration}'s blocking findings were honestly disowned as a parallel agent's committed work (out-of-session); this session produced nothing in the change-set. Left for the human / owning agent.`,
+        );
       }
 
       // Precision metric (telemetry only): emit one decision.applied audit event per
