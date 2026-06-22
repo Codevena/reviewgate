@@ -62,12 +62,15 @@ export async function learnReputationFromDecisions(input: {
     // author; the reviewer may be perfectly right, but the agent neither confirmed a defect in
     // its OWN work nor rejected the finding. Crediting "correct" would let an agent inflate a
     // noisy reviewer's trust by out-of-scoping foreign findings (reputation poisoning, M6).
+    // S2: "out-of-session" is NEUTRAL for the same reason — the finding is on a parallel agent's
+    // committed work the session disowned; no defect in its OWN code was confirmed or rejected.
     // Every OTHER accepted action credits (F-023).
     if (
       d.verdict === "accepted" &&
       d.action !== "acknowledged-low-value" &&
       d.action !== "verified-not-applicable" &&
-      d.action !== "out-of-scope"
+      d.action !== "out-of-scope" &&
+      d.action !== "out-of-session"
     )
       outcome = "correct";
     else if (d.verdict === "rejected" && d.reviewer_was_wrong === true) outcome = "wrong";

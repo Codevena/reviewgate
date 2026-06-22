@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { REVIEW_PROMPT_PREAMBLE } from "../../src/core/orchestrator.ts";
+import { DOC_REVIEW_PROMPT_PREAMBLE, REVIEW_PROMPT_PREAMBLE } from "../../src/core/orchestrator.ts";
 
 // S7 (hammihan F-001): the reviewer flagged an UNTRACKED working-tree migration as
 // "committed in the diff / breaks the deploy" — a confident-wrong CRITICAL. The diff is
@@ -18,5 +18,14 @@ describe("review prompt git-context (S7)", () => {
     expect(p).toContain("premise");
     expect(p).toContain("imported collaborator");
     expect(p).toContain("lower your confidence");
+  });
+
+  it("S3: warns that a referenced/sibling artifact may RESOLVE a concern seen in isolation", () => {
+    for (const preamble of [REVIEW_PROMPT_PREAMBLE, DOC_REVIEW_PROMPT_PREAMBLE]) {
+      const p = preamble.toLowerCase();
+      expect(p).toContain("resolve");
+      expect(p).toContain("referenced");
+      expect(p).toContain("lower your confidence");
+    }
   });
 });

@@ -29,6 +29,15 @@ const Accepted = Base.extend({
   // finding is flagged `foreign_to_session` (Slice A's ownership snapshot) — so it can never be
   // used to wave away a finding on the agent's OWN code (fail-CLOSED without that flag). It is
   // reputation-NEUTRAL (excluded in reputation/learn.ts) and never pins an FP.
+  // S2 (field report 2026-06-23): "out-of-session" is the honest "this whole change-set is not my
+  // session's work" disposition for the COMMITTED-foreign case — a parallel agent's already-merged
+  // commits that entered this session's reviewed diff in a shared checkout (which P2's byte-identity
+  // baseline can NOT tag foreign_to_session, because committed files were never working-tree-dirty).
+  // The decisions-gate accepts it ONLY when the finding is NOT session-attributable AND the WHOLE
+  // diff has zero session-attributable files (the session produced no uncommitted work) — so it can
+  // never wave away a finding on the agent's OWN live work. It ALWAYS routes a human ESCALATION
+  // (session-disowned, ALLOW_STOP) — it never fakes a PASS. REQUIRES a `reason` >= 20 (union
+  // superRefine below). reputation-NEUTRAL (excluded in reputation/learn.ts) and never pins an FP.
   action: z.enum([
     "fixed",
     "addressed-elsewhere",
@@ -36,6 +45,7 @@ const Accepted = Base.extend({
     "acknowledged-low-value",
     "verified-not-applicable",
     "out-of-scope",
+    "out-of-session",
   ]),
   // Optional in the branch shape; REQUIRED (>= 20) only for "verified-not-applicable" via the
   // union superRefine. (A superRefine returns a ZodEffects, which z.discriminatedUnion's raw
@@ -76,6 +86,18 @@ export const DecisionEntrySchema = z
           path: ["reason"],
           message:
             "out-of-scope requires a reason of >= 20 non-whitespace chars (why this file is not yours / who owns it)",
+        });
+      }
+    }
+    // S2: out-of-session must carry a substantive reason (>= 20 non-whitespace chars) naming why the
+    // whole change-set isn't this session's work — a bare disposition must not release the turn.
+    if (d.verdict === "accepted" && d.action === "out-of-session") {
+      if (typeof d.reason !== "string" || d.reason.trim().length < 20) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["reason"],
+          message:
+            "out-of-session requires a reason of >= 20 non-whitespace chars (why this whole change-set is not your session's work)",
         });
       }
     }

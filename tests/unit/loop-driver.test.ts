@@ -206,6 +206,149 @@ describe("LoopDriver", () => {
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
   });
 
+  it("S2: routes to session-disowned (allow_stop) for committed-foreign findings when whole_diff_attributable is false", async () => {
+    // stop_hook_active=true + a blocking finding that is NOT foreign_to_session (committed work, so
+    // P1's byte-identity baseline never tagged it) but IS session_attributable:false, AND the whole
+    // diff has zero attributable files. The agent honestly disowned a parallel agent's committed
+    // work → allow the stop via the non-accusatory session-disowned ESCALATION (never a faked pass).
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDISOWN");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [{ id: "F-001", severity: "CRITICAL", session_attributable: false }],
+        whole_diff_attributable: false,
+      }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+    expect(decision.reason).toMatch(/session-disowned/);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("S2: an accepted out-of-session decision escalates session-disowned (no re-review loop)", async () => {
+    // The agent explicitly disowns the committed-foreign finding via an out-of-session decision.
+    // Since committed-foreign findings are NOT demoted, re-reviewing would re-surface them and loop;
+    // instead the gate escalates the honest handoff ONCE (allow_stop + ESCALATION.md).
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQDISOWN2");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-001",
+            signature: "sig-F-001",
+            severity: "CRITICAL",
+            category: "security",
+            rule_id: "r",
+            file: "seo-spec.ts",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "codex", model: "x", persona: "security" },
+            confidence: 0.9,
+            consensus: "singleton",
+            session_attributable: false,
+          },
+        ],
+        whole_diff_attributable: false,
+      }),
+    );
+    mkdirSync(dirname(decisionsPath(repo, 1)), { recursive: true });
+    writeFileSync(
+      decisionsPath(repo, 1),
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-001",
+        verdict: "accepted",
+        action: "out-of-session",
+        reason: "Entire change-set is the parallel SEO agent's committed work; not my session's.",
+      })}\n`,
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+    expect(decision.reason).toMatch(/session-disowned/);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(true);
+  });
+
+  it("S2: a committed-foreign finding does NOT route to session-disowned when whole_diff_attributable is true (mixed diff)", async () => {
+    // Same finding, but the session HAS skin in the diff (whole_diff_attributable:true) → it must
+    // NOT be allowed to disown → the firm decisions-unaddressed block (it has its own work here).
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQMIXED");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [{ id: "F-001", severity: "CRITICAL", session_attributable: false }],
+        whole_diff_attributable: true,
+      }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+    });
+    const decision = await driver.run();
+    expect(decision.reason).toMatch(/decisions-unaddressed/);
+  });
+
   it("P3: an OWNED unaddressed finding still uses the firm decisions-unaddressed escalation", async () => {
     // Same setup but the finding is NOT foreign → it is the agent's own code → the firm path.
     const repo = fakeRepo();

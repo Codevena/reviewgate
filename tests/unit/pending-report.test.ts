@@ -46,6 +46,31 @@ describe("PendingReportSchema", () => {
     expect(() => PendingReportSchema.parse(r)).not.toThrow();
   });
 
+  it("accepts an optional top-level whole_diff_attributable and defaults to absent (S2)", () => {
+    const base = {
+      schema: "reviewgate.pending.v1" as const,
+      run_id: "x",
+      iter: 1,
+      max_iter: 3,
+      verdict: "PASS" as const,
+      counts: { critical: 0, warn: 0, info: 0 },
+      reviewers: [],
+      findings: [],
+      cost_usd_total: 0,
+      duration_ms_total: 0,
+      generated_at: "x",
+      git: { sha: "x", branch: "x", dirty_files: [] },
+    };
+    expect(
+      PendingReportSchema.parse({ ...base, whole_diff_attributable: false })
+        .whole_diff_attributable,
+    ).toBe(false);
+    expect(
+      PendingReportSchema.parse({ ...base, whole_diff_attributable: true }).whole_diff_attributable,
+    ).toBe(true);
+    expect(PendingReportSchema.parse(base).whole_diff_attributable).toBeUndefined();
+  });
+
   it("rejects verdict outside the allowed set", () => {
     expect(() =>
       PendingReportSchema.parse({

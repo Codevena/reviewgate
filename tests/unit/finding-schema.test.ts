@@ -49,6 +49,18 @@ describe("FindingSchema demoted_from_critical (G0)", () => {
   });
 });
 
+describe("FindingSchema session_attributable (S2)", () => {
+  it("accepts session_attributable:false/true and defaults to absent", () => {
+    expect(FindingSchema.parse({ ...base, session_attributable: false }).session_attributable).toBe(
+      false,
+    );
+    expect(FindingSchema.parse({ ...base, session_attributable: true }).session_attributable).toBe(
+      true,
+    );
+    expect(FindingSchema.parse(base).session_attributable).toBeUndefined();
+  });
+});
+
 describe("claimed_fixed_recurred tag", () => {
   it("accepts an optional { iter } tag with a positive iter", () => {
     const f = FindingSchema.parse({ ...base, claimed_fixed_recurred: { iter: 2 } });

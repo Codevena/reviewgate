@@ -28,6 +28,7 @@ export const REVIEW_OUTPUT_SCHEMA = {
           "message",
           "details",
           "confidence",
+          "evidence_line",
         ],
         properties: {
           severity: { type: "string", enum: ["CRITICAL", "WARN", "INFO"] },
@@ -53,6 +54,11 @@ export const REVIEW_OUTPUT_SCHEMA = {
           message: { type: "string" },
           details: { type: "string" },
           confidence: { type: "number" },
+          // S4 (field report 2026-06-23): the exact source line the finding relies on, verbatim, or
+          // null if the deciding line/artifact was not provided to the reviewer. RENDER-ONLY: a
+          // deterministic cross-check (fact-check.ts) badges a CLEAR mismatch vs the working-tree
+          // line; it never changes severity. Nullable per strict-mode (express optional via type).
+          evidence_line: { type: ["string", "null"] },
         },
       },
     },
@@ -117,6 +123,7 @@ export interface ReviewFinding {
   message: string;
   details: string;
   confidence: number;
+  evidence_line?: string | null;
 }
 
 // Reviewer-submitted (pre-enrichment) proposal shape. Mirrors MemoryProposalSchema
@@ -282,6 +289,11 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       reviewer: { provider: ctx.provider, model: ctx.model, persona: ctx.persona },
       confidence: typeof cf.confidence === "number" ? Math.min(1, Math.max(0, cf.confidence)) : 0.7,
       consensus: "singleton" as const,
+      // S4: carry the reviewer's self-quoted evidence line (capped) when it sent a real string;
+      // a null/absent/non-string value is simply omitted (back-compat — no badge, full-strength gate).
+      ...(typeof cf.evidence_line === "string" && cf.evidence_line.length > 0
+        ? { evidence_line: cf.evidence_line.slice(0, 500) }
+        : {}),
     };
     const parsed = FindingSchema.safeParse(candidate);
     if (parsed.success) result.push(parsed.data);

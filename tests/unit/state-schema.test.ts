@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ReviewgateStateSchema, initialState } from "../../src/schemas/state.ts";
+import { EscalationReason, ReviewgateStateSchema, initialState } from "../../src/schemas/state.ts";
 
 describe("decisions_emitted_through_iter", () => {
   it("defaults to 0 for back-compat state.json", () => {
@@ -54,5 +54,11 @@ describe("claimed_fixed_signatures field", () => {
     expect(() =>
       ReviewgateStateSchema.parse({ ...initialState("x"), claimed_fixed_signatures: { sig: 0 } }),
     ).toThrow();
+  });
+});
+
+describe("EscalationReason (S2)", () => {
+  it("accepts the session-disowned reason", () => {
+    expect(EscalationReason.parse("session-disowned")).toBe("session-disowned");
   });
 });

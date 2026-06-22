@@ -113,6 +113,22 @@ export const FindingSchema = z.object({
   // judgment: goes to INFO, never sets demoted_from_critical, G0-EXEMPT. Persisted in
   // pending.json as the ownership snapshot the out-of-scope decision gate reads (no live re-derive).
   foreign_to_session: z.boolean().optional(),
+  // S2 (field report 2026-06-23): true when this finding's file IS attributable to this session
+  // (owned ∪ baseline-net-changed ∪ dirty-now-not-baseline — the SOUND uncommitted-work set);
+  // false when it is NOT (a parallel agent's committed work, or pre-existing dirty the session
+  // never touched). Stamped server-side by the aggregator from the attributable set computed once
+  // over facts.files, persisted as the snapshot the out-of-session decision gate reads (no live
+  // re-derive). Absent (single-agent / scoping off) → treated as attributable (fail-closed: disown
+  // unavailable). NEVER changes severity — purely an ownership tag, unlike foreign_to_session.
+  session_attributable: z.boolean().optional(),
+  // S4 (field report 2026-06-23): the exact source line the reviewer self-attests it relied on,
+  // verbatim (capped). RENDER-ONLY: fact-check badges a CLEAR mismatch vs the working-tree line.
+  // Never changes severity.
+  evidence_line: z.string().optional(),
+  // S4: set true (render-only) when the reviewer's quoted evidence_line matches NO line in the cited
+  // file — a strong signal it reasoned on stale/absent/fabricated context. Advisory badge ONLY; the
+  // verdict/severity are untouched (a moved line still present elsewhere does NOT trip it).
+  evidence_mismatch: z.boolean().optional(),
   // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).

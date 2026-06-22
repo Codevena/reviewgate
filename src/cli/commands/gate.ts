@@ -33,6 +33,7 @@ import {
   isAncestor,
   mergeBase,
   mergeBaseUpstream,
+  workingTreeDirtyFiles,
 } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
@@ -70,6 +71,10 @@ interface ReviewContext {
   // empty baseline / synthesized-flag review) → full review (fail-closed). Folded into the
   // review cache key so a scoped result can't be served to a differently-scoped run.
   foreignFiles?: Set<string> | null;
+  // S2 (field report 2026-06-23): the session_id + working-tree-dirty snapshot for the orchestrator
+  // to compute the sound uncommitted-attribution set over facts.files. null when scoping is off, no
+  // session_id, or the dirtyNow snapshot failed (→ no attribution → out-of-session disown unavailable).
+  attribution?: { sessionId: string; dirtyNow: string[] } | null;
 }
 
 // Everything produced by the pre-loop setup phase, bundled so it can be computed
@@ -573,6 +578,7 @@ export async function gatherReviewContext(
   // → null = full review (fail-closed). Committed/HEAD-advanced files are never in the
   // working-tree baseline → never foreign, so the synthesized-diff paths are safe unchanged.
   let foreignFiles: Set<string> | null = null;
+  let attribution: { sessionId: string; dirtyNow: string[] } | null = null;
   if (scopeToSession) {
     try {
       const parsedForScope = parseHookStdin(input.hookStdinRaw) as { session_id?: unknown } | null;
@@ -581,9 +587,22 @@ export async function gatherReviewContext(
       if (sessionId) {
         const set = computeForeignFiles(input.repoRoot, sessionId);
         if (set.size > 0) foreignFiles = set;
+        // S2: snapshot the working-tree-dirty set so the orchestrator can compute the SOUND
+        // uncommitted-attribution set over its facts.files. A dirtyNow snapshot FAILURE is
+        // fail-CLOSED for attribution: without it we can't prove which files the session has
+        // uncommitted skin in, so we disable the out-of-session disown entirely (attribution=null
+        // → whole_diff_attributable absent → disown unavailable) rather than risk an empty
+        // dirtyNow making the agent's own Bash-edited-but-uncommitted file look disownable.
+        try {
+          const dirtyNow = await workingTreeDirtyFiles(input.repoRoot);
+          attribution = { sessionId, dirtyNow };
+        } catch {
+          attribution = null;
+        }
       }
     } catch {
       foreignFiles = null; // any failure → no scoping → full review (fail-closed)
+      attribution = null;
     }
   }
   return {
@@ -593,6 +612,7 @@ export async function gatherReviewContext(
     diffIncomplete: dirtyFlagUnparsed,
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
     foreignFiles,
+    attribution,
   };
 }
 
@@ -649,7 +669,7 @@ async function runStopGate(
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
   const { host, adapters, ctx } = setup;
-  const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles } = ctx;
+  const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles, attribution } = ctx;
   // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
   // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
   // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never
@@ -686,6 +706,8 @@ async function runStopGate(
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
     // Slice A (P1): files this session did not author → demoted to advisory in the aggregator.
     ...(foreignFiles ? { foreignFiles } : {}),
+    // S2: session_id + dirtyNow snapshot → orchestrator stamps session_attributable / whole_diff_attributable.
+    ...(attribution ? { attribution } : {}),
   });
 
   const driver = new LoopDriver({

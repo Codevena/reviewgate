@@ -85,6 +85,12 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "📜 asserts a project/house rule without a file:line citation — verify the rule exists",
     );
+  // S4 (field report 2026-06-23): the reviewer's self-quoted evidence line is not in the cited file
+  // → likely reasoned on stale/absent context (the moot lone-CRITICAL class). Render-only advisory.
+  if (f.evidence_mismatch)
+    badges.push(
+      "🔎 the line this finding cites as evidence is not present in the file — likely reasoned on stale or absent context; verify the cited code yourself before acting",
+    );
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
   if (f.fp_cluster_match?.suppressed)
@@ -577,7 +583,12 @@ export class ReportWriter {
             "- These findings are on files the reporting session did NOT author (a parallel agent's / pre-existing uncommitted work in a shared checkout). The agent correctly declined to edit foreign code — route them to the owning agent/session, or review them yourself.",
             "- To avoid this in multi-agent runs, isolate work per `git worktree` (each its own `reviewgate init`), or keep foreign findings advisory (the default `outOfDiffBlocking: []`).",
           ]
-        : []),
+        : input.reasonCode === "session-disowned"
+          ? [
+              "- These findings are on a parallel agent's COMMITTED work that entered the reporting session's reviewed diff in a shared checkout; the reporting session produced NO work in this change-set, so it honestly disowned it (the gate did not fake a pass). Route them to the owning agent/session, or review them yourself.",
+              "- This is the committed-foreign analog of the worktree blind spot: to avoid it in multi-agent runs, isolate each agent in its own `git worktree` (each its own `reviewgate init`) so one session's commits never enter another's review base.",
+            ]
+          : []),
       "- Review the listed findings yourself before committing.",
       "- To make a finding a sticky known-false-positive: find its id with `reviewgate fp list`, then `reviewgate fp pin --id <FP-id>`.",
       "- If the panel diverges from your intent systematically, edit `reviewgate.config.ts` (e.g. adjust reviewers/personas) and run `reviewgate doctor` to validate.",

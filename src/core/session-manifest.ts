@@ -198,6 +198,76 @@ export function computeForeignFiles(repoRoot: string, sessionId: string): Set<st
   return foreign;
 }
 
+// S2 (field report 2026-06-23): the subset of `diffFiles` this session is RESPONSIBLE for, using
+// ONLY sound UNCOMMITTED signals — owned (tool-edited) ∪ baseline keys whose content CHANGED since
+// SessionStart ∪ dirty-now files NOT in the baseline (created/first-touched this session). A file
+// the session has uncommitted skin in is ALWAYS attributable, so the out-of-session honest handoff
+// can never disown the agent's own live work. Committed work is NEVER attributable here (it is not a
+// working-tree signal) — the intended asymmetry: committed-foreign is handled by escalation, not
+// demotion. FAIL-CLOSED: no session_id / no manifest / any error → returns ALL diffFiles (everything
+// attributable → disown unavailable). R1: every path (diffFiles, dirtyNow, owned, baseline keys) is
+// normalizeRepoPath-canonicalized so a raw git dirty path can't dodge the membership test — identical
+// canonicalization to the aggregator's `foreignFiles.has(normalizeRepoPath(f.file))`.
+export function computeSessionAttributableFiles(
+  repoRoot: string,
+  sessionId: string,
+  diffFiles: string[],
+  dirtyNow: string[],
+): Set<string> {
+  const normDiff = diffFiles.map((f) => normalizeRepoPath(f)).filter((f) => f.length > 0);
+  const allAttributable = (): Set<string> => new Set(normDiff);
+  if (!sessionId) return allAttributable();
+  try {
+    const m = readSessionManifest(repoRoot, sessionId);
+    if (!m) return allAttributable();
+    const owned = new Set(m.owned.map((p) => normalizeRepoPath(p)));
+    const dirty = new Set(dirtyNow.map((p) => normalizeRepoPath(p)));
+    // normalized baseline key -> { hash, original key } (read via the original on-disk relative key).
+    const baseline = new Map<string, { hash: string; rel: string }>();
+    for (const [rel, hash] of Object.entries(m.baseline)) {
+      baseline.set(normalizeRepoPath(rel), { hash, rel });
+    }
+    const attributable = new Set<string>();
+    for (const f of normDiff) {
+      if (owned.has(f)) {
+        attributable.add(f);
+        continue;
+      }
+      const b = baseline.get(f);
+      if (b) {
+        // baseline-net-changed: attributable iff content differs from the SessionStart snapshot.
+        // Unreadable now (gone/oversize/binary) → can't prove byte-identity → assume the session may
+        // have changed it → attributable (fail-closed).
+        const content = safeReadContained(repoRoot, b.rel, MAX_BASELINE_FILE_BYTES);
+        if (content === null || hashContent(content) !== b.hash) attributable.add(f);
+        continue;
+      }
+      // Dirty now but NEVER in the baseline → created / first-touched this session.
+      if (dirty.has(f)) attributable.add(f);
+    }
+    return attributable;
+  } catch {
+    return allAttributable();
+  }
+}
+
+// S2: stamp per-finding `session_attributable` (file ∈ the attributable diff-file set) and derive
+// the report-level `wholeDiffAttributable` (the set is already ∩ diff, so any member means the
+// session has skin in the diff). Report-only metadata — NEVER changes severity (unlike the foreign
+// demote). `file` is normalizeRepoPath-canonicalized before the membership test, matching the
+// attributable set's own canonicalization (R1). Generic over the finding shape to avoid a Finding
+// import cycle.
+export function stampSessionAttribution<T extends { file: string }>(
+  findings: T[],
+  attributable: Set<string>,
+): { findings: Array<T & { session_attributable: boolean }>; wholeDiffAttributable: boolean } {
+  const stamped = findings.map((f) => ({
+    ...f,
+    session_attributable: attributable.has(normalizeRepoPath(f.file)),
+  }));
+  return { findings: stamped, wholeDiffAttributable: attributable.size > 0 };
+}
+
 // Remove session manifests older than the TTL (best-effort, by created_at). Called from
 // SessionStart so the dir self-trims; never touches another session's still-fresh manifest.
 export function pruneOldSessionManifests(repoRoot: string, nowMs: number): void {

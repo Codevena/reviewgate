@@ -1,6 +1,8 @@
 import { constants, closeSync, fstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
+import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { Finding } from "../schemas/finding.ts";
+import { safeReadContained } from "../utils/safe-read.ts";
 
 // Deterministic finding fact-check — no LLM, no network. Two independent production
 // field reports hit the same trust-killer: a single reviewer emitted a 0.97/1.00
@@ -115,5 +117,41 @@ export function validateFindingFacts(
     if (f.line_start <= lines) return f; // cited line exists → real finding, untouched
     const note = `\n\n[reviewgate fact-check] cited location ${file}:${f.line_start} does not exist in the working tree (file has ${lines} line${lines === 1 ? "" : "s"}) — almost certainly hallucinated; demoted to advisory. Verify before treating as real.`;
     return demote(f, note);
+  });
+}
+
+// S4 (field report 2026-06-23): cap a single quoted line; bound the read like validateFindingFacts.
+const MAX_EVIDENCE_READ_BYTES = 5_000_000;
+
+// Normalize a source line for a forgiving, injection-safe comparison: defang any reviewer-supplied
+// fence/marker (the quote is untrusted text), then collapse whitespace and trim. Whitespace-only
+// differences (tabs vs spaces, indentation) must NEVER read as a mismatch (precision-first).
+function normalizeLine(s: string): string {
+  return neutralizeFences(neutralizeInjectionMarkers(s)).replace(/\s+/g, " ").trim();
+}
+
+// S4: RENDER-ONLY evidence attestation. When a finding self-quotes the source line it relied on
+// (evidence_line), badge `evidence_mismatch` ONLY when that quote matches NO line of the cited file
+// — a strong signal the reviewer reasoned on stale/absent/fabricated context (the moot lone-CRITICAL
+// the field report hit, made without the resolving artifact). It NEVER changes severity. Fail-SAFE
+// at every gap: no evidence_line, empty-after-normalize quote, unreadable/oversize file, line out of
+// range, an exact match at the cited line, OR a match at ANY other line (a moved/deleted pre-image
+// the agent relocated) → NO badge. So a badge means: the reviewer quoted a line that is simply not in
+// the file. Pure + synchronous; reuses the O_NOFOLLOW-contained reader.
+export function attestEvidence(findings: Finding[], repoRoot: string): Finding[] {
+  return findings.map((f) => {
+    const ev = typeof f.evidence_line === "string" ? f.evidence_line : null;
+    if (ev === null || ev.length === 0) return f;
+    if (!f.file || f.file === "." || f.line_start < 1) return f;
+    const content = safeReadContained(repoRoot, f.file, MAX_EVIDENCE_READ_BYTES);
+    if (content === null) return f; // unreadable / oversize / escapes repo → fail-safe (no badge)
+    const evN = normalizeLine(ev);
+    if (evN.length === 0) return f; // quote was only whitespace/markers → no signal
+    const lines = content.split("\n");
+    const cited = lines[f.line_start - 1];
+    if (cited === undefined) return f; // out of range → validateFindingFacts owns the phantom case
+    if (normalizeLine(cited) === evN) return f; // quote matches the cited line → good evidence
+    if (lines.some((l) => normalizeLine(l) === evN)) return f; // matches elsewhere → moved, ambiguous
+    return { ...f, evidence_mismatch: true }; // matches NO line → stale/absent/fabricated context
   });
 }
