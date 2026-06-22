@@ -55,7 +55,20 @@ export function findingBadges(f: Finding): string | null {
       "⬇ was CRITICAL, one-step-demoted — decide before passing (don't reflexively acknowledge)",
     );
   if (f.scope_demoted) badges.push("📍 outside changed lines");
+  // Slice A (P1): on a file this session did not author — advisory (parallel agent / pre-existing).
+  if (f.foreign_to_session)
+    badges.push(
+      "👥 on a file this session did not edit (parallel agent / pre-existing) — advisory; if it truly isn't yours, record an out-of-scope decision",
+    );
   if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
+  // Slice D (P5): a CRITICAL on a docs/markdown file capped to WARN (stale doc ≠ data-loss bug).
+  if (f.docs_severity_capped)
+    badges.push("📝 docs file — capped CRITICAL→WARN; still decide before passing");
+  // Slice C (P4): a lone uncorroborated CRITICAL — honest framing, NOT a downgrade (still blocks).
+  if (f.lone_critical_uncorroborated)
+    badges.push(
+      "🚧 lone CRITICAL — single reviewer, uncorroborated; verify the cited code yourself, then fix (action:fixed) or reject (reviewer_was_wrong) with a concrete reason",
+    );
   if (f.redaction_demoted)
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",

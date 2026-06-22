@@ -107,6 +107,15 @@ export const ConfigSchema = z.object({
       // INFO (advisory) — a mocked secret in a fixture isn't a prod vuln. Default ON via
       // defaults.ts. Set false for repos that ship production code under a tests/ path.
       demoteTestSecurity: z.boolean().optional(),
+      // Slice D (P5, field report 2026-06-22): cap a CRITICAL on a docs/markdown file to WARN
+      // (a stale doc is over-severity). security/correctness on a doc stay CRITICAL (a leaked
+      // secret / dangerous command). Default ON via defaults.ts. Set false to let docs hard-FAIL.
+      capDocsSeverity: z.boolean().optional(),
+      // Slice A (P1, field report 2026-06-22): demote findings on files this session did NOT
+      // author (baseline-delta ownership) to advisory INFO, so a parallel agent's uncommitted
+      // work / pre-existing dirty state doesn't block this session's turn. Fail-CLOSED (full
+      // review) when ownership can't be determined. Default ON via defaults.ts.
+      scopeToSession: z.boolean().optional(),
       // Categories that stay BLOCKING even when the finding's file is not in the
       // diff at ALL (escape hatch for legitimate cross-file impact, e.g. a changed
       // export breaking an untouched caller). Default [] — every out-of-diff

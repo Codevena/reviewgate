@@ -1823,6 +1823,7 @@ export class Orchestrator {
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       demoteCorrectness: repCfg?.demoteCorrectness ?? true,
       demoteTestSecurity: this.input.config.phases.review.demoteTestSecurity ?? true,
+      capDocsSeverity: this.input.config.phases.review.capDocsSeverity ?? true,
       ...(criticMap ? { critic: criticMap } : {}),
       ...(fpActive ? { fpActive } : {}),
       ...(fpActiveClusters ? { fpActiveClusters } : {}),
