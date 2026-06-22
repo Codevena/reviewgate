@@ -5,7 +5,7 @@ import {
   judgeGrounding,
   parseGroundingOutput,
 } from "../../src/core/grounding.ts";
-import type { Finding } from "../../src/schemas/finding.ts";
+import { type Finding, FindingSchema } from "../../src/schemas/finding.ts";
 
 function mk(over: Partial<Finding> = {}): Finding {
   return {
@@ -191,6 +191,27 @@ describe("grounding judge (S6 layer 2)", () => {
     );
     expect(out[0]?.severity).toBe("WARN");
     expect(out[0]?.demoted_from_critical).toBe(true);
+  });
+
+  it("caps details at 2000 even with a very long (untrusted) judge reason — no schema overflow", () => {
+    // v.reason is untrusted LLM output with no length cap. A pathological reason must not push
+    // the appended note past FindingSchema's 2000-char details ceiling (a negative slice would
+    // otherwise yield over-length details → safeParse rejects the finding → it silently vanishes).
+    const longReason = "x".repeat(5000);
+    const out = applyGroundingJudgeVerdicts(
+      [
+        mk({
+          signature: "s1",
+          severity: "CRITICAL",
+          category: "quality",
+          details: "y".repeat(1990),
+        }),
+      ],
+      new Map([["s1", { grounded: false, reason: longReason }]]),
+    );
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.details.length ?? 0).toBeLessThanOrEqual(2000);
+    expect(() => FindingSchema.parse(out[0])).not.toThrow();
   });
 
   it("applyGroundingJudgeVerdicts keeps grounded CRITICALs and findings absent from the map", () => {
