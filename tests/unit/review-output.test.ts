@@ -20,6 +20,7 @@ describe("review-output", () => {
       "message",
       "details",
       "confidence",
+      "evidence_line",
     ]);
     expect(items.additionalProperties).toBe(false);
     // line_end is strict-mode optional → nullable type, not omitted from required.

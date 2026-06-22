@@ -61,7 +61,7 @@ import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { runChecks } from "./checks/runner.ts";
 import { type CriticVerdict, runCritic } from "./critic.ts";
-import { validateFindingFacts } from "./fact-check.ts";
+import { attestEvidence, validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
 import {
@@ -294,6 +294,12 @@ export const REVIEW_PROMPT_PREAMBLE = [
   "to you) may already RESOLVE a concern that looks open in isolation. If that deciding artifact was",
   "provided, verify against it before raising the finding; if it was NOT provided, lower your confidence",
   "and severity rather than asserting the premise as fact.",
+  // S4 (field report 2026-06-23): the reviewer self-attests the exact line it relied on, so a moot
+  // finding made without the deciding context is visible. evidence_line is REQUIRED in the output.
+  "For every CRITICAL or WARN finding, set evidence_line to the EXACT line of provided source you rely",
+  "on (verbatim — the single most load-bearing line). If the deciding line/artifact was NOT provided to",
+  "you, set evidence_line to null and lower your confidence rather than asserting a blocking finding you",
+  "cannot quote. For INFO findings evidence_line may be null.",
 ].join("\n");
 
 export const DOC_REVIEW_PROMPT_PREAMBLE = [
@@ -318,6 +324,10 @@ export const DOC_REVIEW_PROMPT_PREAMBLE = [
   "to you) may already RESOLVE a concern that looks open in isolation. If that deciding artifact was",
   "provided, verify against it before raising the finding; if it was NOT provided, lower your confidence",
   "and severity rather than asserting the premise as fact.",
+  // S4: self-attest the relied-upon line (evidence_line is REQUIRED in the output).
+  "For every CRITICAL or WARN finding, set evidence_line to the EXACT line of provided source/spec you",
+  "rely on (verbatim). If the deciding line/artifact was NOT provided to you, set evidence_line to null",
+  "and lower your confidence rather than asserting a blocking finding you cannot quote.",
 ].join("\n");
 
 // M6: per-request timeout for a single Context7 search/context call (NOT the
@@ -1953,6 +1963,14 @@ export class Orchestrator {
       reportFindings = reportFindings.map((f) =>
         touchedFiles.has(f.file) ? f : { ...f, stable_code: true },
       );
+    }
+
+    // S4 (field report 2026-06-23): RENDER-ONLY evidence attestation — badge a finding whose self-
+    // quoted evidence_line matches NO line of the cited file (reasoned on stale/absent context). Never
+    // changes severity; runs on the report set only (not one-shot, whose synthetic diff has no cited
+    // working-tree file). The good spec singletons (which quote a real line) are untouched.
+    if (this.input.reportMode !== "one-shot") {
+      reportFindings = attestEvidence(reportFindings, repo);
     }
 
     // S2 (field report 2026-06-23): stamp per-finding session_attributable + the report-level

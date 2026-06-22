@@ -121,6 +121,14 @@ export const FindingSchema = z.object({
   // re-derive). Absent (single-agent / scoping off) → treated as attributable (fail-closed: disown
   // unavailable). NEVER changes severity — purely an ownership tag, unlike foreign_to_session.
   session_attributable: z.boolean().optional(),
+  // S4 (field report 2026-06-23): the exact source line the reviewer self-attests it relied on,
+  // verbatim (capped). RENDER-ONLY: fact-check badges a CLEAR mismatch vs the working-tree line.
+  // Never changes severity.
+  evidence_line: z.string().optional(),
+  // S4: set true (render-only) when the reviewer's quoted evidence_line matches NO line in the cited
+  // file — a strong signal it reasoned on stale/absent/fabricated context. Advisory badge ONLY; the
+  // verdict/severity are untouched (a moved line still present elsewhere does NOT trip it).
+  evidence_mismatch: z.boolean().optional(),
   // Phase 4 #7: set true when the aggregator demoted this finding to INFO because
   // its reviewer-reported confidence fell below the configured floor AND it wasn't
   // corroborated by other reviewers (advisory, non-blocking).

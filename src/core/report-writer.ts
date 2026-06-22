@@ -85,6 +85,12 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "📜 asserts a project/house rule without a file:line citation — verify the rule exists",
     );
+  // S4 (field report 2026-06-23): the reviewer's self-quoted evidence line is not in the cited file
+  // → likely reasoned on stale/absent context (the moot lone-CRITICAL class). Render-only advisory.
+  if (f.evidence_mismatch)
+    badges.push(
+      "🔎 the line this finding cites as evidence is not present in the file — likely reasoned on stale or absent context; verify the cited code yourself before acting",
+    );
   if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
   if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
   if (f.fp_cluster_match?.suppressed)
