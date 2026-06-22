@@ -162,6 +162,14 @@ to the human / owning agent.
 {"schema":"reviewgate.decision.v1","finding_id":"F-004","verdict":"accepted","action":"out-of-scope","reason":"This file is the parallel SEO-sitemap agent's uncommitted work; not my change to touch."}
 ```
 
+> **Multi-agent shared checkout / `/clear`:** ownership is captured at **SessionStart** (the
+> working-tree-dirty baseline, per `session_id`). If you `/clear` (or start a fresh session)
+> with your OWN uncommitted edits still in the tree, those files become the new session's
+> baseline and — if you never touch them again — read as `👥 foreign` (advisory, never a
+> silent block). To avoid that, **commit or finish your work before `/clear`** in a shared
+> checkout, or just re-touch the file. For true isolation, give each agent its own
+> `git worktree` (each `reviewgate init`'d).
+
 **Rejected (the reviewer is wrong):**
 
 ```json

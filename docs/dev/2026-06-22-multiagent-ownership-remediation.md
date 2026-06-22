@@ -57,6 +57,19 @@ S5/S6/S8 test polish). **Slices A/B redesigned** to close 5 CRITICAL + 5 WARN fa
 - **S1** the manifest demote is STRUCTURAL (like off-diff): → INFO, NO `demoted_from_critical`,
   G0-EXEMPT (foreign = out of scope, not a value judgment).
 
+### Post-implementation DoD outcome (2026-06-22, adversarial opus panel + per-finding verify)
+
+**PASS** — 3 reviewers + adversarial verification, zero confirmed CRITICAL/WARN. All must-fixes
+(M1–M10, S1, G0) verified closed in the committed code; tsc + lint clean; suite 2103/0.
+Two plan deviations were reviewed and accepted as **inert / safe**:
+- **M9 (`consecutive_out_of_scope` cap) intentionally NOT implemented** — `findings-out-of-scope`
+  is in `ALLOW_STOP_ESCALATIONS` and allow-stops on first occurrence, so there is no unbounded
+  re-block loop for a cap to bound (it would be dead code, along with its two-site reset).
+- **M4 belt (disable scoping on synthesized-flag paths) NOT added** — committed/HEAD-advanced
+  files are never working-tree-dirty at SessionStart → never in the baseline → never foreign, so
+  the structural guarantee already covers it; the only contrived demote (revert-to-exact-baseline-
+  bytes) is the SAFE direction. The `/clear`-reclassifies-own-work edge is documented in AGENTS.md.
+
 ## Prime directive (every slice)
 
 Nothing may let a real CRITICAL slip **silently**. Every scope/severity change is
