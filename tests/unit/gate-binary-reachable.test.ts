@@ -31,13 +31,44 @@ describe("init generates a PATH-resilient, fail-closed gate shim", () => {
     expect(shim).toContain("RG_BIN=''");
   });
 
-  it("the gate shim also fails closed if exec itself fails (post-exec block)", async () => {
+  it("the gate shim also fails closed if the binary can't run on this host (wrong arch / 126/127)", async () => {
     const repo = tmpRepo();
     await runInit({ repoRoot: repo, mode: "agent-loop" });
     const shim = readFileSync(join(repo, ".reviewgate", "bin", "gate"), "utf8");
-    expect(shim).toContain("could not exec it"); // post-exec fail-closed fallback
-    // two block decisions: (1) nothing resolved, (2) resolved but exec failed
+    expect(shim).toContain("could not run it on this host"); // 126/127 fail-closed block
+    // two block decisions: (1) nothing resolved, (2) resolved but can't run on this host
     expect(shim.match(/"decision":"block"/g)?.length).toBe(2);
+  });
+
+  it("gate shim FAILS CLOSED (not fail-open) when the binary is +x but un-runnable (ENOEXEC / wrong arch → exit 126)", async () => {
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+
+    // Create a file that is executable (+x) but NOT a valid program on this host.
+    // Writing raw non-ELF, non-Mach-O bytes ensures the kernel returns ENOEXEC,
+    // which bash translates to exit 126.
+    const badBin = join(repo, "fake-reviewgate");
+    writeFileSync(badBin, Buffer.from([0x00, 0x01, 0x02, 0xff]));
+    chmodSync(badBin, 0o755);
+
+    // Overwrite the shim with __REVIEWGATE_BIN__ substituted to our bad binary.
+    const template = readFileSync(join(import.meta.dirname, "../../bin-templates/gate.sh"), "utf8");
+    const shimContent = template.replace("__REVIEWGATE_BIN__", shSingleQuote(badBin));
+    writeFileSync(join(repo, ".reviewgate", "bin", "gate"), shimContent, { mode: 0o755 });
+
+    // Run the shim with stdin closed (mimics Claude Code's Stop hook invocation).
+    const proc = Bun.spawnSync(["bash", join(repo, ".reviewgate", "bin", "gate")], {
+      stdin: null,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const stdout = new TextDecoder().decode(proc.stdout);
+    // Must exit 0 (a block decision, not an unhandled error exit).
+    expect(proc.exitCode).toBe(0);
+    // Must emit a block decision so Claude Code is not silently allowed to stop.
+    expect(stdout).toContain('"decision":"block"');
+    expect(stdout).toContain("could not run it on this host");
   });
 
   it("trigger/reset shims are best-effort (exit 0 on unresolved, never block)", async () => {

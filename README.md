@@ -270,6 +270,20 @@ wizard instead of hand-writing the config:
 reviewgate setup       # interactive configuration wizard
 ```
 
+### Option C — npm (`npm i -g reviewgate`)
+
+```bash
+npm i -g reviewgate     # installs only your platform's prebuilt binary
+reviewgate init         # arm the gate in the current repo
+reviewgate doctor       # health-check
+```
+
+A global install is recommended for the persistent Stop gate, because `reviewgate init`
+bakes the binary's absolute path into the hook. `npx reviewgate init` works for a quick
+try, but the binary lives in an ephemeral npx cache that may be garbage-collected — `init`
+warns when it detects this. Supported: macOS and Linux (glibc) on arm64/x64; on other
+platforms use Option A or B.
+
 ---
 
 ## Quick start

@@ -8,6 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
 // POSIX single-quote escaping for the binary path interpolated into the shim's
 // `RG_BIN='<here>'`. The path comes from process.execPath, which can sit at an
@@ -18,8 +20,51 @@ import { basename, dirname, join } from "node:path";
 export function shSingleQuote(value: string): string {
   return value.replace(/'/g, "'\\''");
 }
-import { fileURLToPath } from "node:url";
-import { writeFileAtomic } from "../../utils/atomic-write.ts";
+
+// Ephemeral package-manager caches: a binary here is GC-able, so a baked path into it
+// can later vanish and make the Stop gate fail closed. We still bake it (it works now)
+// but warn. Covers npx, npm cacache, pnpm/yarn/bun `dlx`, and any OS-temp extraction.
+const EPHEMERAL_BIN_MARKERS = ["/_npx/", "/_cacache/", "/dlx-", "/.bun/install/cache/", "/bunx-"];
+const TEMP_ROOTS = [
+  "/tmp/",
+  "/private/tmp/",
+  "/private/var/folders/",
+  "/var/folders/",
+  "/var/tmp/",
+];
+function isEphemeralBinPath(p: string): boolean {
+  return EPHEMERAL_BIN_MARKERS.some((m) => p.includes(m)) || TEMP_ROOTS.some((r) => p.includes(r));
+}
+
+// Decide what absolute binary path to bake into the hook shims, given the path of the
+// binary that ran `init`. The launcher SPAWNS the compiled binary, so under an npm
+// install process.execPath is the platform binary (basename "reviewgate"), not node —
+// the same regex that gates the curl|sh and dev cases handles npm with no extra branch.
+export function resolveBakedBin(execPath: string): { bakedBin: string; warning: string | null } {
+  if (!/reviewgate/i.test(basename(execPath))) return { bakedBin: "", warning: null };
+  if (isEphemeralBinPath(execPath)) {
+    return {
+      bakedBin: execPath,
+      warning:
+        "the reviewgate binary is in an ephemeral cache (npx/dlx/temp) and may be garbage-collected, " +
+        "which would make the Stop gate fail closed. For a durable gate, install it with " +
+        "`npm i -g reviewgate` (or as a project devDependency) and re-run `reviewgate init`.",
+    };
+  }
+  return { bakedBin: execPath, warning: null };
+}
+
+// Render the 4 hook shims with the baked path. Extracted from runInit so a stale→new
+// re-bake (e.g. user moves from curl|sh to npm) is unit-testable; each call fully
+// overwrites the shim, so the previous RG_BIN can never linger.
+export function writeShims(binDir: string, tplDir: string, bakedBin: string): void {
+  for (const name of ["trigger", "gate", "reset", "pre-push"]) {
+    const tpl = readFileSync(join(tplDir, `${name}.sh`), "utf8");
+    const dst = join(binDir, name);
+    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(shSingleQuote(bakedBin)));
+    chmodSync(dst, 0o755);
+  }
+}
 
 const HOOKS_TEMPLATE = {
   PostToolUse: [
@@ -238,15 +283,9 @@ export async function runInit(
   // gate). Only bake a real reviewgate binary: under `bun run dev` execPath is the
   // bun runtime, not a usable `reviewgate`, so leave it empty and let the shim
   // fall back to PATH (and, for the gate, FAIL CLOSED if nothing resolves).
-  const bakedBin = /reviewgate/i.test(basename(process.execPath)) ? process.execPath : "";
-  for (const name of ["trigger", "gate", "reset", "pre-push"]) {
-    const src = join(tplDir, `${name}.sh`);
-    const dst = join(binDir, name);
-    const tpl = readFileSync(src, "utf8");
-    // Shell-escape: the shim assigns RG_BIN='<this>' — see shSingleQuote.
-    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(shSingleQuote(bakedBin)));
-    chmodSync(dst, 0o755);
-  }
+  const { bakedBin, warning: bakedWarning } = resolveBakedBin(process.execPath);
+  if (bakedWarning) console.error(`reviewgate init: WARNING — ${bakedWarning}`);
+  writeShims(binDir, tplDir, bakedBin);
 
   // 2. Merge hooks into .claude/settings.json
   const settingsDir = join(input.repoRoot, ".claude");

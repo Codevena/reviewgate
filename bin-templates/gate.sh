@@ -15,9 +15,15 @@ if [ -z "$RG_BIN" ]; then
   printf '%s\n' '{"decision":"block","reason":"Reviewgate could not run the Stop gate: the reviewgate binary is not on PATH and no baked path resolved. Failing CLOSED so unreviewed changes are not silently allowed. Fix: put the reviewgate binary on PATH (or re-run `reviewgate init` with it installed), then run `reviewgate doctor`."}'
   exit 0
 fi
-exec "$RG_BIN" gate --hook stop
-# Reached ONLY if exec failed (RG_BIN resolved but isn't a runnable binary on this
-# host — stale path, wrong arch, bad interpreter). Fail CLOSED rather than let bash
-# exit non-zero with empty stdout, which Claude Code reads as "allow stop".
-printf '%s\n' '{"decision":"block","reason":"Reviewgate resolved a binary but could not exec it (not runnable on this host). Failing closed; run `reviewgate doctor`."}'
-exit 0
+# Run the gate (NOT `exec`): if RG_BIN resolves to a file that can't actually run on
+# this host (wrong arch → ENOEXEC → exit 126, bad interpreter, or vanished → 127),
+# `exec` would replace bash and die with EMPTY stdout — which Claude Code reads as
+# "allow stop", a silent fail-OPEN. Running it as a child lets us catch 126/127 and
+# emit a fail-CLOSED block instead. Normal runs pass the gate's stdout + exit code through.
+"$RG_BIN" gate --hook stop
+rc=$?
+if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+  printf '%s\n' '{"decision":"block","reason":"Reviewgate resolved a binary but could not run it on this host (wrong architecture / bad interpreter / not executable). Failing CLOSED so unreviewed changes are not silently allowed. Re-run `reviewgate init` with the correct binary for this machine, then `reviewgate doctor`."}'
+  exit 0
+fi
+exit "$rc"
