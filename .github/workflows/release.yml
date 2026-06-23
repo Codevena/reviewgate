@@ -137,19 +137,22 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          field() { node -e "process.stdout.write(require(require('node:path').resolve(process.argv[1],'package.json'))[process.argv[2]])" "$1" "$2"; }
-          # npm versions are immutable; skip any package whose exact version already exists
-          # so a re-pushed tag or a partial-publish re-run completes instead of aborting.
+          # Idempotent publish — a re-pushed tag / partial-publish re-run must SKIP versions that
+          # already exist (npm versions are immutable) instead of aborting. We rely on the
+          # AUTHORITATIVE write-path response (the 403 "cannot publish over previously published"),
+          # NOT `npm view`: the registry's CDN has read-after-write lag, so `npm view pkg@newver`
+          # can report "not found" minutes after a successful publish → a false re-publish → 403.
+          # "./$d" (not "$d"): a bare "owner/repo"-shaped path like "npm-dist/main" is parsed by npm
+          # as a GitHub-shorthand git dep (→ git ls-remote, fails); "./" forces a local-directory read.
           publish_idem() {
-            d="$1"; name="$(field "$d" name)"; ver="$(field "$d" version)"
-            if npm view "${name}@${ver}" version >/dev/null 2>&1; then
-              echo "skip: ${name}@${ver} already published"
+            d="$1"
+            if out="$(npm publish "./$d" --access public --provenance 2>&1)"; then
+              printf '%s\n' "$out"
+            elif printf '%s\n' "$out" | grep -qiE "cannot publish over|previously published"; then
+              echo "skip: ./$d — this version is already published (idempotent)"
             else
-              # "./$d" (not "$d"): a bare "owner/repo"-shaped path like "npm-dist/main" is
-              # parsed by npm as a GitHub-shorthand git dep (→ git ls-remote, fails). The
-              # leading "./" forces npm to treat it as a local directory. (@codevena/* paths
-              # dodge the shorthand via the "@", but be consistent + safe everywhere.)
-              npm publish "./$d" --access public --provenance
+              printf '%s\n' "$out" >&2
+              return 1
             fi
           }
           # Platform packages MUST go first — main pins them exactly and would otherwise
