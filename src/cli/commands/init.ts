@@ -8,6 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
 // POSIX single-quote escaping for the binary path interpolated into the shim's
 // `RG_BIN='<here>'`. The path comes from process.execPath, which can sit at an
@@ -63,8 +65,6 @@ export function writeShims(binDir: string, tplDir: string, bakedBin: string): vo
     chmodSync(dst, 0o755);
   }
 }
-import { fileURLToPath } from "node:url";
-import { writeFileAtomic } from "../../utils/atomic-write.ts";
 
 const HOOKS_TEMPLATE = {
   PostToolUse: [
