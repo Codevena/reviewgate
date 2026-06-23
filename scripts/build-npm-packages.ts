@@ -70,3 +70,53 @@ export function mainManifest(version: string): Record<string, unknown> {
     files: ["bin"],
   };
 }
+
+// ---- build orchestration (run: bun run scripts/build-npm-packages.ts) ----
+if (import.meta.main) {
+  const { $ } = await import("bun");
+  const { rmSync, mkdirSync, copyFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+
+  const root = process.cwd();
+  const rootPkg = JSON.parse(await Bun.file(join(root, "package.json")).text()) as { version: string };
+  const version = process.env.REVIEWGATE_VERSION ?? rootPkg.version;
+  const onlyCurrent = process.env.REVIEWGATE_BUILD_ONLY_CURRENT === "1";
+  const targets = onlyCurrent
+    ? TARGETS.filter((t) => t.os === process.platform && t.cpu === process.arch)
+    : TARGETS;
+  if (onlyCurrent && targets.length === 0) {
+    throw new Error(`no Reviewgate target matches host ${process.platform}-${process.arch}`);
+  }
+
+  const distRoot = join(root, "npm-dist");
+  rmSync(distRoot, { recursive: true, force: true });
+
+  // grammar + asset sources (same set as `bun run build`)
+  const grammars = [
+    "node_modules/web-tree-sitter/web-tree-sitter.wasm",
+    ...(await Array.fromAsync(new Bun.Glob("node_modules/tree-sitter-typescript/*.wasm").scan({ cwd: root }))).map((p) => join(root, p)),
+    ...(await Array.fromAsync(new Bun.Glob("node_modules/tree-sitter-python/*.wasm").scan({ cwd: root }))).map((p) => join(root, p)),
+  ];
+
+  for (const t of targets) {
+    const dir = join(distRoot, pkgName(t)); // join handles the @scope/name split
+    mkdirSync(join(dir, "grammars"), { recursive: true });
+    mkdirSync(join(dir, "bin-templates"), { recursive: true });
+    console.error(`building ${pkgName(t)} (${t.bunTarget}) …`);
+    // NOTE: outfile is under npm-dist/ ONLY — never dist/ (the live symlinked gate binary).
+    await $`bun build src/cli/index.ts --compile --target=${t.bunTarget} --outfile ${join(dir, "reviewgate")}`.cwd(root);
+    for (const g of grammars) copyFileSync(g, join(dir, "grammars", g.split("/").pop()!));
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
+      copyFileSync(join(root, "bin-templates", sh), join(dir, "bin-templates", sh));
+    }
+    writeFileSync(join(dir, "package.json"), `${JSON.stringify(platformManifest(t, version), null, 2)}\n`);
+  }
+
+  // main package
+  const mainDir = join(distRoot, "main");
+  mkdirSync(join(mainDir, "bin"), { recursive: true });
+  copyFileSync(join(root, "bin", "reviewgate.cjs"), join(mainDir, "bin", "reviewgate.cjs"));
+  writeFileSync(join(mainDir, "package.json"), `${JSON.stringify(mainManifest(version), null, 2)}\n`);
+
+  console.error(`npm-dist/ built @ ${version} (${targets.length} platform package(s) + main).`);
+}

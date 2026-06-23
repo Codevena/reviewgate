@@ -5,6 +5,8 @@ node_modules
 
 # Build
 dist
+npm-dist
+*.tgz
 *.tsbuildinfo
 
 # Reviewgate runtime artifacts (we are reviewgate but still want these gitignored in our own repo)

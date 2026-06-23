@@ -45,6 +45,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests",
     "format": "biome format --write src tests",
+    "build:npm": "bun run scripts/build-npm-packages.ts",
     "self-review": "bun run dev init && bun run dev gate --hook trigger </dev/null && bun run dev gate --hook stop </dev/null"
   },
   "dependencies": {
