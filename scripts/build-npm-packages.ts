@@ -111,7 +111,11 @@ if (import.meta.main) {
     mkdirSync(join(dir, "bin-templates"), { recursive: true });
     console.error(`building ${pkgName(t)} (${t.bunTarget}) …`);
     // NOTE: outfile is under npm-dist/ ONLY — never dist/ (the live symlinked gate binary).
-    await $`bun build src/cli/index.ts --compile --target=${t.bunTarget} --outfile ${join(dir, "reviewgate")}`.cwd(root);
+    // Force NODE_ENV=production so bun's DCE keeps the --version handler even when the
+    // caller (e.g. bun test / some CI environments) sets NODE_ENV=test.
+    await $`bun build src/cli/index.ts --compile --target=${t.bunTarget} --outfile ${join(dir, "reviewgate")}`
+      .cwd(root)
+      .env({ ...process.env, NODE_ENV: "production" });
     for (const g of grammars) copyFileSync(g, join(dir, "grammars", g.split("/").pop()!));
     for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
       copyFileSync(join(root, "bin-templates", sh), join(dir, "bin-templates", sh));
