@@ -74,7 +74,7 @@ export function mainManifest(version: string): Record<string, unknown> {
 // ---- build orchestration (run: bun run scripts/build-npm-packages.ts) ----
 if (import.meta.main) {
   const { $ } = await import("bun");
-  const { rmSync, mkdirSync, copyFileSync, writeFileSync } = await import("node:fs");
+  const { rmSync, mkdirSync, copyFileSync, writeFileSync, readdirSync } = await import("node:fs");
   const { join } = await import("node:path");
 
   const root = process.cwd();
@@ -92,10 +92,17 @@ if (import.meta.main) {
   rmSync(distRoot, { recursive: true, force: true });
 
   // grammar + asset sources (same set as `bun run build`)
+  // Bun installs packages as symlinks (pnpm-style node_modules); Bun.Glob.scan does NOT
+  // traverse symlinked dirs, so it misses the tree-sitter grammars. readdirSync follows
+  // the symlink and lists the real entries.
+  const wasmIn = (rel: string) =>
+    readdirSync(join(root, rel))
+      .filter((f) => f.endsWith(".wasm"))
+      .map((f) => join(root, rel, f));
   const grammars = [
-    "node_modules/web-tree-sitter/web-tree-sitter.wasm",
-    ...(await Array.fromAsync(new Bun.Glob("node_modules/tree-sitter-typescript/*.wasm").scan({ cwd: root }))).map((p) => join(root, p)),
-    ...(await Array.fromAsync(new Bun.Glob("node_modules/tree-sitter-python/*.wasm").scan({ cwd: root }))).map((p) => join(root, p)),
+    ...wasmIn("node_modules/web-tree-sitter"),
+    ...wasmIn("node_modules/tree-sitter-typescript"),
+    ...wasmIn("node_modules/tree-sitter-python"),
   ];
 
   for (const t of targets) {
