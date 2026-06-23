@@ -1,0 +1,78 @@
+name: Release
+
+# Cut a release: push a tag like `v0.1.0-alpha.1` (matched by `v*`). This builds a
+# self-contained tarball per platform and attaches them to the GitHub Release.
+#
+# Why tarballs, not a bare binary: `bun --compile` does NOT embed the tree-sitter
+# `.wasm` grammars (the symbol-graph feature reads them at runtime), and the gate
+# also ships `bin-templates/` + `personas/`. So each asset is a folder —
+# `reviewgate` binary + `grammars/` + `bin-templates/` + `personas/` — gzipped.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub Release + upload assets (first-party GITHUB_TOKEN)
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # Gate the release on the same checks as CI — never ship a binary that fails
+      # its own suite (this is, after all, a review gate).
+      - name: Verify (typecheck · lint · unit tests)
+        run: |
+          bun run typecheck
+          bun run lint
+          bun test tests/unit
+
+      - name: Build per-platform tarballs
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # bun cross-compile target  ->  released os-arch name (all built from this one runner)
+          targets="bun-darwin-arm64:darwin-arm64 bun-darwin-x64:darwin-x64 bun-linux-x64:linux-x64 bun-linux-arm64:linux-arm64"
+          for pair in $targets; do
+            bunt="${pair%%:*}"; name="${pair##*:}"
+            out="reviewgate-${TAG}-${name}"
+            echo "::group::build ${name}"
+            mkdir -p "dist-rel/${out}/grammars" "dist-rel/${out}/bin-templates"
+            bun build src/cli/index.ts --compile --target="${bunt}" --outfile "dist-rel/${out}/reviewgate"
+            cp node_modules/web-tree-sitter/web-tree-sitter.wasm \
+               node_modules/tree-sitter-typescript/*.wasm \
+               node_modules/tree-sitter-python/*.wasm \
+               "dist-rel/${out}/grammars/"
+            cp bin-templates/*.sh "dist-rel/${out}/bin-templates/" || true
+            cp -r src/personas "dist-rel/${out}/personas" || true
+            tar -C dist-rel -czf "${out}.tar.gz" "${out}"
+            sha256sum "${out}.tar.gz" >> SHA256SUMS.txt
+            echo "::endgroup::"
+          done
+          echo "--- SHA256SUMS ---"; cat SHA256SUMS.txt
+
+      - name: Create / update the Release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Pre-1.0 / alpha / beta / rc tags are marked as a pre-release.
+          prerelease=""
+          case "$TAG" in
+            *alpha*|*beta*|*rc*|v0.*) prerelease="--prerelease" ;;
+          esac
+          # Idempotent: create the release only if it doesn't exist yet (re-runs just re-upload).
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $prerelease
+          gh release upload "$TAG" reviewgate-*.tar.gz SHA256SUMS.txt --clobber

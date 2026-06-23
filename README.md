@@ -214,11 +214,29 @@ reviewgate doctor
 
 ## Install
 
+### Option A — download a release binary (fastest)
+
+Grab the tarball for your platform from the
+[Releases](https://github.com/Codevena/reviewgate/releases) page and put the
+binary on your `PATH`. Keep the extracted folder intact — the binary loads its
+sibling `grammars/` (tree-sitter `.wasm`) at runtime:
+
+```bash
+# pick the asset for your os-arch (darwin-arm64 / darwin-x64 / linux-x64 / linux-arm64)
+tar xzf reviewgate-v0.1.0-alpha.1-darwin-arm64.tar.gz
+ln -sf "$PWD/reviewgate-v0.1.0-alpha.1-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
+reviewgate --version
+```
+
+Each release ships a `SHA256SUMS.txt` you can verify against.
+
+### Option B — build from source (contributors / latest `master`)
+
 ```bash
 git clone https://github.com/Codevena/reviewgate.git
 cd reviewgate
 bun install
-bun run build          # produces ./dist/reviewgate (single binary)
+bun run build          # produces ./dist/reviewgate (+ sibling grammars/)
 ```
 
 Then, in the repo you want reviewed:
