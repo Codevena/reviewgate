@@ -27,10 +27,6 @@
     "cli",
     "bun"
   ],
-  "bin": {
-    "reviewgate": "./dist/reviewgate"
-  },
-  "files": ["dist", "bin-templates", "src/personas"],
   "engines": {
     "bun": ">=1.0.0",
     "node": ">=20"
@@ -38,13 +34,13 @@
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate && mkdir -p dist/grammars dist/bin-templates && cp node_modules/web-tree-sitter/web-tree-sitter.wasm node_modules/tree-sitter-typescript/*.wasm node_modules/tree-sitter-python/*.wasm dist/grammars/ && { cp bin-templates/*.sh dist/bin-templates/ 2>/dev/null || true; } && { cp -r src/personas dist/personas 2>/dev/null || true; }",
-    "prepublishOnly": "bun run build && bun run scripts/verify-publish.ts",
     "test": "bun test",
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check src tests",
+    "lint": "biome check src tests bin",
     "format": "biome format --write src tests",
+    "verify:npm": "node --check bin/reviewgate.cjs && bun run scripts/verify-publish.ts",
     "build:npm": "bun run scripts/build-npm-packages.ts",
     "self-review": "bun run dev init && bun run dev gate --hook trigger </dev/null && bun run dev gate --hook stop </dev/null"
   },

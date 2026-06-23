@@ -1,35 +1,82 @@
 // scripts/verify-publish.ts
 //
-// prepublishOnly guard: `npm publish` ships the paths in package.json `files`
-// ["dist", "bin-templates", "src/personas"], but `dist/` is gitignored and only
-// exists after `bun run build`. Without this guard a publish from a clean checkout
-// would ship an EMPTY dist + a dangling `bin` — a broken package. This verifies the
-// compiled binary, the tree-sitter grammars (else the symbol graph is dead in the
-// shipped binary), and the hook templates (else `reviewgate init` throws) are all
-// present before the tarball is built. NOTE: this does NOT make the binary
-// cross-platform/self-contained — that is a separate, larger follow-up.
-import { existsSync } from "node:fs";
+// Publish preflight: validate the generated npm-dist/ set before `npm publish`.
+// Checks the launcher, the four platform packages (non-empty binary + all 4 grammars +
+// shims + os/cpu), that all five versions match, and that the main package pins each
+// platform package at an EXACT version, maps bin correctly, sets engines.node, and
+// declares no runtime dependencies.
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { TARGETS, pkgName } from "./build-npm-packages.ts";
 
-export function verifyDist(root: string): { ok: boolean; missing: string[] } {
-  const missing: string[] = [];
-  const must = (rel: string) => {
-    if (!existsSync(join(root, rel))) missing.push(rel);
+const GRAMMARS = [
+  "web-tree-sitter.wasm",
+  "tree-sitter-typescript.wasm",
+  "tree-sitter-tsx.wasm",
+  "tree-sitter-python.wasm",
+];
+
+export function verifyNpmDist(
+  distRoot: string,
+  opts: { minBinaryBytes?: number } = {},
+): { ok: boolean; errors: string[] } {
+  const minBinaryBytes = opts.minBinaryBytes ?? 1_000_000;
+  const errors: string[] = [];
+  const mainPkgPath = join(distRoot, "main", "package.json");
+  if (!existsSync(mainPkgPath)) return { ok: false, errors: ["main/package.json missing — run `bun run build:npm`"] };
+
+  const main = JSON.parse(readFileSync(mainPkgPath, "utf8")) as {
+    version: string;
+    bin?: Record<string, string>;
+    engines?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+    dependencies?: Record<string, string>;
   };
-  must("dist/reviewgate");
-  must("dist/grammars/web-tree-sitter.wasm");
-  for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
-    must(`dist/bin-templates/${sh}`);
-  return { ok: missing.length === 0, missing };
+  const version = main.version;
+
+  const launcher = join(distRoot, "main", "bin", "reviewgate.cjs");
+  if (!existsSync(launcher)) errors.push("main launcher bin/reviewgate.cjs missing");
+  else if (!readFileSync(launcher, "utf8").startsWith("#!")) errors.push("main launcher missing the node shebang");
+
+  if (main.bin?.reviewgate !== "bin/reviewgate.cjs")
+    errors.push(`main bin.reviewgate must be "bin/reviewgate.cjs" (got ${main.bin?.reviewgate ?? "nothing"})`);
+  if (!main.engines?.node) errors.push("main package must set engines.node");
+  if (main.dependencies && Object.keys(main.dependencies).length > 0)
+    errors.push("main package must declare NO runtime dependencies");
+
+  for (const t of TARGETS) {
+    const name = pkgName(t);
+    const dir = join(distRoot, name);
+    const pj = join(dir, "package.json");
+    if (!existsSync(pj)) {
+      errors.push(`${name}: package.json missing`);
+      continue;
+    }
+    const m = JSON.parse(readFileSync(pj, "utf8")) as { version: string; os?: string[]; cpu?: string[] };
+    if (m.version !== version) errors.push(`${name}: version ${m.version} != main ${version}`);
+    if (JSON.stringify(m.os) !== JSON.stringify([t.os])) errors.push(`${name}: os must be ["${t.os}"]`);
+    if (JSON.stringify(m.cpu) !== JSON.stringify([t.cpu])) errors.push(`${name}: cpu must be ["${t.cpu}"]`);
+    const bin = join(dir, "reviewgate");
+    if (!existsSync(bin)) errors.push(`${name}: binary 'reviewgate' missing`);
+    else if (statSync(bin).size < minBinaryBytes)
+      errors.push(`${name}: binary is too small (${statSync(bin).size} < ${minBinaryBytes}) — empty/failed compile?`);
+    for (const g of GRAMMARS)
+      if (!existsSync(join(dir, "grammars", g))) errors.push(`${name}: grammars/${g} missing`);
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
+      if (!existsSync(join(dir, "bin-templates", sh))) errors.push(`${name}: bin-templates/${sh} missing`);
+    const pin = main.optionalDependencies?.[name];
+    if (pin !== version) errors.push(`${name}: main must pin it EXACTLY at ${version} (got ${pin ?? "nothing"})`);
+  }
+
+  return { ok: errors.length === 0, errors };
 }
 
 if (import.meta.main) {
-  const { ok, missing } = verifyDist(process.cwd());
+  const distRoot = join(process.cwd(), "npm-dist");
+  const { ok, errors } = verifyNpmDist(distRoot);
   if (!ok) {
-    console.error(
-      `prepublishOnly: dist is incomplete — refusing to publish. Missing: ${missing.join(", ")}. Run \`bun run build\` first.`,
-    );
+    console.error(`verify:npm — npm-dist is not publishable:\n  ${errors.join("\n  ")}`);
     process.exit(1);
   }
-  console.error("prepublishOnly: dist verified (binary + grammars + hook templates present).");
+  console.error("verify:npm — npm-dist verified (launcher + 4 platform packages, versions pinned).");
 }
