@@ -243,18 +243,42 @@ reviewgate setup       # interactive configuration wizard
 
 ## Quick start
 
-1. `reviewgate init` in your project.
-2. Use Claude Code as normal. After it edits files and tries to finish a turn,
-   the Stop hook runs the review.
-3. If Codex finds blocking issues, Claude is told to read `.reviewgate/pending.md`
-   and address each finding — it cannot end the turn until it does.
-4. You review the final diff and commit manually. Reviewgate never commits or
+Zero to your first blocked review in ~5 minutes.
+
+1. **Arm the repo.** `reviewgate init` in your project (installs the hooks +
+   writes a starter `reviewgate.config.ts`).
+2. **Get one reviewer working.** You need exactly one to start. Either run the
+   wizard — `reviewgate setup` — or do it by hand:
+   - **Lowest friction (no CLI):** set `OPENROUTER_API_KEY` and add an
+     `openrouter` reviewer to `phases.review.reviewers` (paid per call).
+   - **$0 within your subscription:** install + log in to one OAuth CLI — `codex
+     login`, Claude Code, or the Gemini CLI — they're already in the starter config.
+
+   Then confirm what's actually ready: **`reviewgate doctor`** tells you exactly
+   which reviewers it can reach and what to fix.
+3. **See it work (60-second smoke test) — *before* you trust it in a loop.** Make
+   a deliberately broken change and run the gate by hand:
+
+   ```bash
+   echo 'export const refund = (amt, by) => amt / by;  // div-by-zero, no guard' >> smoke.ts
+   git add smoke.ts
+   reviewgate gate            # reviews `git diff HEAD`
+   cat .reviewgate/pending.md # the findings the panel raised
+   git rm -f smoke.ts
+   ```
+4. **Use Claude Code as normal.** After it edits files and tries to finish a turn,
+   the `Stop` hook runs the review. If a reviewer raises a blocking finding, Claude
+   is told to read `.reviewgate/pending.md` and address each one — it **cannot end
+   the turn** until every finding is fixed or rejected-with-reason.
+5. **You review the final diff and commit manually.** Reviewgate never commits or
    edits code itself; it only reports.
 
-You can also run the gate manually outside the loop:
+Useful commands outside the loop:
 
 ```bash
-reviewgate gate                      # review current `git diff HEAD`
+reviewgate doctor                    # which reviewers are ready + what to fix
+reviewgate setup                     # interactive configuration wizard
+reviewgate gate                      # review current `git diff HEAD` on demand
 reviewgate reset                     # re-arm the gate (clear this session's review state)
 reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 ```
