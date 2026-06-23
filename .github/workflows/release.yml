@@ -38,6 +38,8 @@ jobs:
           bun test tests/unit
 
       - name: Build per-platform tarballs
+        env:
+          NODE_ENV: production
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
@@ -76,3 +78,77 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag $prerelease
           gh release upload "$TAG" reviewgate-*.tar.gz SHA256SUMS.txt --clobber
+
+  publish-npm:
+    needs: release
+    runs-on: ubuntu-latest
+    # Two-layer gate: (1) only on the canonical repo (forks are skipped here);
+    # (2) the "Guard — NPM_TOKEN present" step below sets skip=1 when the secret is
+    # unset, so the build/publish steps no-op even on the canonical repo without a token.
+    if: ${{ github.repository == 'Codevena/reviewgate' }}
+    permissions:
+      contents: read
+      id-token: write # npm provenance (OIDC)
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node + npm (registry auth)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Guard — NPM_TOKEN present
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "NPM_TOKEN secret not set — skipping npm publish."
+            echo "skip=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build + verify npm-dist (version from tag)
+        if: ${{ env.skip != '1' }}
+        env:
+          REVIEWGATE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # strip the leading 'v' from the tag for the package version
+          export REVIEWGATE_VERSION="${REVIEWGATE_VERSION#v}"
+          # fail if the committed root version disagrees with the tag (no drift)
+          root_ver="$(node -e "process.stdout.write(require('./package.json').version)")"
+          if [ "${root_ver}" != "${REVIEWGATE_VERSION}" ]; then
+            echo "version drift: package.json ${root_ver} != tag ${REVIEWGATE_VERSION}"; exit 1
+          fi
+          bun run build:npm
+          bun run verify:npm
+
+      - name: Publish (platform packages first, then main; idempotent)
+        if: ${{ env.skip != '1' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          field() { node -e "process.stdout.write(require(require('node:path').resolve(process.argv[1],'package.json'))[process.argv[2]])" "$1" "$2"; }
+          # npm versions are immutable; skip any package whose exact version already exists
+          # so a re-pushed tag or a partial-publish re-run completes instead of aborting.
+          publish_idem() {
+            d="$1"; name="$(field "$d" name)"; ver="$(field "$d" version)"
+            if npm view "${name}@${ver}" version >/dev/null 2>&1; then
+              echo "skip: ${name}@${ver} already published"
+            else
+              npm publish "$d" --access public --provenance
+            fi
+          }
+          # Platform packages MUST go first — main pins them exactly and would otherwise
+          # reference versions that don't exist yet.
+          for d in npm-dist/@codevena/*; do publish_idem "$d"; done
+          publish_idem npm-dist/main
