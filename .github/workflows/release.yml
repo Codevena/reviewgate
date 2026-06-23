@@ -145,7 +145,11 @@ jobs:
             if npm view "${name}@${ver}" version >/dev/null 2>&1; then
               echo "skip: ${name}@${ver} already published"
             else
-              npm publish "$d" --access public --provenance
+              # "./$d" (not "$d"): a bare "owner/repo"-shaped path like "npm-dist/main" is
+              # parsed by npm as a GitHub-shorthand git dep (→ git ls-remote, fails). The
+              # leading "./" forces npm to treat it as a local directory. (@codevena/* paths
+              # dodge the shorthand via the "@", but be consistent + safe everywhere.)
+              npm publish "./$d" --access public --provenance
             fi
           }
           # Platform packages MUST go first — main pins them exactly and would otherwise
