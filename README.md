@@ -214,21 +214,34 @@ reviewgate doctor
 
 ## Install
 
-### Option A — download a release binary (fastest)
+### Option A — one-liner install (fastest)
 
-Grab the tarball for your platform from the
-[Releases](https://github.com/Codevena/reviewgate/releases) page and put the
-binary on your `PATH`. Keep the extracted folder intact — the binary loads its
-sibling `grammars/` (tree-sitter `.wasm`) at runtime:
+Detects your platform, downloads the matching prebuilt binary from
+[Releases](https://github.com/Codevena/reviewgate/releases), **verifies its
+SHA-256**, and symlinks it onto your `PATH` (into `~/.local/bin`). No sudo, no
+build step, no Bun required:
 
 ```bash
-# pick the asset for your os-arch (darwin-arm64 / darwin-x64 / linux-x64 / linux-arm64)
+curl -sSL https://raw.githubusercontent.com/Codevena/reviewgate/master/install.sh | sh
+reviewgate --version
+```
+
+Pin a version with `REVIEWGATE_VERSION=v0.1.0-alpha.1`, or change where it lands
+with `REVIEWGATE_INSTALL_DIR` / `REVIEWGATE_BIN_DIR`. macOS + Linux (arm64/x64).
+
+<details><summary>…or download the tarball manually</summary>
+
+Grab the asset for your os-arch from the Releases page and keep the extracted
+folder intact — the binary loads its sibling `grammars/` (tree-sitter `.wasm`) at
+runtime. Each release ships a `SHA256SUMS.txt` to verify against:
+
+```bash
 tar xzf reviewgate-v0.1.0-alpha.1-darwin-arm64.tar.gz
 ln -sf "$PWD/reviewgate-v0.1.0-alpha.1-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
 reviewgate --version
 ```
 
-Each release ships a `SHA256SUMS.txt` you can verify against.
+</details>
 
 ### Option B — build from source (contributors / latest `master`)
 
