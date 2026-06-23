@@ -111,6 +111,87 @@ isolated on either platform. See [Security](#security).
 
 ---
 
+## Failure modes it survives
+
+A code-review gate has exactly one job: **don't let a real bug ship.** The easy
+part is reviewing a diff — any wrapper around an LLM does that in an afternoon.
+The hard part is **never silently failing _open_**: a gate that quietly says
+"green" when it didn't actually check is worse than no gate at all, because you
+*trust* it.
+
+Almost everything below was learned the hard way, in production, dogfooding
+Reviewgate on its own changes. Each one is a way a naïve gate fails open — and
+what this one does instead. The fix is the product.
+
+> **Design rule:** when in doubt, **fail closed** — block, over-review, or
+> escalate to a human. Never fail open: pass, hide, or demote. Every guard below
+> is a consequence of that rule.
+
+**"No findings" must never mean "PASS."** *Naïve:* every reviewer is
+quota-exhausted or times out → the panel returns nothing → "0 findings" →
+**PASS**. *Reality:* your code was never reviewed; the gate just waved it through.
+*Reviewgate:* zero successful reviews is an **ERROR that blocks**, distinct from a
+real clean pass.
+
+**A demote is not harmless.** *Naïve:* an "uncertain" CRITICAL is quietly
+downgraded to WARN so the turn can proceed. *Reality:* under the default policy a
+WARN-only result *soft-passes* — so a real, possibly-correct CRITICAL **vanishes
+with no decision required**. *Reviewgate:* a finding demoted *from* CRITICAL is
+flagged and still requires an explicit decision before the turn can end — it can
+never silently soft-pass.
+
+**Reviewers hallucinate — including in code they never saw.** *Naïve:* trust the
+panel. *Reality:* a lone reviewer emits a 0.97-confidence CRITICAL citing
+`file:line` in a file with *fewer lines than that* — a fabrication that, at panel
+size 1, hard-FAILs the gate with full authority. *Reviewgate:* a deterministic,
+no-LLM fact-check demotes a finding whose cited line provably doesn't exist;
+diff-scoping makes findings on *unchanged* code advisory; a demote-only critic and
+cross-reviewer consensus down-weight the rest.
+
+**A blocked turn must not become an infinite loop.** *Naïve:* "block until every
+finding is resolved." *Reality:* the agent writes its decision file → that write
+re-arms the dirty flag → the gate re-blocks → forever. *Reviewgate:* the loop is
+bounded — it caps iterations and emits an `ESCALATION.md` (releasing the turn to a
+human) on max-iterations, stuck-signatures, cost-cap or a high reject-rate.
+
+**Multi-agent shared checkouts break "review the repo's HEAD."** *Naïve:* review
+whatever is in the working tree. *Reality:* in a shared checkout, session A's gate
+blocks on session B's parallel work — code A never wrote. And the obvious fix
+("attribute *committed* work to a session") is *itself* a fail-open: a file
+authored via a shell command and then committed is invisible to every attribution
+signal, so an agent could "disown" its own CRITICAL. *Reviewgate:* per-session
+**baseline-delta ownership** scopes uncommitted work soundly; committed foreign
+work is *never* silently demoted — it routes to an honest, human-surfaced
+**escalation**. (That unsound auto-attribution was caught by an adversarial
+pre-implementation review *before* a line of it shipped.)
+
+**The bug a green test suite can't see.** *Naïve:* the schema looks right and the
+stub tests pass — ship it. *Reality:* one property missing from a strict
+JSON-schema's `required` list makes *every real* provider review return HTTP 400;
+the stub-based tests never hit the real endpoint, so they stay green. *Reviewgate:*
+a structural test replicates the provider's strict-mode rules so the trap can't be
+reintroduced — and provider changes are verified against a *real* CLI/API call, not
+just stubs.
+
+### How these get found
+
+None of this comes from foresight — it comes from process:
+
+- **It dogfoods itself.** Reviewgate runs its own gate on every change to
+  Reviewgate; most of the incidents above were surfaced by the tool reviewing its
+  own diff.
+- **Adversarial verification, before *and* after.** Plans are reviewed by an
+  independent model panel *before* implementation (a pre-implementation gate that
+  has killed real fail-opens on paper) and again after — reviewers prompted to
+  *refute*, not rubber-stamp.
+- **Real calls, not just mocks.** Provider behaviour is verified end-to-end against
+  the actual CLIs/APIs, because stubs have hidden whole classes of bug.
+
+If a guard ever looks paranoid, assume it's load-bearing — it's almost certainly a
+scar from one of the failures above.
+
+---
+
 ## Requirements
 
 - [Bun](https://bun.sh) ≥ 1.0 (Node 20+ works for the compiled binary)
