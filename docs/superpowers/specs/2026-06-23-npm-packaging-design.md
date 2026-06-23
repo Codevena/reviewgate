@@ -65,21 +65,22 @@ reviewgate                          (main, unscoped — name FREE on npm ✓)
 @codevena/reviewgate-linux-arm64                      os:[linux]  cpu:[arm64] libc:[glibc]
 ```
 
-Each **platform package** mirrors the existing release-tarball / `dist/` layout EXACTLY:
+Each **platform package** mirrors the runtime-relevant part of the `dist/` layout:
 
 ```
 @codevena/reviewgate-<os>-<arch>/
-  package.json        name/version/os/cpu/(libc), files:["reviewgate","grammars","bin-templates","personas"]
+  package.json        name/version/os/cpu/(libc), files:["reviewgate","grammars","bin-templates"]
   reviewgate          the bun --compile self-contained binary (at package root)
   grammars/*.wasm     tree-sitter grammars (NOT embedded by bun --compile)
   bin-templates/*.sh  gate/trigger/reset/pre-push shims
-  personas/           persona markdown
 ```
 
 Binary at the package root (not under `bin/`) is deliberate: `init` resolves
 `bin-templates/` and the grammars relative to `dirname(process.execPath)`, so the
-binary's siblings must be `grammars/` + `bin-templates/` + `personas/` — identical to
-`dist/` and the release tarballs. No code path needs to learn a new layout.
+binary's required siblings are `grammars/` + `bin-templates/`. **`personas/` is NOT
+shipped** — it is `.gitkeep`-only and resolved at runtime from `.reviewgate/personas/`,
+never relative to the binary (plan-gate finding), so the npm layout intentionally drops
+it (a small divergence from the current `dist/`/tarball build, which still copies it).
 
 ### Launcher (`bin/reviewgate.cjs`)
 
@@ -138,7 +139,7 @@ Install-mode behavior:
 | Install | Baked path | Durability |
 |---|---|---|
 | `npm i -g reviewgate` (**recommended for the persistent gate**) | `$(npm root -g)/@codevena/…/reviewgate` | stable; survives across projects |
-| local devDep | `<proj>/node_modules/@codevena/…/reviewgate` | stable across reinstalls; breaks only if `node_modules` is deleted-without-reinstall → gate **fails closed** + PATH-fallback; re-run `init` |
+| local devDep | `<proj>/node_modules/@codevena/…/reviewgate` | stable across reinstalls; breaks only if `node_modules` is deleted-without-reinstall → gate **fails closed**; re-run `init` |
 | `npx reviewgate init` | ephemeral `~/.npm/_npx/<hash>/…` | fragile (npx may GC the cache) → gate **fails closed**; see below |
 
 **The only init code change:** when `process.execPath` points into an ephemeral npm cache
@@ -161,10 +162,11 @@ Pure Bun script, deterministic, no network. Steps:
 1. Read version from a single source (the tag in CI; the repo root `package.json` version
    locally). Refuse to build if any of the 5 manifests would disagree.
 2. For each of the 4 targets: `bun build src/cli/index.ts --compile --target=<bun-target>
-   --outfile npm-dist/@codevena/reviewgate-<os>-<arch>/reviewgate`, then copy
-   `grammars/` (the 3 `.wasm`), `bin-templates/*.sh`, `personas/` next to it. Write the
-   platform `package.json` (name, version, `os`, `cpu`, `libc` for linux, `license`,
-   `repository`, `files`, `description`).
+   --outfile npm-dist/@codevena/reviewgate-<os>-<arch>/reviewgate` (output under
+   `npm-dist/` ONLY — never `dist/`, the live symlinked gate binary), then copy the
+   4 `grammars/*.wasm` + `bin-templates/*.sh` next to it. Write the platform
+   `package.json` (name, version, `os`, `cpu`, `libc` for linux, `license`, `repository`,
+   `files`, `description`).
 3. Generate the main package into `npm-dist/main/`: copy `bin/reviewgate.cjs`; write
    `package.json` with `name: "reviewgate"`, the version, `bin`, `optionalDependencies`
    with **exact** (`=`/pinned, not `^`) versions of all 4 platform packages, NO runtime
@@ -175,9 +177,10 @@ Pure Bun script, deterministic, no network. Steps:
 
 Replace the old single-dist check with a generated-set validator:
 
-- main launcher present and starts with the node shebang;
-- all 4 platform packages present, each with a binary, `grammars/web-tree-sitter.wasm`,
-  the 4 shims, `personas/`, and `os`/`cpu` set correctly (and `libc` on linux);
+- main launcher present + node shebang; main `bin.reviewgate === "bin/reviewgate.cjs"`,
+  `engines.node` set, NO runtime `dependencies`;
+- all 4 platform packages present, each with a **non-empty** binary (≥ 1 MB floor),
+  all **4** grammar wasm, the 4 shims, and `os`/`cpu` set correctly (and `libc` on linux);
 - **all 5 versions identical**;
 - main's `optionalDependencies` pin each platform package at that exact version;
 - main declares NO runtime `dependencies`.
@@ -241,13 +244,16 @@ manual `bun run build:npm && bun run verify:npm`). Keep all dev scripts/deps. Ad
   baked + WARN; bun-runtime execPath → empty); `build-npm-packages` manifest generation
   (versions equal, optionalDependencies pinned, os/cpu correct); `verify-publish`
   validator rejects a mismatched-version / missing-grammar / `^`-ranged set.
-- **Integration (local, gated on `npm` present):** the hermetic temp-project install +
-  `init` + gate-shim smoke test from the deliverable above.
+- **Integration (local, opt-in via `RG_E2E=1`, also needs `npm`):** the hermetic
+  temp-project install + `init` + gate-shim smoke test from the deliverable above. Gated
+  so the DoD's bare `bun test` never runs npm or builds binaries.
 
 ## Risks / mitigations
 
 - **Baked node_modules path breaks on `node_modules` wipe** → gate fails **closed**
-  (safe) + PATH fallback + documented re-`init`. Recommend global install for the gate.
+  (safe; the shim's `command -v reviewgate` PATH fallback is NOT a reliable recovery —
+  the Stop hook's non-login PATH usually lacks the npm global bin) + documented re-`init`.
+  Recommend a global install for the gate.
 - **`npx` ephemeral binary** → WARN in init + README guidance.
 - **Cross-compile correctness** → verified all 4 targets build from macOS; CI re-builds
   on ubuntu; the hermetic test exercises the host target end-to-end.

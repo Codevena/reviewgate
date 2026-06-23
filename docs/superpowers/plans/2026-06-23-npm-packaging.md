@@ -15,10 +15,12 @@
 - Main package declares **NO runtime `dependencies`**, `engines.node >= 20`, and **NO `os`/`cpu`** (installs everywhere; launcher errors clearly on unsupported platforms).
 - Main `optionalDependencies` pin each platform package at the **EXACT** version string (no `^`/`~`).
 - All five package manifests share one identical version (single source: `REVIEWGATE_VERSION` env in CI, else repo-root `package.json` version).
-- Platform package layout mirrors `dist/`: binary `reviewgate` at the package ROOT, with sibling `grammars/`, `bin-templates/`, `personas/`.
+- Platform package layout: binary `reviewgate` at the package ROOT, with sibling `grammars/` (all 4 wasm) + `bin-templates/`. **No `personas/`** — it is `.gitkeep`-only and resolved at runtime from `.reviewgate/personas/`, never relative to the binary, so shipping it is dead weight (plan-gate finding).
+- The 4 grammar wasm files (`web-tree-sitter.wasm`, `tree-sitter-typescript.wasm`, `tree-sitter-tsx.wasm`, `tree-sitter-python.wasm`) must ship in every platform package and be validated.
+- **`build:npm` must NEVER write to `dist/`.** `dist/reviewgate` is the live, symlinked gate binary for this session and every repo on the machine (`~/.local/bin/reviewgate` → `dist/reviewgate`); the orchestration compiles ONLY into `npm-dist/` and reads grammars straight from `node_modules/` (populated by `bun install`, not `bun run build`).
 - No install scripts (must work under `npm ci --ignore-scripts`). No Windows, no musl (documented).
-- Any broken baked binary path must make the gate **fail closed** (block), never silent-pass.
-- Publish always with `--access public --provenance`; platform packages first, then main.
+- Any broken baked binary path must make the gate **fail closed** (block), never silent-pass. (The shim's `command -v reviewgate` PATH fallback is NOT a reliable recovery for npm-global installs — the Claude Code Stop hook runs with a non-login PATH that typically lacks the npm global bin; fail-closed-block is the real safety net.)
+- Publishes must be **idempotent** (skip a package whose exact version already exists) — npm versions are immutable, so a partial-publish re-run must not abort. Platform packages first, then main, with `--access public --provenance` (CI) — the `@codevena` org and a create-capable token must exist before the first tag.
 
 ---
 
@@ -140,46 +142,73 @@ git commit -m "feat(npm): pure-CJS launcher that resolves+spawns the platform bi
 ### Task 2: init bake — extract `resolveBakedBin` + ephemeral-npx warning
 
 **Files:**
-- Modify: `src/cli/commands/init.ts` (replace the inline `bakedBin` expression at ~line 241; print the warning)
+- Modify: `src/cli/commands/init.ts` (replace the inline `bakedBin` expression at ~line 241; extract `writeShims`; print the warning)
 - Test: `tests/unit/init-bake.test.ts` (new)
 
 **Interfaces:**
-- Produces: `export function resolveBakedBin(execPath: string): { bakedBin: string; warning: string | null }`
-  - basename not matching `/reviewgate/i` → `{ bakedBin: "", warning: null }` (bun-dev runtime; shim falls back to PATH).
-  - execPath path contains `/_npx/` → `{ bakedBin: execPath, warning: <ephemeral message> }`.
-  - otherwise → `{ bakedBin: execPath, warning: null }`.
+- Produces:
+  - `export function resolveBakedBin(execPath: string): { bakedBin: string; warning: string | null }`
+    - basename not matching `/reviewgate/i` → `{ bakedBin: "", warning: null }` (bun-dev runtime; shim falls back to PATH).
+    - execPath under an ephemeral package-manager cache (npx / npm cacache / pnpm·yarn·bun dlx / OS temp) → `{ bakedBin: execPath, warning: <ephemeral message> }`.
+    - otherwise → `{ bakedBin: execPath, warning: null }`.
+  - `export function writeShims(binDir: string, tplDir: string, bakedBin: string): void` — renders the 4 hook shims with the given baked path (used by `runInit`; extracted so a stale→new re-bake is unit-testable).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
 // tests/unit/init-bake.test.ts
 import { describe, expect, it } from "bun:test";
-import { resolveBakedBin } from "../../src/cli/commands/init.ts";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resolveBakedBin, writeShims } from "../../src/cli/commands/init.ts";
+
+const REPO_TPL = join(import.meta.dir, "..", "..", "bin-templates");
 
 describe("resolveBakedBin", () => {
-  it("bakes a normal install path (global or local node_modules), no warning", () => {
-    const r = resolveBakedBin("/Users/x/.npm-global/lib/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate");
-    expect(r.bakedBin).toBe("/Users/x/.npm-global/lib/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate");
-    expect(r.warning).toBeNull();
+  it("bakes a normal global install path, no warning", () => {
+    const p = "/Users/x/.npm-global/lib/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate";
+    expect(resolveBakedBin(p)).toEqual({ bakedBin: p, warning: null });
+  });
+
+  it("bakes a local project node_modules path, no warning", () => {
+    const p = "/Users/x/proj/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate";
+    expect(resolveBakedBin(p)).toEqual({ bakedBin: p, warning: null });
   });
 
   it("bakes the curl|sh install path, no warning", () => {
-    const r = resolveBakedBin("/Users/x/.reviewgate/v0.1.0-alpha.1/reviewgate");
-    expect(r.bakedBin).toBe("/Users/x/.reviewgate/v0.1.0-alpha.1/reviewgate");
-    expect(r.warning).toBeNull();
+    const p = "/Users/x/.reviewgate/v0.1.0-alpha.1/reviewgate";
+    expect(resolveBakedBin(p)).toEqual({ bakedBin: p, warning: null });
   });
 
   it("does NOT bake the bun-dev runtime (basename is 'bun')", () => {
-    const r = resolveBakedBin("/opt/homebrew/bin/bun");
-    expect(r.bakedBin).toBe("");
-    expect(r.warning).toBeNull();
+    expect(resolveBakedBin("/opt/homebrew/bin/bun")).toEqual({ bakedBin: "", warning: null });
   });
 
-  it("bakes but WARNS on an ephemeral npx cache path", () => {
-    const r = resolveBakedBin("/Users/x/.npm/_npx/abc123/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate");
-    expect(r.bakedBin).toContain("/_npx/");
-    expect(r.warning).toContain("npx");
+  it.each([
+    ["npx", "/Users/x/.npm/_npx/abc123/node_modules/@codevena/reviewgate-darwin-arm64/reviewgate"],
+    ["npm cacache", "/Users/x/.npm/_cacache/tmp/xyz/reviewgate"],
+    ["pnpm dlx", "/Users/x/.pnpm-store/v3/tmp/dlx-9876/node_modules/@codevena/reviewgate-linux-x64/reviewgate"],
+    ["bun cache", "/Users/x/.bun/install/cache/reviewgate@0.1.0/reviewgate"],
+    ["os temp (macOS)", "/private/var/folders/aa/bb/T/xfs-123/reviewgate"],
+    ["os temp (/tmp)", "/tmp/yarn--163-0/reviewgate"],
+  ])("bakes but WARNS on an ephemeral %s path", (_label, p) => {
+    const r = resolveBakedBin(p);
+    expect(r.bakedBin).toBe(p);
+    expect(r.warning).toContain("ephemeral");
     expect(r.warning).toContain("npm i -g reviewgate");
+  });
+});
+
+describe("writeShims re-bake (stale path is replaced)", () => {
+  it("rewrites RG_BIN from a stale path to the new one on a second run", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "rg-shims-"));
+    writeShims(binDir, REPO_TPL, "/old/reviewgate");
+    expect(readFileSync(join(binDir, "gate"), "utf8")).toContain("RG_BIN='/old/reviewgate'");
+    writeShims(binDir, REPO_TPL, "/new/reviewgate");
+    const gate = readFileSync(join(binDir, "gate"), "utf8");
+    expect(gate).toContain("RG_BIN='/new/reviewgate'");
+    expect(gate).not.toContain("/old/reviewgate");
   });
 });
 ```
@@ -187,51 +216,73 @@ describe("resolveBakedBin", () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bun test tests/unit/init-bake.test.ts`
-Expected: FAIL — `resolveBakedBin` is not exported.
+Expected: FAIL — `resolveBakedBin` / `writeShims` are not exported.
 
-- [ ] **Step 3: Add `resolveBakedBin` and use it in `runInit`**
+- [ ] **Step 3: Add `resolveBakedBin` + `writeShims` and use them in `runInit`**
 
-In `src/cli/commands/init.ts`, add this exported function near the top (after the imports / `shSingleQuote`):
+In `src/cli/commands/init.ts`, add these exported functions near the top (after `shSingleQuote`):
 
 ```ts
+// Ephemeral package-manager caches: a binary here is GC-able, so a baked path into it
+// can later vanish and make the Stop gate fail closed. We still bake it (it works now)
+// but warn. Covers npx, npm cacache, pnpm/yarn/bun `dlx`, and any OS-temp extraction.
+const EPHEMERAL_BIN_MARKERS = ["/_npx/", "/_cacache/", "/dlx-", "/.bun/install/cache/", "/bunx-"];
+const TEMP_ROOTS = ["/tmp/", "/private/tmp/", "/private/var/folders/", "/var/folders/", "/var/tmp/"];
+function isEphemeralBinPath(p: string): boolean {
+  return EPHEMERAL_BIN_MARKERS.some((m) => p.includes(m)) || TEMP_ROOTS.some((r) => p.includes(r));
+}
+
 // Decide what absolute binary path to bake into the hook shims, given the path of the
 // binary that ran `init`. The launcher SPAWNS the compiled binary, so under an npm
 // install process.execPath is the platform binary (basename "reviewgate"), not node —
 // the same regex that gates the curl|sh and dev cases handles npm with no extra branch.
-// An ephemeral `npx` cache path is still baked (it works right now) but warned about,
-// because npx may garbage-collect it and the gate would then fail closed.
 export function resolveBakedBin(execPath: string): { bakedBin: string; warning: string | null } {
   if (!/reviewgate/i.test(basename(execPath))) return { bakedBin: "", warning: null };
-  if (execPath.includes("/_npx/")) {
+  if (isEphemeralBinPath(execPath)) {
     return {
       bakedBin: execPath,
       warning:
-        "the reviewgate binary is in an ephemeral npx cache and may be garbage-collected, " +
+        "the reviewgate binary is in an ephemeral cache (npx/dlx/temp) and may be garbage-collected, " +
         "which would make the Stop gate fail closed. For a durable gate, install it with " +
         "`npm i -g reviewgate` (or as a project devDependency) and re-run `reviewgate init`.",
     };
   }
   return { bakedBin: execPath, warning: null };
 }
+
+// Render the 4 hook shims with the baked path. Extracted from runInit so a stale→new
+// re-bake (e.g. user moves from curl|sh to npm) is unit-testable; each call fully
+// overwrites the shim, so the previous RG_BIN can never linger.
+export function writeShims(binDir: string, tplDir: string, bakedBin: string): void {
+  for (const name of ["trigger", "gate", "reset", "pre-push"]) {
+    const tpl = readFileSync(join(tplDir, `${name}.sh`), "utf8");
+    const dst = join(binDir, name);
+    writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(shSingleQuote(bakedBin)));
+    chmodSync(dst, 0o755);
+  }
+}
 ```
 
-Then replace the inline computation (currently `const bakedBin = /reviewgate/i.test(basename(process.execPath)) ? process.execPath : "";`) with:
+Then in `runInit`, replace the inline `bakedBin` computation and the shim-writing loop with:
 
 ```ts
   const { bakedBin, warning: bakedWarning } = resolveBakedBin(process.execPath);
   if (bakedWarning) console.error(`reviewgate init: WARNING — ${bakedWarning}`);
+  writeShims(binDir, tplDir, bakedBin);
 ```
+
+(Remove the now-redundant `for (const name of ["trigger", "gate", "reset", "pre-push"]) { … }` loop that did the inline `writeFileSync`/`chmodSync`.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `bun test tests/unit/init-bake.test.ts tests/unit/init.test.ts`
-Expected: PASS (new bake tests + the existing init suite unchanged).
+Expected: PASS (new bake + re-bake tests; the existing init suite unchanged).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/cli/commands/init.ts tests/unit/init-bake.test.ts
-git commit -m "feat(npm): resolveBakedBin — npm execPath bakes unchanged; warn on ephemeral npx cache"
+git commit -m "feat(npm): resolveBakedBin (ephemeral-cache warn) + extracted writeShims (re-bake-safe)"
 ```
 
 ---
@@ -281,7 +332,7 @@ describe("npm package manifests", () => {
     expect(darwin.os).toEqual(["darwin"]);
     expect(darwin.cpu).toEqual(["arm64"]);
     expect(darwin.libc).toBeUndefined();
-    expect(darwin.files).toEqual(["reviewgate", "grammars", "bin-templates", "personas"]);
+    expect(darwin.files).toEqual(["reviewgate", "grammars", "bin-templates"]);
 
     const linux = platformManifest({ bunTarget: "bun-linux-x64", os: "linux", cpu: "x64" }, "1.2.3");
     expect(linux.libc).toEqual(["glibc"]);
@@ -355,7 +406,9 @@ export function platformManifest(t: Target, version: string): Record<string, unk
     os: [t.os],
     cpu: [t.cpu],
     ...(t.os === "linux" ? { libc: ["glibc"] } : {}),
-    files: ["reviewgate", "grammars", "bin-templates", "personas"],
+    // No "personas": it is .gitkeep-only and resolved at runtime from .reviewgate/personas/,
+    // never relative to the binary — shipping it is dead weight (plan-gate finding).
+    files: ["reviewgate", "grammars", "bin-templates"],
   };
 }
 
@@ -422,8 +475,8 @@ git commit -m "feat(npm): package-manifest helpers (TARGETS, platform/main manif
 // ---- build orchestration (run: bun run scripts/build-npm-packages.ts) ----
 if (import.meta.main) {
   const { $ } = await import("bun");
-  const { rmSync, mkdirSync, cpSync, copyFileSync, writeFileSync } = await import("node:fs");
-  const { join, dirname } = await import("node:path");
+  const { rmSync, mkdirSync, copyFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
 
   const root = process.cwd();
   const rootPkg = JSON.parse(await Bun.file(join(root, "package.json")).text()) as { version: string };
@@ -451,12 +504,12 @@ if (import.meta.main) {
     mkdirSync(join(dir, "grammars"), { recursive: true });
     mkdirSync(join(dir, "bin-templates"), { recursive: true });
     console.error(`building ${pkgName(t)} (${t.bunTarget}) …`);
+    // NOTE: outfile is under npm-dist/ ONLY — never dist/ (the live symlinked gate binary).
     await $`bun build src/cli/index.ts --compile --target=${t.bunTarget} --outfile ${join(dir, "reviewgate")}`.cwd(root);
     for (const g of grammars) copyFileSync(g, join(dir, "grammars", g.split("/").pop()!));
     for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
       copyFileSync(join(root, "bin-templates", sh), join(dir, "bin-templates", sh));
     }
-    cpSync(join(root, "src", "personas"), join(dir, "personas"), { recursive: true });
     writeFileSync(join(dir, "package.json"), `${JSON.stringify(platformManifest(t, version), null, 2)}\n`);
   }
 
@@ -475,10 +528,13 @@ if (import.meta.main) {
 In `package.json` `scripts`, add:
 
 ```json
-    "build:npm": "bun run build && bun run scripts/build-npm-packages.ts",
+    "build:npm": "bun run scripts/build-npm-packages.ts",
 ```
 
-(The `bun run build` prerequisite ensures `node_modules` grammars exist; the orchestration reads them.)
+**Do NOT chain `bun run build`** — that compiles `dist/reviewgate`, which is the live
+symlinked gate binary (`~/.local/bin/reviewgate` → `dist/reviewgate`) and would redeploy
+mid-session for every repo on the machine. The orchestration reads grammars straight from
+`node_modules/` (populated by `bun install`) and writes binaries only into `npm-dist/`.
 
 Append to `.gitignore` (under the existing `dist` line):
 
@@ -524,7 +580,7 @@ git commit -m "feat(npm): build:npm orchestration — assemble npm-dist (4 platf
 
 **Interfaces:**
 - Consumes: `TARGETS`, `pkgName` (Task 3).
-- Produces: `export function verifyNpmDist(distRoot: string): { ok: boolean; errors: string[] }` — validates the generated set: launcher present + shebang; main has no `dependencies`; every platform package present with binary + `grammars/web-tree-sitter.wasm` + 4 shims + correct `os`/`cpu`; all five versions identical; main `optionalDependencies` pin each platform exactly.
+- Produces: `export function verifyNpmDist(distRoot: string, opts?: { minBinaryBytes?: number }): { ok: boolean; errors: string[] }` — validates the generated set: launcher present + shebang; main `bin.reviewgate === "bin/reviewgate.cjs"`, `engines.node` present, no `dependencies`; every platform package present with a **non-empty** binary (≥ `minBinaryBytes`, default 1 MB) + **all 4** grammar wasm + 4 shims + correct `os`/`cpu`; all five versions identical; main `optionalDependencies` pin each platform exactly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -537,7 +593,18 @@ import { join } from "node:path";
 import { TARGETS, pkgName } from "../../scripts/build-npm-packages.ts";
 import { verifyNpmDist } from "../../scripts/verify-publish.ts";
 
-function scaffold(root: string, version: string, opts: { caret?: boolean; dropGrammar?: boolean; badVersion?: string } = {}) {
+const GRAMMARS = [
+  "web-tree-sitter.wasm",
+  "tree-sitter-typescript.wasm",
+  "tree-sitter-tsx.wasm",
+  "tree-sitter-python.wasm",
+];
+
+function scaffold(
+  root: string,
+  version: string,
+  opts: { caret?: boolean; dropGrammar?: boolean; badVersion?: string; emptyBin?: boolean } = {},
+) {
   // main
   mkdirSync(join(root, "main", "bin"), { recursive: true });
   writeFileSync(join(root, "main", "bin", "reviewgate.cjs"), "#!/usr/bin/env node\n");
@@ -547,6 +614,7 @@ function scaffold(root: string, version: string, opts: { caret?: boolean; dropGr
       name: "reviewgate",
       version,
       bin: { reviewgate: "bin/reviewgate.cjs" },
+      engines: { node: ">=20" },
       optionalDependencies: Object.fromEntries(
         TARGETS.map((t) => [pkgName(t), opts.caret ? `^${version}` : version]),
       ),
@@ -557,10 +625,9 @@ function scaffold(root: string, version: string, opts: { caret?: boolean; dropGr
     const dir = join(root, pkgName(t));
     mkdirSync(join(dir, "grammars"), { recursive: true });
     mkdirSync(join(dir, "bin-templates"), { recursive: true });
-    writeFileSync(join(dir, "reviewgate"), "");
-    if (!opts.dropGrammar) writeFileSync(join(dir, "grammars", "web-tree-sitter.wasm"), "");
+    writeFileSync(join(dir, "reviewgate"), opts.emptyBin ? "" : "x".repeat(64));
+    for (const g of GRAMMARS) if (!(opts.dropGrammar && g === "web-tree-sitter.wasm")) writeFileSync(join(dir, "grammars", g), "");
     for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) writeFileSync(join(dir, "bin-templates", sh), "");
-    mkdirSync(join(dir, "personas"), { recursive: true });
     writeFileSync(
       join(dir, "package.json"),
       JSON.stringify({ name: pkgName(t), version: opts.badVersion ?? version, os: [t.os], cpu: [t.cpu] }),
@@ -572,17 +639,20 @@ function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-npmdist-"));
 }
 
+// Tiny binary floor for the scaffold (real binaries are tens of MB; CI uses the 1 MB default).
+const SMALL = { minBinaryBytes: 1 };
+
 describe("verifyNpmDist", () => {
   it("passes on a well-formed npm-dist", () => {
     const root = tmp();
     scaffold(root, "1.2.3");
-    expect(verifyNpmDist(root)).toEqual({ ok: true, errors: [] });
+    expect(verifyNpmDist(root, SMALL)).toEqual({ ok: true, errors: [] });
   });
 
   it("fails when a platform package version drifts", () => {
     const root = tmp();
     scaffold(root, "1.2.3", { badVersion: "1.2.4" });
-    const r = verifyNpmDist(root);
+    const r = verifyNpmDist(root, SMALL);
     expect(r.ok).toBe(false);
     expect(r.errors.join(" ")).toContain("version");
   });
@@ -590,17 +660,25 @@ describe("verifyNpmDist", () => {
   it("fails when optionalDependencies use a caret range instead of an exact pin", () => {
     const root = tmp();
     scaffold(root, "1.2.3", { caret: true });
-    const r = verifyNpmDist(root);
+    const r = verifyNpmDist(root, SMALL);
     expect(r.ok).toBe(false);
-    expect(r.errors.join(" ")).toContain("exact");
+    expect(r.errors.join(" ")).toContain("EXACTLY");
   });
 
   it("fails when a grammar is missing (dead symbol graph in the shipped binary)", () => {
     const root = tmp();
     scaffold(root, "1.2.3", { dropGrammar: true });
-    const r = verifyNpmDist(root);
+    const r = verifyNpmDist(root, SMALL);
     expect(r.ok).toBe(false);
     expect(r.errors.join(" ")).toContain("web-tree-sitter.wasm");
+  });
+
+  it("fails on an empty/too-small binary (failed cross-compile)", () => {
+    const root = tmp();
+    scaffold(root, "1.2.3", { emptyBin: true });
+    const r = verifyNpmDist(root, SMALL);
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(" ")).toContain("too small");
   });
 });
 ```
@@ -616,20 +694,34 @@ Expected: FAIL — `verifyNpmDist` not exported.
 // scripts/verify-publish.ts
 //
 // Publish preflight: validate the generated npm-dist/ set before `npm publish`.
-// Checks the launcher, the four platform packages (binary + grammars + shims +
-// os/cpu), that all five versions match, and that the main package pins each
-// platform package at an EXACT version with no runtime dependencies.
-import { existsSync, readFileSync } from "node:fs";
+// Checks the launcher, the four platform packages (non-empty binary + all 4 grammars +
+// shims + os/cpu), that all five versions match, and that the main package pins each
+// platform package at an EXACT version, maps bin correctly, sets engines.node, and
+// declares no runtime dependencies.
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { TARGETS, pkgName } from "./build-npm-packages.ts";
 
-export function verifyNpmDist(distRoot: string): { ok: boolean; errors: string[] } {
+const GRAMMARS = [
+  "web-tree-sitter.wasm",
+  "tree-sitter-typescript.wasm",
+  "tree-sitter-tsx.wasm",
+  "tree-sitter-python.wasm",
+];
+
+export function verifyNpmDist(
+  distRoot: string,
+  opts: { minBinaryBytes?: number } = {},
+): { ok: boolean; errors: string[] } {
+  const minBinaryBytes = opts.minBinaryBytes ?? 1_000_000;
   const errors: string[] = [];
   const mainPkgPath = join(distRoot, "main", "package.json");
   if (!existsSync(mainPkgPath)) return { ok: false, errors: ["main/package.json missing — run `bun run build:npm`"] };
 
   const main = JSON.parse(readFileSync(mainPkgPath, "utf8")) as {
     version: string;
+    bin?: Record<string, string>;
+    engines?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
     dependencies?: Record<string, string>;
   };
@@ -639,6 +731,9 @@ export function verifyNpmDist(distRoot: string): { ok: boolean; errors: string[]
   if (!existsSync(launcher)) errors.push("main launcher bin/reviewgate.cjs missing");
   else if (!readFileSync(launcher, "utf8").startsWith("#!")) errors.push("main launcher missing the node shebang");
 
+  if (main.bin?.reviewgate !== "bin/reviewgate.cjs")
+    errors.push(`main bin.reviewgate must be "bin/reviewgate.cjs" (got ${main.bin?.reviewgate ?? "nothing"})`);
+  if (!main.engines?.node) errors.push("main package must set engines.node");
   if (main.dependencies && Object.keys(main.dependencies).length > 0)
     errors.push("main package must declare NO runtime dependencies");
 
@@ -654,8 +749,12 @@ export function verifyNpmDist(distRoot: string): { ok: boolean; errors: string[]
     if (m.version !== version) errors.push(`${name}: version ${m.version} != main ${version}`);
     if (JSON.stringify(m.os) !== JSON.stringify([t.os])) errors.push(`${name}: os must be ["${t.os}"]`);
     if (JSON.stringify(m.cpu) !== JSON.stringify([t.cpu])) errors.push(`${name}: cpu must be ["${t.cpu}"]`);
-    if (!existsSync(join(dir, "reviewgate"))) errors.push(`${name}: binary 'reviewgate' missing`);
-    if (!existsSync(join(dir, "grammars", "web-tree-sitter.wasm"))) errors.push(`${name}: grammars/web-tree-sitter.wasm missing`);
+    const bin = join(dir, "reviewgate");
+    if (!existsSync(bin)) errors.push(`${name}: binary 'reviewgate' missing`);
+    else if (statSync(bin).size < minBinaryBytes)
+      errors.push(`${name}: binary is too small (${statSync(bin).size} < ${minBinaryBytes}) — empty/failed compile?`);
+    for (const g of GRAMMARS)
+      if (!existsSync(join(dir, "grammars", g))) errors.push(`${name}: grammars/${g} missing`);
     for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
       if (!existsSync(join(dir, "bin-templates", sh))) errors.push(`${name}: bin-templates/${sh} missing`);
     const pin = main.optionalDependencies?.[name];
@@ -676,20 +775,24 @@ if (import.meta.main) {
 }
 ```
 
-- [ ] **Step 4: Edit `package.json` — retire the naive publish, add `verify:npm`**
+- [ ] **Step 4: Edit `package.json` — retire the naive publish, lint `bin/`, add `verify:npm`**
 
-Remove these three keys from `package.json` (the root is no longer itself published):
+Remove these two keys from `package.json` (the root is no longer itself published):
 
 ```json
   "bin": { "reviewgate": "./dist/reviewgate" },
   "files": ["dist", "bin-templates", "src/personas"],
 ```
 
-and the `prepublishOnly` script line. Add to `scripts`:
-
-```json
-    "verify:npm": "bun run scripts/verify-publish.ts",
-```
+and the `prepublishOnly` script line. Then in `scripts`:
+- change `lint` to also lint the launcher (biome's `files.ignore` does not exclude `bin/`):
+  ```json
+      "lint": "biome check src tests bin",
+  ```
+- add a `verify:npm` that syntax-checks the launcher under Node, then validates `npm-dist/`:
+  ```json
+      "verify:npm": "node --check bin/reviewgate.cjs && bun run scripts/verify-publish.ts",
+  ```
 
 - [ ] **Step 5: Run tests + typecheck**
 
@@ -730,7 +833,16 @@ const hasNpm = spawnSync("npm", ["--version"], { encoding: "utf8" }).status === 
 const supported =
   ["darwin", "linux"].includes(process.platform) && ["arm64", "x64"].includes(process.arch);
 
-describe.if(hasNpm && supported)("npm install end-to-end", () => {
+// OPT-IN: this test builds binaries + runs a real `npm install`, so it is gated on
+// RG_E2E=1 and never runs under a bare `bun test` (incl. the DoD suite). Run it with:
+//   RG_E2E=1 bun test tests/integration/npm-install-e2e.test.ts
+// (build:npm writes only to npm-dist/, never dist/ — it does not redeploy the live gate.)
+function packFilename(stage: string, dir: string): string {
+  const out = execFileSync("npm", ["pack", "--json", "--pack-destination", stage, dir], { encoding: "utf8" });
+  return (JSON.parse(out) as Array<{ filename: string }>)[0].filename;
+}
+
+describe.if(process.env.RG_E2E === "1" && hasNpm && supported)("npm install end-to-end", () => {
   it("packs, installs, bakes the node_modules binary path, and the gate shim execs it", () => {
     // 1. Build only the host platform package + main, then pack both.
     execFileSync("bun", ["run", "build:npm"], {
@@ -739,8 +851,8 @@ describe.if(hasNpm && supported)("npm install end-to-end", () => {
       stdio: "inherit",
     });
     const stage = mkdtempSync(join(tmpdir(), "rg-e2e-stage-"));
-    const mainTgz = execFileSync("npm", ["pack", "--silent", "--pack-destination", stage, join(REPO, "npm-dist", "main")], { encoding: "utf8" }).trim().split("\n").pop()!;
-    const platTgz = execFileSync("npm", ["pack", "--silent", "--pack-destination", stage, join(REPO, "npm-dist", HOST_PKG)], { encoding: "utf8" }).trim().split("\n").pop()!;
+    const mainTgz = packFilename(stage, join(REPO, "npm-dist", "main"));
+    const platTgz = packFilename(stage, join(REPO, "npm-dist", HOST_PKG));
 
     // 2. Consumer project: install the main tarball, override the host platform dep to the local tarball.
     const proj = mkdtempSync(join(tmpdir(), "rg-e2e-proj-"));
@@ -776,10 +888,10 @@ describe.if(hasNpm && supported)("npm install end-to-end", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test**
+- [ ] **Step 2: Run the test (opt-in)**
 
-Run: `bun test tests/integration/npm-install-e2e.test.ts`
-Expected: PASS (or SKIP if `npm` absent / unsupported platform). On a Mac with npm present it builds, packs, installs, inits, and runs the gate shim.
+Run: `RG_E2E=1 bun test tests/integration/npm-install-e2e.test.ts`
+Expected: PASS. Without `RG_E2E=1` (e.g. a bare `bun test` / the DoD suite) the `describe.if` is false → the test is SKIPPED, so it never runs npm or builds binaries in the normal suite. On a Mac with npm present and `RG_E2E=1` it builds (npm-dist only), packs, installs, inits, and runs the gate shim.
 
 - [ ] **Step 3: Commit**
 
@@ -805,7 +917,9 @@ git commit -m "test(npm): hermetic npm-install→init→gate-shim end-to-end"
   publish-npm:
     needs: release
     runs-on: ubuntu-latest
-    # Only run when an npm token is configured (skips on forks / contributors).
+    # Two-layer gate: (1) only on the canonical repo (forks are skipped here);
+    # (2) the "Guard — NPM_TOKEN present" step below sets skip=1 when the secret is
+    # unset, so the build/publish steps no-op even on the canonical repo without a token.
     if: ${{ github.repository == 'Codevena/reviewgate' }}
     permissions:
       contents: read
@@ -852,17 +966,34 @@ git commit -m "test(npm): hermetic npm-install→init→gate-shim end-to-end"
           bun run build:npm
           bun run verify:npm
 
-      - name: Publish (platform packages first, then main)
+      - name: Publish (platform packages first, then main; idempotent)
         if: ${{ env.skip != '1' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for d in npm-dist/@codevena/*; do
-            npm publish "$d" --access public --provenance
-          done
-          npm publish npm-dist/main --access public --provenance
+          field() { node -e "process.stdout.write(require(require('node:path').resolve(process.argv[1],'package.json'))[process.argv[2]])" "$1" "$2"; }
+          # npm versions are immutable; skip any package whose exact version already exists
+          # so a re-pushed tag or a partial-publish re-run completes instead of aborting.
+          publish_idem() {
+            d="$1"; name="$(field "$d" name)"; ver="$(field "$d" version)"
+            if npm view "${name}@${ver}" version >/dev/null 2>&1; then
+              echo "skip: ${name}@${ver} already published"
+            else
+              npm publish "$d" --access public --provenance
+            fi
+          }
+          # Platform packages MUST go first — main pins them exactly and would otherwise
+          # reference versions that don't exist yet.
+          for d in npm-dist/@codevena/*; do publish_idem "$d"; done
+          publish_idem npm-dist/main
 ```
+
+> **Version coupling (load-bearing).** The binary's reported version comes from the ROOT
+> `package.json` (compiled into `src/version.ts` at `bun build` time) and is part of the
+> review **cache key**; the npm manifests use `REVIEWGATE_VERSION` (the tag). The drift
+> guard above (`root_ver != tag` → fail) is therefore correctness-critical, not cosmetic —
+> keep it.
 
 - [ ] **Step 2: Validate the workflow YAML**
 
@@ -929,25 +1060,46 @@ Reviewgate publishes five packages: `reviewgate` (launcher) + four
 `@codevena/reviewgate-<os>-<arch>` prebuilt-binary packages. See
 `docs/superpowers/specs/2026-06-23-npm-packaging-design.md`.
 
-## One-time setup
+## One-time setup (MUST be done before the first tag)
 1. `npm login` (2FA as configured).
-2. Create the `@codevena` npm **org** (free for public packages): npmjs.com → Add Organization → `codevena`.
-3. Add an automation/granular **publish token** as the repo secret `NPM_TOKEN`
-   (GitHub → Settings → Secrets → Actions). Scope: publish for `reviewgate` + `@codevena/*`.
+2. Create the `@codevena` npm **org** (free for public packages): npmjs.com → Add
+   Organization → `codevena`. Without it, every scoped `npm publish` 404s.
+3. Add a **granular/automation publish token** as the repo secret `NPM_TOKEN`
+   (GitHub → Settings → Secrets → Actions) with **create + publish** rights for
+   `reviewgate` and `@codevena/*`. Automation tokens bypass 2FA by design (intended for CI).
 
 ## Release (CI — recommended)
-1. Bump `package.json` `version` (e.g. `0.1.0-alpha.2`), commit.
+1. Bump `package.json` `version` (e.g. `0.1.0-alpha.2`) **and** the README install-example
+   version (Option A tarball name + Option C, if pinned). The CI drift guard checks the
+   *committed* root version against the tag, so **commit before tagging**.
 2. `git tag v0.1.0-alpha.2 && git push origin v0.1.0-alpha.2`.
 3. The `release` workflow builds the GitHub Release tarballs; `publish-npm` then builds
    `npm-dist/`, verifies it, and publishes all five (platform packages first, then main)
-   with provenance. The job fails if the tag and `package.json` version disagree.
+   with provenance. Publishes are **idempotent** (already-published versions are skipped).
 
-## Release (local fallback)
+## Release (local fallback — loses provenance)
+Provenance can only be generated from the GitHub Actions OIDC context, so prefer CI for
+public releases. Local fallback:
 ```bash
 bun run build:npm && bun run verify:npm
 for d in npm-dist/@codevena/*; do npm publish "$d" --access public; done
 npm publish npm-dist/main --access public
 ```
+
+## Partial-publish recovery
+npm versions are **immutable** and cannot be re-published or (within 24 h) un-published.
+If a publish fails mid-way (e.g. 2 of 4 platform packages went up, main did not):
+- Just **re-run the same tag** (re-push it, or re-run the CI job). `publish_idem` skips the
+  already-published versions and finishes the rest — no abort.
+- If you need to change package **content**, you cannot reuse the version — **bump** it
+  (new tag) and republish all five.
+- Never publish `main` before all four platform packages are live (the job already orders
+  it last; if publishing by hand, keep that order — main pins the platforms exactly).
+
+## Dist-tags
+While the only releases are alphas, publish **without** an explicit dist-tag so the alpha
+becomes `latest` and a bare `npm i -g reviewgate` installs it. Once a **stable** release
+exists, publish prereleases with `--tag next` so they don't move `latest`.
 
 ## Verify
 ```bash
@@ -981,4 +1133,16 @@ git commit -m "docs(npm): README install Option C + maintainer publish runbook"
 
 **Placeholder scan:** none — every step ships complete code/commands.
 
-**Type consistency:** `Target`/`TARGETS`/`pkgName`/`platformManifest`/`mainManifest` defined in Task 3 and consumed verbatim in Tasks 4, 5; `resolveBakedBin` defined and consumed in Task 2; `verifyNpmDist` defined in Task 5 and consumed by its test; `HOST_PKG` derivation identical in Tasks 1 and 6.
+**Type consistency:** `Target`/`TARGETS`/`pkgName`/`platformManifest`/`mainManifest` defined in Task 3 and consumed verbatim in Tasks 4, 5; `resolveBakedBin`/`writeShims` defined and consumed in Task 2; `verifyNpmDist(distRoot, opts?)` defined in Task 5 and consumed by its test + Task 6; `HOST_PKG` derivation identical in Tasks 1 and 6.
+
+**Plan-gate revisions incorporated (2× Opus panel, both REVISE → addressed):**
+- `build:npm` decoupled from `bun run build` so it never redeploys the live `dist/` gate binary; compiles only into `npm-dist/` (Task 4). [CRITICAL]
+- E2E test made opt-in via `RG_E2E=1` so the DoD suite never runs npm or builds binaries (Task 6). [CRITICAL]
+- Ephemeral-bin detection broadened beyond `/_npx/` to npx·cacache·pnpm/yarn/bun dlx·OS-temp (Task 2). [CRITICAL]
+- `personas/` dropped from platform packages (dead weight; resolved from `.reviewgate/personas/`) (Tasks 3, 4). [WARN]
+- `verifyNpmDist` strengthened: non-empty binary, all 4 grammars, main `bin`/`engines` checks (Task 5). [WARN]
+- Launcher now linted (`biome check … bin`) + `node --check` in `verify:npm` (Task 5). [WARN]
+- `writeShims` extracted + re-bake (stale→new path) test added (Task 2). [WARN]
+- Publishes made idempotent (skip existing versions) + recovery/org/dist-tag runbook (Tasks 7, 8). [WARN]
+- `npm pack --json` parsing (Task 6); CI gate comment corrected + version-coupling note (Task 7). [WARN/INFO]
+- Empirically VERIFIED sound by the panel (no change needed): spawn→execPath bake, npm os/cpu skip without registry fetch, `require.resolve` of the hoisted scoped dep, offline gate exit-0 on a fresh repo, `setup-node` + `NODE_AUTH_TOKEN` publish auth, same-job `GITHUB_ENV` skip flag.
