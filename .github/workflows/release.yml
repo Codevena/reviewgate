@@ -82,13 +82,16 @@ jobs:
   publish-npm:
     needs: release
     runs-on: ubuntu-latest
-    # Two-layer gate: (1) only on the canonical repo (forks are skipped here);
-    # (2) the "Guard — NPM_TOKEN present" step below sets skip=1 when the secret is
-    # unset, so the build/publish steps no-op even on the canonical repo without a token.
+    # Auth via npm Trusted Publishing (OIDC) — NO long-lived NPM_TOKEN. npm (>= 11.5)
+    # mints a short-lived, per-run credential from the GitHub OIDC identity, which
+    # npmjs.com trusts for these packages (configured per-package on npmjs.com:
+    # publisher = GitHub Actions, repo Codevena/reviewgate, workflow release.yml).
+    # Forks are skipped by the repo check; a fork's OIDC identity wouldn't match the
+    # trusted publisher anyway, so npm would reject it.
     if: ${{ github.repository == 'Codevena/reviewgate' }}
     permissions:
       contents: read
-      id-token: write # npm provenance (OIDC)
+      id-token: write # REQUIRED: lets npm do the OIDC trusted-publishing handshake (+ provenance)
     steps:
       - uses: actions/checkout@v5
 
@@ -97,26 +100,26 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Setup Node + npm (registry auth)
+      # NO registry-url: setup-node's registry-url writes an .npmrc line
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` — with no NODE_AUTH_TOKEN
+      # set (we use OIDC, not a token) npm aborts publish with "Failed to replace env
+      # in config: ${NODE_AUTH_TOKEN}". npm publishes to the default registry
+      # (registry.npmjs.org) anyway, and OIDC Trusted Publishing handles auth.
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: "https://registry.npmjs.org"
+
+      # node 20 ships npm 10.x; Trusted Publishing (OIDC) needs npm >= 11.5. Pin an exact,
+      # audited version — `@latest` would fetch+exec an unaudited binary inside this
+      # id-token:write job (it can read the OIDC request token), a supply-chain risk.
+      - name: Upgrade npm (pinned; >= 11.5 for OIDC Trusted Publishing)
+        run: npm install -g npm@11.17.0
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Guard — NPM_TOKEN present
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "${NPM_TOKEN}" ]; then
-            echo "NPM_TOKEN secret not set — skipping npm publish."
-            echo "skip=1" >> "$GITHUB_ENV"
-          fi
-
       - name: Build + verify npm-dist (version from tag)
-        if: ${{ env.skip != '1' }}
         env:
           REVIEWGATE_VERSION: ${{ github.ref_name }}
         run: |
@@ -131,12 +134,11 @@ jobs:
           bun run build:npm
           bun run verify:npm
 
-      - name: Publish (platform packages first, then main; idempotent)
-        if: ${{ env.skip != '1' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish via OIDC Trusted Publishing (platform packages first, then main; idempotent)
         run: |
           set -euo pipefail
+          # No NODE_AUTH_TOKEN: npm >= 11.5 detects the OIDC environment + the per-package
+          # trusted-publisher config and authenticates per run (provenance is generated too).
           # Idempotent publish — a re-pushed tag / partial-publish re-run must SKIP versions that
           # already exist (npm versions are immutable) instead of aborting. We rely on the
           # AUTHORITATIVE write-path response (the 403 "cannot publish over previously published"),
