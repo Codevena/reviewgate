@@ -66,9 +66,10 @@ If a publish fails mid-way (e.g. 2 of 4 platform packages went up, main did not)
   it last; if publishing by hand, keep that order — main pins the platforms exactly).
 
 ## Dist-tags
-While the only releases are alphas, publish **without** an explicit dist-tag so the alpha
-becomes `latest` and a bare `npm i -g reviewgate` installs it. Once a **stable** release
-exists, publish prereleases with `--tag next` so they don't move `latest`.
+npm >= 11 **REFUSES to publish a prerelease without an explicit `--tag`** (npm 10
+auto-assigned `latest`). While the only releases are alphas, the `publish-npm` job passes
+`--tag latest` so the newest alpha is `latest` and a bare `npm i -g reviewgate` installs it.
+Once a **stable** release exists, switch prereleases to `--tag next` so they don't move `latest`.
 
 ## Verify
 ```bash

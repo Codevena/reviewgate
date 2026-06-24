@@ -146,9 +146,13 @@ jobs:
           # can report "not found" minutes after a successful publish → a false re-publish → 403.
           # "./$d" (not "$d"): a bare "owner/repo"-shaped path like "npm-dist/main" is parsed by npm
           # as a GitHub-shorthand git dep (→ git ls-remote, fails); "./" forces a local-directory read.
+          # --tag latest: npm >= 11 REFUSES to publish a prerelease (e.g. 0.1.0-alpha.N)
+          # without an explicit --tag (npm 10 auto-assigned `latest`). While the only releases
+          # are alphas we publish them as `latest` so a bare `npm i -g reviewgate` installs the
+          # newest one. (After the first STABLE release, switch prereleases to `--tag next`.)
           publish_idem() {
             d="$1"
-            if out="$(npm publish "./$d" --access public --provenance 2>&1)"; then
+            if out="$(npm publish "./$d" --access public --provenance --tag latest 2>&1)"; then
               printf '%s\n' "$out"
             elif printf '%s\n' "$out" | grep -qiE "cannot publish over|previously published"; then
               echo "skip: ./$d — this version is already published (idempotent)"
