@@ -20,7 +20,7 @@ import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-hel
 import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
 import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
 
-const DISALLOWED = "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
+const DISALLOWED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
 
 // NOTE: a hardcoded review-budget cap (CLAUDE_REVIEW_TIMEOUT_CAP_MS=180s) was tried
 // here and REVERTED. Field data (2026-06-02 dogfood across hammihan/geometrywars) shows
