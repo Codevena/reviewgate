@@ -1,7 +1,9 @@
 // src/cli/index.ts
 import { defineCommand, runMain } from "citty";
+import type { ProviderId } from "../providers/registry.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
+import { runBenchRun } from "./commands/bench.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import {
@@ -403,6 +405,79 @@ const learn = defineCommand({
   },
 });
 
+const bench = defineCommand({
+  meta: {
+    name: "bench",
+    description: "Benchmark the reviewer panel against a labelled ground-truth corpus",
+  },
+  subCommands: {
+    run: defineCommand({
+      meta: {
+        name: "run",
+        description:
+          "Run every case in a corpus and write a reviewgate.bench.result.v1 JSON (precision/recall/FP-rate + per-provider + provenance)",
+      },
+      args: {
+        corpus: {
+          type: "string",
+          required: true,
+          description: "Corpus directory (dir of case dirs)",
+        },
+        out: { type: "string", required: true, description: "Output results JSON path" },
+        providers: { type: "string", description: "Comma-separated reviewer subset (ablation)" },
+        window: { type: "string", description: "Line-match window radius (default 5)" },
+        "include-advisory": {
+          type: "boolean",
+          description: "Fold INFO/advisory findings into scoring",
+        },
+        "no-cache": {
+          type: "boolean",
+          description:
+            "No-op in P1: bench always measures cold (the review cache is force-disabled because a cache hit omits the per-provider raw layer). Accepted for forward-compat.",
+        },
+        "min-clean": { type: "string", description: "Quality-gate floor on scored clean cases" },
+        "min-seeded": { type: "string", description: "Quality-gate floor on scored seeded cases" },
+        "max-failed-frac": {
+          type: "string",
+          description: "Max review-error fraction before benchmark-invalid (default 0.1)",
+        },
+      },
+      async run({ args }) {
+        const num = (v: unknown): number | undefined => {
+          if (typeof v !== "string" || v.length === 0) return undefined;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : undefined;
+        };
+        const providers =
+          typeof args.providers === "string" && args.providers.length > 0
+            ? (args.providers
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean) as ProviderId[])
+            : undefined;
+        const window = num(args.window);
+        const minClean = num(args["min-clean"]);
+        const minSeeded = num(args["min-seeded"]);
+        const maxFailedFrac = num(args["max-failed-frac"]);
+        const res = await runBenchRun({
+          repoRoot: process.cwd(),
+          corpus: args.corpus as string,
+          out: args.out as string,
+          ...(providers ? { providers } : {}),
+          ...(window !== undefined ? { window } : {}),
+          includeAdvisory: args["include-advisory"] === true,
+          ...(minClean !== undefined ? { minClean } : {}),
+          ...(minSeeded !== undefined ? { minSeeded } : {}),
+          ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
+        });
+        if (res.stdout) process.stdout.write(res.stdout);
+        if (res.stderr) process.stderr.write(res.stderr);
+        process.exit(res.exitCode);
+      },
+    }),
+  },
+});
+
 const main = defineCommand({
   meta: {
     name: "reviewgate",
@@ -423,6 +498,7 @@ const main = defineCommand({
     report,
     setup,
     learn,
+    bench,
   },
 });
 

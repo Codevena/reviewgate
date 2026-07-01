@@ -7,7 +7,7 @@ const validResult = {
     reviewgate_version: "0.1.0-alpha.4",
     corpus_commit: "abc1234",
     corpus_dirty: false,
-    providers: [{ id: "codex", cli_version: "1.2.3", model: "unknown" }],
+    providers: [{ id: "codex", cli_version: "1.2.3", model: "unknown", persona: "security" }],
     config_hash: "deadbeef",
     window: 5,
     repeat: 1,
@@ -15,6 +15,15 @@ const validResult = {
     temperature: null,
     stores: "per-case-fresh",
     cache: "cold",
+    file_context: "full",
+    phases: {
+      critic: false,
+      reputation: true,
+      fp_ledger: false,
+      confidence_floor: 0.6,
+      scope_to_diff: true,
+      ablations: [],
+    },
     host_os: "darwin-arm64",
     timestamp: "2026-07-01T00:00:00Z",
     case_count: { seeded: 1, clean: 1 },
@@ -26,8 +35,20 @@ const validResult = {
       status: "scored",
       content_hash: "hash1",
       counts: { tp: 1, fp: 0, fn: 0, neutral: 0 },
+      panel_ok: 1,
+      panel_configured: 1,
+      file_context: "full",
       latency_ms: 1200,
       error: null,
+    },
+  ],
+  providers: [
+    {
+      provider: "codex",
+      coverage: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+      precision: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+      recall: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+      authoritative: true,
     },
   ],
   cost: [
@@ -133,8 +154,129 @@ describe("BenchResultSchema", () => {
           status: "review-error",
           content_hash: "h",
           counts: { tp: 0, fp: 0, fn: 0, neutral: 0 },
+          panel_ok: 0,
+          panel_configured: 1,
+          file_context: "full",
           latency_ms: null,
           error: "provider timeout",
+        },
+      ],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  // --- P1 additive amendments (spec §12) ---
+
+  it("requires provenance.file_context and rejects an unknown value", () => {
+    const { file_context: _drop, ...prov } = validResult.provenance;
+    expect(BenchResultSchema.safeParse({ ...validResult, provenance: prov }).success).toBe(false);
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        provenance: { ...validResult.provenance, file_context: "sideways" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a persona on every provenance roster entry", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      provenance: {
+        ...validResult.provenance,
+        providers: [{ id: "codex", cli_version: "1", model: "unknown" }],
+      },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("requires the provenance.phases config snapshot", () => {
+    const { phases: _drop, ...prov } = validResult.provenance;
+    expect(BenchResultSchema.safeParse({ ...validResult, provenance: prov }).success).toBe(false);
+  });
+
+  it("allows a null confidence_floor in the phases snapshot (floor disabled)", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      provenance: {
+        ...validResult.provenance,
+        phases: { ...validResult.provenance.phases, confidence_floor: null },
+      },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("records ablation names in the phases snapshot", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      provenance: {
+        ...validResult.provenance,
+        phases: { ...validResult.provenance.phases, critic: false, ablations: ["no-critic"] },
+      },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("requires per-case panel_ok / panel_configured / file_context", () => {
+    const bareCase = {
+      id: "x",
+      kind: "seeded-bug",
+      status: "scored",
+      content_hash: "h",
+      counts: { tp: 0, fp: 0, fn: 0, neutral: 0 },
+      latency_ms: 1,
+      error: null,
+    };
+    expect(BenchResultSchema.safeParse({ ...validResult, cases: [bareCase] }).success).toBe(false);
+  });
+
+  it("requires the top-level per-provider results section", () => {
+    const { providers: _drop, ...rest } = validResult;
+    expect(BenchResultSchema.safeParse(rest).success).toBe(false);
+  });
+
+  it("validates the per-provider metric blocks", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      providers: [
+        {
+          provider: "codex",
+          coverage: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+          // precision value disagrees with num/den → MetricSchema rejects it.
+          precision: { num: 1, den: 2, value: 0.9, ci_lo: 0, ci_hi: 1 },
+          recall: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+          authoritative: true,
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects an authoritative provider with an undefined (den=0) coverage", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      providers: [
+        {
+          provider: "codex",
+          coverage: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          precision: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          recall: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          authoritative: true,
+        },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("allows a non-authoritative provider with undefined coverage", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      providers: [
+        {
+          provider: "gemini",
+          coverage: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          precision: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          recall: { num: 0, den: 0, value: null, ci_lo: null, ci_hi: null },
+          authoritative: false,
         },
       ],
     });
