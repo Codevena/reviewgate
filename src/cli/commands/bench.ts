@@ -12,6 +12,7 @@ import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "
 import { join, resolve } from "node:path";
 import type { MatchResult } from "../../bench/matcher.ts";
 import { makeMetric } from "../../bench/metrics.ts";
+import { renderBenchReport } from "../../bench/report.ts";
 import { type CaseRunOutcome, buildBenchConfig, runBenchCase } from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import type { ProviderAdapter, ProviderConfig } from "../../providers/adapter-base.ts";
@@ -72,6 +73,42 @@ interface LoadedCase {
 
 function usage(message: string): BenchRunOutput {
   return { exitCode: 2, stdout: "", stderr: `bench run: ${message}\n` };
+}
+
+export interface BenchReportInput {
+  repoRoot: string;
+  file: string;
+  /** print only the paste-ready markdown block (default: the terminal table). */
+  markdown?: boolean;
+}
+
+/** Render a saved results JSON to a terminal table (+ markdown). Exit 2 on a bad file. */
+export async function runBenchReport(input: BenchReportInput): Promise<BenchRunOutput> {
+  const path = resolve(input.repoRoot, input.file);
+  if (!existsSync(path)) {
+    return { exitCode: 2, stdout: "", stderr: `bench report: file not found: ${input.file}\n` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `bench report: not valid JSON: ${err instanceof Error ? err.message : err}\n`,
+    };
+  }
+  const result = BenchResultSchema.safeParse(parsed);
+  if (!result.success) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `bench report: not a valid bench result: ${result.error.issues[0]?.message ?? "?"}\n`,
+    };
+  }
+  const { table, markdown } = renderBenchReport(result.data);
+  const out = input.markdown ? `${markdown}\n` : `${table}\n\n${markdown}\n`;
+  return { exitCode: 0, stdout: out, stderr: "" };
 }
 
 function sha256(s: string): string {

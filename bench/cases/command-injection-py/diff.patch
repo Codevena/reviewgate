@@ -1,0 +1,10 @@
+diff --git a/src/tasks/backup.py b/src/tasks/backup.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/tasks/backup.py
+@@ -0,0 +1,4 @@
++import os
++
++def backup(user_dir):
++    os.system("tar czf backup.tgz " + user_dir)

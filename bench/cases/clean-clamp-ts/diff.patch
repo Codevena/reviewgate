@@ -1,0 +1,11 @@
+diff --git a/src/util/clamp.ts b/src/util/clamp.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/util/clamp.ts
+@@ -0,0 +1,5 @@
++export function clamp(value: number, min: number, max: number): number {
++  if (value < min) return min;
++  if (value > max) return max;
++  return value;
++}

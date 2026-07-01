@@ -3,7 +3,7 @@ import { defineCommand, runMain } from "citty";
 import type { ProviderId } from "../providers/registry.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
-import { runBenchRun } from "./commands/bench.ts";
+import { runBenchReport, runBenchRun } from "./commands/bench.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import {
@@ -469,6 +469,27 @@ const bench = defineCommand({
           ...(minClean !== undefined ? { minClean } : {}),
           ...(minSeeded !== undefined ? { minSeeded } : {}),
           ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
+        });
+        if (res.stdout) process.stdout.write(res.stdout);
+        if (res.stderr) process.stderr.write(res.stderr);
+        process.exit(res.exitCode);
+      },
+    }),
+    report: defineCommand({
+      meta: {
+        name: "report",
+        description:
+          "Render a saved bench results JSON to a terminal table + a paste-ready markdown block",
+      },
+      args: {
+        file: { type: "positional", required: true, description: "Path to a results JSON" },
+        markdown: { type: "boolean", description: "Print only the markdown block (for piping)" },
+      },
+      async run({ args }) {
+        const res = await runBenchReport({
+          repoRoot: process.cwd(),
+          file: args.file as string,
+          markdown: args.markdown === true,
         });
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);

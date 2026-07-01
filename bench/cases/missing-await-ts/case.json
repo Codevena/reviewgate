@@ -1,0 +1,18 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "missing-await-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": "await",
+      "file": "src/orders/checkout.ts",
+      "line": 7,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "db.save returns a promise that is never awaited (dropped); checkout returns before it settles"
+}

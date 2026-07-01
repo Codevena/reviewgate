@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "clean-slugify-py",
+  "kind": "clean",
+  "language": "py",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "a correct slugify; the regex is linear (no ReDoS)"
+}

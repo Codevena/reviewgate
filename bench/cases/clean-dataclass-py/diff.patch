@@ -1,0 +1,15 @@
+diff --git a/src/models/point.py b/src/models/point.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/models/point.py
+@@ -0,0 +1,9 @@
++from dataclasses import dataclass
++
++@dataclass(frozen=True)
++class Point:
++    x: float
++    y: float
++
++    def distance_to(self, other):
++        return ((self.x - other.x) ** 2 + (self.y - other.y) ** 2) ** 0.5

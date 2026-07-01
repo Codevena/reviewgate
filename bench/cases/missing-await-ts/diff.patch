@@ -1,0 +1,15 @@
+diff --git a/src/orders/checkout.ts b/src/orders/checkout.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/orders/checkout.ts
+@@ -0,0 +1,9 @@
++type Order = { id: string };
++
++export async function checkout(
++  db: { save: (order: Order) => Promise<void> },
++  order: Order,
++): Promise<string> {
++  db.save(order);
++  return order.id;
++}

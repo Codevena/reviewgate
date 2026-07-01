@@ -1,0 +1,18 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "sql-injection-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": "sql",
+      "file": "src/db/users.ts",
+      "line": 3,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "req.query.id concatenated straight into a SQL string"
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "command-injection-py",
+  "kind": "seeded-bug",
+  "language": "py",
+  "expected": [
+    {
+      "tag": "command",
+      "file": "src/tasks/backup.py",
+      "line": 4,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "unsanitised user_dir concatenated into an os.system shell command"
+}

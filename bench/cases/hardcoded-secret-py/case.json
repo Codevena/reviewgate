@@ -1,0 +1,18 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "hardcoded-secret-py",
+  "kind": "seeded-bug",
+  "language": "py",
+  "expected": [
+    {
+      "tag": "hardcoded",
+      "file": "src/config/aws.py",
+      "line": 4,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "AWS credentials committed as source literals"
+}

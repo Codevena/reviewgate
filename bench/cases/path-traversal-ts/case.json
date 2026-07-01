@@ -1,0 +1,18 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "path-traversal-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": "path",
+      "file": "src/server/files.ts",
+      "line": 4,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "req.query.path joined onto baseDir with no containment check (../ escapes)"
+}
