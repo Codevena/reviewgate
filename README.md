@@ -1,15 +1,17 @@
 # Reviewgate
 
-**Reviewgate prevents AI coding agents from ending a turn until independent LLM
-reviewers have checked the diff and every blocking finding is resolved.**
+**Reviewgate stops your AI coding agent from ending its turn until an independent
+panel of LLM reviewers has checked the diff — and blocks it until every real
+finding is fixed or rejected-with-reason.** It's the *checker* half of the agent
+loop, packaged so the writer can't grade its own homework.
 
-It runs *inside* Claude Code's agent loop. When Claude edits files in a
-Reviewgate-initialised repo, a `Stop` hook spawns a heterogeneous LLM reviewer
-panel (Codex · Gemini · Claude · OpenRouter) as subprocesses, aggregates their
-findings under a severity-weighted veto, and **blocks Claude from ending its
-turn** until every finding is either fixed or rejected-with-reason. Findings live
-in files (`.reviewgate/pending.md`) that Claude reads with its normal Read tool —
-no chat-stream parsing, no flaky stdout scraping.
+- 🐛 **Catches real bugs before the agent says "done"** — a heterogeneous panel
+  (Codex · Gemini · Claude · OpenRouter) reviews the actual diff, in-loop, every turn.
+- 🚦 **Never silently passes** — it fails *closed*: no reviewers, a crash, a timeout
+  or a quota-out **blocks** the turn instead of waving it through.
+- 📋 **Leaves an audit trail** — every finding and every fix/reject decision is
+  written to files (`.reviewgate/pending.md`) a human (or CI) can inspect later — no
+  chat-stream parsing, no flaky stdout scraping.
 
 Reviewers run the official provider CLIs, so users on Claude Pro/Max, ChatGPT
 Plus/Pro and Gemini Advanced pay **$0 per review** within their subscription
@@ -27,49 +29,32 @@ hosted model by name.
   <img src="docs/assets/demo.gif" alt="Reviewgate in action: Claude edits code, tries to finish, Reviewgate blocks on a CRITICAL finding, Claude fixes it, re-review passes." width="820">
 </p>
 
-> **Status: `0.1.0-alpha`.** Multi-reviewer panel
-> (Codex + Gemini + Claude + OpenRouter) · parallel execution · adversarial critic ·
-> adaptive triage · tree-sitter symbol graph · research context · review cache ·
-> quota auto-failover · per-repo learning brain + curator · false-positive ledger ·
-> stats & weekly reports · interactive `setup` wizard · opt-in reviewer filesystem
-> isolation (macOS Seatbelt / Linux bubblewrap). Remaining caveat: network egress is
-> not isolated. See [Scope & limitations](#scope--limitations).
+## 60-second quickstart
 
----
+```bash
+npm i -g reviewgate     # your platform's prebuilt binary
+cd your-repo
+reviewgate init         # bakes the Stop/PostToolUse hooks into .claude/settings.json
+reviewgate setup        # interactive wizard — pick reviewers (or skip for defaults)
+reviewgate doctor       # verify the reviewer CLIs are reachable
+```
 
-## Why: Reviewgate is the verification loop
+Done. Next time Claude Code edits a file in this repo and tries to finish,
+Reviewgate reviews the diff and blocks the turn if it finds a real problem.
 
-The current meta in agentic coding is **"write loops, not code"** ([Boris
-Cherny](https://medium.com/@fahey_james/i-dont-prompt-claude-anymore-i-write-loops-that-prompt-claude-57e48a4f28d7),
-[Simon Willison](https://simonwillison.net/2025/Sep/30/designing-agentic-loops/),
-[Addy Osmani](https://addyosmani.com/blog/loop-engineering/)). The unit of work
-moved from the keystroke → to the prompt → to the **loop**: you stop writing
-lines and start designing the system that prompts the agent and lets it iterate
-until a goal is met.
+> **Want the _why_?** How this fits "write loops, not code", the failure modes it
+> survives, the security model → [Why](#why-reviewgate-is-the-verification-loop) ·
+> [Failure modes](#failure-modes-it-survives) · [Security](#security).
 
-Every agentic loop has two halves — a **generator** that produces code and a
-**checker** that verifies it and decides when to stop. The loop-engineering
-crowd is near-unanimous on the part that actually makes a loop trustworthy:
-*split the one who writes from the one who checks*, and give the loop a
-**testable termination condition** so it can't grade its own homework or run
-forever.
+<details><summary><b>Full feature list</b> (<code>0.1.0-alpha</code>)</summary>
 
-**Reviewgate is that checker, packaged as reusable infrastructure.** It is not a
-code-generating orchestrator (that's the host — Claude Code's `Workflow`,
-parallel agents, cron). It is the verification loop you drop *into* such a loop
-so it can't merge unreviewed work "while you sleep":
-
-| Loop-engineering principle | Reviewgate |
-| --- | --- |
-| Writer ≠ checker (no self-grading) | A **heterogeneous reviewer panel** (Codex · Gemini · Claude · OpenRouter) — independent models inspect the diff |
-| "Are you done?" check each turn | A **`Stop` hook** blocks the turn's end until every finding is fixed or rejected-with-reason |
-| Testable termination condition | `decisions/<iter>.jsonl` must address every finding id in `pending.json` before the gate allows the stop |
-| Adversarial verification | A demote-only **critic** + severity-weighted veto + cross-reviewer consensus |
-| Explicit failure exits (no infinite loop) | `LoopDriver` caps iterations and emits `ESCALATION.md` on max-iter / stuck-signatures / cost-cap / high-reject-rate |
-| Feedback as an observable signal | Findings are written to **files** the agent reads with its normal Read tool — no chat-stream scraping |
-
-In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
-verifier that runs at the end of each turn.
+Multi-reviewer panel (Codex · Gemini · Claude · OpenRouter) · parallel execution ·
+adversarial critic · adaptive triage · tree-sitter symbol graph · research context ·
+review cache · quota auto-failover · per-repo learning brain + curator ·
+false-positive ledger · stats & weekly reports · interactive `setup` wizard ·
+opt-in reviewer filesystem isolation (macOS Seatbelt / Linux bubblewrap). Remaining
+caveat: network egress is not isolated. See [Scope & limitations](#scope--limitations).
+</details>
 
 ---
 
@@ -108,6 +93,42 @@ isolated on either platform. See [Security](#security).
 
 > 📐 For the full control flow, module map and pipeline stages, see
 > [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Why: Reviewgate is the verification loop
+
+The current meta in agentic coding is **"write loops, not code"** ([Boris
+Cherny](https://medium.com/@fahey_james/i-dont-prompt-claude-anymore-i-write-loops-that-prompt-claude-57e48a4f28d7),
+[Simon Willison](https://simonwillison.net/2025/Sep/30/designing-agentic-loops/),
+[Addy Osmani](https://addyosmani.com/blog/loop-engineering/)). The unit of work
+moved from the keystroke → to the prompt → to the **loop**: you stop writing
+lines and start designing the system that prompts the agent and lets it iterate
+until a goal is met.
+
+Every agentic loop has two halves — a **generator** that produces code and a
+**checker** that verifies it and decides when to stop. The loop-engineering
+crowd is near-unanimous on the part that actually makes a loop trustworthy:
+*split the one who writes from the one who checks*, and give the loop a
+**testable termination condition** so it can't grade its own homework or run
+forever.
+
+**Reviewgate is that checker, packaged as reusable infrastructure.** It is not a
+code-generating orchestrator (that's the host — Claude Code's `Workflow`,
+parallel agents, cron). It is the verification loop you drop *into* such a loop
+so it can't merge unreviewed work "while you sleep":
+
+| Loop-engineering principle | Reviewgate |
+| --- | --- |
+| Writer ≠ checker (no self-grading) | A **heterogeneous reviewer panel** (Codex · Gemini · Claude · OpenRouter) — independent models inspect the diff |
+| "Are you done?" check each turn | A **`Stop` hook** blocks the turn's end until every finding is fixed or rejected-with-reason |
+| Testable termination condition | `decisions/<iter>.jsonl` must address every finding id in `pending.json` before the gate allows the stop |
+| Adversarial verification | A demote-only **critic** + severity-weighted veto + cross-reviewer consensus |
+| Explicit failure exits (no infinite loop) | `LoopDriver` caps iterations and emits `ESCALATION.md` on max-iter / stuck-signatures / cost-cap / high-reject-rate |
+| Feedback as an observable signal | Findings are written to **files** the agent reads with its normal Read tool — no chat-stream scraping |
+
+In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
+verifier that runs at the end of each turn.
 
 ---
 
@@ -286,7 +307,7 @@ platforms use Option A or B.
 
 ---
 
-## Quick start
+## First run — guided walkthrough
 
 Zero to your first blocked review in ~5 minutes.
 
