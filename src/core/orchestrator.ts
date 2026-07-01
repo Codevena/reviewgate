@@ -181,6 +181,20 @@ export interface OrchestratorInput {
   // and stamp session_attributable + whole_diff_attributable into the report. null (single-agent /
   // scoping off / no session_id / dirtyNow snapshot failed) → flags omitted → disown unavailable.
   attribution?: { sessionId: string; dirtyNow: string[] } | null;
+  // P1a (bench): when true, IterationResult.rawReviews is populated with each
+  // reviewer's pre-aggregation findings (deep-cloned). Default off → zero cost /
+  // zero behavior change for the gate. Only `reviewgate bench` sets it.
+  captureRawReviews?: boolean;
+}
+
+// P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
+export interface RawReview {
+  provider: ProviderId;
+  persona: string;
+  reviewerId: string;
+  status: ReviewResult["status"];
+  /** deep-cloned pre-aggregation snapshot; [] for a non-ok run. */
+  findings: Finding[];
 }
 
 export interface IterationResult {
@@ -213,6 +227,12 @@ export interface IterationResult {
   // surfaced so the LoopDriver can persist it and min() it with the config cap on
   // the NEXT iteration's escalation precondition. null ⇒ no override.
   maxIterationsOverride?: number | null;
+  // P1a (bench): opt-in per-provider pre-aggregation findings (see
+  // captureRawReviews in OrchestratorInput). Undefined unless captured. Lets
+  // `reviewgate bench` score the RAW per-reviewer layer distinctly from the panel.
+  // `| undefined` (not just `?`) so the return sites can set it unconditionally
+  // under exactOptionalPropertyTypes.
+  rawReviews?: RawReview[] | undefined;
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -1553,6 +1573,20 @@ export class Orchestrator {
 
     const okRuns = settled.filter((s) => s.res.status === "ok");
 
+    // P1a (bench): opt-in per-provider pre-aggregation snapshot. Capture EVERY
+    // settled attempt (ok + non-ok) with its identity + verbatim status, deep-
+    // cloning findings so the downstream demote/aggregate passes (which mutate the
+    // live Finding objects) can't rewrite this snapshot. Undefined unless requested.
+    const rawReviews: RawReview[] | undefined = this.input.captureRawReviews
+      ? settled.map((s) => ({
+          provider: s.provider,
+          persona: s.persona,
+          reviewerId: s.res.reviewerId,
+          status: s.res.status,
+          findings: s.res.findings.map((f) => structuredClone(f)),
+        }))
+      : undefined;
+
     // Per-reviewer outcomes for the RunSummary (includes thrown adapters, now
     // surfaced as error runs in `settled`). Built once for both the okRuns===0
     // ERROR path and the normal final return.
@@ -1617,6 +1651,7 @@ export class Orchestrator {
         allReviewersQuotaLocked,
         allReviewersInfraFailed,
         maxIterationsOverride,
+        rawReviews,
         costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
         durationMs: Date.now() - start,
         signaturesThisIter: [],
@@ -2103,6 +2138,7 @@ export class Orchestrator {
     return {
       verdict: agg.verdict,
       maxIterationsOverride,
+      rawReviews,
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
