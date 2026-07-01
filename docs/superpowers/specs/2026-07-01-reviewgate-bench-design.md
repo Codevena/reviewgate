@@ -498,16 +498,100 @@ Still genuinely open (carry into implementation):
 - **P0** — schemas (`bench-case`, `bench-result`) + `matcher.ts` + unit tests on
   the matcher with hand-built finding/label fixtures (TDD; the matcher is pure and
   fully testable offline without any reviewer).
-- **P1** — `runner.ts` reusing the one-shot Orchestrator path + `bench run` CLI +
-  isolated per-case state dir. **Includes the two gate-required Orchestrator API
-  changes as explicit scope:** (a) optional `stateRoot?` threaded through the
-  state-path resolver + state-store factory, defaulting to `<repoRoot>/.reviewgate`
-  (backward-compatible for `gate.ts` / `review-plan.ts`); (b) optional
-  `captureRawReviews?` flag surfacing the pre-aggregation `rawReviews` array on the
-  result. Plus the fixed synthetic `gitInfo` for the non-git sandbox (§7 step 3).
+- **P1** — `runner.ts` + `bench run` CLI. **Approach revised & re-plan-gated
+  (2026-07-01, PASS after 8 rounds) — see §12.** Instead of threading `stateRoot`
+  through ~30 path functions (spec §7.1's original idea), bench runs each case with
+  `repoRoot` = a fresh **sandbox** dir: since every `.reviewgate/` path derives from
+  `repoRoot`, this isolates all state *by construction*. The one Orchestrator change
+  is an opt-in `captureRawReviews?` flag → pre-aggregation `rawReviews`.
 - **P2** — `bench report` renderer (table + markdown).
 - **P3** — bootstrap corpus (~22 cases) committed under `bench/cases/`.
 - **P4** — ablation overrides + `bench matrix`.
 - **P5** — `--repeat`, `--explain`, cost estimation polish.
 
 P0 is fully offline and TDD-able; the reviewer-dependent parts start at P1.
+
+## 12. P1 implementation plan (plan-gate PASS, 2026-07-01, Codex, 8 rounds)
+
+Supersedes §7.1's `stateRoot`-threading with a **sandbox-`repoRoot`** design (all
+`.reviewgate/` paths derive from `repoRoot`; no `homedir()`/`cwd()` leaks in the
+path layer — verified), which isolates state *by construction* with far less change
+to the dogfooded core.
+
+**P1a — Orchestrator (the one core change):** add opt-in `captureRawReviews?:
+boolean` to `OrchestratorInput` (default false → zero cost/behavior change) and
+optional `rawReviews?` to `IterationResult`. When set, snapshot **all** `settled`
+reviewer attempts (not just ok) at the pre-aggregation point (orchestrator.ts
+~1554), **deep-cloning** each finding (later passes mutate them). The element type
+is explicit (defined in orchestrator.ts, exported for the runner + tests):
+```ts
+export interface RawReview {
+  provider: ProviderId;
+  persona: string;
+  reviewerId: string;
+  status: ReviewResult["status"];   // verbatim taxonomy: "ok"|"error"|"quota"|…
+  findings: Finding[];              // [] for non-ok; deep-cloned snapshot
+}
+// IterationResult gains:  rawReviews?: RawReview[]
+```
+Preserving identity + status lets downstream distinguish "ran, zero findings" (ok,
+[]) from "no result" (non-ok). Populate on the normal + panel-collapse-ERROR return
+paths. TDD with an in-process stub adapter.
+
+**P1b — runner (`src/bench/runner.ts`), per case:**
+1. Fresh temp sandbox; `git init` (no commit). **Hydration path-safety** (corpus
+   diffs are UNTRUSTED): reject the case (`invalid`) if its diff targets a reserved
+   control dir (`.reviewgate/`, `.git/`, `.claude/`), an absolute/`..` path, or a
+   symlink/non-regular mode. `git apply` the diff to the working tree (case must be
+   **self-contained** — applies to an empty tree; non-applyable → `invalid`).
+   Defence-in-depth: ensure no `.reviewgate/` exists in the sandbox before startup.
+2. Config = `deepClone(defaults)` (the exported `defaults` object from
+   `src/config/defaults.ts` — the same base `loadEffectiveConfig` deep-merges) +
+   explicit ablation overrides, then `ConfigSchema.parse(...)` to validate — **never**
+   `loadEffectiveConfig(cwd=sandbox)` (a hydrated case-supplied `reviewgate.config.ts`
+   would execute case-controlled code). Force `cache.enabled=false` (cache-hit
+   early-returns omit `rawReviews`).
+3. `adapters = buildAdapters(cfg, providerOverrides)` (same builder as
+   `review-plan.ts`, letting a test inject in-process stub adapters). `gitInfo =
+   FIXED_SYNTHETIC` — a constant `GitInfo` object (fixed branch e.g. `"bench"`, fixed
+   short/long sha placeholders, clean worktree), recorded in provenance; bench never
+   calls `collectGitInfo` on the sandbox. `Orchestrator({repoRoot: sandbox, config,
+   adapters, diff, reportMode:"one-shot", captureRawReviews:true, gitInfo,
+   sandboxMode:"off"})`.
+4. `runIteration` → aggregated findings from `planReviewJsonPath` (exists in
+   `paths.ts` alongside `planReviewMdPath`) + per-provider
+   from `result.rawReviews`. Per-provider scoring segments by status; a provider's
+   metrics are **non-authoritative** below a coverage threshold.
+5. `changedHunks` via a **real unified-diff parser** (`src/bench/diff-hunks.ts`,
+   TDD): NEW-side ranges; `/dev/null`, new-file, rename/copy; zero-length deletion
+   anchored to a single clamped line `[1, lastLine]`. Because corpus diffs are
+   untrusted, the parser TDD scope also covers ADVERSARIAL/malformed input
+   (malformed `@@` headers, quoted/space/escaped paths, binary patches, combined
+   diffs, mode-only changes, rename/copy headers targeting reserved or escaping
+   paths) — the parser's path validation must not desync from `git apply` behaviour;
+   anything it can't parse safely → the case is `invalid`. Adapt Findings →
+   `MatcherFinding`; `matchCase` for aggregated + per-provider layers.
+
+**P1c — `bench run` CLI:** validate every case (schema + diff); aggregate metrics
+(Wilson CI + raw num/den) over scored cases. **Quality gate (exit 4)**: any
+`invalid` case, zero clean, zero seeded, review-error fraction over threshold, or —
+recorded + flagged — degraded aggregate panel coverage. Provenance pins the
+effective reviewer roster (provider/persona/model) + result-affecting phase config +
+`config_hash`. File-context is **full** (hydrated); a machine-readable
+`file_context` field guards against silently pooling any future diff-only fallback.
+
+**P1 schema amendments to `src/schemas/bench-result.ts`** (explicit — the P0
+`BenchResultSchema` is `.strict()`, so writing new fields without amending it throws
+at runtime; addresses plan-gate CRITICAL). These are ADDITIVE and the schema is
+still pre-release `v1` (no back-compat burden):
+- `ProvenanceSchema`: add `file_context: z.enum(["full","diff-only"])`; extend each
+  `providers[]` entry with `persona: z.string()` (the resolved reviewer roster is
+  provider+persona+model+cli_version); add `phases` — the result-affecting config
+  snapshot (critic on/off, reputation, confidenceFloor, scopeToDiff, ablation set).
+- `CaseResultSchema`: add `panel_ok: number` + `panel_configured: number` (per-case
+  aggregate panel coverage) and `file_context` per case.
+- Add a `providers[]` (per-provider) results section: for each provider a
+  `{provider, coverage: Metric, precision: Metric, recall: Metric, authoritative:
+  boolean}` computed over the RAW layer, `authoritative:false` when coverage is
+  below threshold — this is the storage slot the per-provider `matchCase` scoring
+  writes to. New schema tests cover the added fields + the coverage-flag invariant.
