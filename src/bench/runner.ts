@@ -132,6 +132,10 @@ export interface RunBenchCaseInput {
   /** in-process stub adapters injected by tests; production omits (real CLIs). */
   adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
   hostTier?: "opus" | "sonnet" | "haiku" | "unknown";
+  /** Injectable quota-failover availability probe. Tests pass a deterministic map
+   * so failover doesn't depend on which reviewer CLIs happen to be installed;
+   * production omits it and the Orchestrator probes the real binaries/keys. */
+  providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
 }
 
 /** Adapt a persisted Finding to the matcher's shape. Index-derived id guarantees
@@ -225,6 +229,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       reasonOnFailEnabled: true,
       reportMode: "one-shot",
       captureRawReviews: true,
+      ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
     });
     // Sanitize the case id before embedding it in the run id: BenchCaseSchema
     // already restricts it to a safe slug and the Orchestrator re-sanitizes run

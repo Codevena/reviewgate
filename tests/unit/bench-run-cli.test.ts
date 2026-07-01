@@ -238,6 +238,9 @@ describe("runBenchRun", () => {
       corpus,
       out,
       adapters: { codex: quotaStub("codex"), gemini: smartStub("gemini") },
+      // Force the failover target available so the test is hermetic (does not depend
+      // on whether the gemini/agy CLI is installed on the runner — it is not in CI).
+      providerAvailable: () => true,
       now: () => new Date("2026-07-01T00:00:00Z"),
     });
     expect(res.exitCode).toBe(0);

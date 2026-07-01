@@ -54,6 +54,8 @@ export interface BenchRunInput {
   adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
   /** injectable clock for a deterministic provenance timestamp in tests. */
   now?: () => Date;
+  /** injectable quota-failover availability probe (tests); production probes real CLIs. */
+  providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
 }
 
 export interface BenchRunOutput {
@@ -313,6 +315,7 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
       window,
       includeAdvisory,
       ...(input.adapters ? { adapters: input.adapters } : {}),
+      ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
     });
     caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome));
 
