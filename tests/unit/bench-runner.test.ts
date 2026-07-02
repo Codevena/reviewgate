@@ -4,7 +4,7 @@
 // CLIs), then scores the aggregated report AND the per-provider raw layer against
 // the case labels. Also exercises hydration path-safety and the review-error path.
 import { describe, expect, it } from "bun:test";
-import { runBenchCase } from "../../src/bench/runner.ts";
+import { buildBenchConfig, runBenchCase } from "../../src/bench/runner.ts";
 import { defaultConfig } from "../../src/config/defaults.ts";
 import { ConfigSchema, type ReviewgateConfig } from "../../src/config/define-config.ts";
 import type {
@@ -300,5 +300,29 @@ describe("runBenchCase", () => {
     expect(out.status).toBe("review-error");
     expect(out.aggregatedMatch).toBeNull();
     expect(out.panelOk).toBe(0);
+  });
+});
+
+describe("buildBenchConfig panel roster", () => {
+  it("defaults to a single codex reviewer with cache disabled", () => {
+    const c = buildBenchConfig();
+    expect(c.phases.review.reviewers).toHaveLength(1);
+    expect(c.phases.review.reviewers[0]?.provider).toBe("codex");
+    expect(c.cache.enabled).toBe(false);
+  });
+
+  it("builds a multi-reviewer panel from providers and enables each provider", () => {
+    const c = buildBenchConfig({ providers: ["codex", "gemini", "claude-code"] });
+    expect(c.phases.review.reviewers.map((r) => r.provider)).toEqual([
+      "codex",
+      "gemini",
+      "claude-code",
+    ]);
+    expect(c.providers.codex?.enabled).toBe(true);
+    expect(c.providers.gemini?.enabled).toBe(true);
+    expect(c.providers["claude-code"]?.enabled).toBe(true);
+    // Same persona (isolates the "more providers" effect), no failover chain.
+    expect(c.phases.review.reviewers.every((r) => r.persona === "security")).toBe(true);
+    expect(c.phases.review.reviewers.every((r) => !r.fallback)).toBe(true);
   });
 });

@@ -68,8 +68,13 @@ function findNonRegularFile(root: string, rel = ""): string | null {
   return null;
 }
 
+/** Persona every explicit-panel reviewer runs under, so a panel-vs-single
+ * comparison isolates the "more providers" effect (spec §8 class B). */
+const BENCH_PANEL_PERSONA = "security";
+
 export interface BenchConfigOptions {
-  /** `--providers` subset: restrict the reviewer roster to these providers. */
+  /** `--providers` BUILDS the reviewer panel: one slot per provider (spec §8 class
+   * B — 1 vs. N reviewers). Omitted → the shipped default (single codex reviewer). */
   providers?: ProviderId[];
 }
 
@@ -79,17 +84,26 @@ export interface BenchConfigOptions {
  * `loadEffectiveConfig(cwd=sandbox)` — a case-supplied `reviewgate.config.ts` would
  * execute case-controlled code. The cache is force-disabled because a cache-hit
  * early-return omits `rawReviews` (bench needs the per-provider layer every time).
+ *
+ * `providers` builds an EXPLICIT panel: one reviewer slot per provider (same
+ * persona, no failover chain, so each provider is measured as itself), and each
+ * provider is ENABLED (the orchestrator skips a reviewer slot whose provider is
+ * disabled). This is how bench measures a real heterogeneous panel — which engages
+ * the consensus / FP-ledger-quorum / reputation machinery that is dormant on a
+ * single reviewer.
  */
 export function buildBenchConfig(opts: BenchConfigOptions = {}): ReviewgateConfig {
   const base = ConfigSchema.parse(structuredClone(defaultConfig));
   base.cache.enabled = false;
   if (opts.providers && opts.providers.length > 0) {
-    const want = new Set<ProviderId>(opts.providers);
-    const filtered = base.phases.review.reviewers.filter((r) => want.has(r.provider));
-    if (filtered.length === 0) {
-      throw new Error(`--providers matched no configured reviewer: ${opts.providers.join(",")}`);
+    base.phases.review.reviewers = opts.providers.map((provider) => ({
+      provider,
+      persona: BENCH_PANEL_PERSONA,
+    }));
+    for (const provider of opts.providers) {
+      const pc = base.providers[provider];
+      if (pc) pc.enabled = true;
     }
-    base.phases.review.reviewers = filtered;
   }
   return ConfigSchema.parse(base);
 }

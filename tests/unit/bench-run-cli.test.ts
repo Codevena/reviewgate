@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBenchRun } from "../../src/cli/commands/bench.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
+import type { ProviderId } from "../../src/providers/registry.ts";
 import { BenchResultSchema } from "../../src/schemas/bench-result.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
@@ -346,7 +347,7 @@ describe("runBenchRun", () => {
     expect(res.exitCode).toBe(2);
   });
 
-  it("returns a usage error (exit 2) when --providers matches no reviewer", async () => {
+  it("returns a usage error (exit 2) for an unknown provider", async () => {
     const corpus = newCorpus();
     writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
     writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
@@ -354,9 +355,35 @@ describe("runBenchRun", () => {
       repoRoot: corpus,
       corpus,
       out: join(corpus, "results.json"),
-      providers: ["opencode"],
+      providers: ["bogus" as ProviderId],
       adapters: { codex: smartCodexStub() },
     });
     expect(res.exitCode).toBe(2);
+  });
+
+  it("builds a multi-reviewer PANEL from --providers and scores each provider (RAW layer)", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    const out = join(corpus, "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      providers: ["codex", "claude-code"],
+      adapters: { codex: smartStub("codex"), "claude-code": smartStub("claude-code") },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(res.exitCode).toBe(0);
+    const r = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    // Provenance pins a 2-reviewer roster; per-provider RAW rows cover both.
+    expect(r.provenance.providers.map((p) => p.id).sort()).toEqual(["claude-code", "codex"]);
+    for (const id of ["codex", "claude-code"]) {
+      const p = r.providers.find((x) => x.provider === id);
+      expect(p?.recall.value).toBe(1); // each provider caught the seeded bug
+    }
+    // The panel corroborated → the plant is caught, no false positive on the clean case.
+    expect(r.aggregate.recall.value).toBe(1);
+    expect(r.aggregate.clean_fp_rate.value).toBe(0);
   });
 });

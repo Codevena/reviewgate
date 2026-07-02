@@ -424,7 +424,11 @@ const bench = defineCommand({
           description: "Corpus directory (dir of case dirs)",
         },
         out: { type: "string", required: true, description: "Output results JSON path" },
-        providers: { type: "string", description: "Comma-separated reviewer subset (ablation)" },
+        providers: {
+          type: "string",
+          description:
+            "Comma-separated reviewer PANEL, e.g. codex,gemini,claude-code (1 vs. N reviewers). Omitted → single codex.",
+        },
         window: { type: "string", description: "Line-match window radius (default 5)" },
         "include-advisory": {
           type: "boolean",
