@@ -8,21 +8,39 @@
 // Exit codes (spec §6): 0 = scored + gate satisfied · 2 = usage/input error ·
 // 3 = ERROR (no reviewer completed anywhere) · 4 = benchmark-invalid.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { MatchResult } from "../../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../../bench/metrics.ts";
-import { renderBenchReport } from "../../bench/report.ts";
-import { type CaseRunOutcome, buildBenchConfig, runBenchCase } from "../../bench/runner.ts";
+import { renderBenchMatrix, renderBenchReport } from "../../bench/report.ts";
+import {
+  type CaseRunOutcome,
+  type SuppressorConfig,
+  buildBenchConfig,
+  runBenchCase,
+} from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import type { ProviderAdapter, ProviderConfig } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { type BenchCase, BenchCaseSchema } from "../../schemas/bench-case.ts";
 import {
+  type BenchMatrix,
+  BenchMatrixSchema,
   type BenchResult,
   BenchResultSchema,
   type CaseResult,
   type Cost,
+  type MatrixVariant,
+  type Metric,
   type ProviderResult,
 } from "../../schemas/bench-result.ts";
 import { spawnCapture } from "../../utils/spawn-capture.ts";
@@ -52,6 +70,10 @@ export interface BenchRunInput {
   maxFailedFrac?: number;
   /** run the whole corpus K times and report mean ± spread per metric (default 1). */
   repeat?: number;
+  /** suppressor-layer toggles (spec §8 class A) — threaded to buildBenchConfig. */
+  suppressors?: SuppressorConfig;
+  /** named ablation labels recorded in provenance.phases.ablations (set by `bench matrix`). */
+  ablationLabels?: string[];
   /** in-process stub adapters for tests; production omits (real CLIs). */
   adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
   /** injectable clock for a deterministic provenance timestamp in tests. */
@@ -293,7 +315,10 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
 
   let config: ReviewgateConfig;
   try {
-    config = buildBenchConfig(input.providers ? { providers: input.providers } : {});
+    config = buildBenchConfig({
+      ...(input.providers ? { providers: input.providers } : {}),
+      ...(input.suppressors ? { suppressors: input.suppressors } : {}),
+    });
   } catch (err) {
     return usage(err instanceof Error ? err.message : String(err));
   }
@@ -468,7 +493,7 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
         fp_ledger: config.phases.fpLedger?.enabled ?? false,
         confidence_floor: config.phases.review.confidenceFloor ?? null,
         scope_to_diff: config.phases.review.scopeToDiff ?? false,
-        ablations: [],
+        ablations: input.ablationLabels ?? [],
       },
       host_os: `${process.platform}-${process.arch}`,
       timestamp: now.toISOString(),
@@ -539,4 +564,127 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
     stdout: `bench run: ${scoredCount}/${total} cases scored → precision ${aggregate.precision.value}, recall ${aggregate.recall.value}, clean-FP ${aggregate.clean_fp_rate.value}. Wrote ${input.out}\n`,
     stderr: "",
   };
+}
+
+// --- bench matrix (spec §8 ablation) ---------------------------------------
+
+/** The ablatable layers → the suppressor override that turns each OFF, tagged by
+ * class (A = post-review suppressor; B = input/prompt-stage). */
+const MATRIX_ABLATIONS: Record<string, { klass: "A" | "B"; off: SuppressorConfig }> = {
+  critic: { klass: "A", off: { critic: null } },
+  "confidence-floor": { klass: "A", off: { confidenceFloor: 0 } },
+  reputation: { klass: "A", off: { reputation: false } },
+  "scope-to-diff": { klass: "B", off: { scopeToDiff: false } },
+};
+
+export interface BenchMatrixInput {
+  repoRoot: string;
+  corpus: string;
+  out: string;
+  ablate: string[];
+  providers?: ProviderId[] | undefined;
+  /** enable the critic in the baseline (required to ablate `critic` meaningfully). */
+  criticProvider?: ProviderId;
+  repeat?: number;
+  window?: number;
+  includeAdvisory?: boolean;
+  adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
+  providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
+  now?: () => Date;
+}
+
+/**
+ * Ablation matrix (spec §8): run the corpus once as a BASELINE (full suppression)
+ * and once per `--ablate` layer with that ONE layer turned off, then report the
+ * per-layer Δ (baseline − ablated). Reuses `runBenchRun` per variant (each to a
+ * temp file) so the scoring path is identical.
+ */
+export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunOutput> {
+  if (input.ablate.length === 0) {
+    return { exitCode: 2, stdout: "", stderr: "bench matrix: --ablate needs at least one layer\n" };
+  }
+  const unknown = input.ablate.filter((a) => !(a in MATRIX_ABLATIONS));
+  if (unknown.length > 0) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `bench matrix: unknown ablation(s): ${unknown.join(",")} (known: ${Object.keys(MATRIX_ABLATIONS).join(",")})\n`,
+    };
+  }
+  const baselineSuppressors: SuppressorConfig = {
+    ...(input.criticProvider ? { critic: input.criticProvider } : {}),
+  };
+  const work = mkdtempSync(join(tmpdir(), "rg-bench-matrix-"));
+  try {
+    const runVariant = async (
+      label: string,
+      suppressors: SuppressorConfig,
+      ablationLabels: string[],
+    ): Promise<BenchResult | { error: BenchRunOutput }> => {
+      const out = join(work, `${label}.json`);
+      const res = await runBenchRun({
+        repoRoot: input.repoRoot,
+        corpus: input.corpus,
+        out,
+        ...(input.providers ? { providers: input.providers } : {}),
+        ...(input.repeat !== undefined ? { repeat: input.repeat } : {}),
+        ...(input.window !== undefined ? { window: input.window } : {}),
+        includeAdvisory: input.includeAdvisory ?? false,
+        ...(input.adapters ? { adapters: input.adapters } : {}),
+        ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+        ...(input.now ? { now: input.now } : {}),
+        suppressors,
+        ablationLabels,
+      });
+      if (!existsSync(out)) return { error: res }; // exit 2 before any write
+      return BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    };
+
+    const baseline = await runVariant("baseline", baselineSuppressors, []);
+    if ("error" in baseline) return baseline.error;
+
+    const dv = (b: Metric, v: Metric): number => (b.value ?? 0) - (v.value ?? 0);
+    const variants: MatrixVariant[] = [
+      {
+        label: "baseline",
+        ablation: "",
+        class: "baseline",
+        precision: baseline.aggregate.precision,
+        recall: baseline.aggregate.recall,
+        clean_fp_rate: baseline.aggregate.clean_fp_rate,
+        delta: null,
+      },
+    ];
+
+    for (const layer of input.ablate) {
+      const spec = MATRIX_ABLATIONS[layer];
+      if (!spec) continue; // validated above
+      const r = await runVariant(`no-${layer}`, { ...baselineSuppressors, ...spec.off }, [layer]);
+      if ("error" in r) return r.error;
+      variants.push({
+        label: `-${layer}`,
+        ablation: layer,
+        class: spec.klass,
+        precision: r.aggregate.precision,
+        recall: r.aggregate.recall,
+        clean_fp_rate: r.aggregate.clean_fp_rate,
+        delta: {
+          precision: dv(baseline.aggregate.precision, r.aggregate.precision),
+          recall: dv(baseline.aggregate.recall, r.aggregate.recall),
+          clean_fp_rate: dv(baseline.aggregate.clean_fp_rate, r.aggregate.clean_fp_rate),
+        },
+      });
+    }
+
+    const matrix: BenchMatrix = {
+      schema: "reviewgate.bench.matrix.v1",
+      provenance: baseline.provenance,
+      variants,
+    };
+    BenchMatrixSchema.parse(matrix);
+    writeFileSync(resolve(input.repoRoot, input.out), `${JSON.stringify(matrix, null, 2)}\n`);
+    return { exitCode: 0, stdout: `${renderBenchMatrix(matrix)}\n`, stderr: "" };
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 }

@@ -72,11 +72,28 @@ function findNonRegularFile(root: string, rel = ""): string | null {
  * comparison isolates the "more providers" effect (spec §8 class B). */
 const BENCH_PANEL_PERSONA = "security";
 
+/** Suppressor-layer overrides for ablation (spec §8). Absent knobs keep the default. */
+export interface SuppressorConfig {
+  /** post-review LLM critic provider; null → critic off. Enables `phases.critic`. */
+  critic?: ProviderId | null;
+  /** low-confidence demote floor (0 disables the demote). */
+  confidenceFloor?: number;
+  /** demote findings outside the changed hunks to advisory INFO. */
+  scopeToDiff?: boolean;
+  /** reputation-based demote of a chronically-wrong reviewer's lone findings. */
+  reputation?: boolean;
+}
+
 export interface BenchConfigOptions {
   /** `--providers` BUILDS the reviewer panel: one slot per provider (spec §8 class
    * B — 1 vs. N reviewers). Omitted → the shipped default (single codex reviewer). */
   providers?: ProviderId[];
+  /** suppressor toggles (spec §8 class A) — enable/disable the FP-suppression layers. */
+  suppressors?: SuppressorConfig;
 }
+
+/** The critic persona bench runs its adversarial FP-filter pass under. */
+const BENCH_CRITIC_PERSONA = "fp-filter";
 
 /**
  * Build the effective bench config from the shipped defaults (spec §12 P1b step 2):
@@ -104,6 +121,15 @@ export function buildBenchConfig(opts: BenchConfigOptions = {}): ReviewgateConfi
       const pc = base.providers[provider];
       if (pc) pc.enabled = true;
     }
+  }
+  const s = opts.suppressors;
+  if (s) {
+    if (s.critic !== undefined) {
+      base.phases.critic = s.critic ? { provider: s.critic, persona: BENCH_CRITIC_PERSONA } : null;
+    }
+    if (s.confidenceFloor !== undefined) base.phases.review.confidenceFloor = s.confidenceFloor;
+    if (s.scopeToDiff !== undefined) base.phases.review.scopeToDiff = s.scopeToDiff;
+    if (s.reputation !== undefined) base.phases.reputation.enabled = s.reputation;
   }
   return ConfigSchema.parse(base);
 }

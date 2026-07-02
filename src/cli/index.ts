@@ -3,7 +3,7 @@ import { defineCommand, runMain } from "citty";
 import type { ProviderId } from "../providers/registry.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
-import { runBenchReport, runBenchRun } from "./commands/bench.ts";
+import { runBenchMatrix, runBenchReport, runBenchRun } from "./commands/bench.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import {
@@ -450,6 +450,19 @@ const bench = defineCommand({
           description:
             "Run the corpus K times; report mean ± spread per metric (tames LLM variance)",
         },
+        critic: {
+          type: "string",
+          description: "Enable the post-review LLM critic with this provider (e.g. openrouter)",
+        },
+        "no-scope-to-diff": {
+          type: "boolean",
+          description: "Ablation: score the whole file, not just changed hunks",
+        },
+        "confidence-floor": {
+          type: "string",
+          description: "Ablation: low-confidence demote floor (0 disables)",
+        },
+        "no-reputation": { type: "boolean", description: "Ablation: disable reputation demote" },
       },
       async run({ args }) {
         const num = (v: unknown): number | undefined => {
@@ -469,6 +482,15 @@ const bench = defineCommand({
         const minSeeded = num(args["min-seeded"]);
         const maxFailedFrac = num(args["max-failed-frac"]);
         const repeat = num(args.repeat);
+        const confidenceFloor = num(args["confidence-floor"]);
+        const suppressors = {
+          ...(typeof args.critic === "string" && args.critic.length > 0
+            ? { critic: args.critic.trim() as ProviderId }
+            : {}),
+          ...(confidenceFloor !== undefined ? { confidenceFloor } : {}),
+          ...(args["no-scope-to-diff"] === true ? { scopeToDiff: false } : {}),
+          ...(args["no-reputation"] === true ? { reputation: false } : {}),
+        };
         const res = await runBenchRun({
           repoRoot: process.cwd(),
           corpus: args.corpus as string,
@@ -480,6 +502,7 @@ const bench = defineCommand({
           ...(minSeeded !== undefined ? { minSeeded } : {}),
           ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
           ...(repeat !== undefined ? { repeat } : {}),
+          ...(Object.keys(suppressors).length > 0 ? { suppressors } : {}),
         });
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);
@@ -501,6 +524,66 @@ const bench = defineCommand({
           repoRoot: process.cwd(),
           file: args.file as string,
           markdown: args.markdown === true,
+        });
+        if (res.stdout) process.stdout.write(res.stdout);
+        if (res.stderr) process.stderr.write(res.stderr);
+        process.exit(res.exitCode);
+      },
+    }),
+    matrix: defineCommand({
+      meta: {
+        name: "matrix",
+        description:
+          "Ablation: run the corpus with suppression layers toggled and print the per-layer Δ (spec §8 money-shot)",
+      },
+      args: {
+        corpus: { type: "string", required: true, description: "Corpus directory" },
+        out: { type: "string", required: true, description: "Output matrix JSON path" },
+        ablate: {
+          type: "string",
+          required: true,
+          description: "Comma-separated layers: critic,confidence-floor,reputation,scope-to-diff",
+        },
+        providers: {
+          type: "string",
+          description: "Reviewer panel, e.g. codex,gemini,claude-code (omitted → single codex)",
+        },
+        critic: {
+          type: "string",
+          description: "Critic provider enabled in the baseline (required to ablate `critic`)",
+        },
+        repeat: { type: "string", description: "Run each variant K times (mean pooled)" },
+        window: { type: "string", description: "Line-match window radius (default 5)" },
+        "include-advisory": { type: "boolean" },
+      },
+      async run({ args }) {
+        const num = (v: unknown): number | undefined => {
+          if (typeof v !== "string" || v.length === 0) return undefined;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : undefined;
+        };
+        const csv = (v: unknown): string[] =>
+          typeof v === "string" && v.length > 0
+            ? v
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : [];
+        const providers = csv(args.providers) as ProviderId[];
+        const window = num(args.window);
+        const repeat = num(args.repeat);
+        const res = await runBenchMatrix({
+          repoRoot: process.cwd(),
+          corpus: args.corpus as string,
+          out: args.out as string,
+          ablate: csv(args.ablate),
+          ...(providers.length > 0 ? { providers } : {}),
+          ...(typeof args.critic === "string" && args.critic.length > 0
+            ? { criticProvider: args.critic.trim() as ProviderId }
+            : {}),
+          ...(repeat !== undefined ? { repeat } : {}),
+          ...(window !== undefined ? { window } : {}),
+          includeAdvisory: args["include-advisory"] === true,
         });
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);

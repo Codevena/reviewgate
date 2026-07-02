@@ -8,7 +8,13 @@
 // cases, or no clean/seeded cases) is flagged non-authoritative and its headline
 // framing withheld, mirroring `bench run`'s exit-4 gate. Pure, no I/O.
 
-import type { BenchResult, CaseResult, Metric, SpreadStat } from "../schemas/bench-result.ts";
+import type {
+  BenchMatrix,
+  BenchResult,
+  CaseResult,
+  Metric,
+  SpreadStat,
+} from "../schemas/bench-result.ts";
 
 /** Re-derive whether a saved run is trustworthy from the stored signals. */
 export function isAuthoritative(result: BenchResult): { ok: boolean; reasons: string[] } {
@@ -154,4 +160,62 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   );
 
   return { table: L.join("\n"), markdown: M.join("\n") };
+}
+
+/** `+0.35` / `-0.75` / ` 0.00` — signed 2-decimal delta. */
+function fmtDelta(d: number): string {
+  const s = d.toFixed(2);
+  return d > 0 ? `+${s}` : s;
+}
+
+/** Point value of a metric for the compact matrix table (`n/a` when undefined). */
+function fmtPoint(m: Metric): string {
+  return m.value === null ? "n/a" : m.value.toFixed(2);
+}
+
+/**
+ * Render the ablation matrix (spec §8): baseline (full suppression) + one row per
+ * ablated layer, with the per-layer Δ (baseline − ablated). Positive Δprecision /
+ * Δrecall ⇒ the layer HELPS; for clean-FP a NEGATIVE Δ ⇒ the layer REDUCES false
+ * positives (baseline is lower). Returns a terminal block + a markdown block.
+ */
+export function renderBenchMatrix(matrix: BenchMatrix): string {
+  const p = matrix.provenance;
+  const L: string[] = [];
+  L.push("Reviewgate bench matrix — ablation (baseline = full suppression)");
+  L.push("================================================================");
+  L.push(
+    `roster: ${p.providers.map((r) => r.id).join(", ")}  ·  repeat ${p.repeat}  ·  corpus ${p.corpus_commit}${p.corpus_dirty ? " (dirty)" : ""}`,
+  );
+  L.push("");
+  const head = `  ${pad("variant", 16)} ${pad("class", 6)} ${pad("precision", 10)} ${pad("recall", 8)} ${pad("clean-FP", 9)}  ${pad("Δprec", 7)} ${pad("Δrecall", 8)} Δcleanfp`;
+  L.push(head);
+  for (const v of matrix.variants) {
+    const d = v.delta;
+    L.push(
+      `  ${pad(v.label, 16)} ${pad(v.class === "baseline" ? "—" : v.class, 6)} ${pad(fmtPoint(v.precision), 10)} ${pad(fmtPoint(v.recall), 8)} ${pad(fmtPoint(v.clean_fp_rate), 9)}  ${pad(d ? fmtDelta(d.precision) : "—", 7)} ${pad(d ? fmtDelta(d.recall) : "—", 8)} ${d ? fmtDelta(d.clean_fp_rate) : "—"}`,
+    );
+  }
+  L.push("");
+  L.push(
+    "Δ = baseline − ablated. precision/recall: + ⇒ the layer helps. clean-FP: − ⇒ the layer reduces false positives.",
+  );
+
+  const M: string[] = [];
+  M.push("### Reviewgate bench — ablation matrix");
+  M.push("");
+  M.push("| variant | class | precision | recall | clean-FP | Δprec | Δrecall | Δclean-FP |");
+  M.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
+  for (const v of matrix.variants) {
+    const d = v.delta;
+    M.push(
+      `| ${v.label} | ${v.class === "baseline" ? "—" : v.class} | ${fmtPoint(v.precision)} | ${fmtPoint(v.recall)} | ${fmtPoint(v.clean_fp_rate)} | ${d ? fmtDelta(d.precision) : "—"} | ${d ? fmtDelta(d.recall) : "—"} | ${d ? fmtDelta(d.clean_fp_rate) : "—"} |`,
+    );
+  }
+  M.push("");
+  M.push(
+    "_Δ = baseline − ablated · precision/recall: + ⇒ layer helps · clean-FP: − ⇒ layer reduces FPs._",
+  );
+
+  return `${L.join("\n")}\n\n${M.join("\n")}`;
 }

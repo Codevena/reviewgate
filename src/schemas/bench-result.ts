@@ -219,7 +219,42 @@ export const BenchResultSchema = z
   })
   .strict();
 
+// reviewgate bench matrix (spec §8) — the ablation Δ table. One variant per row:
+// the baseline (full suppression) plus one row per ablated layer, each carrying
+// its point metrics and the signed delta vs. baseline.
+export const MatrixVariantSchema = z
+  .object({
+    label: z.string(),
+    /** the ablated layer ("" for the baseline row). */
+    ablation: z.string(),
+    /** A = post-review suppressor (aggregated layer only); B = input/prompt-stage. */
+    class: z.enum(["A", "B", "baseline"]),
+    precision: MetricSchema,
+    recall: MetricSchema,
+    clean_fp_rate: MetricSchema,
+    /** baseline − variant per metric (null on the baseline row). */
+    delta: z
+      .object({
+        precision: z.number(),
+        recall: z.number(),
+        clean_fp_rate: z.number(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const BenchMatrixSchema = z
+  .object({
+    schema: z.literal("reviewgate.bench.matrix.v1"),
+    provenance: ProvenanceSchema,
+    variants: z.array(MatrixVariantSchema),
+  })
+  .strict();
+
 export type Metric = z.infer<typeof MetricSchema>;
+export type MatrixVariant = z.infer<typeof MatrixVariantSchema>;
+export type BenchMatrix = z.infer<typeof BenchMatrixSchema>;
 export type PhasesSnapshot = z.infer<typeof PhasesSnapshotSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type CaseResult = z.infer<typeof CaseResultSchema>;

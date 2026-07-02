@@ -326,3 +326,26 @@ describe("buildBenchConfig panel roster", () => {
     expect(c.phases.review.reviewers.every((r) => !r.fallback)).toBe(true);
   });
 });
+
+describe("buildBenchConfig suppressor toggles", () => {
+  it("enables the critic with the given provider (default off)", () => {
+    expect(buildBenchConfig().phases.critic).toBeNull();
+    const c = buildBenchConfig({ suppressors: { critic: "openrouter" } });
+    expect(c.phases.critic).not.toBeNull();
+    expect(c.phases.critic?.provider).toBe("openrouter");
+  });
+
+  it("disables the critic when critic:null", () => {
+    const c = buildBenchConfig({ suppressors: { critic: null } });
+    expect(c.phases.critic).toBeNull();
+  });
+
+  it("applies confidenceFloor / scopeToDiff / reputation overrides", () => {
+    const c = buildBenchConfig({
+      suppressors: { confidenceFloor: 0, scopeToDiff: false, reputation: false },
+    });
+    expect(c.phases.review.confidenceFloor).toBe(0);
+    expect(c.phases.review.scopeToDiff).toBe(false);
+    expect(c.phases.reputation.enabled).toBe(false);
+  });
+});
