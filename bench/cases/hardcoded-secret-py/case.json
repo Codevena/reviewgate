@@ -5,7 +5,12 @@
   "language": "py",
   "expected": [
     {
-      "tag": "hardcoded",
+      "tag": [
+        "hardcoded",
+        "hardcoded credential",
+        "hardcoded secret",
+        "exposed credential"
+      ],
       "file": "src/config/aws.py",
       "line": 4,
       "min_severity": "WARN"

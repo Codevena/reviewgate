@@ -38,6 +38,43 @@ describe("matchCase — basic seeded-bug scoring", () => {
     expect(r.findings.find((f) => f.findingId === "f1")?.labelIndex).toBe(0);
   });
 
+  it("matches when the finding satisfies ANY alternative tag (any-of)", () => {
+    const input = baseInput({
+      // The reviewer phrased it as "unsanitized query", not "sql injection".
+      expected: [
+        {
+          tag: ["sql injection", "unsanitized query"],
+          file: "src/db.ts",
+          line: 42,
+          minSeverity: "WARN",
+        },
+      ],
+      findings: [finding({ id: "f1", text: "unsanitized query built from req.query.id" })],
+    });
+    const r = matchCase(input);
+    expect(r.tp).toBe(1);
+    expect(r.fn).toBe(0);
+  });
+
+  it("does NOT match when the finding satisfies none of the alternatives", () => {
+    const input = baseInput({
+      expected: [
+        {
+          tag: ["sql injection", "unsanitized query"],
+          file: "src/db.ts",
+          line: 42,
+          minSeverity: "WARN",
+        },
+      ],
+      // In-region blocking finding about something else → FP + the label is FN.
+      findings: [finding({ id: "f1", text: "missing null check on the result" })],
+    });
+    const r = matchCase(input);
+    expect(r.tp).toBe(0);
+    expect(r.fn).toBe(1);
+    expect(r.fp).toBe(1);
+  });
+
   it("counts a label with no matching finding as FN", () => {
     const r = matchCase(baseInput({ findings: [] }));
     expect(r.fn).toBe(1);

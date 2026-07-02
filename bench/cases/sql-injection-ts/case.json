@@ -5,7 +5,11 @@
   "language": "ts",
   "expected": [
     {
-      "tag": "sql",
+      "tag": [
+        "sql injection",
+        "sql query",
+        "sql"
+      ],
       "file": "src/db/users.ts",
       "line": 3,
       "min_severity": "WARN"

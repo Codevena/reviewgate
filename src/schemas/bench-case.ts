@@ -48,10 +48,18 @@ const SafeCaseId = z
 // depth). 25 ≫ the 1–3 the spec targets, ≪ anything pathological.
 const MAX_EXPECTED_LABELS = 25;
 const MAX_ALLOWED_ENTRIES = 25;
+// A label's tag may be one phrasing or several (any-of): a finding matches if it
+// satisfies ANY alternative — reviewers describe the same bug many ways. Bounded so
+// a hostile corpus can't blow up the matcher. A single string stays valid.
+const MAX_TAG_ALTERNATIVES = 10;
+const TagField = z.union([
+  z.string().min(1),
+  z.array(z.string().min(1)).min(1).max(MAX_TAG_ALTERNATIVES),
+]);
 
 export const ExpectedLabelSchema = z
   .object({
-    tag: z.string().min(1),
+    tag: TagField,
     file: SafeRelPath,
     line: z.number().int().positive(),
     min_severity: SeverityCoerced,
@@ -60,7 +68,7 @@ export const ExpectedLabelSchema = z
 
 export const AllowedEntrySchema = z
   .object({
-    tag: z.string().min(1),
+    tag: TagField,
     file: SafeRelPath,
     line: z.number().int().positive(),
   })

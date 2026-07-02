@@ -5,7 +5,12 @@
   "language": "py",
   "expected": [
     {
-      "tag": "command",
+      "tag": [
+        "command injection",
+        "shell injection",
+        "shell command",
+        "command"
+      ],
       "file": "src/tasks/backup.py",
       "line": 4,
       "min_severity": "WARN"

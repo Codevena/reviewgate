@@ -20,14 +20,17 @@ export interface MatcherFinding {
 }
 
 export interface ExpectedLabel {
-  tag: string;
+  /** One acceptable phrasing, or several (any-of): the finding matches the label's
+   * tag test if it satisfies ANY alternative — reviewers phrase the same bug many
+   * ways ("SQL injection" / "unsanitized query" / "string concatenation into SQL"). */
+  tag: string | string[];
   file: string;
   line: number;
   minSeverity: BenchSeverity;
 }
 
 export interface AllowedEntry {
-  tag: string;
+  tag: string | string[];
   file: string;
   line: number;
 }
@@ -90,14 +93,32 @@ function tokenizeTag(tag: string): string[] {
     .filter(Boolean);
 }
 
-/** Tag matches when EVERY tag token appears as a substring of the finding text. */
-function tagMatch(text: string, tag: string): { matched: boolean; overlap: number } {
-  const hay = text.toLowerCase();
+/** One alternative matches when EVERY one of its tokens appears in the finding text. */
+function oneTagMatch(hay: string, tag: string): { matched: boolean; overlap: number } {
   const tokens = tokenizeTag(tag);
   if (tokens.length === 0) return { matched: false, overlap: 0 };
   let overlap = 0;
   for (const t of tokens) if (hay.includes(t)) overlap++;
   return { matched: overlap === tokens.length, overlap };
+}
+
+/**
+ * Any-of tag match: the label's `tag` may be one phrasing or several. The finding
+ * matches if ANY alternative fully matches. `overlap` is the best token-overlap
+ * across all alternatives (for the cost tie-break and near-miss detection), so a
+ * partial overlap still surfaces even when no alternative fully matches.
+ */
+function tagMatch(text: string, tag: string | string[]): { matched: boolean; overlap: number } {
+  const hay = text.toLowerCase();
+  const alts = Array.isArray(tag) ? tag : [tag];
+  let matched = false;
+  let overlap = 0;
+  for (const alt of alts) {
+    const r = oneTagMatch(hay, alt);
+    if (r.matched) matched = true;
+    if (r.overlap > overlap) overlap = r.overlap;
+  }
+  return { matched, overlap };
 }
 
 /** Two closed intervals intersect. */

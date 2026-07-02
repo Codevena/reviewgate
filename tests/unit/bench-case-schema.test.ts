@@ -31,6 +31,40 @@ describe("BenchCaseSchema", () => {
     expect(r.success).toBe(false);
   });
 
+  it("accepts an expected label whose tag is an array of alternatives (any-of)", () => {
+    const r = BenchCaseSchema.safeParse({
+      ...validSeeded,
+      expected: [
+        {
+          tag: ["sql injection", "unsanitized query", "string concatenation into sql"],
+          file: "src/db.ts",
+          line: 42,
+          min_severity: "CRITICAL",
+        },
+      ],
+    });
+    if (!r.success) console.error(r.error);
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects an empty tag alternatives array", () => {
+    const r = BenchCaseSchema.safeParse({
+      ...validSeeded,
+      expected: [{ tag: [], file: "src/db.ts", line: 42, min_severity: "CRITICAL" }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a blank string inside the tag alternatives array", () => {
+    const r = BenchCaseSchema.safeParse({
+      ...validSeeded,
+      expected: [
+        { tag: ["sql injection", ""], file: "src/db.ts", line: 42, min_severity: "CRITICAL" },
+      ],
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("defaults strict_region to true when omitted", () => {
     const r = BenchCaseSchema.parse(validSeeded);
     expect(r.strict_region).toBe(true);

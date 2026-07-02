@@ -5,7 +5,12 @@
   "language": "ts",
   "expected": [
     {
-      "tag": "await",
+      "tag": [
+        "missing await",
+        "not awaited",
+        "floating promise",
+        "await"
+      ],
       "file": "src/orders/checkout.ts",
       "line": 7,
       "min_severity": "WARN"

@@ -5,7 +5,11 @@
   "language": "ts",
   "expected": [
     {
-      "tag": "path",
+      "tag": [
+        "path traversal",
+        "directory traversal",
+        "path"
+      ],
       "file": "src/server/files.ts",
       "line": 4,
       "min_severity": "WARN"
