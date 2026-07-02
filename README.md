@@ -130,6 +130,13 @@ so it can't merge unreviewed work "while you sleep":
 In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
 verifier that runs at the end of each turn.
 
+**And it's measured, not asserted.** On a labelled ground-truth corpus, the panel
+caught **every seeded security bug** (recall 8/8), and the demote-only critic
+**halved the panel's false-positive rate** on clean code (0.90 → 0.40) at **zero
+recall cost** — the empirical answer to "does the suppression stack earn its
+complexity?". Numbers + a copy-paste way to reproduce them:
+**[`bench/`](bench/README.md)** (`reviewgate bench run` / `bench matrix`).
+
 ---
 
 ## Failure modes it survives
