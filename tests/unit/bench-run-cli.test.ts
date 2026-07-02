@@ -253,6 +253,88 @@ describe("runBenchRun", () => {
     expect(result.aggregate.recall.value).toBe(1);
   });
 
+  it("runs --repeat K and reports per-metric mean ± spread (run-to-run stability)", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    const out = join(corpus, "results.json");
+
+    // Content-aware + repeat-varying: the seeded bug is always caught; the clean
+    // case draws a false positive ONLY on its 2nd review (repeat 2), so clean-FP
+    // varies [0, 1, 0] across 3 repeats → non-zero spread.
+    let cleanCalls = 0;
+    const varyingStub: ProviderAdapter = {
+      id: "codex",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "oauth", error: null };
+      },
+      async review(inp) {
+        const diff = readFileSync(inp.diffPath, "utf8");
+        let findings: Finding[] = [];
+        if (diff.includes("db.ts")) {
+          findings = [sqlFinding()];
+        } else {
+          cleanCalls++;
+          if (cleanCalls === 2) {
+            findings = [
+              {
+                id: "codex-fp",
+                signature: "fp",
+                severity: "WARN",
+                category: "quality",
+                rule_id: "naming",
+                file: "src/util.ts",
+                line_start: 2,
+                line_end: 2,
+                message: "variable name could be clearer",
+                details: "consider renaming for readability",
+                reviewer: { provider: "codex", model: "m", persona: "security" },
+                confidence: 0.9,
+                consensus: "singleton",
+              },
+            ];
+          }
+        }
+        return {
+          reviewerId: inp.reviewerId,
+          verdict: findings.length ? "FAIL" : "PASS",
+          findings,
+          usage: { inputTokens: 10, outputTokens: 5, costUsd: 0, quotaUsedPct: null },
+          durationMs: 1,
+          exitCode: 0,
+          rawEventsPath: "",
+          rawText: "",
+          status: "ok",
+        } satisfies ReviewResult;
+      },
+    };
+
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      repeat: 3,
+      adapters: { codex: varyingStub },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+
+    expect(res.exitCode).toBe(0);
+    const r = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(r.provenance.repeat).toBe(3);
+    expect(r.cases).toHaveLength(6); // 2 cases × 3 repeats
+    // Pooled aggregate over the 6 case-runs: 3 TP, 1 FP, 0 FN.
+    expect(r.aggregate.recall.value).toBe(1);
+    expect(r.aggregate.precision.value).toBeCloseTo(0.75, 10);
+    // Stability surfaces the run-to-run variance the pooled number hides.
+    expect(r.stability).not.toBeNull();
+    expect(r.stability?.repeats).toBe(3);
+    expect(r.stability?.clean_fp_rate.mean).toBeCloseTo(1 / 3, 6);
+    expect(r.stability?.clean_fp_rate.min).toBe(0);
+    expect(r.stability?.clean_fp_rate.max).toBe(1);
+    expect(r.stability?.recall.stddev).toBeCloseTo(0, 10); // recall 1 every repeat
+    expect(r.stability?.precision.min).toBeCloseTo(0.5, 10);
+  });
+
   it("returns a usage error (exit 2) when the corpus directory is missing", async () => {
     const corpus = newCorpus();
     const res = await runBenchRun({

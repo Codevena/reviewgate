@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { MatchResult } from "../../bench/matcher.ts";
-import { makeMetric } from "../../bench/metrics.ts";
+import { makeMetric, summarizeSpread } from "../../bench/metrics.ts";
 import { renderBenchReport } from "../../bench/report.ts";
 import { type CaseRunOutcome, buildBenchConfig, runBenchCase } from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
@@ -50,6 +50,8 @@ export interface BenchRunInput {
   minClean?: number;
   minSeeded?: number;
   maxFailedFrac?: number;
+  /** run the whole corpus K times and report mean ± spread per metric (default 1). */
+  repeat?: number;
   /** in-process stub adapters for tests; production omits (real CLIs). */
   adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
   /** injectable clock for a deterministic provenance timestamp in tests. */
@@ -180,7 +182,11 @@ function loadCase(corpus: string, id: string): LoadedCase {
   return { id, benchCase: result.data, diffPatch, contentHash, invalidReason: null, rawKind };
 }
 
-function invalidCaseResult(loaded: LoadedCase, panelConfigured: number): CaseResult {
+function invalidCaseResult(
+  loaded: LoadedCase,
+  panelConfigured: number,
+  repeat: number,
+): CaseResult {
   return {
     id: loaded.id,
     kind: loaded.rawKind,
@@ -190,6 +196,7 @@ function invalidCaseResult(loaded: LoadedCase, panelConfigured: number): CaseRes
     panel_ok: 0,
     panel_configured: panelConfigured,
     file_context: "full",
+    repeat,
     latency_ms: null,
     error: loaded.invalidReason,
   };
@@ -199,6 +206,7 @@ function outcomeToCaseResult(
   loaded: LoadedCase,
   benchCase: BenchCase,
   out: CaseRunOutcome,
+  repeat: number,
 ): CaseResult {
   return {
     id: loaded.id,
@@ -209,6 +217,7 @@ function outcomeToCaseResult(
     panel_ok: out.panelOk,
     panel_configured: out.panelConfigured,
     file_context: "full",
+    repeat,
     latency_ms: out.latencyMs,
     error: out.error,
   };
@@ -294,59 +303,60 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
   const caseDirs = listCaseDirs(corpus);
   if (caseDirs.length === 0) return usage(`no cases found under ${input.corpus}`);
 
-  // --- run every case ---
+  const repeat = Math.max(1, Math.floor(input.repeat ?? 1));
+  // Load + validate each case ONCE (schema/diff checks are deterministic); the
+  // reviewer panel is what re-runs per repeat.
+  const loadedCases = caseDirs.map((id) => loadCase(corpus, id));
+
+  // --- run every case, `repeat` times (repeats OUTER so per-repeat metrics group) ---
   const caseResults: CaseResult[] = [];
-  // per-provider RAW accumulation across scored cases
-  const provScored = new Map<string, number>(); // # scored cases where provider was OK
+  // per-provider RAW accumulation POOLED across all case-runs (every repeat)
+  const provScored = new Map<string, number>(); // # scored case-runs where provider was OK
   const provMatches = new Map<string, MatchResult[]>();
   const provCost = new Map<string, { runs: number; costUsd: number; oauthQuotaRuns: number }>();
   let scoredCount = 0;
 
-  for (const id of caseDirs) {
-    const loaded = loadCase(corpus, id);
-    if (loaded.benchCase === null) {
-      caseResults.push(invalidCaseResult(loaded, panelConfigured));
-      continue;
-    }
-    const outcome = await runBenchCase({
-      benchCase: loaded.benchCase,
-      diffPatch: loaded.diffPatch,
-      config,
-      window,
-      includeAdvisory,
-      ...(input.adapters ? { adapters: input.adapters } : {}),
-      ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
-    });
-    caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome));
+  for (let r = 1; r <= repeat; r++) {
+    for (const loaded of loadedCases) {
+      if (loaded.benchCase === null) {
+        caseResults.push(invalidCaseResult(loaded, panelConfigured, r));
+        continue;
+      }
+      const outcome = await runBenchCase({
+        benchCase: loaded.benchCase,
+        diffPatch: loaded.diffPatch,
+        config,
+        window,
+        includeAdvisory,
+        ...(input.adapters ? { adapters: input.adapters } : {}),
+        ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+      });
+      caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome, r));
 
-    for (const pc of outcome.providerCosts) {
-      const acc = provCost.get(pc.provider) ?? { runs: 0, costUsd: 0, oauthQuotaRuns: 0 };
-      acc.runs += pc.runs;
-      acc.costUsd += pc.costUsd;
-      acc.oauthQuotaRuns += pc.oauthQuotaRuns;
-      provCost.set(pc.provider, acc);
-    }
+      for (const pc of outcome.providerCosts) {
+        const acc = provCost.get(pc.provider) ?? { runs: 0, costUsd: 0, oauthQuotaRuns: 0 };
+        acc.runs += pc.runs;
+        acc.costUsd += pc.costUsd;
+        acc.oauthQuotaRuns += pc.oauthQuotaRuns;
+        provCost.set(pc.provider, acc);
+      }
 
-    if (outcome.status === "scored") {
-      scoredCount++;
-      for (const pp of outcome.perProvider) {
-        if (pp.status === "ok" && pp.match) {
-          provScored.set(pp.provider, (provScored.get(pp.provider) ?? 0) + 1);
-          const list = provMatches.get(pp.provider) ?? [];
-          list.push(pp.match);
-          provMatches.set(pp.provider, list);
+      if (outcome.status === "scored") {
+        scoredCount++;
+        for (const pp of outcome.perProvider) {
+          if (pp.status === "ok" && pp.match) {
+            provScored.set(pp.provider, (provScored.get(pp.provider) ?? 0) + 1);
+            const list = provMatches.get(pp.provider) ?? [];
+            list.push(pp.match);
+            provMatches.set(pp.provider, list);
+          }
         }
       }
     }
   }
 
-  // --- aggregate (over SCORED cases) ---
+  // --- aggregate (POOLED over all scored case-runs across every repeat) ---
   const scored = caseResults.filter((c) => c.status === "scored");
-  // A case counted for corpus composition only if it parsed (invalid rawKind is a guess).
-  const parsedCases = caseResults.filter((c) => c.status !== "invalid");
-  const seededCount = parsedCases.filter((c) => c.kind === "seeded-bug").length;
-  const cleanCount = parsedCases.filter((c) => c.kind === "clean").length;
-  const scoredSeeded = scored.filter((c) => c.kind === "seeded-bug").length;
   const scoredClean = scored.filter((c) => c.kind === "clean");
 
   const tpSum = scored.reduce((s, c) => s + c.counts.tp, 0);
@@ -359,6 +369,41 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
     recall: makeMetric(tpSum, tpSum + fnSum),
     clean_fp_rate: makeMetric(cleanWithFp, scoredClean.length),
   };
+
+  // Corpus-composition + floor counts are over DISTINCT case ids (not K× inflated).
+  const kindById = new Map<string, "seeded-bug" | "clean">();
+  for (const c of caseResults) if (c.status !== "invalid") kindById.set(c.id, c.kind);
+  const seededCount = [...kindById.values()].filter((k) => k === "seeded-bug").length;
+  const cleanCount = [...kindById.values()].filter((k) => k === "clean").length;
+  const scoredSeededIds = new Set(scored.filter((c) => c.kind === "seeded-bug").map((c) => c.id));
+  const scoredCleanIds = new Set(scoredClean.map((c) => c.id));
+
+  // --- run-to-run stability (spec §10#3): per-repeat point metric → mean ± spread ---
+  const point = (num: number, den: number): number | null => (den > 0 ? num / den : null);
+  const stability =
+    repeat > 1
+      ? (() => {
+          const precisions: Array<number | null> = [];
+          const recalls: Array<number | null> = [];
+          const cleanFps: Array<number | null> = [];
+          for (let r = 1; r <= repeat; r++) {
+            const rs = scored.filter((c) => (c.repeat ?? 1) === r);
+            const tp = rs.reduce((s, c) => s + c.counts.tp, 0);
+            const fp = rs.reduce((s, c) => s + c.counts.fp, 0);
+            const fn = rs.reduce((s, c) => s + c.counts.fn, 0);
+            const rc = rs.filter((c) => c.kind === "clean");
+            precisions.push(point(tp, tp + fp));
+            recalls.push(point(tp, tp + fn));
+            cleanFps.push(point(rc.filter((c) => c.counts.fp > 0).length, rc.length));
+          }
+          return {
+            repeats: repeat,
+            precision: summarizeSpread(precisions),
+            recall: summarizeSpread(recalls),
+            clean_fp_rate: summarizeSpread(cleanFps),
+          };
+        })()
+      : null;
 
   // --- per-provider RAW-layer metrics ---
   // Report the UNION of the configured roster AND the providers that actually
@@ -411,7 +456,7 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
       providers: roster,
       config_hash: sha256(JSON.stringify(config)),
       window,
-      repeat: 1,
+      repeat,
       include_advisory: includeAdvisory,
       temperature: null,
       stores: "per-case-fresh",
@@ -433,6 +478,7 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
     providers,
     cost,
     aggregate,
+    stability,
   };
 
   // --- quality gate + exit code ---
@@ -468,11 +514,11 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
       `review-error fraction ${(reviewErrorFrac * 100).toFixed(0)}% > ${(maxFailedFrac * 100).toFixed(0)}%`,
     );
   }
-  if (input.minClean !== undefined && scoredClean.length < input.minClean) {
-    gateReasons.push(`scored clean ${scoredClean.length} < --min-clean ${input.minClean}`);
+  if (input.minClean !== undefined && scoredCleanIds.size < input.minClean) {
+    gateReasons.push(`scored clean ${scoredCleanIds.size} < --min-clean ${input.minClean}`);
   }
-  if (input.minSeeded !== undefined && scoredSeeded < input.minSeeded) {
-    gateReasons.push(`scored seeded ${scoredSeeded} < --min-seeded ${input.minSeeded}`);
+  if (input.minSeeded !== undefined && scoredSeededIds.size < input.minSeeded) {
+    gateReasons.push(`scored seeded ${scoredSeededIds.size} < --min-seeded ${input.minSeeded}`);
   }
   if (panelDegraded) {
     gateReasons.push(

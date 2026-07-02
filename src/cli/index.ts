@@ -441,6 +441,11 @@ const bench = defineCommand({
           type: "string",
           description: "Max review-error fraction before benchmark-invalid (default 0.1)",
         },
+        repeat: {
+          type: "string",
+          description:
+            "Run the corpus K times; report mean ± spread per metric (tames LLM variance)",
+        },
       },
       async run({ args }) {
         const num = (v: unknown): number | undefined => {
@@ -459,6 +464,7 @@ const bench = defineCommand({
         const minClean = num(args["min-clean"]);
         const minSeeded = num(args["min-seeded"]);
         const maxFailedFrac = num(args["max-failed-frac"]);
+        const repeat = num(args.repeat);
         const res = await runBenchRun({
           repoRoot: process.cwd(),
           corpus: args.corpus as string,
@@ -469,6 +475,7 @@ const bench = defineCommand({
           ...(minClean !== undefined ? { minClean } : {}),
           ...(minSeeded !== undefined ? { minSeeded } : {}),
           ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
+          ...(repeat !== undefined ? { repeat } : {}),
         });
         if (res.stdout) process.stdout.write(res.stdout);
         if (res.stderr) process.stderr.write(res.stderr);

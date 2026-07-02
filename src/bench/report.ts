@@ -8,7 +8,7 @@
 // cases, or no clean/seeded cases) is flagged non-authoritative and its headline
 // framing withheld, mirroring `bench run`'s exit-4 gate. Pure, no I/O.
 
-import type { BenchResult, CaseResult, Metric } from "../schemas/bench-result.ts";
+import type { BenchResult, CaseResult, Metric, SpreadStat } from "../schemas/bench-result.ts";
 
 /** Re-derive whether a saved run is trustworthy from the stored signals. */
 export function isAuthoritative(result: BenchResult): { ok: boolean; reasons: string[] } {
@@ -33,6 +33,12 @@ function fmtMetric(m: Metric): string {
     return `n/a (${m.num}/${m.den})`;
   }
   return `${m.value.toFixed(2)} (${m.num}/${m.den}, 95% CI ${m.ci_lo.toFixed(2)}–${m.ci_hi.toFixed(2)})`;
+}
+
+/** `0.33 ± 0.47 (min 0.00, max 1.00)`; `n/a` when no repeat had a defined value. */
+function fmtSpread(s: SpreadStat): string {
+  if (s.mean === null || s.stddev === null || s.min === null || s.max === null) return "n/a";
+  return `${s.mean.toFixed(2)} ± ${s.stddev.toFixed(2)} (min ${s.min.toFixed(2)}, max ${s.max.toFixed(2)})`;
 }
 
 function scored(result: BenchResult): CaseResult[] {
@@ -68,6 +74,15 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   L.push(
     `Cases: ${scoredCases.length} scored (${seededScored} seeded, ${cleanScored} clean) of ${result.cases.length} total`,
   );
+
+  if (result.stability) {
+    const s = result.stability;
+    L.push("");
+    L.push(`Stability (mean ± sd, min–max over ${s.repeats} repeats — LLM run-to-run variance):`);
+    L.push(`  Clean FP-rate : ${fmtSpread(s.clean_fp_rate)}`);
+    L.push(`  Precision     : ${fmtSpread(s.precision)}`);
+    L.push(`  Recall        : ${fmtSpread(s.recall)}`);
+  }
 
   L.push("");
   L.push("Per-provider (RAW, pre-aggregation):");
@@ -117,6 +132,17 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   M.push(`| Precision | ${fmtMetric(result.aggregate.precision)} |`);
   M.push(`| Recall | ${fmtMetric(result.aggregate.recall)} |`);
   M.push("");
+  if (result.stability) {
+    const s = result.stability;
+    M.push(`**Stability across ${s.repeats} repeats (mean ± sd, min–max):**`);
+    M.push("");
+    M.push("| Metric | Across repeats |");
+    M.push("| --- | --- |");
+    M.push(`| **Clean FP-rate** | ${fmtSpread(s.clean_fp_rate)} |`);
+    M.push(`| Precision | ${fmtSpread(s.precision)} |`);
+    M.push(`| Recall | ${fmtSpread(s.recall)} |`);
+    M.push("");
+  }
   M.push("| Provider (RAW) | Coverage | Precision | Recall | Authoritative |");
   M.push("| --- | --- | --- | --- | --- |");
   for (const r of rows) {

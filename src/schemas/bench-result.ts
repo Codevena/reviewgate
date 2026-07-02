@@ -131,8 +131,34 @@ export const CaseResultSchema = z
     panel_ok: z.number().int().nonnegative(),
     panel_configured: z.number().int().nonnegative(),
     file_context: z.enum(["full", "diff-only"]),
+    // Which repeat (1..K) this case-run belongs to under `--repeat K`. Absent ⇒ 1.
+    repeat: z.number().int().positive().optional(),
     latency_ms: z.number().nonnegative().nullable(),
     error: z.string().nullable(),
+  })
+  .strict();
+
+// One metric's spread across the K repeats (spec §10#3). `stddev` is the population
+// standard deviation; stats are null when no repeat had a defined value (den=0).
+export const SpreadStatSchema = z
+  .object({
+    mean: z.number().nullable(),
+    stddev: z.number().min(0).nullable(),
+    min: z.number().nullable(),
+    max: z.number().nullable(),
+    samples: z.number().int().nonnegative(),
+  })
+  .strict();
+
+// Run-to-run stability under `--repeat K` — the mean ± spread of each headline
+// metric across the K repeats, so a lucky/unlucky single run isn't mistaken for
+// signal. Null on a single run (repeat=1).
+export const StabilitySchema = z
+  .object({
+    repeats: z.number().int().positive(),
+    precision: SpreadStatSchema,
+    recall: SpreadStatSchema,
+    clean_fp_rate: SpreadStatSchema,
   })
   .strict();
 
@@ -188,6 +214,8 @@ export const BenchResultSchema = z
         clean_fp_rate: MetricSchema,
       })
       .strict(),
+    // Present (object) only under `--repeat K` (K>1); null/absent for a single run.
+    stability: StabilitySchema.nullable().optional(),
   })
   .strict();
 
@@ -195,6 +223,8 @@ export type Metric = z.infer<typeof MetricSchema>;
 export type PhasesSnapshot = z.infer<typeof PhasesSnapshotSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type CaseResult = z.infer<typeof CaseResultSchema>;
+export type SpreadStat = z.infer<typeof SpreadStatSchema>;
+export type Stability = z.infer<typeof StabilitySchema>;
 export type ProviderResult = z.infer<typeof ProviderResultSchema>;
 export type Cost = z.infer<typeof CostSchema>;
 export type BenchResult = z.infer<typeof BenchResultSchema>;

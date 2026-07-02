@@ -185,6 +185,28 @@ describe("renderBenchReport", () => {
     expect(markdown.toLowerCase()).toContain("non-authoritative");
   });
 
+  it("renders the run-to-run stability block (mean ± spread) when present", () => {
+    const { table, markdown } = renderBenchReport(
+      baseResult({
+        stability: {
+          repeats: 3,
+          precision: { mean: 0.83, stddev: 0.24, min: 0.5, max: 1, samples: 3 },
+          recall: { mean: 1, stddev: 0, min: 1, max: 1, samples: 3 },
+          clean_fp_rate: { mean: 0.33, stddev: 0.47, min: 0, max: 1, samples: 3 },
+        },
+      }),
+    );
+    expect(table.toLowerCase()).toContain("stability");
+    expect(table).toContain("3 repeats");
+    expect(table).toContain("±"); // mean ± spread
+    expect(markdown.toLowerCase()).toContain("stability");
+  });
+
+  it("omits the stability block on a single run (stability null)", () => {
+    const { table } = renderBenchReport(baseResult());
+    expect(table.toLowerCase()).not.toContain("stability");
+  });
+
   it("formats an undefined (den=0) rate as n/a, not 0", () => {
     const { table } = renderBenchReport(
       baseResult({

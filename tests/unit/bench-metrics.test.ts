@@ -5,7 +5,7 @@
 // den=0) is load-bearing — a metric that violates it fails schema validation and a
 // headline number could never be written.
 import { describe, expect, it } from "bun:test";
-import { makeMetric, wilson } from "../../src/bench/metrics.ts";
+import { makeMetric, summarizeSpread, wilson } from "../../src/bench/metrics.ts";
 import { MetricSchema } from "../../src/schemas/bench-result.ts";
 
 describe("makeMetric", () => {
@@ -80,5 +80,39 @@ describe("wilson", () => {
     const small = wilson(8, 10);
     const large = wilson(80, 100);
     expect(large.hi - large.lo).toBeLessThan(small.hi - small.lo);
+  });
+});
+
+describe("summarizeSpread", () => {
+  it("returns all-null with zero samples for an empty (all-null) input", () => {
+    const s = summarizeSpread([null, null]);
+    expect(s.samples).toBe(0);
+    expect(s.mean).toBeNull();
+    expect(s.stddev).toBeNull();
+    expect(s.min).toBeNull();
+    expect(s.max).toBeNull();
+  });
+
+  it("computes mean/min/max and a zero stddev for identical values", () => {
+    const s = summarizeSpread([0.5, 0.5, 0.5]);
+    expect(s.samples).toBe(3);
+    expect(s.mean).toBeCloseTo(0.5, 10);
+    expect(s.stddev).toBeCloseTo(0, 10);
+    expect(s.min).toBe(0.5);
+    expect(s.max).toBe(0.5);
+  });
+
+  it("surfaces run-to-run spread (population stddev)", () => {
+    const s = summarizeSpread([0, 1]);
+    expect(s.mean).toBeCloseTo(0.5, 10);
+    expect(s.min).toBe(0);
+    expect(s.max).toBe(1);
+    expect(s.stddev).toBeCloseTo(0.5, 10); // population stddev of {0,1}
+  });
+
+  it("ignores null (undefined-metric) repeats when summarizing", () => {
+    const s = summarizeSpread([null, 1, null, 0]);
+    expect(s.samples).toBe(2);
+    expect(s.mean).toBeCloseTo(0.5, 10);
   });
 });

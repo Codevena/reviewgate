@@ -283,3 +283,50 @@ describe("BenchResultSchema", () => {
     expect(r.success).toBe(true);
   });
 });
+
+describe("BenchResultSchema — P5 repeat/stability", () => {
+  it("accepts a result with a stability block and per-case repeat index", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      cases: [{ ...validResult.cases[0], repeat: 2 }],
+      stability: {
+        repeats: 3,
+        precision: { mean: 0.5, stddev: 0.2, min: 0.3, max: 0.7, samples: 3 },
+        recall: { mean: 0.8, stddev: 0.1, min: 0.7, max: 0.9, samples: 3 },
+        clean_fp_rate: { mean: 0.25, stddev: 0.35, min: 0, max: 0.75, samples: 3 },
+      },
+    });
+    if (!r.success) console.error(r.error);
+    expect(r.success).toBe(true);
+  });
+
+  it("accepts an all-null (zero-sample) spread stat", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      stability: {
+        repeats: 2,
+        precision: { mean: null, stddev: null, min: null, max: null, samples: 0 },
+        recall: { mean: null, stddev: null, min: null, max: null, samples: 0 },
+        clean_fp_rate: { mean: 0, stddev: 0, min: 0, max: 0, samples: 2 },
+      },
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("still parses a result with no stability (single run)", () => {
+    expect(BenchResultSchema.safeParse(validResult).success).toBe(true);
+  });
+
+  it("rejects a stability stat with a negative stddev", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      stability: {
+        repeats: 2,
+        precision: { mean: 0.5, stddev: -0.1, min: 0.4, max: 0.6, samples: 2 },
+        recall: { mean: 0.5, stddev: 0, min: 0.5, max: 0.5, samples: 2 },
+        clean_fp_rate: { mean: 0, stddev: 0, min: 0, max: 0, samples: 2 },
+      },
+    });
+    expect(r.success).toBe(false);
+  });
+});

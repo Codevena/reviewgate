@@ -55,3 +55,36 @@ export function makeMetric(num: number, den: number): Metric {
   const ci_hi = Math.min(1, Math.max(hi, value));
   return { num, den, value, ci_lo, ci_hi };
 }
+
+export interface SpreadStat {
+  mean: number | null;
+  /** population standard deviation across the repeats (0 for one sample). */
+  stddev: number | null;
+  min: number | null;
+  max: number | null;
+  /** how many repeats had a DEFINED value (nulls excluded). */
+  samples: number;
+}
+
+/**
+ * Summarize a metric's per-repeat point values into mean ± spread (spec §10#3):
+ * LLM reviewers vary run-to-run, so `--repeat K` reports the spread across the K
+ * runs — one lucky/unlucky run must not read as signal. `null` entries (a repeat
+ * where the metric was undefined, den=0) are excluded; an all-null input yields a
+ * zero-sample, all-null summary.
+ */
+export function summarizeSpread(values: Array<number | null>): SpreadStat {
+  const defined = values.filter((v): v is number => v !== null);
+  if (defined.length === 0) {
+    return { mean: null, stddev: null, min: null, max: null, samples: 0 };
+  }
+  const mean = defined.reduce((a, b) => a + b, 0) / defined.length;
+  const variance = defined.reduce((a, b) => a + (b - mean) ** 2, 0) / defined.length;
+  return {
+    mean,
+    stddev: Math.sqrt(variance),
+    min: Math.min(...defined),
+    max: Math.max(...defined),
+    samples: defined.length,
+  };
+}
