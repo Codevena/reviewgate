@@ -151,3 +151,97 @@ describe("Orchestrator captureRawReviews", () => {
     expect(result.rawReviews?.[0]?.findings[0]?.severity).toBe("WARN");
   });
 });
+
+// A quota-exhausted reviewer, forcing the orchestrator's failover machinery.
+function quotaStub(id: ProviderAdapter["id"]): ProviderAdapter {
+  return {
+    id,
+    async preflight() {
+      return { available: true, version: "x", authMode: "oauth", error: null };
+    },
+    async review(inp) {
+      return {
+        reviewerId: inp.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: 100 },
+        durationMs: 1,
+        exitCode: 1,
+        rawEventsPath: "",
+        rawText: "",
+        status: "quota-exhausted",
+      } satisfies ReviewResult;
+    },
+  };
+}
+
+function panelConfig() {
+  return {
+    ...defaultConfig,
+    providers: {
+      ...defaultConfig.providers,
+      "claude-code": { ...defaultConfig.providers["claude-code"], enabled: true },
+    },
+    phases: {
+      ...defaultConfig.phases,
+      review: {
+        reviewers: [
+          { provider: "codex" as const, persona: "security" },
+          { provider: "claude-code" as const, persona: "security" },
+        ],
+      },
+      critic: null,
+      triage: null,
+    },
+  };
+}
+
+describe("Orchestrator disableLastResortFailover (bench per-provider attribution)", () => {
+  it("WITHOUT the flag, a quota'd codex slot poaches claude-code (duplicate provider)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lr-on-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: panelConfig(),
+      adapters: {
+        codex: quotaStub("codex"),
+        "claude-code": stub("claude-code", [f("s", "claude-code", "security")]),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+      captureRawReviews: true,
+      providerAvailable: () => true,
+    });
+    const result = await orch.runIteration({ runId: "RUN", iter: 1 });
+    const claudeCount = (result.rawReviews ?? []).filter(
+      (r) => r.provider === "claude-code",
+    ).length;
+    expect(claudeCount).toBe(2); // codex slot fell over to claude-code → duplicated
+  });
+
+  it("WITH the flag, the quota'd slot stays failed (each provider measured as itself)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lr-off-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const orch = new Orchestrator({
+      repoRoot: repo,
+      config: panelConfig(),
+      adapters: {
+        codex: quotaStub("codex"),
+        "claude-code": stub("claude-code", [f("s", "claude-code", "security")]),
+      },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: DIFF,
+      reasonOnFailEnabled: true,
+      captureRawReviews: true,
+      providerAvailable: () => true,
+      disableLastResortFailover: true,
+    });
+    const result = await orch.runIteration({ runId: "RUN", iter: 1 });
+    const providers = (result.rawReviews ?? []).map((r) => r.provider).sort();
+    expect(providers.filter((p) => p === "claude-code").length).toBe(1);
+    expect(providers.filter((p) => p === "codex").length).toBe(1);
+  });
+});

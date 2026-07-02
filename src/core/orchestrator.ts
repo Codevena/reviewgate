@@ -185,6 +185,12 @@ export interface OrchestratorInput {
   // reviewer's pre-aggregation findings (deep-cloned). Default off → zero cost /
   // zero behavior change for the gate. Only `reviewgate bench` sets it.
   captureRawReviews?: boolean;
+  // Bench: disable the last-resort failover (a not-ok slot poaching ANY other
+  // enabled+available provider). In a bench PANEL every provider is enabled, so a
+  // quota-exhausted slot would otherwise run a DIFFERENT panel member — corrupting
+  // per-provider attribution (duplicate provider, fake corroboration). Each
+  // provider must be measured as itself; a failed slot is a real coverage gap.
+  disableLastResortFailover?: boolean;
 }
 
 // P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
@@ -1487,7 +1493,11 @@ export class Orchestrator {
           // working reviewer exists — i.e. fall back to claude/openrouter even if
           // they were not listed in this slot's chain. Same cooldown/availability
           // gates as the chain walk; skipped on a self-deadline abort.
-          if (run.res.status !== "ok" && !opts.signal?.aborted) {
+          if (
+            run.res.status !== "ok" &&
+            !opts.signal?.aborted &&
+            !this.input.disableLastResortFailover
+          ) {
             const attempted = new Set<ProviderId>([r.provider, ...(r.fallback ?? [])]);
             const lrAvailable = this.input.providerAvailable ?? isProviderAvailable;
             for (const lr of LAST_RESORT_ORDER) {

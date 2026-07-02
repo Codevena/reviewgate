@@ -368,8 +368,14 @@ export async function runBenchRun(input: BenchRunInput): Promise<BenchRunOutput>
 
       if (outcome.status === "scored") {
         scoredCount++;
+        // Count each provider AT MOST ONCE per case-run: coverage is the fraction
+        // of scored case-runs a provider produced an OK review on, so a duplicated
+        // provider entry (e.g. a failover poaching a panel member) must not push
+        // coverage above 1 or double-count its findings.
+        const seenOk = new Set<ProviderId>();
         for (const pp of outcome.perProvider) {
-          if (pp.status === "ok" && pp.match) {
+          if (pp.status === "ok" && pp.match && !seenOk.has(pp.provider)) {
+            seenOk.add(pp.provider);
             provScored.set(pp.provider, (provScored.get(pp.provider) ?? 0) + 1);
             const list = provMatches.get(pp.provider) ?? [];
             list.push(pp.match);

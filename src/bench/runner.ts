@@ -269,6 +269,9 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       reasonOnFailEnabled: true,
       reportMode: "one-shot",
       captureRawReviews: true,
+      // Measure each provider as itself: a quota-exhausted slot must NOT poach
+      // another panel member (that corrupts per-provider attribution).
+      disableLastResortFailover: true,
       ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
     });
     // Sanitize the case id before embedding it in the run id: BenchCaseSchema
