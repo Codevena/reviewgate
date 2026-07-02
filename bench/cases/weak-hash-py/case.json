@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "weak-hash-py",
+  "kind": "seeded-bug",
+  "language": "py",
+  "expected": [
+    {
+      "tag": [
+        "md5",
+        "weak hash",
+        "insecure hash",
+        "weak hashing"
+      ],
+      "file": "src/auth/hash.py",
+      "line": 4,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "MD5 used to hash passwords — cryptographically weak"
+}

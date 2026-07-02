@@ -1,0 +1,22 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "ssrf-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "ssrf",
+        "server-side request forgery",
+        "request forgery"
+      ],
+      "file": "src/net/proxy.ts",
+      "line": 2,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "user-controlled URL passed straight to fetch — server-side request forgery"
+}

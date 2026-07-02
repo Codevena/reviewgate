@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "clean-namedtuple-py",
+  "kind": "clean",
+  "language": "py",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "correct immutable NamedTuple value object"
+}

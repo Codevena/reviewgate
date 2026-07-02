@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "xss-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "xss",
+        "cross-site scripting",
+        "html injection",
+        "unescaped"
+      ],
+      "file": "src/render/greeting.ts",
+      "line": 2,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "unescaped req.query.name interpolated into HTML — reflected XSS"
+}

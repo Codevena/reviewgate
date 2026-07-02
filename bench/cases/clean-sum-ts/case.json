@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "clean-sum-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "hand-written",
+  "notes": "typed pure reducer"
+}

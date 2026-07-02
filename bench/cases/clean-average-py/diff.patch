@@ -1,0 +1,10 @@
+diff --git a/src/stats/average.py b/src/stats/average.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/stats/average.py
+@@ -0,0 +1,4 @@
++def average(values: list[float]) -> float:
++    if not values:
++        return 0.0
++    return sum(values) / len(values)
