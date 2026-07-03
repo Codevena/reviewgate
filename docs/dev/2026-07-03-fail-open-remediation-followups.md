@@ -8,22 +8,31 @@ clean. Plan: `docs/superpowers/plans/2026-07-03-fail-open-remediation.md`.
 
 ## Follow-up tickets (from the reviews — none merge-blocking, all verified non-regressions)
 
-1. **F-005 capture-window race + snapshot-time tree hash** (whole-branch Important #1 + Task-3
-   reviewer Important). A concurrent session's trigger flag landing between the diff snapshot
-   and `LoopDriver.run()`'s `readDirtyFlag` is treated as "the batch this run reviewed"; on a
-   PASS, `unlinkDirtyFlagIfUnchanged` deletes it and the state write records the POST-edit tree
-   hash (`loop-driver.ts` records `treeHash()` at write time) → next Stop can `skip-clean` over
-   an edit no panel saw. Pre-existing window (this branch narrowed the adjacent clobber variant
-   via `writeFileIfAbsent`); reachable only via a second session racing a seconds-wide window
-   AND a PASS. Fix direction: capture the flag at diff-snapshot time (and/or hash the tree at
-   snapshot time — strictly safer AND cheaper), compare-at-delete against the flag state the
-   diff was computed under.
-2. **SessionStart destroys the loud escalation handoff** (whole-branch Important #2, plan-level).
-   `handleReset` deletes ESCALATION.md + flag + state and seeds the current (possibly
-   unreviewed-dirty) tree as reviewed-through — a new session in a standing-down/quota-latched
-   repo silently turns 🟢. Accepted by the plan (open question (c)) but in tension with S3b's
-   goal. Direction: preserve ESCALATION.md (or emit a one-time 🟠 notice) across reset when
-   `escalated=true`.
+1. **F-005 capture-window race + snapshot-time tree hash** — **LARGELY CLOSED** (dogfood F-001
+   fix, `fix(gate): reset never blesses a dirty or escalated tree; tree hash recorded at
+   diff-snapshot time`): the tree hash is now memoized ONCE at diff-snapshot time
+   (`SetupBundle.snapshotTree`, gate.ts, right after `gatherReviewContext`) and every
+   `LoopDriver` write site (head-move record, post-review write, escalation announce) flows
+   through it via `this.i.treeHash` — a mid-review concurrent edit yields stored ≠ post-edit
+   tree, so the next Stop probe returns `"review"` even though F-005 deletes the flag on PASS
+   (pinned end-to-end in `tests/unit/gate-treehash-snapshot.test.ts`). **Residual (still open):
+   compare-at-delete only** — `unlinkDirtyFlagIfUnchanged` still compares against the flag
+   captured at `run()` start, not the diff-snapshot-time flag state, so a trigger flag landing
+   between the diff snapshot and `readDirtyFlag` is still treated as "the batch this run
+   reviewed" and deleted on PASS (the tree-hash mismatch now catches the CONTENT, so this is a
+   scope/base-bookkeeping nit, not a fail-open). Also a sub-ms residual: an edit landing between
+   `collectDiff` inside `gatherReviewContext` and the snapshot hash is still blessed (was a
+   minutes-wide window).
+2. **SessionStart destroys the loud escalation handoff** — **PARTIALLY CLOSED** (dogfood F-002
+   fix, same commit): `handleReset` no longer blesses an unreviewed tree — (a) an ESCALATED
+   pre-wipe state's `last_reviewed_head_sha`/`last_reviewed_tree_hash` are CARRIED OVER into
+   the fresh seed (the escalated range stays inside the next synthesis diff; escalation-metadata
+   hygiene unchanged), and (b) a non-escalated reset seeds the tree hash ONLY when the working
+   tree is genuinely clean (empty working-tree diff; dirty/error → null → next Stop probe fails
+   toward review). **Residual (still open): ESCALATION.md file preservation** — the reset still
+   deletes ESCALATION.md, so the loud human-facing artifact is gone even though the review
+   coverage is now safe; direction unchanged (preserve the file or emit a one-time 🟠 notice
+   across reset when `escalated=true`).
 3. **Verdict-case normalization in `parseReviewOutput`** (whole-branch Minor #4): a reviewer
    emitting `"pass"`/`"Pass"` is coerced to FAIL and, with only advisory findings, now becomes
    a lossy ERROR (fail-closed but churns cooldown/failover). 1-line case-normalize when a field

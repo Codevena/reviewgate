@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stopProbe } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { handleReset, handleTrigger } from "../../src/hooks/handlers.ts";
 import { dirtyFlagPath, stateJsonPath } from "../../src/utils/paths.ts";
@@ -91,12 +92,62 @@ describe("handleReset", () => {
     expect(st.iteration).toBe(0);
   });
 
-  it("seeds last_reviewed_head_sha and last_reviewed_tree_hash (S1)", async () => {
+  it("seeds last_reviewed_head_sha and last_reviewed_tree_hash on a CLEAN tree (S1)", async () => {
+    // gitRepo() leaves a clean working tree (everything committed) — the only
+    // state a reset may bless as reviewed-through (see the dirty-tree test below).
     const repo = gitRepo();
     await handleReset({ repoRoot: repo });
     const st = await new StateStore(repo).load();
     expect(st.last_reviewed_head_sha).not.toBeNull(); // = current HEAD
     expect(st.last_reviewed_tree_hash).not.toBeNull();
+  });
+
+  it("does NOT bless a DIRTY tree: head seeded, tree hash NULL, first stop reviews (dogfood F-002)", async () => {
+    // SessionStart in a repo with uncommitted (never-reviewed) work: seeding the
+    // dirty tree's hash as reviewed-through would make the very next Stop
+    // skip-clean over code no panel ever saw. The head sha is still seeded (the
+    // committed range up to session start is pre-session responsibility), but the
+    // tree hash must stay NULL so the probe fails toward review.
+    const repo = gitRepo();
+    writeFileSync(join(repo, "unreviewed.ts"), "export const dirty = 1;\n"); // uncommitted work
+    await handleReset({ repoRoot: repo });
+    const st = await new StateStore(repo).load();
+    expect(st.last_reviewed_head_sha).toBe(headSha(repo));
+    expect(st.last_reviewed_tree_hash).toBeNull();
+    // The consequence that matters: the next Stop takes the lock path (reviews).
+    expect(await stopProbe(repo)).toBe("review");
+  });
+
+  it("carries an ESCALATED session's reviewed-through markers over the reset (dogfood F-002)", async () => {
+    // A reset while escalated must NOT bless the current HEAD/tree: the escalated
+    // (possibly committed, never machine-reviewed) range would be marked reviewed
+    // and the next stop would skip-clean over it. Instead the PRE-wipe markers are
+    // carried into the fresh seed — the escalated range stays inside the next
+    // synthesis diff. Escalation-metadata hygiene is unchanged (fields cleared).
+    const repo = gitRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HRESETCARRY");
+    await state.update((cur) => ({
+      ...cur,
+      last_reviewed_head_sha: "CARRYSHA",
+      last_reviewed_tree_hash: "CARRYTREE",
+      escalated: true,
+      escalation_announced: true,
+      escalation_reason: "max-iterations",
+      escalated_head_sha: "H1",
+      escalated_tree_hash: "T1",
+    }));
+    await handleReset({ repoRoot: repo });
+    const st = await new StateStore(repo).load();
+    expect(st.last_reviewed_head_sha).toBe("CARRYSHA"); // NOT the current HEAD
+    expect(st.last_reviewed_head_sha).not.toBe(headSha(repo));
+    expect(st.last_reviewed_tree_hash).toBe("CARRYTREE");
+    // Hygiene unchanged: all escalation metadata still cleared by the fresh seed.
+    expect(st.escalated).toBe(false);
+    expect(st.escalation_reason).toBeNull();
+    expect(st.escalation_announced).toBe(false);
+    expect(st.escalated_head_sha).toBeNull();
+    expect(st.escalated_tree_hash).toBeNull();
   });
 
   it("clears ALL escalation metadata (round-5 C1)", async () => {

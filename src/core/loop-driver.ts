@@ -93,9 +93,17 @@ export interface LoopInput {
   // Current HEAD sha. When it differs from the last reviewed sha, a commit
   // landed and the gate re-arms (fresh budget for the next batch).
   headSha?: string;
-  /** S1: lazily computes the working-tree fingerprint recorded alongside
-   *  last_reviewed_head_sha. Optional; absent (tests) → null → the next Stop
-   *  takes the lock path once and re-records. */
+  /** S1: resolves the working-tree fingerprint recorded alongside
+   *  last_reviewed_head_sha. Dogfood F-001: the gate wires this to a MEMOIZED
+   *  DIFF-SNAPSHOT-TIME value (hashed once, right after the reviewed diff was
+   *  collected — SetupBundle.snapshotTree in gate.ts), NOT a fresh at-call-time
+   *  hash: resolving fresh at state-WRITE time (post-review) would bless a
+   *  concurrent session's mid-review Bash edit as reviewed-through, and the next
+   *  Stop would skip-clean over code no panel ever saw. With the snapshot value
+   *  a mid-review edit leaves stored ≠ current tree → the next Stop probe fails
+   *  toward review. All write sites (head-move record, post-review write,
+   *  escalation announce) flow through this same function. Optional; absent
+   *  (tests) → null → the next Stop takes the lock path once and re-records. */
   treeHash?: () => Promise<string | null>;
   /** S3b (round-14 W1): resolves HEAD FRESH at escalation-announce time — REQUIRED,
    *  not optional. `this.i.headSha` is captured at gate START, so a commit landing
@@ -1854,8 +1862,11 @@ export class LoopDriver {
           }
         : null;
     // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn (round-7
-    // W3). Computed fresh here (post-review tree = the state this iteration
-    // actually reviewed), not reused from the pre-review read at the top of run().
+    // W3). Dogfood F-001: treeHash resolves to the gate's memoized DIFF-SNAPSHOT
+    // fingerprint (the tree this iteration's diff was computed from), NOT a fresh
+    // post-review hash — "fresh at write time" blessed a concurrent session's
+    // mid-review edit as reviewed (stored == post-edit tree → next Stop
+    // skip-cleans over never-reviewed code). See LoopInput.treeHash.
     const tree = (await this.i.treeHash?.()) ?? null;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
@@ -2447,6 +2458,9 @@ export class LoopDriver {
       // response to it. Hoist BOTH async reads above the (sync) updater —
       // never await inside it (round-7 W3).
       const escHead = await this.i.freshHeadSha(); // REQUIRED input (round-14 W1); null on git error → never stands down
+      // Dogfood F-001: same memoized diff-snapshot fingerprint as every other
+      // write site. A mid-review edit ⇒ snapshot ≠ announce-time tree ⇒ the
+      // standing-down probe's tree-match fails ⇒ fails toward review (safe).
       const escTree = (await this.i.treeHash?.()) ?? null;
       await this.i.state.update((cur) => ({
         ...cur,

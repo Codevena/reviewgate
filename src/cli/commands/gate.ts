@@ -85,6 +85,12 @@ interface SetupBundle {
   host: ReturnType<typeof detectHostModel>;
   adapters: ReturnType<typeof buildAdapters>;
   ctx: ReviewContext;
+  // Dogfood F-001: the working-tree fingerprint hashed ONCE, immediately after
+  // gatherReviewContext (i.e. the tree the reviewed diff was computed from). All
+  // LoopDriver tree-hash writes use THIS memoized value — hashing fresh at
+  // state-write time (post-review) would bless a concurrent session's mid-review
+  // Bash edit as reviewed-through and the next Stop would skip-clean over it.
+  snapshotTree: string | null;
 }
 
 export interface GateInput {
@@ -735,7 +741,19 @@ async function runStopGate(
         cfg.phases.review.settleBeforeReview ?? false,
         cfg.phases.review.scopeToSession ?? true,
       );
-      return { host, adapters, ctx };
+      // Dogfood F-001: hash the working tree ONCE, immediately after the diff
+      // snapshot, so "reviewed-through" records the tree the diff was computed
+      // FROM — not whatever the tree looks like when the state is written after
+      // the multi-minute panel run, which could include a concurrent session's
+      // mid-review edit no panel ever saw (stored == post-edit tree → the next
+      // Stop skip-cleans, fail-open). With the snapshot value, a mid-review edit
+      // leaves stored ≠ current → the next Stop probe fails toward review.
+      // Residual micro-window (documented, ticket 1): an edit landing between
+      // collectDiff inside gatherReviewContext and this hash is still blessed —
+      // sub-ms vs the previous minutes-wide window; full closure needs
+      // compare-at-delete against the snapshot-time flag state.
+      const snapshotTree = await workingTreeStateHash(input.repoRoot);
+      return { host, adapters, ctx, snapshotTree };
     })();
     setup =
       setupDeadlineAt !== null
@@ -746,7 +764,7 @@ async function runStopGate(
     const reason = `🔴 Reviewgate · GATE CLOSED — review setup (git/state/diff) did not complete within ${secs}s (likely git index-lock contention from a parallel session). End your turn again to retry; run \`reviewgate doctor\` if it persists.`;
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
-  const { host, adapters, ctx } = setup;
+  const { host, adapters, ctx, snapshotTree } = setup;
   const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles, attribution } = ctx;
 
   // S1-C1 BELT (codex CRITICAL, reviewed 2026-07-03): gatherReviewContext can hand
@@ -859,9 +877,13 @@ async function runStopGate(
     orchestrator,
     stopHookActive: stopHookActiveFlag(parsedStdin),
     headSha: gitInfo.sha,
-    // S1: computed FRESH at state-write time (post-review tree), not once here —
-    // see LoopInput.treeHash.
-    treeHash: () => workingTreeStateHash(input.repoRoot),
+    // S1 + dogfood F-001: the DIFF-SNAPSHOT-TIME fingerprint, memoized once right
+    // after gatherReviewContext (the tree the reviewed diff was computed from).
+    // Previously computed FRESH at state-write time — which blessed a concurrent
+    // session's mid-review Bash edit as reviewed-through. Every driver write site
+    // (head-move record, post-review write, escalation announce) flows through
+    // this same snapshot — see LoopInput.treeHash and SetupBundle.snapshotTree.
+    treeHash: async () => snapshotTree,
     // S3b (round-14 W1): resolved FRESH at escalation-announce time, not reused
     // from gitInfo.sha (captured at gate start) — see LoopInput.freshHeadSha.
     freshHeadSha: () => gitHeadSha(input.repoRoot),

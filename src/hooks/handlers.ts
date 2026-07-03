@@ -12,7 +12,12 @@ import {
 import { StateStore } from "../core/state-store.ts";
 import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { ReviewgateStateSchema } from "../schemas/state.ts";
-import { gitHeadSha, isExcludedFromReview, workingTreeStateHash } from "../utils/git.ts";
+import {
+  collectDiff,
+  gitHeadSha,
+  isExcludedFromReview,
+  workingTreeStateHash,
+} from "../utils/git.ts";
 import {
   decisionsDir,
   deferredFlagPath,
@@ -207,6 +212,24 @@ export interface ResetSummary {
 
 export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   const dir = reviewgateDir(input.repoRoot);
+  // F-002 (dogfood, reset-seeds-unreviewed-tree): capture the PRE-wipe state
+  // BEFORE the artifact groups below rmSync state.json. If the wiped session was
+  // ESCALATED, its reviewed-through markers must survive the reset: blessing the
+  // CURRENT HEAD/tree would mark the escalated (possibly committed, never
+  // machine-reviewed) range as reviewed-through, and the next Stop would
+  // skip-clean over it. The carried markers keep that range inside the next
+  // synthesis diff. A missing/corrupt prior state → null → normal seeding.
+  let preWipe: { escalated: boolean; sha: string | null; tree: string | null } | null = null;
+  try {
+    const prev = await new StateStore(input.repoRoot).load();
+    preWipe = {
+      escalated: prev.escalated === true,
+      sha: prev.last_reviewed_head_sha,
+      tree: prev.last_reviewed_tree_hash,
+    };
+  } catch {
+    preWipe = null;
+  }
   // Ordered artifact groups. Each group is removed together (behaviour unchanged
   // from before: best-effort rmSync with force) and contributes ONE human-facing
   // label to the summary if any of its paths was present.
@@ -265,8 +288,22 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   // S1: seed the reviewed-through markers at session start. `last === null`
   // previously meant an unconditional Stop fast-exit — a first-turn Bash
   // `git commit`/`git merge` shipped unreviewed (core-loop#2). Pre-session
-  // work is by definition not this session's responsibility, so "reviewed
-  // through session-start HEAD/tree" is the honest baseline.
+  // COMMITTED work is by definition not this session's responsibility, so
+  // "reviewed through session-start HEAD" is the honest baseline for the sha.
+  //
+  // F-002 (dogfood, reset-seeds-unreviewed-tree): the TREE hash is a stronger
+  // claim — "this exact working-tree content was reviewed" — and a reset must
+  // never manufacture it:
+  //  (a) escalated pre-wipe state → carry over ITS markers (see preWipe above)
+  //      instead of blessing the current HEAD/tree;
+  //  (b) otherwise seed the tree hash ONLY when the working tree is genuinely
+  //      clean (empty working-tree diff). A dirty (unreviewed) tree seeds NULL,
+  //      so the next Stop's probe fails toward review — ownership demotion
+  //      (Slice A) handles any foreign findings in that first review. The hash
+  //      is computed BEFORE the clean-check so an edit racing the two steps
+  //      fails safe either way: landing before the check → non-empty diff →
+  //      null; landing after → stored hash predates it → probe mismatch →
+  //      review. Any error → nulls (fail toward review).
   //
   // Drift from the brief: the "session state" group above unconditionally
   // rmSync's state.json (best-effort), so it does NOT exist at this point.
@@ -278,10 +315,22 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   try {
     const store = new StateStore(input.repoRoot);
     await store.loadOrRecover(ulid());
-    const [sha, tree] = await Promise.all([
-      gitHeadSha(input.repoRoot),
-      workingTreeStateHash(input.repoRoot),
-    ]);
+    let sha: string | null;
+    let tree: string | null;
+    if (preWipe?.escalated) {
+      sha = preWipe.sha;
+      tree = preWipe.tree;
+    } else {
+      sha = await gitHeadSha(input.repoRoot);
+      tree = null;
+      try {
+        const candidate = await workingTreeStateHash(input.repoRoot);
+        const wtDiff = await collectDiff(input.repoRoot, null);
+        if (wtDiff.trim().length === 0) tree = candidate;
+      } catch {
+        tree = null;
+      }
+    }
     await store.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
