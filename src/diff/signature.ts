@@ -59,7 +59,7 @@ const RULE_ID_NOISE = new Set([
   "insecure",
 ]);
 
-function normalizeRuleId(raw: string): string {
+export function normalizeRuleId(raw: string): string {
   const tokens = raw
     .toLowerCase()
     .split(/[^a-z0-9]+/)
