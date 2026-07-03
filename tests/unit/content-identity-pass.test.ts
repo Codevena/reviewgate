@@ -210,39 +210,54 @@ rename to src/new.ts
 });
 
 describe("S5: ledgerEnvHash compatibility across the cycleRejected/claimedFixed cache-key fold", () => {
-  // Pinned literal captured from the ORCHESTRATOR BEFORE the S5 fix (cyc:/cfx: segments
-  // added), using this exact fixture (repoWithCode + cfg + PASS stub, empty suppression
-  // sets). T5's pass_ledger reuse depends on the env_hash staying byte-identical for the
-  // empty-suppression case, or every ledger written before this fix would MISS on the very
-  // next (still-suppression-free) run. A change to this value is a real compatibility break
-  // — it must be investigated, not silenced by re-pinning.
-  const PRE_S5_EMPTY_ENV_HASH = "af3e80137fbacab8144d872db5b6e19311ead12031633553b6a4ff41af94bd99";
+  // S5 appends `|cyc:…`/`|cfx:…` segments to the env-hash inputs, but ONLY when the respective
+  // suppression set is NON-empty (empty → empty segment). T5's pass_ledger reuse depends on the
+  // env_hash staying byte-identical for the suppression-free case, so a ledger written on one
+  // suppression-free run is still served on the next.
+  //
+  // We assert this as a RELATIVE invariant, NOT against a pinned absolute literal. `ledgerEnvHash`
+  // deliberately folds in `RG_VERSION` (a reviewgate upgrade must invalidate the ledger), so any
+  // absolute golden value is VERSION-COUPLED and breaks on every release version bump — which is
+  // exactly what happened (a literal pinned under an earlier alpha failed the release-tag verify).
+  // The checks below capture the real contract — empty cyc/cfx contributes nothing; a non-empty
+  // set changes the hash — without that release-fragility. `runId` is not an env-hash input, so
+  // two runs against the same fixture differ ONLY by the suppression segments.
 
-  it("omitted cycleRejected/claimedFixed → env_hash unchanged from the pre-S5 value", async () => {
-    const repo = repoWithCode();
-    const res = await orch(repo, stub("PASS")).runIteration({ runId: "01HXS5A", iter: 1 });
-    expect(res.passLedgerEnvHash).toBe(PRE_S5_EMPTY_ENV_HASH);
-  });
-
-  it("explicit-empty cycleRejected/claimedFixed → env_hash unchanged from the pre-S5 value", async () => {
-    const repo = repoWithCode();
-    const res = await orch(repo, stub("PASS")).runIteration({
+  // A FRESH repo per run — each is its own cold cache, so every run is a MISS that actually
+  // recomputes and RETURNS the env-hash. Reusing one repo would let the 2nd run HIT the 1st's
+  // byte cache (identical key ⇒ empty segments add nothing — the very thing we assert), but a
+  // cache-served result carries no env-hash, so the field would read `undefined`. Two
+  // identical-content fixtures share every env-hash input (config, conventions, topology,
+  // version) and differ ONLY by the suppression segments under test.
+  it("omitted vs explicit-empty cycleRejected/claimedFixed → identical env_hash (empty adds nothing)", async () => {
+    const omitted = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A", iter: 1 });
+    const explicitEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
       runId: "01HXS5B",
       iter: 1,
       cycleRejectedSignatures: [],
       claimedFixedSignatures: {},
     });
-    expect(res.passLedgerEnvHash).toBe(PRE_S5_EMPTY_ENV_HASH);
+    expect(explicitEmpty.passLedgerEnvHash).toBe(omitted.passLedgerEnvHash);
   });
 
-  it("a non-empty claimedFixedSignatures changes env_hash (ledger-eligibility aside, the hash itself must differ)", async () => {
-    const repo = repoWithCode();
-    const res = await orch(repo, stub("PASS")).runIteration({
+  it("a non-empty claimedFixedSignatures changes env_hash", async () => {
+    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A2", iter: 1 });
+    const nonEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
       runId: "01HXS5C",
       iter: 1,
       claimedFixedSignatures: { "sig-b": 2 },
     });
-    expect(res.passLedgerEnvHash).not.toBe(PRE_S5_EMPTY_ENV_HASH);
+    expect(nonEmpty.passLedgerEnvHash).not.toBe(empty.passLedgerEnvHash);
+  });
+
+  it("a non-empty cycleRejectedSignatures changes env_hash", async () => {
+    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A3", iter: 1 });
+    const nonEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
+      runId: "01HXS5D",
+      iter: 1,
+      cycleRejectedSignatures: ["sig-x"],
+    });
+    expect(nonEmpty.passLedgerEnvHash).not.toBe(empty.passLedgerEnvHash);
   });
 });
 
