@@ -94,6 +94,15 @@ export function implicitOutcomesLockPath(repoRoot: string): string {
   return join(learningsDir(repoRoot), ".implicit-outcomes.lock");
 }
 
+// Agent Lessons v1 — repo-memory of the agent's accepted+fixed mistakes. Single
+// JSON document (one AgentLessonsIndex) alongside the FP-ledger; same learnings/ dir.
+export function agentLessonsPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), "agent-lessons.json");
+}
+export function agentLessonsLockPath(repoRoot: string): string {
+  return join(learningsDir(repoRoot), ".agent-lessons.lock");
+}
+
 export function auditDir(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "audit");
 }

@@ -240,6 +240,20 @@ export const ConfigSchema = z.object({
       .optional(),
     // M5 Part B1: FP-ledger (signature-keyed false-positive learning). Opt-in.
     fpLedger: z.object({ enabled: z.boolean() }).nullable().default(null).optional(),
+    // Agent Lessons v1: collect accepted+fixed findings → deterministic recurrence →
+    // SessionStart advisory injection. Render-only, never verdict-affecting. Opt-in
+    // (null = off), mirroring fpLedger's nullable-object shape.
+    agentLessons: z
+      .object({
+        enabled: z.boolean(),
+        minRecurrence: z.number().int().min(1).default(3),
+        topK: z.number().int().min(1).default(5),
+        maxInjectChars: z.number().int().min(200).default(1500),
+        ttlDays: z.number().int().min(1).default(90),
+      })
+      .nullable()
+      .default(null)
+      .optional(),
     // P0 self-improving: write-only capture of demoted/dropped finding outcomes.
     // Default ON; cap bounds the NDJSON (oldest-drop). No verdict/behavior effect.
     implicitOutcomes: z
