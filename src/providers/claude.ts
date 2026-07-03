@@ -229,6 +229,10 @@ export class ClaudeAdapter implements ProviderAdapter {
         durationMs: res.durationMs,
         exitCode: res.exitCode,
         rawEventsPath: outFile,
+        // The temp run dir (and thus rawEventsPath) is reaped in finally, so the
+        // raw reviewer text — containing the malformed finding — is the ONLY
+        // surviving triage evidence. Carry it exactly like the ok-path does.
+        rawText,
         status: "error",
         // Round-12 W3: the counts ride along in EVERY lossy branch, not just
         // the blocking-drop reason string.

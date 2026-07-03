@@ -137,6 +137,11 @@ describe("ClaudeAdapter (mocked)", () => {
     expect(res.rawEventsPath).toBeTruthy();
     expect(res.rawEventsPath.endsWith("out.json")).toBe(true);
     expect(res.statusDetail ?? "").toMatch(/dropped \d+, blocking \d+/);
+    // The temp run dir is always reaped, so rawText is the ONLY surviving triage
+    // evidence — it must be present and contain the malformed finding's text.
+    expect(res.rawText).toBeTruthy();
+    expect(res.rawText ?? "").toContain("bad line type");
+    expect(res.rawText ?? "").toContain('"line":"42"');
   });
 
   it("UNKNOWN category with an otherwise-valid finding also fails closed (S2, round-3 I1)", async () => {
