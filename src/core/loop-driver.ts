@@ -88,6 +88,10 @@ export interface LoopInput {
   // Current HEAD sha. When it differs from the last reviewed sha, a commit
   // landed and the gate re-arms (fresh budget for the next batch).
   headSha?: string;
+  /** S1: lazily computes the working-tree fingerprint recorded alongside
+   *  last_reviewed_head_sha. Optional; absent (tests) → null → the next Stop
+   *  takes the lock path once and re-records. */
+  treeHash?: () => Promise<string | null>;
   // Post-abort settle cap (ms). Defaults to POST_ABORT_SETTLE_MS_DEFAULT; tests
   // inject a tiny value to exercise the hung-run fail-closed path quickly (M-A0.3).
   postAbortSettleMs?: number;
@@ -801,7 +805,7 @@ export class LoopDriver {
   // parallel session's edit (or a laggard async trigger) can atomically REWRITE
   // the flag with a batch this review never saw. Unconditionally unlinking would
   // silently drop that batch: the other session's next stop sees no flag + an
-  // unchanged HEAD (stopHasNothingToReview) → allow_stop → unreviewed code ships.
+  // unchanged HEAD (stopProbe) → allow_stop → unreviewed code ships.
   // handleTrigger stamps a fresh `ts` + `diff_hash` on every rewrite, so we only
   // delete when the on-disk flag still matches what this run captured at start;
   // a newer flag is restored so the next stop reviews it. The compare is done on
@@ -881,6 +885,10 @@ export class LoopDriver {
     const headSha = this.i.headSha ?? null;
     if (headSha !== null && state.last_reviewed_head_sha !== headSha) {
       const headMovedWhileEscalated = state.last_reviewed_head_sha !== null && state.escalated;
+      // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn, so an
+      // inline await inside it would either fail to compile or (via an
+      // accidentally-async updater) persist a Promise-shaped value (round-7 W3).
+      const tree = (await this.i.treeHash?.()) ?? null;
       await this.i.state.update((cur) =>
         ReviewgateStateSchema.parse({
           ...cur,
@@ -921,6 +929,7 @@ export class LoopDriver {
               }
             : {}),
           last_reviewed_head_sha: headSha,
+          last_reviewed_tree_hash: tree,
         }),
       );
       // The commit closed the escalated cycle → wipe its decisions too, so a
@@ -1767,6 +1776,10 @@ export class LoopDriver {
             files: result.reviewedSnapshotFiles,
           }
         : null;
+    // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn (round-7
+    // W3). Computed fresh here (post-review tree = the state this iteration
+    // actually reviewed), not reused from the pre-review read at the top of run().
+    const tree = (await this.i.treeHash?.()) ?? null;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
@@ -1859,6 +1872,7 @@ export class LoopDriver {
         consecutive_infra_defers: 0,
         consecutive_quota_defers: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
+        last_reviewed_tree_hash: tree,
         last_stop_ts: new Date().toISOString(),
         // On a clean pass (re-arm), bump the cycle sequence so the next cycle's
         // reputation event-ids can't collide with this cycle's (F-001 renumbers).

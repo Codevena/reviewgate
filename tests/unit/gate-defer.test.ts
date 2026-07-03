@@ -13,7 +13,7 @@ import {
   consumeDeferredFlag,
   lockContentionDecision,
   runGate,
-  stopHasNothingToReview,
+  stopProbe,
 } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { handleReset } from "../../src/hooks/handlers.ts";
@@ -81,11 +81,11 @@ describe("gate defer-on-contention", () => {
     expect(readLockHolder(gateLockPath(repo))).toBeNull(); // gone after release
   });
 
-  it("a deferred.flag forces the lock path (stopHasNothingToReview returns false)", async () => {
+  it("a deferred.flag forces the lock path (stopProbe returns 'review')", async () => {
     const repo = gitRepo("rg-defer-force-");
     await new StateStore(repo).initialise("01HDEFER02"); // last sha null → would normally skip
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
-    expect(await stopHasNothingToReview(repo, async () => "x")).toBe(false);
+    expect(await stopProbe(repo, async () => "x")).toBe("review");
   });
 
   it("consumes the deferred.flag once the lock is acquired (no defer loop)", async () => {

@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StateStore } from "../../src/core/state-store.ts";
 import { handleReset, handleTrigger } from "../../src/hooks/handlers.ts";
 import { dirtyFlagPath, stateJsonPath } from "../../src/utils/paths.ts";
 
@@ -71,7 +72,7 @@ describe("handleTrigger", () => {
 });
 
 describe("handleReset", () => {
-  it("removes dirty.flag and state.json on SessionStart", async () => {
+  it("removes dirty.flag and re-seeds state.json fresh on SessionStart", async () => {
     const repo = fakeRepo();
     // ensure .reviewgate/ exists so writeFileSync works
     const { mkdirSync } = await import("node:fs");
@@ -80,6 +81,42 @@ describe("handleReset", () => {
     writeFileSync(stateJsonPath(repo), "{}");
     await handleReset({ repoRoot: repo });
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
-    expect(existsSync(stateJsonPath(repo))).toBe(false);
+    // S1: state.json is no longer left ABSENT — the reset re-seeds a fresh
+    // state (reviewed-through markers) so the very next Stop has an honest
+    // baseline instead of an unconditional last===null fast-exit
+    // (core-loop#2). It must be the fresh schema-valid state, not the stale
+    // "{}" stub written above.
+    expect(existsSync(stateJsonPath(repo))).toBe(true);
+    const st = JSON.parse(readFileSync(stateJsonPath(repo), "utf8"));
+    expect(st.iteration).toBe(0);
+  });
+
+  it("seeds last_reviewed_head_sha and last_reviewed_tree_hash (S1)", async () => {
+    const repo = gitRepo();
+    await handleReset({ repoRoot: repo });
+    const st = await new StateStore(repo).load();
+    expect(st.last_reviewed_head_sha).not.toBeNull(); // = current HEAD
+    expect(st.last_reviewed_tree_hash).not.toBeNull();
+  });
+
+  it("clears ALL escalation metadata (round-5 C1)", async () => {
+    const repo = gitRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HRESETESC1");
+    await state.update((cur) => ({
+      ...cur,
+      escalated: true,
+      escalation_announced: true,
+      escalation_reason: "max-iterations",
+      escalated_head_sha: "H1",
+      escalated_tree_hash: "T",
+    }));
+    await handleReset({ repoRoot: repo });
+    const st = await new StateStore(repo).load();
+    expect(st.escalated).toBe(false);
+    expect(st.escalation_reason).toBeNull();
+    expect(st.escalation_announced).toBe(false);
+    expect(st.escalated_head_sha).toBeNull();
+    expect(st.escalated_tree_hash).toBeNull();
   });
 });

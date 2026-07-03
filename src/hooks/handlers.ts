@@ -2,13 +2,16 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import {
   captureSessionBaseline,
   pruneOldSessionManifests,
   recordSessionOwned,
 } from "../core/session-manifest.ts";
-import { gitHeadSha } from "../utils/git.ts";
+import { StateStore } from "../core/state-store.ts";
+import { ReviewgateStateSchema } from "../schemas/state.ts";
+import { gitHeadSha, workingTreeStateHash } from "../utils/git.ts";
 import {
   decisionsDir,
   deferredFlagPath,
@@ -219,6 +222,37 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
     if (sid) await captureSessionBaseline(input.repoRoot, sid, new Date().toISOString());
   } catch {
     /* best-effort: a baseline-capture failure just means the next review is unscoped (full) */
+  }
+
+  // S1: seed the reviewed-through markers at session start. `last === null`
+  // previously meant an unconditional Stop fast-exit — a first-turn Bash
+  // `git commit`/`git merge` shipped unreviewed (core-loop#2). Pre-session
+  // work is by definition not this session's responsibility, so "reviewed
+  // through session-start HEAD/tree" is the honest baseline.
+  //
+  // Drift from the brief: the "session state" group above unconditionally
+  // rmSync's state.json (best-effort), so it does NOT exist at this point.
+  // StateStore.update() calls load() → readFileSync, which throws ENOENT on a
+  // missing file (no auto-create) — a bare update() here would silently no-op
+  // inside its own try/catch. loadOrRecover (the same ulid()-seeded pattern
+  // runStopGate uses) recreates state.json first so update() has something to
+  // patch, landing the seed in the FRESH state as the brief requires.
+  try {
+    const store = new StateStore(input.repoRoot);
+    await store.loadOrRecover(ulid());
+    const [sha, tree] = await Promise.all([
+      gitHeadSha(input.repoRoot),
+      workingTreeStateHash(input.repoRoot),
+    ]);
+    await store.update((cur) =>
+      ReviewgateStateSchema.parse({
+        ...cur,
+        last_reviewed_head_sha: sha ?? cur.last_reviewed_head_sha,
+        last_reviewed_tree_hash: tree,
+      }),
+    );
+  } catch {
+    /* best-effort: a failed seed leaves null → the Stop path fails toward review */
   }
 
   return { cleared };
