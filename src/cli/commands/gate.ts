@@ -23,7 +23,7 @@ import {
 } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
-import { writeFileAtomic } from "../../utils/atomic-write.ts";
+import { writeFileAtomic, writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { FlockTimeoutError, flock, readLockHolder } from "../../utils/flock.ts";
 import {
   DIFF_INCOMPLETE_MARKER,
@@ -743,6 +743,20 @@ async function runStopGate(
   // cycle later. Same conditional shape as handleTrigger/consumeDeferredFlag:
   // base_sha present iff known. An unreadable state here (pathological — setup
   // just loadOrRecover'd it) degrades to the base-less flag, never skips the belt.
+  //
+  // Write protocol (dirty-flag-race-clobber, codex CRITICAL 2026-07-03): the write
+  // MUST be an atomic CREATE-IF-ABSENT (writeFileIfAbsent — tmp + link(2), the
+  // flock.ts protocol), NOT check-then-writeFileAtomic. PostToolUse triggers are
+  // not serialized by the gate lock, so a concurrent session's trigger can land a
+  // fresh dirty.flag between our existsSync check above and the write — a rename
+  // would CLOBBER that newer flag with our synthesized one, whose diff was computed
+  // BEFORE the concurrent edit; a later clean-pass tree hash could then record the
+  // post-edit tree as reviewed and the next Stop would fast-exit over code no panel
+  // ever saw. On EEXIST (writeFileIfAbsent returns false) we neither clobber nor
+  // fail-close: the concurrent flag is newer truth, the driver gates on whatever is
+  // on disk, and the F-005 compare-and-delete already preserves a flag rewritten
+  // mid-review for the next stop. Only a real write failure keeps the fail-closed
+  // block below.
   if (diff.trim().length > 0 && !existsSync(dirtyFlagPath(input.repoRoot))) {
     let lastReviewed: string | null = null;
     try {
@@ -751,7 +765,7 @@ async function runStopGate(
       lastReviewed = null;
     }
     try {
-      writeFileAtomic(
+      writeFileIfAbsent(
         dirtyFlagPath(input.repoRoot),
         JSON.stringify({
           diff_hash: gitInfo.sha.slice(0, 16),

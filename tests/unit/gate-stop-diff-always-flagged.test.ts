@@ -251,4 +251,49 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     expect(flag.base_sha).toBe(lastSha); // the known base is preserved, not dropped
     expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL);
   }, 30_000);
+
+  it("(e) a dirty.flag that appears CONCURRENTLY is never clobbered by the belt (dirty-flag-race-clobber)", async () => {
+    // PostToolUse triggers are NOT serialized by the gate lock: another session's
+    // trigger can land a fresh dirty.flag while this stop-gate is mid-setup. That
+    // flag is newer truth (it marks an edit the current in-memory diff was computed
+    // BEFORE) — if the belt replaced it with its synthesized flag, a later clean
+    // pass could record the post-edit tree hash as reviewed and the next Stop would
+    // fast-exit over code no panel ever saw. The belt must leave a flag it finds
+    // byte-identical (its write is an atomic create-if-absent, link(2)-based —
+    // writeFileIfAbsent — whose EEXIST no-clobber semantics are unit-pinned in
+    // tests/unit/atomic-write.test.ts; this pins the belt end-to-end).
+    //
+    // The race is injected via collectDiffFn: the concurrent trigger's flag is
+    // written AFTER gatherReviewContext's own has-flag check already ran (so the
+    // no-flag synthesis path is taken) but BEFORE the belt executes.
+    const repo = gitRepo("rg-stopc1-noclobber-");
+    await new StateStore(repo).initialise("01STOPC1NOCLOB"); // last=null → belt is the writer
+    writeFileSync(join(repo, "sneaky4.ts"), "export const w = 4;\n");
+    const concurrentFlag = JSON.stringify({
+      diff_hash: "concurrent-trigger",
+      ts: "2026-07-03T00:00:00.000Z",
+      base_ts: "2026-07-03T00:00:00.000Z",
+    });
+
+    const out = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: stubReviewer("sneaky4.ts") },
+      sandboxModeOverride: "off",
+      collectDiffFn: async (...args: Parameters<typeof collectDiff>) => {
+        const result = await collectDiff(...args);
+        // Simulated concurrent PostToolUse trigger (another session's edit).
+        writeFileSync(dirtyFlagPath(repo), concurrentFlag);
+        return result;
+      },
+    });
+
+    expect(out.exitCode).toBe(0);
+    const decision = JSON.parse(out.stdout || "{}") as { decision?: string };
+    expect(decision.decision).toBe("block"); // still reviewed — a surviving flag never green-allows
+    // The concurrent trigger's flag survived the belt BYTE-IDENTICAL — not
+    // replaced by the synthesized {diff_hash: <head sha>, base_ts: sentinel} body.
+    expect(readFileSync(dirtyFlagPath(repo), "utf8")).toBe(concurrentFlag);
+  }, 30_000);
 });
