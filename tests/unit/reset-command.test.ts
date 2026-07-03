@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReset } from "../../src/cli/commands/reset.ts";
@@ -25,7 +25,6 @@ describe("handleReset summary", () => {
     const { cleared } = await handleReset({ repoRoot: root });
     const rg = join(root, ".reviewgate");
     for (const p of [
-      "state.json",
       "dirty.flag",
       "pending.md",
       "pending.json",
@@ -35,6 +34,13 @@ describe("handleReset summary", () => {
     ]) {
       expect(existsSync(join(rg, p))).toBe(false);
     }
+    // S1: state.json is no longer left absent — the reset re-seeds a fresh
+    // state (reviewed-through markers) rather than the stale "{}" stub seedRepo
+    // wrote, so the very next Stop has an honest baseline instead of an
+    // unconditional last===null fast-exit (core-loop#2).
+    expect(existsSync(join(rg, "state.json"))).toBe(true);
+    const st = JSON.parse(readFileSync(join(rg, "state.json"), "utf8"));
+    expect(st.iteration).toBe(0);
     expect(cleared).toContain("dirty flag");
     expect(cleared).toContain("session state");
     expect(cleared).toContain("pending findings");
@@ -98,13 +104,14 @@ describe("runReset command", () => {
 
   it("clears the same artifacts as the gate --hook reset path (parity)", async () => {
     // Both runReset and the SessionStart hook drive the SAME handleReset, so a
-    // freshly seeded tree must end up identically empty either way.
+    // freshly seeded tree must end up identically empty either way. state.json
+    // is EXCLUDED here (S1): it is re-seeded, not left absent — see the
+    // dedicated "removes all per-session artifacts" test above.
     const viaCommand = seedRepo();
     await runReset({ repoRoot: viaCommand, write: () => {} });
     const viaHook = seedRepo();
     await handleReset({ repoRoot: viaHook });
     for (const p of [
-      "state.json",
       "dirty.flag",
       "pending.md",
       "pending.json",
@@ -115,5 +122,7 @@ describe("runReset command", () => {
       expect(existsSync(join(viaCommand, ".reviewgate", p))).toBe(false);
       expect(existsSync(join(viaHook, ".reviewgate", p))).toBe(false);
     }
+    expect(existsSync(join(viaCommand, ".reviewgate", "state.json"))).toBe(true);
+    expect(existsSync(join(viaHook, ".reviewgate", "state.json"))).toBe(true);
   });
 });

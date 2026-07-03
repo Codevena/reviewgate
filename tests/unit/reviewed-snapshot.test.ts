@@ -77,6 +77,7 @@ function driverFor(repo: string, state: StateStore, result: IterationResult, hea
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: { runIteration: async () => result },
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     ...(headSha ? { headSha } : {}),
   });
 }
@@ -135,6 +136,22 @@ describe("state schema back-compat", () => {
     expect(parsed.reviewed_snapshot).toBeNull();
     expect(parsed.cycle_rejected_dispositions).toEqual([]);
     expect(parsed.pass_ledger).toBeNull();
+  });
+
+  it("new S1/S3 fields default and roundtrip", () => {
+    const st = ReviewgateStateSchema.parse({ ...initialState("01HXS1S3") });
+    expect(st.last_reviewed_tree_hash).toBeNull();
+    expect(st.escalated_head_sha).toBeNull();
+    expect(st.escalated_tree_hash).toBeNull();
+    const round = ReviewgateStateSchema.parse({
+      ...st,
+      last_reviewed_tree_hash: "abc",
+      escalated_head_sha: "deadbeef",
+      escalated_tree_hash: "def",
+    });
+    expect(round.last_reviewed_tree_hash).toBe("abc");
+    expect(round.escalated_head_sha).toBe("deadbeef");
+    expect(round.escalated_tree_hash).toBe("def");
   });
 });
 

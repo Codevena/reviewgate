@@ -64,6 +64,7 @@ describe("LoopDriver run.complete emit", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
 
     const decision = await driver.run();

@@ -365,20 +365,26 @@ export const ConfigSchema = z.object({
     // it. Default 300_000 (5min).
     timeoutCooldownMs: z.number().int().nonnegative().default(300_000),
     // Max consecutive turns the gate may DEFER when no reviewer can complete a review
-    // on a MIXED total outage (some quota, some timeout/error). The common transient
-    // outage is covered elsewhere (all-quota defers uncapped; per-reviewer timeout cools
-    // down + fails over), so this only governs the rarer mixed case. DEFAULT 3: the gate
-    // defers up to N turns (allow-stop, keeps the dirty flag, never PASSes, audit-logged)
-    // then escalates to the human. Was 0 (hard-block), but a hard block on a total outage
-    // just re-fires every turn until Claude Code's stop-hook cap force-ends it UNREVIEWED
-    // — no real security, only a block-loop (field evidence 2026-06-05). Set 0 to restore
-    // the old hard-block.
+    // on a MIXED total outage (some quota, some timeout/error). The pure all-quota
+    // outage is covered by quotaDeferMaxConsecutive below (per-reviewer timeout cools
+    // down + fails over separately), so this only governs the rarer mixed case. DEFAULT
+    // 3: the gate defers up to N turns (allow-stop, keeps the dirty flag, never
+    // PASSes, audit-logged) then escalates to the human. Was 0 (hard-block), but a
+    // hard block on a total outage just re-fires every turn until Claude Code's
+    // stop-hook cap force-ends it UNREVIEWED — no real security, only a block-loop
+    // (field evidence 2026-06-05). Set 0 to restore the old hard-block.
     infraDeferMaxConsecutive: z.number().int().nonnegative().default(3),
-    // #10: max consecutive turns to DEFER a give-up escalation (max-iterations /
-    // stuck-signatures) while a configured reviewer is in cooldown (quota cap or
-    // timeout/error backoff — see quotaDegradationNote), before escalating anyway.
-    // Mirrors infraDeferMaxConsecutive. 0 disables the defer (escalate immediately
-    // even when degraded — prior behavior).
+    // Dual-purpose, SHARED counter (consecutive_quota_defers) — both consumers count
+    // "quota prevented a full review this turn" into the same streak so interleavings
+    // accumulate rather than resetting each other:
+    //  (a) #10: DEFER a give-up escalation (max-iterations / stuck-signatures / etc.)
+    //      while a configured reviewer is in cooldown, before escalating anyway.
+    //  (b) S4a: handleAllQuotaLocked's own bound — EVERY reviewer quota-capped (not
+    //      just one in cooldown) for this many consecutive turns escalates to
+    //      "quota-exhausted-persistent" (was unbounded: codex/agy reset windows reach
+    //      days-to-weeks, so an unbounded defer shipped the whole window un-reviewed).
+    // Mirrors infraDeferMaxConsecutive. 0 disables the defer for BOTH consumers
+    // (escalate immediately even when degraded/all-quota — prior behavior).
     quotaDeferMaxConsecutive: z.number().int().nonnegative().default(1),
     // #5: escalate when a single BLOCKING finding's signature recurs across this many
     // consecutive reviewed iterations (a treadmill where one finding sticks while the

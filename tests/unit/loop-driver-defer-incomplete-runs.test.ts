@@ -69,6 +69,7 @@ describe("defer paths reset the incomplete-run streak (F-02)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: errorStub({ allReviewersQuotaLocked: true }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toMatch(/quota/i);
@@ -93,6 +94,7 @@ describe("defer paths reset the incomplete-run streak (F-02)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: errorStub({ allReviewersInfraFailed: true }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toMatch(/DEFERRED/i);

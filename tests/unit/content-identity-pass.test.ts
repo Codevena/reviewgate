@@ -209,6 +209,43 @@ rename to src/new.ts
   });
 });
 
+describe("S5: ledgerEnvHash compatibility across the cycleRejected/claimedFixed cache-key fold", () => {
+  // Pinned literal captured from the ORCHESTRATOR BEFORE the S5 fix (cyc:/cfx: segments
+  // added), using this exact fixture (repoWithCode + cfg + PASS stub, empty suppression
+  // sets). T5's pass_ledger reuse depends on the env_hash staying byte-identical for the
+  // empty-suppression case, or every ledger written before this fix would MISS on the very
+  // next (still-suppression-free) run. A change to this value is a real compatibility break
+  // — it must be investigated, not silenced by re-pinning.
+  const PRE_S5_EMPTY_ENV_HASH = "af3e80137fbacab8144d872db5b6e19311ead12031633553b6a4ff41af94bd99";
+
+  it("omitted cycleRejected/claimedFixed → env_hash unchanged from the pre-S5 value", async () => {
+    const repo = repoWithCode();
+    const res = await orch(repo, stub("PASS")).runIteration({ runId: "01HXS5A", iter: 1 });
+    expect(res.passLedgerEnvHash).toBe(PRE_S5_EMPTY_ENV_HASH);
+  });
+
+  it("explicit-empty cycleRejected/claimedFixed → env_hash unchanged from the pre-S5 value", async () => {
+    const repo = repoWithCode();
+    const res = await orch(repo, stub("PASS")).runIteration({
+      runId: "01HXS5B",
+      iter: 1,
+      cycleRejectedSignatures: [],
+      claimedFixedSignatures: {},
+    });
+    expect(res.passLedgerEnvHash).toBe(PRE_S5_EMPTY_ENV_HASH);
+  });
+
+  it("a non-empty claimedFixedSignatures changes env_hash (ledger-eligibility aside, the hash itself must differ)", async () => {
+    const repo = repoWithCode();
+    const res = await orch(repo, stub("PASS")).runIteration({
+      runId: "01HXS5C",
+      iter: 1,
+      claimedFixedSignatures: { "sig-b": 2 },
+    });
+    expect(res.passLedgerEnvHash).not.toBe(PRE_S5_EMPTY_ENV_HASH);
+  });
+});
+
 describe("pass_ledger persistence (loop-driver)", () => {
   function summaryFor(verdict: string, source = "panel", providers: unknown[] = []): RunSummary {
     return {
@@ -247,6 +284,7 @@ describe("pass_ledger persistence (loop-driver)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: { runIteration: async () => result },
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       headSha: "headsha1",
     }).run();
   }

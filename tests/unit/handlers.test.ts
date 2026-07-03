@@ -1,6 +1,13 @@
 // tests/unit/handlers.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BASE_TS_NO_SCOPING_SENTINEL, handleTrigger } from "../../src/hooks/handlers.ts";
@@ -88,5 +95,74 @@ describe("handleTrigger", () => {
     await handleTrigger({ repoRoot: repo, hookStdinRaw: '{"edit":2}' });
     const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as { base_ts?: string };
     expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL);
+  });
+
+  // S3a: writing .reviewgate/decisions/<iter>.jsonl (which an escalation block
+  // message ORDERS the agent to do) must not arm a fresh dirty flag — that would
+  // re-review an empty diff and silently neutralize the escalation.
+  describe("S3a: excluded-path edits do not arm the flag", () => {
+    it("a Write whose only path is under .reviewgate/ does NOT arm the dirty flag", async () => {
+      const repo = mkdtempSync(join(tmpdir(), "rg-trigger-s3a-excl-"));
+      mkdirSync(reviewgateDir(repo), { recursive: true });
+      const stdin = JSON.stringify({
+        session_id: "s1",
+        tool_name: "Write",
+        tool_input: { file_path: join(repo, ".reviewgate/decisions/3.jsonl") },
+      });
+      await handleTrigger({ repoRoot: repo, hookStdinRaw: stdin });
+      expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+    });
+
+    it("a Write to a real source file still arms the flag", async () => {
+      const repo = mkdtempSync(join(tmpdir(), "rg-trigger-s3a-real-"));
+      mkdirSync(reviewgateDir(repo), { recursive: true });
+      const stdin = JSON.stringify({
+        session_id: "s1",
+        tool_name: "Write",
+        tool_input: { file_path: join(repo, "src/a.ts") },
+      });
+      await handleTrigger({ repoRoot: repo, hookStdinRaw: stdin });
+      expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    });
+
+    it("unparseable stdin still arms the flag (fail toward review)", async () => {
+      const repo = mkdtempSync(join(tmpdir(), "rg-trigger-s3a-badjson-"));
+      mkdirSync(reviewgateDir(repo), { recursive: true });
+      await handleTrigger({ repoRoot: repo, hookStdinRaw: "not json" });
+      expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    });
+
+    it("an UNKNOWN tool shape arms the flag even when the parsed path looks excluded (round-6 W2)", async () => {
+      const repo = mkdtempSync(join(tmpdir(), "rg-trigger-s3a-unknown-"));
+      mkdirSync(reviewgateDir(repo), { recursive: true });
+      const stdin = JSON.stringify({
+        session_id: "s1",
+        tool_name: "SomeFutureMultiFileTool",
+        tool_input: {
+          file_path: join(repo, ".reviewgate/decisions/3.jsonl"),
+          other_paths: ["src/a.ts"],
+        },
+      });
+      await handleTrigger({ repoRoot: repo, hookStdinRaw: stdin });
+      expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    });
+
+    it("a known tool with MORE than one extracted path arms the flag (shape not fully understood)", async () => {
+      const repo = mkdtempSync(join(tmpdir(), "rg-trigger-s3a-multi-"));
+      mkdirSync(reviewgateDir(repo), { recursive: true });
+      // MultiEdit carrying its own top-level file_path PLUS an edits[] entry that
+      // references a genuinely different file — editedPathsOf extracts 2 distinct
+      // paths, so the "exactly one canonical path" shape assumption doesn't hold.
+      const stdin = JSON.stringify({
+        session_id: "s1",
+        tool_name: "MultiEdit",
+        tool_input: {
+          file_path: join(repo, ".reviewgate/decisions/3.jsonl"),
+          edits: [{ file_path: join(repo, "src/b.ts") }],
+        },
+      });
+      await handleTrigger({ repoRoot: repo, hookStdinRaw: stdin });
+      expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    });
   });
 });

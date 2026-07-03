@@ -1,7 +1,12 @@
 // src/providers/review-output.ts
 import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { computeSignature } from "../diff/signature.ts";
-import { type Finding, type FindingCategory, FindingSchema } from "../schemas/finding.ts";
+import {
+  type Finding,
+  FindingCategory,
+  FindingSchema,
+  SeverityCoerced,
+} from "../schemas/finding.ts";
 import { safeJsonParse } from "../utils/safe-json.ts";
 
 export const REVIEW_OUTPUT_SCHEMA = {
@@ -231,9 +236,67 @@ export interface MapContext {
   workingDir: string;
 }
 
-export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): Finding[] {
+// S2: reviewer-phrased category synonyms → the strict 7-value enum. Mirrors
+// SeverityCoerced's philosophy but at the mapping edge (BEFORE computeSignature —
+// the signature hashes the category, so coercion must precede it). Unknown
+// values pass through UNCHANGED so FindingSchema.safeParse still rejects them:
+// silently bucketing garbage into "quality" would hide a malformed reviewer.
+const CATEGORY_SYNONYMS: Record<string, FindingCategory> = {
+  vulnerability: "security",
+  vuln: "security",
+  "security-issue": "security",
+  sec: "security",
+  bug: "correctness",
+  logic: "correctness",
+  defect: "correctness",
+  "correctness-issue": "correctness",
+  maintainability: "quality",
+  style: "quality",
+  "code-quality": "quality",
+  cleanliness: "quality",
+  perf: "performance",
+  test: "testing",
+  tests: "testing",
+  coverage: "testing",
+  doc: "docs",
+  documentation: "docs",
+};
+
+export function coerceCategory(v: unknown): string | unknown {
+  if (typeof v !== "string") return v;
+  const key = v.trim().toLowerCase();
+  if ((FindingCategory.options as readonly string[]).includes(key)) return key;
+  return CATEGORY_SYNONYMS[key] ?? v;
+}
+
+// S2: the result of mapping a reviewer's raw JSON into Findings, PLUS how much of
+// the reviewer's own report died along the way. A candidate is "dropped" when it
+// fails the typeof guard OR FindingSchema.safeParse — either way the reviewer's
+// opinion on it is lost, and mappingLooksLossy uses these counts to decide
+// whether the mapped result may still be trusted as a clean review.
+export interface MappedReview {
+  findings: Finding[];
+  droppedCount: number;
+  droppedBlockingCount: number;
+}
+
+export function mapReviewOutputToFindingsCounted(out: ReviewOutput, ctx: MapContext): MappedReview {
   const result: Finding[] = [];
   let n = 0;
+  let dropped = 0;
+  let droppedBlocking = 0;
+
+  // A dropped candidate counts as BLOCKING when its raw severity coerces to
+  // CRITICAL/WARN, OR when it can't be parsed at all — an unparseable severity
+  // is potentially blocking, so fail toward lossy rather than assume advisory.
+  const recordDrop = (cf: ReviewFinding): void => {
+    dropped += 1;
+    const sev = SeverityCoerced.safeParse(cf?.severity);
+    if (!sev.success || sev.data === "CRITICAL" || sev.data === "WARN") {
+      droppedBlocking += 1;
+    }
+  };
+
   for (const cf of out.findings) {
     if (
       typeof cf?.severity !== "string" ||
@@ -242,9 +305,16 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       typeof cf?.line !== "number" ||
       typeof cf?.message !== "string"
     ) {
+      // A reported candidate that never even reached safeParse is just as lost
+      // as one that failed it (round-9 I1) — count it the same way.
+      recordDrop(cf);
       continue;
     }
     n += 1;
+    // S2: coerce reviewer-phrased category synonyms BEFORE computeSignature (the
+    // signature hashes the category) and before use in the persisted field.
+    // Unknown categories pass through unchanged so safeParse still rejects them.
+    const category = coerceCategory(cf.category);
     // Canonicalize to repo-relative posix so the finding's file + signature match
     // the diff's changed-range keys (otherwise diff-scoping mis-fires on "./x").
     const file = normalizeRepoPath(cf.file, ctx.workingDir);
@@ -269,12 +339,12 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
       signature: computeSignature({
         file,
         ruleId,
-        category: cf.category as FindingCategory,
+        category: category as FindingCategory,
         lineStart: line,
         lineEnd,
       }),
       severity: cf.severity,
-      category: cf.category,
+      category,
       rule_id: ruleId,
       file,
       line_start: line,
@@ -296,7 +366,39 @@ export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): F
         : {}),
     };
     const parsed = FindingSchema.safeParse(candidate);
-    if (parsed.success) result.push(parsed.data);
+    if (parsed.success) {
+      result.push(parsed.data);
+    } else {
+      recordDrop(cf);
+    }
   }
-  return result;
+  return { findings: result, droppedCount: dropped, droppedBlockingCount: droppedBlocking };
+}
+
+// Back-compat thin wrapper: all current callers that only need the findings
+// array keep compiling unchanged. codex/openrouter enforce the category enum
+// via strict output schema, so they never need the drop counts.
+export function mapReviewOutputToFindings(out: ReviewOutput, ctx: MapContext): Finding[] {
+  return mapReviewOutputToFindingsCounted(out, ctx).findings;
+}
+
+// S2: does the mapped result under-represent what the reviewer actually
+// reported badly enough that it must NOT be trusted as a clean review? Returns
+// a human-readable reason, or null when the mapping is safe to treat at face
+// value. Order matters: a dropped BLOCKING-severity candidate poisons the
+// result regardless of what survived or what the reviewer's own verdict says —
+// a PASS payload carrying a malformed CRITICAL must not sail through on the
+// strength of a surviving INFO (round-7 W1 / round-10 W1 priority).
+export function mappingLooksLossy(out: ReviewOutput, mapped: MappedReview): string | null {
+  if (mapped.droppedBlockingCount > 0) {
+    return `${mapped.droppedBlockingCount} blocking-severity finding(s) died in schema mapping`;
+  }
+  const reported = out.findings.length;
+  if (reported > 0 && mapped.findings.length === 0) {
+    return `reviewer reported ${reported} finding(s) but 0 survived schema mapping`;
+  }
+  if (out.verdict === "FAIL" && !mapped.findings.some((f) => f.severity !== "INFO")) {
+    return "reviewer verdict FAIL but no blocking finding survived schema mapping";
+  }
+  return null;
 }

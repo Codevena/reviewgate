@@ -1083,19 +1083,37 @@ export class Orchestrator {
     const regionsSegment = activeRegions
       ? `|rgn:${createHash("sha256").update(JSON.stringify(activeRegions)).digest("hex")}`
       : "";
+    // S5: per-cycle suppression inputs MOVE THE VERDICT in aggregate() but were
+    // absent from the key: rejecting a WARN made the re-review of the identical
+    // diff cache a PASS that outlived the (re-arm-cleared) reject set — a sticky
+    // per-diff suppression bypassing the FP-ledger's promotion quorum. Fold
+    // them in exactly like deltaScope. Empty → empty segment (key unchanged for
+    // the common case AND for T5 ledger env_hash compatibility).
+    const cycSorted = [...(opts.cycleRejectedSignatures ?? [])].sort();
+    const cycleRejectedSegment = cycSorted.length
+      ? `|cyc:${createHash("sha256").update(JSON.stringify(cycSorted)).digest("hex")}`
+      : "";
+    const cfxEntries = Object.entries(opts.claimedFixedSignatures ?? {}).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    const claimedFixedSegment = cfxEntries.length
+      ? `|cfx:${createHash("sha256").update(JSON.stringify(cfxEntries)).digest("hex")}`
+      : "";
     const configHashHex = createHash("sha256")
       .update(JSON.stringify(this.input.config))
       .digest("hex");
+    // M3: provider versions not queried; cache invalidates on config/version/schema
+    // change. M4+M5: the combined brain+FP behavior-hash is folded in here so any
+    // brain OR active-ledger change re-runs the panel deterministically. The
+    // host-model tier and project-conventions content are appended too: both affect
+    // the review (which reviewer model runs / what context is injected) but are not
+    // captured by configHash or the diff hash. Built ONCE and reused for both the
+    // byte-cache key and the T5/R3 ledgerEnvHash below (was duplicated).
+    const providerVersions = `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}${deltaSegment}${regionsSegment}${cycleRejectedSegment}${claimedFixedSegment}`;
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
       configHash: configHashHex,
-      // M3: provider versions not queried; cache invalidates on config/version/
-      // schema change. M4+M5: the combined brain+FP behavior-hash is folded in
-      // here so any brain OR active-ledger change re-runs the panel deterministically.
-      // The host-model tier and project-conventions content are appended too: both
-      // affect the review (which reviewer model runs / what context is injected) but
-      // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}${deltaSegment}${regionsSegment}`,
+      providerVersions,
       reviewgateVersion: RG_VERSION,
       // G0 (field report 2026-06-21): bumped v1 → v2 to invalidate ALL pre-G0 cache entries.
       // G0 changes per-finding semantics (value-judgment demoters now clamp a from-CRITICAL at
@@ -1113,14 +1131,7 @@ export class Orchestrator {
     // mutation, host-tier switch or config edit invalidates the ledger exactly like
     // it invalidates the byte cache (adversarial review 2026-07-03).
     const ledgerEnvHash = createHash("sha256")
-      .update(
-        [
-          configHashHex,
-          `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}${deltaSegment}${regionsSegment}`,
-          RG_VERSION,
-          "reviewgate.pending.v2",
-        ].join("|"),
-      )
+      .update([configHashHex, providerVersions, RG_VERSION, "reviewgate.pending.v2"].join("|"))
       .digest("hex");
 
     // T5/R3 (field report 2026-07-03): content-identity PASS short-circuit. A

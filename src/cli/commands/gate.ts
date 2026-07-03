@@ -23,7 +23,7 @@ import {
 } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
-import { writeFileAtomic } from "../../utils/atomic-write.ts";
+import { writeFileAtomic, writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { FlockTimeoutError, flock, readLockHolder } from "../../utils/flock.ts";
 import {
   DIFF_INCOMPLETE_MARKER,
@@ -34,6 +34,7 @@ import {
   mergeBase,
   mergeBaseUpstream,
   workingTreeDirtyFiles,
+  workingTreeStateHash,
 } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
 import { notifyDesktop } from "../../utils/notify.ts";
@@ -41,6 +42,7 @@ import {
   auditDir,
   deferredFlagPath,
   dirtyFlagPath,
+  escalationMdPath,
   gateLockPath,
   stateJsonPath,
 } from "../../utils/paths.ts";
@@ -83,6 +85,12 @@ interface SetupBundle {
   host: ReturnType<typeof detectHostModel>;
   adapters: ReturnType<typeof buildAdapters>;
   ctx: ReviewContext;
+  // Dogfood F-001: the working-tree fingerprint hashed ONCE, immediately after
+  // gatherReviewContext (i.e. the tree the reviewed diff was computed from). All
+  // LoopDriver tree-hash writes use THIS memoized value — hashing fresh at
+  // state-write time (post-review) would bless a concurrent session's mid-review
+  // Bash edit as reviewed-through and the next Stop would skip-clean over it.
+  snapshotTree: string | null;
 }
 
 export interface GateInput {
@@ -191,29 +199,85 @@ export function lockContentionDecision(repoRoot: string, err: unknown): GateOutp
 }
 
 // M-A1: cheap "is there anything to review?" probe, run BEFORE the gate lock so a
-// pure read/analysis turn (no dirty.flag AND HEAD unchanged since the last review)
-// short-circuits to allow_stop WITHOUT acquiring the global lock or doing git/
-// pipeline work — removing lock contention for parallel sessions on one checkout.
-// Preserves HEAD-advance review: if HEAD moved past the last reviewed sha (e.g.
-// work committed via Bash with no Edit/Write), returns false so the lock path runs
+// pure read/analysis turn (no dirty.flag AND HEAD unchanged since the last review
+// AND the working tree is byte-identical to the last review, S1) short-circuits to
+// allow_stop WITHOUT acquiring the global lock or doing git/pipeline work —
+// removing lock contention for parallel sessions on one checkout. Preserves
+// HEAD-advance review: if HEAD moved past the last reviewed sha (e.g. work
+// committed via Bash with no Edit/Write), returns "review" so the lock path runs
 // the HEAD-advanced synthesis. State is read WITHOUT the lock — StateStore writes
 // are atomic (tmp+rename) so there's no torn read, and a stale read only ever errs
-// toward taking the lock (safe). headShaFn is injectable for tests.
-export async function stopHasNothingToReview(
+// toward taking the lock (safe). headShaFn/treeHashFn are injectable for tests.
+//
+// S1: closes the Bash-mutation bypass — an uncommitted edit made via a shell tool
+// (sed -i / tee / git apply, ...) leaves NO dirty.flag and does NOT move HEAD, so
+// the old HEAD-only fast-exit skipped it entirely (unreviewed code ships,
+// core-loop#2). The probe now additionally compares a content-true working-tree
+// fingerprint (workingTreeStateHash, Task 1) recorded at the last review against
+// the CURRENT one; only an exact match on BOTH HEAD and tree fast-exits.
+export type StopProbeResult = "review" | "skip-clean" | "skip-escalated";
+
+export async function stopProbe(
   repoRoot: string,
   headShaFn: typeof gitHeadSha = gitHeadSha,
-): Promise<boolean> {
+  treeHashFn: (repoRoot: string) => Promise<string | null> = workingTreeStateHash,
+): Promise<StopProbeResult> {
   // A pending deferred review (M-A2) always needs the lock path — never skip it.
-  if (existsSync(deferredFlagPath(repoRoot))) return false;
-  if (existsSync(dirtyFlagPath(repoRoot))) return false;
+  if (existsSync(deferredFlagPath(repoRoot))) return "review";
+  if (existsSync(dirtyFlagPath(repoRoot))) return "review";
   try {
     const st = await new StateStore(repoRoot).load();
-    const last = st.last_reviewed_head_sha;
-    if (last === null) return true; // never reviewed + no edits → nothing to review
+    // Round-5 W1: resolve HEAD exactly ONCE per probe execution and use that
+    // value in EVERY branch (including Task 5's escalated branch) — two reads
+    // racing a concurrent commit could compare tree and HEAD from different
+    // instants (stand down over new work, or spuriously re-review).
     const sha = await headShaFn(repoRoot);
-    return sha === last; // no dirty flag + HEAD unchanged → nothing to review
+    // S3b standing-down: the escalation handed this range to the human; with no
+    // new flag and BOTH head and tree unmoved since the announce there is
+    // nothing to (re-)review — but the stop must not read as a green "no
+    // changes" either. The caller prints the loud escalated variant. HEAD moved
+    // past the announce sha OR the tree changed (a post-escalation Bash
+    // mutation — round-2 C1) OR either hash unknowable → "review" (lock path:
+    // Path-A recovery / synthesis of the new work).
+    if (st.escalated && st.escalation_announced) {
+      // Round-13 W1: the persistent-quota latch NEVER stands down — its whole
+      // design routes every stop through the lock path into handleAllQuotaLocked
+      // (bounded defer + provider-recovery check). Even if the dirty flag were
+      // lost despite Task 7's keep-invariant, the probe must fail toward review.
+      if (st.escalation_reason === "quota-exhausted-persistent") return "review";
+      // Round-4 W1: standing down is only honest while the handoff artifact
+      // actually exists — a deleted/never-written ESCALATION.md means the human
+      // was NOT (or is no longer) informed; fail toward the lock path, which
+      // re-announces or reviews.
+      if (!existsSync(escalationMdPath(repoRoot))) return "review";
+      // A null announce-time sha (freshHeadSha git-error at announce) makes the
+      // full-match stand-down unreachable — but the escalated state must STILL
+      // be captured by this branch: putting the non-null check in the ENTRY
+      // guard instead would fall through to the escalation-blind S1 comparison
+      // below, which can return "skip-clean" (🟢) on an escalated,
+      // un-remediated range — and would silently defeat the two always-review
+      // checks above too.
+      if (st.escalated_head_sha === null) return "review";
+      if (sha !== st.escalated_head_sha) return "review"; // `sha` = the probe's single HEAD read (round-5 W1)
+      if (st.escalated_tree_hash === null) return "review";
+      const tree = await treeHashFn(repoRoot);
+      return tree !== null && tree === st.escalated_tree_hash ? "skip-escalated" : "review";
+    }
+    const last = st.last_reviewed_head_sha;
+    // S1: `last === null` no longer fast-exits. Post-reset it is always seeded;
+    // null now means "unknown baseline" → let the full (locked) path decide.
+    if (last === null) return "review";
+    if (sha !== last) return "review"; // HEAD advanced → lock path (synthesis)
+    // HEAD unchanged: the old fast-exit here was the Bash-mutation hole — an
+    // uncommitted `sed -i`/`tee`/`git apply` edit leaves no dirty flag and no
+    // HEAD move. Compare the working-tree fingerprint recorded at the last
+    // review; any mismatch or ANY unknown (null) → take the lock path.
+    const stored = st.last_reviewed_tree_hash;
+    if (stored === null) return "review";
+    const current = await treeHashFn(repoRoot);
+    return current !== null && current === stored ? "skip-clean" : "review";
   } catch {
-    return false; // any uncertainty → take the lock and let the full path decide
+    return "review"; // any uncertainty → take the lock and let the full path decide
   }
 }
 
@@ -283,15 +347,30 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
 
   // hook === 'stop'. M-A1: before taking the (contended, multi-minute) gate lock,
   // skip entirely when there's nothing to review — a pure read/analysis turn with
-  // no dirty.flag and an unchanged HEAD. This is the common case in a busy
-  // multi-session checkout and must not pay lock contention or git/pipeline cost.
-  if (await stopHasNothingToReview(input.repoRoot)) {
+  // no dirty.flag, an unchanged HEAD, and (S1) an unchanged working-tree fingerprint.
+  // This is the common case in a busy multi-session checkout and must not pay lock
+  // contention or git/pipeline cost.
+  const probe = await stopProbe(input.repoRoot);
+  if (probe === "skip-clean") {
     return {
       exitCode: 0,
       stdout: "",
       stderr: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
     };
   }
+  if (probe === "skip-escalated") {
+    // stopProbe's escalated standing-down branch (escalated + HEAD/tree unmoved
+    // since the announce) PRODUCES this value; mapped here — never silently
+    // falls through to the green message. Exact copy per the plan (2026-07-03
+    // fail-open-remediation.md, Task 5 Step 3a).
+    return {
+      exitCode: 0,
+      stdout: "",
+      stderr:
+        "🟠 Reviewgate · GATE STANDING DOWN — an escalation is pending human review (.reviewgate/ESCALATION.md). The escalated change-set has NOT been machine-reviewed; new work will re-arm the gate.",
+    };
+  }
+  // probe === "review" → fall through to the lock path below.
 
   // Otherwise serialize the whole pipeline so two stop-hooks on the same checkout
   // can't run reviews in parallel and interleave writes to pending.*, decisions,
@@ -365,7 +444,7 @@ export function consumeDeferredFlag(repoRoot: string): void {
       );
     } catch {
       // Synthesis failed → do NOT consume the marker. Keeping deferred.flag forces
-      // the next stop to retry (stopHasNothingToReview stays false), so the change
+      // the next stop to retry (stopProbe keeps returning "review"), so the change
       // is never silently dropped. Fail-safe per the eventual-review guarantee.
       return;
     }
@@ -528,8 +607,13 @@ export async function gatherReviewContext(
     const last = st.last_reviewed_head_sha;
     // Compute the since-`last` diff ONCE here and reuse it below when this path
     // sets reviewBase = last (avoids a second identical collectDiff = duplicate git work).
-    const sinceLast =
-      gitInfo.sha && last && gitInfo.sha !== last ? await diffFn(input.repoRoot, last) : "";
+    // S1: also fires when HEAD did NOT move — an uncommitted Bash-tool edit
+    // (no PostToolUse, no dirty flag) reaches here via the tree-hash probe in
+    // stopProbe. collectDiff(base=last) covers committed AND
+    // uncommitted (+ untracked) work since the last review, so one call handles
+    // both the HEAD-advance and the dirty-tree case. Reaching this line at all
+    // means the fast-exit already saw a change; the extra diff is not wasted.
+    const sinceLast = gitInfo.sha && last ? await diffFn(input.repoRoot, last) : "";
     if (sinceLast.trim().length > 0) {
       reviewBase = last;
       precomputedDiff = sinceLast;
@@ -657,7 +741,19 @@ async function runStopGate(
         cfg.phases.review.settleBeforeReview ?? false,
         cfg.phases.review.scopeToSession ?? true,
       );
-      return { host, adapters, ctx };
+      // Dogfood F-001: hash the working tree ONCE, immediately after the diff
+      // snapshot, so "reviewed-through" records the tree the diff was computed
+      // FROM — not whatever the tree looks like when the state is written after
+      // the multi-minute panel run, which could include a concurrent session's
+      // mid-review edit no panel ever saw (stored == post-edit tree → the next
+      // Stop skip-cleans, fail-open). With the snapshot value, a mid-review edit
+      // leaves stored ≠ current → the next Stop probe fails toward review.
+      // Residual micro-window (documented, ticket 1): an edit landing between
+      // collectDiff inside gatherReviewContext and this hash is still blessed —
+      // sub-ms vs the previous minutes-wide window; full closure needs
+      // compare-at-delete against the snapshot-time flag state.
+      const snapshotTree = await workingTreeStateHash(input.repoRoot);
+      return { host, adapters, ctx, snapshotTree };
     })();
     setup =
       setupDeadlineAt !== null
@@ -668,8 +764,71 @@ async function runStopGate(
     const reason = `🔴 Reviewgate · GATE CLOSED — review setup (git/state/diff) did not complete within ${secs}s (likely git index-lock contention from a parallel session). End your turn again to retry; run \`reviewgate doctor\` if it persists.`;
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
-  const { host, adapters, ctx } = setup;
+  const { host, adapters, ctx, snapshotTree } = setup;
   const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles, attribution } = ctx;
+
+  // S1-C1 BELT (codex CRITICAL, reviewed 2026-07-03): gatherReviewContext can hand
+  // back a correctly populated, non-empty `diff` WITHOUT a dirty.flag ever landing
+  // on disk — either because last_reviewed_head_sha was null (the null-last branch's
+  // `sinceLast` short-circuits to "" so its persistence write never even runs) or
+  // because that write silently FAILED (ENOSPC/EACCES, swallowed by the try/catch in
+  // gatherReviewContext). LoopDriver.run() independently RE-READS the flag from disk
+  // and green-allows ("No code changes since last review") when it finds none — so a
+  // diff that only ever existed in THIS function's memory would ship unreviewed even
+  // though the Orchestrator below is built with the correct diff. Belt: whenever we're
+  // holding a non-empty diff and no flag is on disk at this point, synthesize one now.
+  // If that write ALSO fails, fail CLOSED instead of letting the driver's disk read
+  // silently win. This single check covers both origin cases — no per-branch fix
+  // needed upstream.
+  //
+  // base_sha: preserve the last-reviewed base whenever the state knows it. A
+  // base-LESS flag scopes the NEXT cycle to working-tree-only — fine when `last`
+  // is null (there IS no wider base), but when `last` is non-null (the
+  // failed-synthesis origin) it would silently DROP committed last..HEAD work
+  // from the follow-up cycle's scope if THIS turn's review FAILs (the flag
+  // survives a FAIL and becomes that cycle's review base) — a fail-open one
+  // cycle later. Same conditional shape as handleTrigger/consumeDeferredFlag:
+  // base_sha present iff known. An unreadable state here (pathological — setup
+  // just loadOrRecover'd it) degrades to the base-less flag, never skips the belt.
+  //
+  // Write protocol (dirty-flag-race-clobber, codex CRITICAL 2026-07-03): the write
+  // MUST be an atomic CREATE-IF-ABSENT (writeFileIfAbsent — tmp + link(2), the
+  // flock.ts protocol), NOT check-then-writeFileAtomic. PostToolUse triggers are
+  // not serialized by the gate lock, so a concurrent session's trigger can land a
+  // fresh dirty.flag between our existsSync check above and the write — a rename
+  // would CLOBBER that newer flag with our synthesized one, whose diff was computed
+  // BEFORE the concurrent edit; a later clean-pass tree hash could then record the
+  // post-edit tree as reviewed and the next Stop would fast-exit over code no panel
+  // ever saw. On EEXIST (writeFileIfAbsent returns false) we neither clobber nor
+  // fail-close: the concurrent flag is newer truth, the driver gates on whatever is
+  // on disk, and the F-005 compare-and-delete already preserves a flag rewritten
+  // mid-review for the next stop. Only a real write failure keeps the fail-closed
+  // block below.
+  if (diff.trim().length > 0 && !existsSync(dirtyFlagPath(input.repoRoot))) {
+    let lastReviewed: string | null = null;
+    try {
+      lastReviewed = (await state.load()).last_reviewed_head_sha ?? null;
+    } catch {
+      lastReviewed = null;
+    }
+    try {
+      writeFileIfAbsent(
+        dirtyFlagPath(input.repoRoot),
+        JSON.stringify({
+          diff_hash: gitInfo.sha.slice(0, 16),
+          ts: new Date().toISOString(),
+          ...(lastReviewed ? { base_sha: lastReviewed } : {}),
+          base_ts: BASE_TS_NO_SCOPING_SENTINEL,
+        }),
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = `🔴 Reviewgate · GATE CLOSED — a non-empty diff could not be flagged for review (dirty.flag persistence failed: ${msg}). Failing closed rather than let this turn end unreviewed. Ensure .reviewgate is writable, then re-run; \`reviewgate doctor\` for diagnostics.`;
+      return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+    }
+  }
+
   // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
   // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
   // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never
@@ -718,6 +877,16 @@ async function runStopGate(
     orchestrator,
     stopHookActive: stopHookActiveFlag(parsedStdin),
     headSha: gitInfo.sha,
+    // S1 + dogfood F-001: the DIFF-SNAPSHOT-TIME fingerprint, memoized once right
+    // after gatherReviewContext (the tree the reviewed diff was computed from).
+    // Previously computed FRESH at state-write time — which blessed a concurrent
+    // session's mid-review Bash edit as reviewed-through. Every driver write site
+    // (head-move record, post-review write, escalation announce) flows through
+    // this same snapshot — see LoopInput.treeHash and SetupBundle.snapshotTree.
+    treeHash: async () => snapshotTree,
+    // S3b (round-14 W1): resolved FRESH at escalation-announce time, not reused
+    // from gitInfo.sha (captured at gate start) — see LoopInput.freshHeadSha.
+    freshHeadSha: () => gitHeadSha(input.repoRoot),
   });
   const decision = await driver.run();
 

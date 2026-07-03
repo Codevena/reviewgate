@@ -73,3 +73,37 @@ describe("isQuotaExhausted — agy (Antigravity) wording", () => {
     expect(isQuotaExhausted("Contact your administrator to enable overages.")).toBe(true);
   });
 });
+
+describe("isQuotaExhausted — 429 status (S4b)", () => {
+  test("stack-trace line:col does not read as quota (S4b)", () => {
+    expect(isQuotaExhausted("TypeError: x is not a function\n    at parse (foo.ts:429:12)")).toBe(
+      false,
+    );
+    expect(isQuotaExhausted("at Object.<anonymous> (/app/dist/main.js:1429:3)")).toBe(false);
+    expect(isQuotaExhausted("expected 429 items")).toBe(false); // bare count in prose
+    expect(isQuotaExhausted("processed 429 files in 2s")).toBe(false);
+  });
+
+  test("real 429 diagnostics still read as quota", () => {
+    expect(isQuotaExhausted("HTTP 429 Too Many Requests")).toBe(true);
+    expect(isQuotaExhausted("429 Too Many Requests")).toBe(true); // curl-style status line
+    expect(isQuotaExhausted("Request failed with status code 429")).toBe(true);
+    expect(isQuotaExhausted("error: 429")).toBe(true);
+    expect(isQuotaExhausted("upstream returned 429: slow down")).toBe(true);
+    // round-3 W2: representative provider/SDK shapes
+    expect(isQuotaExhausted("HTTP/2 429")).toBe(true);
+    expect(isQuotaExhausted("HTTPError: 429")).toBe(true);
+    expect(isQuotaExhausted("429 from upstream")).toBe(true);
+  });
+
+  test("crash diagnostics near an error word still do not read as quota", () => {
+    expect(isQuotaExhausted("error a.ts:429:2")).toBe(false); // short path after context word
+    expect(isQuotaExhausted("error at foo.ts:429:12")).toBe(false);
+    expect(isQuotaExhausted("syntax error line 429")).toBe(false); // round-14 W2
+    expect(isQuotaExhausted("error line 429")).toBe(false);
+  });
+
+  test("no-space colon form still reads as quota", () => {
+    expect(isQuotaExhausted("error:429")).toBe(true);
+  });
+});

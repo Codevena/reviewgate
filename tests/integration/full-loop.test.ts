@@ -8,6 +8,7 @@ import { runGate } from "../../src/cli/commands/gate.ts";
 import { runInit } from "../../src/cli/commands/init.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { CodexAdapter } from "../../src/providers/codex.ts";
+import { workingTreeStateHash } from "../../src/utils/git.ts";
 
 function sha(repo: string): string {
   return spawnSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim();
@@ -145,9 +146,17 @@ describe("full loop integration", () => {
     const repo = tmpRepo();
     await runInit({ repoRoot: repo, mode: "agent-loop" });
     const head = sha(repo);
+    // S1: the fast-exit now ALSO requires the working-tree fingerprint to match
+    // (closes the Bash-mutation bypass) — seed it from the actual clean tree so
+    // this still exercises the true "nothing changed" fast-exit.
+    const tree = await workingTreeStateHash(repo);
     const st = new StateStore(repo);
     await st.initialise("01HXQNOADV");
-    await st.update((c) => ({ ...c, last_reviewed_head_sha: head }));
+    await st.update((c) => ({
+      ...c,
+      last_reviewed_head_sha: head,
+      last_reviewed_tree_hash: tree,
+    }));
 
     const stop = await runGate({
       repoRoot: repo,

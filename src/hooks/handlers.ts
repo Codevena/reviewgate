@@ -2,13 +2,22 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ulid } from "ulid";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import {
   captureSessionBaseline,
   pruneOldSessionManifests,
   recordSessionOwned,
 } from "../core/session-manifest.ts";
-import { gitHeadSha } from "../utils/git.ts";
+import { StateStore } from "../core/state-store.ts";
+import { normalizeRepoPath } from "../diff/repo-path.ts";
+import { ReviewgateStateSchema } from "../schemas/state.ts";
+import {
+  collectDiff,
+  gitHeadSha,
+  isExcludedFromReview,
+  workingTreeStateHash,
+} from "../utils/git.ts";
 import {
   decisionsDir,
   deferredFlagPath,
@@ -77,7 +86,44 @@ const BASE_TS_SAFETY_MARGIN_MS = 30_000;
 // re-review (F-015).
 export const BASE_TS_NO_SCOPING_SENTINEL = new Date(0).toISOString();
 
+// S3a: the PostToolUse matcher only fires for these tools, each of which carries
+// exactly ONE canonical file_path — the shape the excluded-path skip below relies
+// on being "fully understood" before it dares to no-op.
+const KNOWN_SINGLE_PATH_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
 export async function handleTrigger(input: TriggerInput): Promise<void> {
+  // S3a: an edit that ONLY touches reviewgate-managed/excluded paths (e.g. the
+  // decisions file the escalation block message asks the agent to write) is not
+  // reviewable work and must not arm the gate — a post-escalation decisions
+  // write would otherwise mint a fresh dirty flag at the CURRENT head, re-arm
+  // the cycle against an empty diff, and neutralize the escalation with a 🟢.
+  // Fail-safe (round-6 W2): the skip requires a FULLY-understood tool shape,
+  // not merely "some paths parsed" — a partially-parsed multi-path payload
+  // could hide a reviewable path behind an excluded one. Anything else (unknown
+  // tool name, missing/extra path fields, unparseable stdin, zero extracted
+  // paths) → fall through and arm.
+  // (round-8 I1: if editedPathsOf expands MultiEdit per-operation into several
+  // entries for the SAME file, dedupe before the length check; if they are
+  // genuinely different paths, arming is the correct fail-closed outcome.)
+  try {
+    const parsed = parseHookStdin(input.hookStdinRaw);
+    const toolName =
+      typeof (parsed as { tool_name?: unknown } | null)?.tool_name === "string"
+        ? ((parsed as { tool_name?: string }).tool_name as string)
+        : null;
+    const files = [...new Set(editedPathsOf(parsed))];
+    const shapeFullyUnderstood =
+      toolName !== null && KNOWN_SINGLE_PATH_TOOLS.has(toolName) && files.length === 1;
+    if (
+      shapeFullyUnderstood &&
+      files.every((f) => isExcludedFromReview(normalizeRepoPath(f, input.repoRoot)))
+    ) {
+      return;
+    }
+  } catch {
+    /* fall through: arm the flag (fail toward review) */
+  }
+
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const diffHash = createHash("sha256").update(input.hookStdinRaw).digest("hex").slice(0, 16);
@@ -166,6 +212,24 @@ export interface ResetSummary {
 
 export async function handleReset(input: ResetInput): Promise<ResetSummary> {
   const dir = reviewgateDir(input.repoRoot);
+  // F-002 (dogfood, reset-seeds-unreviewed-tree): capture the PRE-wipe state
+  // BEFORE the artifact groups below rmSync state.json. If the wiped session was
+  // ESCALATED, its reviewed-through markers must survive the reset: blessing the
+  // CURRENT HEAD/tree would mark the escalated (possibly committed, never
+  // machine-reviewed) range as reviewed-through, and the next Stop would
+  // skip-clean over it. The carried markers keep that range inside the next
+  // synthesis diff. A missing/corrupt prior state → null → normal seeding.
+  let preWipe: { escalated: boolean; sha: string | null; tree: string | null } | null = null;
+  try {
+    const prev = await new StateStore(input.repoRoot).load();
+    preWipe = {
+      escalated: prev.escalated === true,
+      sha: prev.last_reviewed_head_sha,
+      tree: prev.last_reviewed_tree_hash,
+    };
+  } catch {
+    preWipe = null;
+  }
   // Ordered artifact groups. Each group is removed together (behaviour unchanged
   // from before: best-effort rmSync with force) and contributes ONE human-facing
   // label to the summary if any of its paths was present.
@@ -219,6 +283,63 @@ export async function handleReset(input: ResetInput): Promise<ResetSummary> {
     if (sid) await captureSessionBaseline(input.repoRoot, sid, new Date().toISOString());
   } catch {
     /* best-effort: a baseline-capture failure just means the next review is unscoped (full) */
+  }
+
+  // S1: seed the reviewed-through markers at session start. `last === null`
+  // previously meant an unconditional Stop fast-exit — a first-turn Bash
+  // `git commit`/`git merge` shipped unreviewed (core-loop#2). Pre-session
+  // COMMITTED work is by definition not this session's responsibility, so
+  // "reviewed through session-start HEAD" is the honest baseline for the sha.
+  //
+  // F-002 (dogfood, reset-seeds-unreviewed-tree): the TREE hash is a stronger
+  // claim — "this exact working-tree content was reviewed" — and a reset must
+  // never manufacture it:
+  //  (a) escalated pre-wipe state → carry over ITS markers (see preWipe above)
+  //      instead of blessing the current HEAD/tree;
+  //  (b) otherwise seed the tree hash ONLY when the working tree is genuinely
+  //      clean (empty working-tree diff). A dirty (unreviewed) tree seeds NULL,
+  //      so the next Stop's probe fails toward review — ownership demotion
+  //      (Slice A) handles any foreign findings in that first review. The hash
+  //      is computed BEFORE the clean-check so an edit racing the two steps
+  //      fails safe either way: landing before the check → non-empty diff →
+  //      null; landing after → stored hash predates it → probe mismatch →
+  //      review. Any error → nulls (fail toward review).
+  //
+  // Drift from the brief: the "session state" group above unconditionally
+  // rmSync's state.json (best-effort), so it does NOT exist at this point.
+  // StateStore.update() calls load() → readFileSync, which throws ENOENT on a
+  // missing file (no auto-create) — a bare update() here would silently no-op
+  // inside its own try/catch. loadOrRecover (the same ulid()-seeded pattern
+  // runStopGate uses) recreates state.json first so update() has something to
+  // patch, landing the seed in the FRESH state as the brief requires.
+  try {
+    const store = new StateStore(input.repoRoot);
+    await store.loadOrRecover(ulid());
+    let sha: string | null;
+    let tree: string | null;
+    if (preWipe?.escalated) {
+      sha = preWipe.sha;
+      tree = preWipe.tree;
+    } else {
+      sha = await gitHeadSha(input.repoRoot);
+      tree = null;
+      try {
+        const candidate = await workingTreeStateHash(input.repoRoot);
+        const wtDiff = await collectDiff(input.repoRoot, null);
+        if (wtDiff.trim().length === 0) tree = candidate;
+      } catch {
+        tree = null;
+      }
+    }
+    await store.update((cur) =>
+      ReviewgateStateSchema.parse({
+        ...cur,
+        last_reviewed_head_sha: sha ?? cur.last_reviewed_head_sha,
+        last_reviewed_tree_hash: tree,
+      }),
+    );
+  } catch {
+    /* best-effort: a failed seed leaves null → the Stop path fails toward review */
   }
 
   return { cleared };

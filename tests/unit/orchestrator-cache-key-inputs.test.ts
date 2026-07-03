@@ -74,6 +74,61 @@ function orch(
   });
 }
 
+// S5: cycleRejectedSignatures/claimedFixedSignatures are per-cycle suppression
+// inputs that MOVE THE VERDICT inside aggregate() (see the ...(opts.cycleRejectedSignatures
+// ? { cycleRejected: ... } : {}) spread feeding aggregate()) but, before this fix, were
+// absent from the cache key — so a rejected WARN's re-review of an IDENTICAL diff could
+// serve a PASS cached from a run that never had that suppression context.
+describe("S5: verdict cache key folds in cycleRejected/claimedFixed suppression state", () => {
+  it("does NOT serve a cached PASS when cycleRejectedSignatures becomes non-empty", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ck-cyc-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const state = { calls: 0 };
+    await orch(repo, state).runIteration({ runId: "R", iter: 1, cycleRejectedSignatures: [] });
+    expect(state.calls).toBe(1);
+    await orch(repo, state).runIteration({
+      runId: "R",
+      iter: 2,
+      cycleRejectedSignatures: ["sig-a"],
+    });
+    expect(state.calls).toBe(2); // miss → panel re-ran under the new suppression scope
+  });
+
+  it("does NOT serve a cached PASS when claimedFixedSignatures becomes non-empty", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ck-cfx-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const state = { calls: 0 };
+    await orch(repo, state).runIteration({ runId: "R", iter: 1, claimedFixedSignatures: {} });
+    expect(state.calls).toBe(1);
+    await orch(repo, state).runIteration({
+      runId: "R",
+      iter: 2,
+      claimedFixedSignatures: { "sig-b": 2 },
+    });
+    expect(state.calls).toBe(2); // miss → panel re-ran under the new suppression scope
+  });
+
+  it("serves a cached PASS when suppression state is identical (no over-correction)", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-ck-cyc-hit-"));
+    writeFileSync(join(repo, "foo.ts"), "x");
+    const state = { calls: 0 };
+    await orch(repo, state).runIteration({
+      runId: "R",
+      iter: 1,
+      cycleRejectedSignatures: ["sig-a"],
+      claimedFixedSignatures: { "sig-b": 2 },
+    });
+    expect(state.calls).toBe(1);
+    await orch(repo, state).runIteration({
+      runId: "R",
+      iter: 2,
+      cycleRejectedSignatures: ["sig-a"],
+      claimedFixedSignatures: { "sig-b": 2 },
+    });
+    expect(state.calls).toBe(1); // hit → identical suppression scope reuses the verdict
+  });
+});
+
 describe("verdict cache key folds in host-model tier + conventions", () => {
   it("serves a cached PASS on identical inputs (sanity: cache works)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-ck-hit-"));

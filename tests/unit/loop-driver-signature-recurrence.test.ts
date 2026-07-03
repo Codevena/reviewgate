@@ -118,6 +118,7 @@ function driver(repo: string, state: StateStore, config = defaultConfig): LoopDr
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: passStub,
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
   });
 }
 

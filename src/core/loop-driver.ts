@@ -68,6 +68,11 @@ const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<Escalation
   // uncommitted work in the diff. Same safe floor as findings-out-of-scope: loud human ESCALATION
   // (never a faked PASS), allow the stop instead of trapping the agent on foreign committed code.
   "session-disowned",
+  // S4a: EVERY reviewer stayed quota-capped for quotaDeferMaxConsecutive+1 consecutive
+  // turns. Same rationale as infra-unavailable — the agent cannot fix a quota outage, so
+  // blocking would deadlock the loop for the whole reset window (hours-to-weeks for
+  // codex/agy). ESCALATION.md + audit inform the human; the stop is allowed.
+  "quota-exhausted-persistent",
 ]);
 
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
@@ -88,6 +93,29 @@ export interface LoopInput {
   // Current HEAD sha. When it differs from the last reviewed sha, a commit
   // landed and the gate re-arms (fresh budget for the next batch).
   headSha?: string;
+  /** S1: resolves the working-tree fingerprint recorded alongside
+   *  last_reviewed_head_sha. Dogfood F-001: the gate wires this to a MEMOIZED
+   *  DIFF-SNAPSHOT-TIME value (hashed once, right after the reviewed diff was
+   *  collected — SetupBundle.snapshotTree in gate.ts), NOT a fresh at-call-time
+   *  hash: resolving fresh at state-WRITE time (post-review) would bless a
+   *  concurrent session's mid-review Bash edit as reviewed-through, and the next
+   *  Stop would skip-clean over code no panel ever saw. With the snapshot value
+   *  a mid-review edit leaves stored ≠ current tree → the next Stop probe fails
+   *  toward review. All write sites (head-move record, post-review write,
+   *  escalation announce) flow through this same function. Optional; absent
+   *  (tests) → null → the next Stop takes the lock path once and re-records. */
+  treeHash?: () => Promise<string | null>;
+  /** S3b (round-14 W1): resolves HEAD FRESH at escalation-announce time — REQUIRED,
+   *  not optional. `this.i.headSha` is captured at gate START, so a commit landing
+   *  mid-review (before the announce) would misrecord as the announce-time sha,
+   *  and the next stop would misread that pre-announce commit as a post-announce
+   *  recovery. An optional field silently falling back to the stale gate-start
+   *  headSha would let any driver construction that forgot to wire it do exactly
+   *  that; making it required forces every constructor to decide. Resolving null
+   *  (git error) records `escalated_head_sha: null` — the standing-down probe
+   *  branch then never fires (it requires non-null) and Path A takes the
+   *  pre-migration fallback: loud/over-review, never a silent advance. */
+  freshHeadSha: () => Promise<string | null>;
   // Post-abort settle cap (ms). Defaults to POST_ABORT_SETTLE_MS_DEFAULT; tests
   // inject a tiny value to exercise the hung-run fail-closed path quickly (M-A0.3).
   postAbortSettleMs?: number;
@@ -801,7 +829,7 @@ export class LoopDriver {
   // parallel session's edit (or a laggard async trigger) can atomically REWRITE
   // the flag with a batch this review never saw. Unconditionally unlinking would
   // silently drop that batch: the other session's next stop sees no flag + an
-  // unchanged HEAD (stopHasNothingToReview) → allow_stop → unreviewed code ships.
+  // unchanged HEAD (stopProbe) → allow_stop → unreviewed code ships.
   // handleTrigger stamps a fresh `ts` + `diff_hash` on every rewrite, so we only
   // delete when the on-disk flag still matches what this run captured at start;
   // a newer flag is restored so the next stop reviews it. The compare is done on
@@ -880,7 +908,33 @@ export class LoopDriver {
     // a later commit is detectable. A clean PASS re-arms separately (see below).
     const headSha = this.i.headSha ?? null;
     if (headSha !== null && state.last_reviewed_head_sha !== headSha) {
-      const headMovedWhileEscalated = state.last_reviewed_head_sha !== null && state.escalated;
+      // S3b: "commit recovers escalation" must mean a commit made AFTER the
+      // announce. Mid-batch commits (commit-per-task) already satisfy
+      // headSha !== last_reviewed_head_sha at the FIRST post-escalation stop —
+      // re-arming on those would advance last_reviewed_head_sha past work the
+      // panel never cleared and print 🟢 on the next stop. escalated_head_sha
+      // (recorded at announce) is the discriminator; null (pre-migration)
+      // preserves the old behavior.
+      // Round-9 W1: a quota latch is NOT recoverable by committing — nothing
+      // was reviewed and there are no findings a commit could address. While
+      // latched, Path A neither re-arms nor advances last_reviewed_head_sha;
+      // the kept dirty flag routes every stop through handleAllQuotaLocked.
+      const quotaLatched = state.escalation_reason === "quota-exhausted-persistent";
+      const headMovedWhileEscalated =
+        !quotaLatched &&
+        state.last_reviewed_head_sha !== null &&
+        state.escalated &&
+        (state.escalated_head_sha === null || headSha !== state.escalated_head_sha);
+      const stillEscalatedNoNewCommit =
+        state.escalated &&
+        (quotaLatched ||
+          (state.escalated_head_sha !== null && headSha === state.escalated_head_sha));
+      // Task-3 invariant (round-12 W1): EVERY write of last_reviewed_head_sha
+      // records the tree fingerprint alongside — hoisted above the sync updater.
+      // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn, so an
+      // inline await inside it would either fail to compile or (via an
+      // accidentally-async updater) persist a Promise-shaped value (round-7 W3).
+      const tree = stillEscalatedNoNewCommit ? null : ((await this.i.treeHash?.()) ?? null);
       await this.i.state.update((cur) =>
         ReviewgateStateSchema.parse({
           ...cur,
@@ -918,9 +972,20 @@ export class LoopDriver {
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+                // S3b: the recovered commit closes out the OLD escalated range —
+                // drop its announce-time markers so a stale match can't stand a
+                // FUTURE escalation down early.
+                escalated_head_sha: null,
+                escalated_tree_hash: null,
               }
             : {}),
-          last_reviewed_head_sha: headSha,
+          // While standing down (still escalated, no post-announce commit) the
+          // state must never claim the escalated range was reviewed — this is the
+          // core S3b invariant: last_reviewed_head_sha stays put until genuinely
+          // new (post-announce) work justifies advancing it.
+          ...(stillEscalatedNoNewCommit
+            ? {}
+            : { last_reviewed_head_sha: headSha, last_reviewed_tree_hash: tree }),
         }),
       );
       // The commit closed the escalated cycle → wipe its decisions too, so a
@@ -942,7 +1007,19 @@ export class LoopDriver {
     // (F-002). (A commit-while-escalated is handled above; this is the no-commit,
     // keep-editing case.) Termination still holds — the fresh cycle is itself
     // bounded by maxIterations/cost-cap.
-    if (state.escalated && state.escalation_announced) {
+    // S4a item 1: a quota-exhausted-persistent latch is exempt. That announce does
+    // NOT unlink the dirty flag (item 1b), so this branch would otherwise fire on
+    // EVERY stop during the outage (a fresh re-arm every turn, resetting iteration/
+    // signature_history and re-escalating every cap+1 turns — churn, not recovery).
+    // The latch means "quota prevented review", not "the agent kept editing after
+    // being told the gate gave up" — new work during the outage simply joins the
+    // still-flagged batch; only a completed panel review (handleAllQuotaLocked's
+    // recovery clear) or a genuine max-iterations-style escalation ends it.
+    if (
+      state.escalated &&
+      state.escalation_announced &&
+      state.escalation_reason !== "quota-exhausted-persistent"
+    ) {
       await this.i.state.update((cur) =>
         ReviewgateStateSchema.parse({
           ...cur,
@@ -969,6 +1046,11 @@ export class LoopDriver {
           cycle_addressed_dispositions: [],
           region_suppressed_hits: 0,
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+          // S3b: this re-arm closes out the OLD escalated range too (new work is
+          // about to be reviewed in a fresh cycle) — drop its announce-time
+          // markers alongside `escalated: false`.
+          escalated_head_sha: null,
+          escalated_tree_hash: null,
         }),
       );
       clearDecisions(this.i.repoRoot);
@@ -1743,6 +1825,18 @@ export class LoopDriver {
     const softPassBlocks =
       result.verdict === "SOFT-PASS" && (softPolicy === "block" || fromCriticalDemoted > 0);
     const passed = (result.verdict === "PASS" || result.verdict === "SOFT-PASS") && !softPassBlocks;
+    // S4a recovery: clear the quota-exhausted-persistent latch ONLY when the panel
+    // actually produced a review of the flagged batch — i.e. reaching this point
+    // (the normal post-iteration update, not one of the early-return defer/escalate
+    // branches above) with a REAL verdict, never any ERROR outcome. This block is
+    // still reachable with verdict==="ERROR" for a misconfig/schema-mapping failure
+    // that is neither all-quota-locked nor all-infra-failed (those two return early
+    // above and never reach here) — that is NOT a completed review, so excluding
+    // ANY ERROR here (not just the all-quota/all-infra ones) is required, not
+    // redundant. A crash/infra/timeout ERROR must never erase the persistent quota
+    // handoff before anything was actually reviewed.
+    const quotaLatchClears =
+      state.escalation_reason === "quota-exhausted-persistent" && result.verdict !== "ERROR";
     // T5/R3: persist the reviewed manifest as the PASS ledger ONLY for a clean
     // FULL-coverage panel PASS: orchestrator half (passLedgerEligible: full-panel
     // PASS over a COMPLETE diff) AND loop-driver half (no reduced coverage / not
@@ -1767,6 +1861,13 @@ export class LoopDriver {
             files: result.reviewedSnapshotFiles,
           }
         : null;
+    // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn (round-7
+    // W3). Dogfood F-001: treeHash resolves to the gate's memoized DIFF-SNAPSHOT
+    // fingerprint (the tree this iteration's diff was computed from), NOT a fresh
+    // post-review hash — "fresh at write time" blessed a concurrent session's
+    // mid-review edit as reviewed (stored == post-edit tree → next Stop
+    // skip-cleans over never-reviewed code). See LoopInput.treeHash.
+    const tree = (await this.i.treeHash?.()) ?? null;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
@@ -1790,9 +1891,18 @@ export class LoopDriver {
                 verdict: result.verdict,
               },
             ],
-        escalated: passed ? false : cur.escalated,
-        escalation_reason: passed ? null : cur.escalation_reason,
-        escalation_announced: passed ? false : cur.escalation_announced,
+        escalated: passed || quotaLatchClears ? false : cur.escalated,
+        escalation_reason: passed || quotaLatchClears ? null : cur.escalation_reason,
+        escalation_announced: passed || quotaLatchClears ? false : cur.escalation_announced,
+        // S4a: the latch-clear touches ONLY these escalation fields — never the
+        // dirty flag or its base_sha (untouched by this whole block; a FAIL/
+        // WARN-FAIL recovery hands off to the normal FAIL loop with the flag still
+        // armed over the ORIGINAL base, so pre-quota work cannot fall out of
+        // scope). Outside the quota-latch case these two fields are otherwise
+        // untouched here (they carry over via the `...cur` spread) — only
+        // Path A/B and the announce site write them.
+        escalated_head_sha: quotaLatchClears ? null : cur.escalated_head_sha,
+        escalated_tree_hash: quotaLatchClears ? null : cur.escalated_tree_hash,
         // Re-arm resets the cross-iteration FP accumulator; a non-pass preserves it
         // (the streak builds across the cycle's iterations).
         cumulative_fp_rejects: passed ? 0 : cur.cumulative_fp_rejects,
@@ -1859,6 +1969,7 @@ export class LoopDriver {
         consecutive_infra_defers: 0,
         consecutive_quota_defers: 0,
         last_reviewed_head_sha: headSha ?? cur.last_reviewed_head_sha,
+        last_reviewed_tree_hash: tree,
         last_stop_ts: new Date().toISOString(),
         // On a clean pass (re-arm), bump the cycle sequence so the next cycle's
         // reputation event-ids can't collide with this cycle's (F-001 renumbers).
@@ -2020,7 +2131,75 @@ export class LoopDriver {
   // advance the iteration (skip the normal state update entirely) so a string of
   // quota-locked turns can't march to the max-iterations escalation. Distinct
   // from a misconfig ERROR, which still hard-blocks on the ERROR branch above.
+  //
+  // S4a: the defer above was originally UNBOUNDED — every all-quota turn deferred
+  // forever with nothing but a console note. codex/agy quota resets can be
+  // days-to-weeks, so an unbounded defer ships the whole window un-reviewed. Bound
+  // it like handleInfraUnavailable: escalate to the human after
+  // quotaDeferMaxConsecutive consecutive all-quota turns, then LATCH — once
+  // announced, further all-quota turns defer loudly (referencing the existing
+  // ESCALATION.md) instead of re-escalating (no churn). consecutive_quota_defers
+  // is SHARED with escalateAndDecide's own quota-degraded-defer (both are "quota
+  // prevented a full review this turn"); interleavings accumulate into one streak.
   private async handleAllQuotaLocked(state: ReviewgateState): Promise<LoopDecision> {
+    const cap = this.i.config.loop.quotaDeferMaxConsecutive;
+    const next = state.consecutive_quota_defers + 1;
+    // The LATCH CHECK COMES FIRST — once "quota-exhausted-persistent" is announced,
+    // later all-quota turns never re-escalate (no ESCALATION.md churn); they defer
+    // loudly, referencing the existing handoff. The bookkeeping still happens — the
+    // counter keeps counting (stats/audit honesty) and the completed-run metadata is
+    // recorded exactly like every other all-quota turn; ONLY the escalation is
+    // suppressed.
+    if (state.escalated && state.escalation_reason === "quota-exhausted-persistent") {
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          incomplete_runs: 0,
+          consecutive_quota_defers: next,
+          last_stop_ts: new Date().toISOString(),
+        }),
+      );
+      return {
+        kind: "allow_stop",
+        reason: `🟠 Reviewgate · GATE DEFERRED — still quota-capped; escalation already pending (see .reviewgate/ESCALATION.md). The change stays flagged and is reviewed in full once a reviewer completes.${this.quotaDegradationNote(new Date()) ?? ""}`,
+      };
+    }
+    // Defer disabled (cap 0) → hard-block immediately, mirroring
+    // handleInfraUnavailable's cap-0 contract ("defer disabled means disabled").
+    // Without this, cap=0 fell through the `next > cap` check into the under-cap
+    // defer branch FOREVER — unbounded defers, the exact fail-open S4a exists to
+    // close (DoD codex WARN). Checked AFTER the latch (a latched state still
+    // defers loudly — the human is already informed) and BEFORE the
+    // cap-exceeded/under-cap branches.
+    if (cap <= 0) {
+      return {
+        kind: "block",
+        reason: `🔴 Reviewgate · GATE CLOSED — every reviewer is quota-capped (iteration ${state.iteration}), so this turn could not be reviewed, and the quota defer is disabled (quotaDeferMaxConsecutive=0). The change stays flagged; end your turn again once quota resets, or raise the cap to defer instead.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` for per-provider status."}`,
+      };
+    }
+    if (next > cap) {
+      // Persist THIS turn's bookkeeping BEFORE escalating, exactly like the infra
+      // path — the escalation turn is still an all-quota turn and its audit state
+      // must say so (the announce site then resets the counter to 0 in its own
+      // update).
+      await this.i.state.update((cur) =>
+        ReviewgateStateSchema.parse({
+          ...cur,
+          incomplete_runs: 0,
+          consecutive_quota_defers: next,
+          last_stop_ts: new Date().toISOString(),
+        }),
+      );
+      const fresh = await this.i.state.load();
+      return this.escalateAndDecide(
+        fresh,
+        "quota-exhausted-persistent",
+        `Every reviewer was quota-capped for ${next} consecutive turns — the gate deferred each one un-reviewed.${this.quotaDegradationNote(new Date()) ?? ""}`,
+      );
+    }
+    // The under-cap defer branch persists its bookkeeping EXPLICITLY — every
+    // all-quota turn increments the counter (this is the very increment the cap
+    // check above reads next turn).
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
@@ -2029,13 +2208,15 @@ export class LoopDriver {
         // a review actually completes"). Without this, timeout → quota-defer →
         // timeout would escalate "2 consecutive runs" across a completed run.
         incomplete_runs: 0,
+        consecutive_quota_defers: next,
         last_stop_ts: new Date().toISOString(),
       }),
     );
     const note = this.quotaDegradationNote(new Date()) ?? "";
     return {
       kind: "allow_stop",
-      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets.${note}`,
+      // `cap` is always > 0 here (cap<=0 hard-blocked above) — no "∞" display needed.
+      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets (defer ${next}/${cap}).${note}`,
     };
   }
 
@@ -2270,16 +2451,36 @@ export class LoopDriver {
         state.signature_history,
         state.iteration_stats,
       );
+      // Round-7 W2: resolve HEAD *fresh* at announce time. this.i.headSha was
+      // captured at GATE START — a commit landing mid-review (before the
+      // announce) would otherwise read on the next stop as a post-announce
+      // recovery commit and stand the escalation down for work that was not a
+      // response to it. Hoist BOTH async reads above the (sync) updater —
+      // never await inside it (round-7 W3).
+      const escHead = await this.i.freshHeadSha(); // REQUIRED input (round-14 W1); null on git error → never stands down
+      // Dogfood F-001: same memoized diff-snapshot fingerprint as every other
+      // write site. A mid-review edit ⇒ snapshot ≠ announce-time tree ⇒ the
+      // standing-down probe's tree-match fails ⇒ fails toward review (safe).
+      const escTree = (await this.i.treeHash?.()) ?? null;
       await this.i.state.update((cur) => ({
         ...cur,
         escalation_announced: true,
         consecutive_quota_defers: 0,
+        escalated_head_sha: escHead, // S3b
+        escalated_tree_hash: escTree, // round-2 C1
       }));
     }
     // Compare-and-delete (F-005): a flag rewritten mid-review carries a captured
     // base for the NEW batch; deleting it would make a later trigger re-capture
     // base as the CURRENT HEAD, silently dropping unreviewed mid-batch commits.
-    this.unlinkDirtyFlagIfUnchanged();
+    // S4a item 1b: a quota-exhausted-persistent announce is exempt from the unlink.
+    // The whole stable-state design (Path A/B exemptions above, stopProbe's latch
+    // check) relies on a dirty flag ALWAYS existing while the latch holds — that is
+    // what routes EVERY subsequent stop through the lock path into
+    // handleAllQuotaLocked (bounded-defer message + provider-recovery check)
+    // instead of stopProbe's escalation-aware standing-down branch, which is for
+    // findings/convergence escalations that genuinely hand the range to the human.
+    if (reasonCode !== "quota-exhausted-persistent") this.unlinkDirtyFlagIfUnchanged();
     // Some escalations mean "the REVIEWER is the problem, not the agent's code"
     // (reviewer-fp-streak: the agent kept correctly rejecting a noisy reviewer's
     // findings). Blocking there punishes correct behavior and holds the dev
@@ -2321,6 +2522,16 @@ export class LoopDriver {
         return {
           kind: "allow_stop",
           reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — the remaining blocking findings are on a parallel agent's COMMITTED work that entered this session's reviewed diff in a shared checkout, and your session produced nothing in this change-set; NOT blocking your turn and NOT faking a pass. Read .reviewgate/ESCALATION.md and hand these to the human / owning agent. (To isolate work in multi-agent runs, use a per-session \`git worktree\`.)${suffix}`,
+        };
+      }
+      // S4a: the persistent all-quota outage. Distinct copy from infra-unavailable — the
+      // dirty flag is deliberately KEPT (item 1b), so unlike every other escalation this one
+      // does NOT need `reviewgate reset` to recover: the FIRST reviewer that completes a real
+      // review (once quota resets) clears the latch automatically and reviews the full batch.
+      if (reasonCode === "quota-exhausted-persistent") {
+        return {
+          kind: "allow_stop",
+          reason: `🟠 Reviewgate · GATE ESCALATED (${reasonCode}) — every reviewer stayed quota-capped for several consecutive turns (transient quota outage, NOT your code); NOT blocking your turn. Unlike other escalations the change stays FLAGGED: no \`reviewgate reset\` needed — it is reviewed automatically once a reviewer's quota resets and completes a review. Read .reviewgate/ESCALATION.md for details (and the reset time, if known).${suffix}`,
         };
       }
       return {

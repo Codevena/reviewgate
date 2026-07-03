@@ -3,7 +3,7 @@
 // take the SAME gate lock the stop path uses, so it can't race a concurrent in-flight
 // stop-gate and rmSync state out from under it (torn reads / corrupted review).
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate } from "../../src/cli/commands/gate.ts";
@@ -31,8 +31,12 @@ describe("gate reset hook locking", () => {
     const repo = seedRepo();
     const out = await runGate({ repoRoot: repo, hook: "reset", hookStdinRaw: "{}" });
     expect(out.exitCode).toBe(0);
-    // State was cleared.
-    expect(existsSync(stateJsonPath(repo))).toBe(false);
+    // State was cleared — S1: re-seeded fresh (not left absent), so the very
+    // next Stop has an honest baseline instead of a last===null fast-exit
+    // (core-loop#2). Assert it's the FRESH state, not the old iteration:3 stub.
+    expect(existsSync(stateJsonPath(repo))).toBe(true);
+    const st = JSON.parse(readFileSync(stateJsonPath(repo), "utf8"));
+    expect(st.iteration).toBe(0);
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
     // Lock was released (not leaked) afterwards.
     expect(readLockHolder(gateLockPath(repo))).toBeNull();

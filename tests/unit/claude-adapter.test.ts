@@ -89,6 +89,100 @@ describe("ClaudeAdapter (mocked)", () => {
     expect(res.status).toBe("error");
     expect(res.findings).toEqual([]);
   });
+
+  it("reviewer JSON whose only finding dies on the LINE-TYPE guard → status error, never PASS (S2)", async () => {
+    // verdict FAIL, one finding with line as string "42" — fails the typeof
+    // guard BEFORE any category handling → 0 mapped findings. Must fail closed
+    // (ERROR), never silently collapse to an empty PASS.
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-linetype-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-claude-linetype.sh",
+      [
+        "#!/usr/bin/env bash",
+        "cat <<'JSON'",
+        "{",
+        '  "type": "result",',
+        '  "subtype": "success",',
+        '  "result": "{\\"verdict\\":\\"FAIL\\",\\"findings\\":[{\\"severity\\":\\"CRITICAL\\",\\"category\\":\\"correctness\\",\\"rule_id\\":\\"cl-rule\\",\\"file\\":\\"a.ts\\",\\"line\\":\\"42\\",\\"message\\":\\"bad line type\\",\\"details\\":\\"d\\",\\"confidence\\":0.9}]}",',
+        '  "total_cost_usd": 0,',
+        '  "usage": { "input_tokens": 10, "output_tokens": 5 },',
+        '  "session_id": "fake"',
+        "}",
+        "JSON",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new ClaudeAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 60_000 },
+      reviewerId: "claude-adversarial",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "adversarial",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("error");
+    expect(res.verdict).toBe("ERROR");
+    expect(res.findings).toEqual([]);
+    expect(res.statusDetail ?? "").toMatch(
+      /survived mapping|no blocking finding|blocking-severity/,
+    );
+    // Triageability (round-11 W4): the lossy-ERROR result points at the SAME
+    // rawEventsPath the ok-path would have returned, and the counts ride along.
+    expect(res.rawEventsPath).toBeTruthy();
+    expect(res.rawEventsPath.endsWith("out.json")).toBe(true);
+    expect(res.statusDetail ?? "").toMatch(/dropped \d+, blocking \d+/);
+    // The temp run dir is always reaped, so rawText is the ONLY surviving triage
+    // evidence — it must be present and contain the malformed finding's text.
+    expect(res.rawText).toBeTruthy();
+    expect(res.rawText ?? "").toContain("bad line type");
+    expect(res.rawText ?? "").toContain('"line":"42"');
+  });
+
+  it("UNKNOWN category with an otherwise-valid finding also fails closed (S2, round-3 I1)", async () => {
+    // verdict FAIL, one finding with category "vibes", numeric line 42 — passes
+    // the typeof guard, dies in FindingSchema.safeParse → 0 mapped findings.
+    const dir = mkdtempSync(join(tmpdir(), "rg-cl-unkcat-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-claude-unkcat.sh",
+      [
+        "#!/usr/bin/env bash",
+        "cat <<'JSON'",
+        "{",
+        '  "type": "result",',
+        '  "subtype": "success",',
+        '  "result": "{\\"verdict\\":\\"FAIL\\",\\"findings\\":[{\\"severity\\":\\"CRITICAL\\",\\"category\\":\\"vibes\\",\\"rule_id\\":\\"cl-rule\\",\\"file\\":\\"a.ts\\",\\"line\\":42,\\"message\\":\\"bad category\\",\\"details\\":\\"d\\",\\"confidence\\":0.9}]}",',
+        '  "total_cost_usd": 0,',
+        '  "usage": { "input_tokens": 10, "output_tokens": 5 },',
+        '  "session_id": "fake"',
+        "}",
+        "JSON",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new ClaudeAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 60_000 },
+      reviewerId: "claude-adversarial",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "adversarial",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("error");
+    expect(res.verdict).toBe("ERROR");
+    expect(res.findings).toEqual([]);
+  });
 });
 
 describe("ClaudeAdapter.complete (judge completion)", () => {

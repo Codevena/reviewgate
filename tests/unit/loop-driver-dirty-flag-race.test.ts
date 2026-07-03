@@ -73,6 +73,7 @@ describe("dirty.flag compare-and-delete (F-05/F-16)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop"); // THIS run's verdict is honored …
     // … but the NEWER flag survives so the next stop reviews the other batch.
@@ -103,6 +104,7 @@ describe("dirty.flag compare-and-delete (F-05/F-16)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
@@ -136,6 +138,7 @@ describe("dirty.flag compare-and-delete (F-05/F-16)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.reason).toMatch(/ESCALAT/i);
     expect(existsSync(dirtyFlagPath(repo))).toBe(true); // newer batch preserved
@@ -166,6 +169,7 @@ describe("dirty.flag compare-and-delete (F-05/F-16)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.reason).toMatch(/ESCALAT/i);
     expect(existsSync(dirtyFlagPath(repo))).toBe(false); // unchanged flag consumed
@@ -194,6 +198,7 @@ describe("SOFT-PASS open-gate message includes the critical count (F-06 visibili
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toContain("1 CRITICAL");
@@ -221,6 +226,7 @@ describe("SOFT-PASS open-gate message includes the critical count (F-06 visibili
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toContain("1 WARN");

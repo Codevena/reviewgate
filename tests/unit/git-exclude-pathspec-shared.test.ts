@@ -43,13 +43,13 @@ describe("git exclude-pathspec is a single shared source", () => {
       ":(exclude)reviewgate.config.ts",
       ":(exclude).reviewgate",
       ":(exclude).reviewgate/**",
-      // P6 (field report 2026-06-22): the user's DoD scratch dir (.review/, rm -rf'd
-      // before commit) must not enter the reviewed diff or the cache key in repos that
-      // don't gitignore it.
+      // P6 (field report 2026-06-22) / S6 (2026-07-03): the user's DoD scratch dir
+      // (.review/, rm -rf'd before commit) must not enter the reviewed diff or the
+      // cache key in repos that don't gitignore it. Root-anchored only (S6) — a
+      // NESTED .review/ is reviewed (over-review is the safe direction; see
+      // tests/unit/git-review-scratch-root-anchor.test.ts).
       ":(exclude).review",
       ":(exclude).review/**",
-      ":(exclude)**/.review",
-      ":(exclude)**/.review/**",
       ":(exclude).antigravitycli",
       ":(exclude).antigravitycli/**",
       ":(exclude)**/.antigravitycli",
@@ -58,10 +58,12 @@ describe("git exclude-pathspec is a single shared source", () => {
   });
 
   it("isExcludedFromReview excludes .review scratch but NOT .reviewgate-unrelated names", () => {
-    // P6: the untracked side must mirror EXCLUDE_PATHSPEC exactly.
+    // P6/S6: the untracked side must mirror EXCLUDE_PATHSPEC exactly.
     expect(isExcludedFromReview(".review")).toBe(true);
     expect(isExcludedFromReview(".review/plan-gate-prompt.txt")).toBe(true);
-    expect(isExcludedFromReview("sub/.review/codex-a-findings.md")).toBe(true);
+    // S6: root-anchored only — a NESTED .review/ is reviewed (over-review is the
+    // safe direction; see tests/unit/git-review-scratch-root-anchor.test.ts).
+    expect(isExcludedFromReview("sub/.review/codex-a-findings.md")).toBe(false);
     // Over-broad-match guards: a file/dir that merely CONTAINS "review" is NOT excluded.
     expect(isExcludedFromReview("review-notes.md")).toBe(false);
     expect(isExcludedFromReview("src/review.ts")).toBe(false);
@@ -70,10 +72,13 @@ describe("git exclude-pathspec is a single shared source", () => {
     expect(isExcludedFromReview(".reviewgate/state.json")).toBe(true);
   });
 
-  it("collectDiff excludes an UNTRACKED .review scratch file even with no gitignore line", async () => {
+  it("collectDiff excludes an UNTRACKED root .review scratch file but reviews a nested one (S6)", async () => {
     // The field-report failure: F-001/F-002 were on .review/plan-gate-* in a checkout that
     // did not gitignore .review/, so they entered the diff (and the cache key). Pure
-    // subtraction — verify the untracked side drops them and a real file still shows.
+    // subtraction — verify the untracked side drops the ROOT scratch dir and a real file
+    // still shows. S6: a NESTED .review/ is no longer excluded (over-review is the safe
+    // direction) — see tests/unit/git-review-scratch-root-anchor.test.ts for the dedicated
+    // root-vs-nested coverage.
     const repo = tmpRepo();
     mkdirSync(join(repo, ".review"), { recursive: true });
     writeFileSync(join(repo, ".review", "plan-gate-prompt.txt"), "stale scratch\n");
@@ -86,7 +91,7 @@ describe("git exclude-pathspec is a single shared source", () => {
     expect(out).toContain("real.ts");
     expect(out).toContain("review-notes.md"); // over-broad guard: NOT excluded
     expect(out).not.toContain(".review/plan-gate-prompt.txt");
-    expect(out).not.toContain("codex-a-findings.md");
+    expect(out).toContain("sub/.review/codex-a-findings.md"); // S6: nested is reviewed
     // Exclusion must not trip the incomplete fail-CLOSED marker.
     expect(out).not.toContain("TRUNCATED or TIMED OUT");
   });

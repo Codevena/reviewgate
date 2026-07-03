@@ -106,6 +106,7 @@ describe("loop-driver region harvest wiring", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
 
     expect(received?.length).toBe(1);
@@ -183,6 +184,7 @@ describe("loop-driver region harvest wiring", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     const st = await state.load();
     expect(st.cycle_rejected_dispositions).toEqual([]);

@@ -31,11 +31,11 @@ CLI subcommands: `init` (install hooks into `.claude/settings.json`), `gate` (ho
 
 The entire pipeline is driven by hooks calling `reviewgate gate --hook <trigger|stop|reset>` (`src/cli/commands/gate.ts`):
 
-- `trigger` (PostToolUse) — just marks `.reviewgate/dirty.flag`.
+- `trigger` (PostToolUse) — marks `.reviewgate/dirty.flag`, except when the edit's fully-understood single path is reviewgate-managed/excluded (S3a) — e.g. a decision-file write doesn't re-arm the gate on itself.
 - `reset` (SessionStart) — wipes per-session state.
-- `stop` (Stop) — the real work: `LoopDriver.run()` → `Orchestrator.runIteration()`.
+- `stop` (Stop) — a three-valued probe (`review` / `skip-clean` / `skip-escalated`, S1) first compares HEAD plus a content-true working-tree fingerprint against the reviewed-through markers, so uncommitted Bash-tool edits that never touched `trigger` are still caught; only `review` proceeds to the real work: `LoopDriver.run()` → `Orchestrator.runIteration()`.
 
-`LoopDriver` (`src/core/loop-driver.ts`) decides allow-stop vs block: no dirty flag → allow; otherwise it gates on the previous iteration's decisions (`.reviewgate/decisions/<iter>.jsonl` must address every finding id from `pending.json`), advances `iteration` toward the cap, and emits `ESCALATION.md` on max-iterations / stuck-signatures / cost-cap / high-reject-rate. It deliberately does **not** short-circuit on `stop_hook_active` (the FAIL→fix→re-review loop must run in-chain), and re-arms the budget on a clean PASS or a commit.
+`LoopDriver` (`src/core/loop-driver.ts`) decides allow-stop vs block: `skip-clean` allows; otherwise it gates on the previous iteration's decisions (`.reviewgate/decisions/<iter>.jsonl` must address every finding id from `pending.json`), advances `iteration` toward the cap, and emits `ESCALATION.md` on max-iterations / stuck-signatures / cost-cap / high-reject-rate. A non-empty stop diff always persists a dirty flag or fail-closes (belt), so a real change can never fall through un-flagged. Once escalated, the gate stands down LOUDLY — `skip-escalated` prints a 🟠 message pointing at `ESCALATION.md` instead of the green one — and recovery requires a commit made AFTER the announce (S3b), not merely one that predates it. An all-quota outage defers a bounded number of turns, then escalates once and keeps the change flagged until a reviewer actually completes (S4a). It deliberately does **not** short-circuit on `stop_hook_active` (the FAIL→fix→re-review loop must run in-chain), and re-arms the budget on a clean PASS or a commit.
 
 `Orchestrator.runIteration()` (`src/core/orchestrator.ts`) is the pipeline: **triage → cache check → research → reviewer panel → critic → aggregate → write report**.
 
