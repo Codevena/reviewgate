@@ -58,6 +58,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(["allow_stop", "block"]).toContain(decision.kind);
@@ -83,6 +84,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -124,6 +126,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -159,6 +162,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -198,6 +202,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop"); // not blocked for foreign code
@@ -239,6 +244,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -306,6 +312,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -344,6 +351,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/decisions-unaddressed/);
@@ -376,6 +384,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block"); // own code → still firm
@@ -417,6 +426,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -464,6 +474,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -501,6 +512,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -533,6 +545,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -564,6 +577,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -599,6 +613,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     // First escalation BLOCKS once so the agent is told the gate gave up.
     const first = await driver.run();
@@ -640,6 +655,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -674,6 +690,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
@@ -707,6 +724,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     const after = await state.load();
@@ -746,6 +764,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
@@ -780,6 +799,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
@@ -821,6 +841,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -861,6 +882,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     // The converging cycle must NOT have given up.
@@ -921,6 +943,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -1005,6 +1028,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -1052,6 +1076,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -1095,6 +1120,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toMatch(/ESCALATED/);
@@ -1146,6 +1172,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     // F-001 (WARN) addressed; F-002 (INFO) not required → gate proceeds → PASS on DOC_DIFF.
@@ -1185,6 +1212,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     const after = await state.load();
@@ -1217,6 +1245,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -1256,6 +1285,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     // Re-armed → ran a fresh iteration 1 (PASS) instead of re-escalating.
@@ -1299,6 +1329,7 @@ describe("LoopDriver", () => {
           reasonOnFailEnabled: true,
         }),
         stopHookActive: false,
+        freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       });
 
     // First stop: null baseline → record sha, still escalates (was escalated).
@@ -1313,6 +1344,144 @@ describe("LoopDriver", () => {
     expect(second.kind).toBe("allow_stop");
     expect(second.reason).toContain("iteration 1");
     expect((await state.load()).escalated).toBe(false);
+  });
+
+  it("does NOT recover an escalation when HEAD has not moved past escalated_head_sha — mid-batch commits made BEFORE the escalation (S3b)", async () => {
+    // Old bug: headMovedWhileEscalated fired on ANY headSha !== last_reviewed_head_sha,
+    // which is already true at the first post-escalation stop when the batch
+    // contained mid-batch commits (commit-per-task) — last_reviewed_head_sha would
+    // jump past the never-reviewed H0..H1 range. escalated_head_sha (recorded at
+    // announce) is now the discriminator: HEAD ("H1") matches it, so this is NOT a
+    // post-announce recovery commit.
+    //
+    // escalation_announced starts FALSE so this pins Path A's discriminator in
+    // isolation from the SEPARATE, unconditional post-escalation-new-edits re-arm
+    // (Path B, `state.escalated && state.escalation_announced`, tested via
+    // "re-arms and reviews NEW edits" above) — which would otherwise fire whenever
+    // escalated+announced and cascade into a full fresh iteration within this same
+    // run() call, confounding the assertion below. Same isolation technique the
+    // pre-existing "records the HEAD baseline on first sight" test (above) uses.
+    // The iteration cap (3) still re-escalates and re-announces below (as that
+    // test also does) — proving the discriminator holds even through a re-announce.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQS3BNOMOVE");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      escalated: true,
+      escalation_reason: "max-iterations",
+      escalation_announced: false,
+      last_reviewed_head_sha: "H0",
+      escalated_head_sha: "H1", // recorded at a PRIOR announce
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      headSha: "H1", // HEAD has NOT moved since the announce
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF,
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+      freshHeadSha: async () => "H1", // the re-announce below resolves the SAME sha
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block"); // re-escalates at the iter cap (was already escalated)
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const st = await state.load();
+    expect(st.escalated).toBe(true); // NOT re-armed
+    expect(st.last_reviewed_head_sha).toBe("H0"); // never claims the range was reviewed
+  });
+
+  it("a commit made AFTER the escalation still recovers it (S3b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQS3BMOVED");
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      escalated: true,
+      escalation_reason: "max-iterations",
+      escalation_announced: true,
+      last_reviewed_head_sha: "H0",
+      escalated_head_sha: "H1", // recorded at announce
+      escalated_tree_hash: "T",
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      headSha: "H2", // a genuine commit landed AFTER the announce
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: DOC_DIFF, // doc-only → triage skip → PASS on the re-armed cycle
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+    const st = await state.load();
+    expect(st.escalated).toBe(false);
+    expect(st.escalated_head_sha).toBeNull();
+    expect(st.escalated_tree_hash).toBeNull();
+    expect(st.last_reviewed_head_sha).toBe("H2");
+  });
+
+  it("escalation announce records escalated_head_sha (S3b)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQS3BANNOUNCE");
+    // Pre-populate state as if we've already failed 3 times (mirrors "escalates
+    // after maxIterations FAIL streak" above) so the FIRST run() call announces.
+    await state.update((cur) => ({
+      ...cur,
+      iteration: 3,
+      signature_history: [["sig1"], ["sig1"], ["sig1"]],
+    }));
+    writeDirty(repo);
+    const audit = new AuditLogger(auditDir(repo));
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config: defaultConfig,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config: defaultConfig,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: false,
+      freshHeadSha: async () => "H1", // the fresh HEAD read at announce time
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/ESCALATED/);
+    const st = await state.load();
+    expect(st.escalation_announced).toBe(true);
+    expect(st.escalated_head_sha).toBe("H1");
   });
 
   it("a PASS re-arm clears prior-cycle decisions so a stale decision can't satisfy the next cycle", async () => {
@@ -1349,6 +1518,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("allow_stop");
@@ -1399,6 +1569,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block"); // fresh iteration 1 FAILed
@@ -1442,6 +1613,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block"); // fresh iteration 1 FAILed
@@ -1486,6 +1658,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -1544,6 +1717,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -1602,6 +1776,7 @@ describe("LoopDriver", () => {
         audit: new AuditLogger(auditDir(repo)),
         orchestrator: stub,
         stopHookActive: false,
+        freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       });
     // Drive the FAIL → reject-as-confirmed-FP → re-review loop. Each round the agent
     // rejects the (fresh) finding with reviewer_was_wrong, exactly as in the dogfood.
@@ -1701,6 +1876,7 @@ describe("LoopDriver", () => {
         audit: new AuditLogger(auditDir(repo)),
         orchestrator: stub,
         stopHookActive: false,
+        freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       });
     // Drive the loop: write decisions, run, write decisions, run, ... until escalation.
     let decision = await mkDriver().run();
@@ -1821,6 +1997,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: true,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     // It DOES escalate/block (F-002 unaddressed) — that part is unchanged…
     expect(decision.kind).toBe("block");
@@ -1878,6 +2055,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(received).toContain("sig-X");
     expect((await state.load()).cycle_rejected_signatures).toContain("sig-X");
@@ -1915,6 +2093,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     // Transient quota outage → allow the stop (don't block the dev for hours) …
     expect(decision.kind).toBe("allow_stop");
@@ -1965,6 +2144,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop");
     expect(decision.reason).toMatch(/DEFERRED/i);
@@ -1988,6 +2168,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.reason).toMatch(/ESCALAT/i);
     // infra-unavailable is an ALLOW-STOP escalation: it writes ESCALATION.md (human
@@ -2016,6 +2197,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("block");
     expect(decision.reason).toMatch(/CLOSED/i);
@@ -2034,6 +2216,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: infraErrorStub(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.kind).toBe("allow_stop"); // defers, does NOT block-loop
     expect(decision.reason).toMatch(/DEFERRED/i);
@@ -2071,6 +2254,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: passOrch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect((await state.load()).reputation_cycle_seq).toBe(1);
   });
@@ -2120,6 +2304,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     // iteration 1's decisions folded into fp_rejects_history[0] (decoupled from threshold)
@@ -2170,6 +2355,7 @@ describe("LoopDriver", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -2228,6 +2414,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     // Only action:"fixed" is recorded; addressed-elsewhere is NOT.
     expect(received?.["sig-fixed"]).toBe(1);
@@ -2286,6 +2473,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     // Earliest iter (1) preserved — NOT advanced to 2.
     expect(received?.["sig-X"]).toBe(1);
@@ -2346,6 +2534,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(received?.["rep-sig"]).toBe(1);
     expect(received?.["mem-sig"]).toBe(1); // member signature captured too
@@ -2408,6 +2597,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(received).toContain("rep-sig");
     expect(received).toContain("mem-sig");
@@ -2471,6 +2661,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(received?.["sig-superseded"]).toBeUndefined(); // fixed→deferred: last wins, not claimed
     expect(received?.["sig-final-fixed"]).toBe(1); // deferred→fixed: last wins, claimed
@@ -2530,6 +2721,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     // The stale claim is reconciled away because the latest decision is not "fixed".
     expect(received?.["sig-superseded"]).toBeUndefined();
@@ -2579,6 +2771,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(received).toEqual({}); // nothing recorded, no throw
   });
@@ -2620,6 +2813,7 @@ describe("LoopDriver", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect((await state.load()).claimed_fixed_signatures).toEqual({});
   });
@@ -2662,6 +2856,7 @@ describe("LoopDriver stuck-signature threshold (configurable)", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     return { decision, state };
@@ -2788,6 +2983,7 @@ describe("LoopDriver convergence-aware max-iterations", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     return { decision, state, repo };
@@ -2937,6 +3133,7 @@ describe("LoopDriver cost-cap escalation", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -2967,6 +3164,7 @@ describe("LoopDriver cost-cap escalation", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect((await state.load()).escalation_reason ?? "").not.toBe("cost-cap");
@@ -3003,6 +3201,7 @@ describe("LoopDriver softPassPolicy", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: softOrch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
   }
 
@@ -3071,6 +3270,7 @@ describe("LoopDriver softPassPolicy — G0 demoted-from-CRITICAL", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: fromCritOrch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
   }
 
@@ -3141,6 +3341,7 @@ describe("LoopDriver softPassPolicy — G0 demoted-from-CRITICAL", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: orch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await d.run();
     expect(decision.kind).toBe("block");
@@ -3205,6 +3406,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(decision.reason).toContain("ESCALATED");
     expect((await state.load()).escalation_reason).toBe("max-iterations");
@@ -3261,6 +3463,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: stub,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(ran).toBe(true); // grace applied → another iteration ran
     expect(decision.reason).not.toContain("ESCALATED");
@@ -3312,6 +3515,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
         audit: new AuditLogger(auditDir(repo)),
         orchestrator: stubOrch(summary, verdict),
         stopHookActive: false,
+        freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       }).run();
     }
 
@@ -3405,6 +3609,7 @@ describe("LoopDriver convergence grace vs confirmed-FP accumulation", () => {
         audit: new AuditLogger(auditDir(repo)),
         orchestrator: errOrch(summary),
         stopHookActive: false,
+        freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       }).run();
     }
 
@@ -3487,6 +3692,7 @@ describe("LoopDriver quota-degraded escalation note", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     const escMd = existsSync(join(repo, ".reviewgate", "ESCALATION.md"))
@@ -3552,6 +3758,7 @@ describe("LoopDriver quota-degraded escalation note", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     const escMd = existsSync(join(repo, ".reviewgate", "ESCALATION.md"))

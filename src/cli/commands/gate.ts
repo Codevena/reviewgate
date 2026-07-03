@@ -42,6 +42,7 @@ import {
   auditDir,
   deferredFlagPath,
   dirtyFlagPath,
+  escalationMdPath,
   gateLockPath,
   stateJsonPath,
 } from "../../utils/paths.ts";
@@ -225,8 +226,29 @@ export async function stopProbe(
     // racing a concurrent commit could compare tree and HEAD from different
     // instants (stand down over new work, or spuriously re-review).
     const sha = await headShaFn(repoRoot);
-    // (Task 5 inserts the escalated standing-down branch HERE — it uses `sha`,
-    //  never a second headShaFn call.)
+    // S3b standing-down: the escalation handed this range to the human; with no
+    // new flag and BOTH head and tree unmoved since the announce there is
+    // nothing to (re-)review — but the stop must not read as a green "no
+    // changes" either. The caller prints the loud escalated variant. HEAD moved
+    // past the announce sha OR the tree changed (a post-escalation Bash
+    // mutation — round-2 C1) OR either hash unknowable → "review" (lock path:
+    // Path-A recovery / synthesis of the new work).
+    if (st.escalated && st.escalation_announced && st.escalated_head_sha !== null) {
+      // Round-13 W1: the persistent-quota latch NEVER stands down — its whole
+      // design routes every stop through the lock path into handleAllQuotaLocked
+      // (bounded defer + provider-recovery check). Even if the dirty flag were
+      // lost despite Task 7's keep-invariant, the probe must fail toward review.
+      if (st.escalation_reason === "quota-exhausted-persistent") return "review";
+      // Round-4 W1: standing down is only honest while the handoff artifact
+      // actually exists — a deleted/never-written ESCALATION.md means the human
+      // was NOT (or is no longer) informed; fail toward the lock path, which
+      // re-announces or reviews.
+      if (!existsSync(escalationMdPath(repoRoot))) return "review";
+      if (sha !== st.escalated_head_sha) return "review"; // `sha` = the probe's single HEAD read (round-5 W1)
+      if (st.escalated_tree_hash === null) return "review";
+      const tree = await treeHashFn(repoRoot);
+      return tree !== null && tree === st.escalated_tree_hash ? "skip-escalated" : "review";
+    }
     const last = st.last_reviewed_head_sha;
     // S1: `last === null` no longer fast-exits. Post-reset it is always seeded;
     // null now means "unknown baseline" → let the full (locked) path decide.
@@ -323,10 +345,9 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     };
   }
   if (probe === "skip-escalated") {
-    // Task 5 wires the branch of stopProbe that PRODUCES this value (escalated +
-    // HEAD/tree unmoved since the announce). The mapping is wired here now so it
-    // is complete the moment that branch lands — never silently falls through to
-    // the green message. Exact copy per the plan (2026-07-03
+    // stopProbe's escalated standing-down branch (escalated + HEAD/tree unmoved
+    // since the announce) PRODUCES this value; mapped here — never silently
+    // falls through to the green message. Exact copy per the plan (2026-07-03
     // fail-open-remediation.md, Task 5 Step 3a).
     return {
       exitCode: 0,
@@ -833,6 +854,9 @@ async function runStopGate(
     // S1: computed FRESH at state-write time (post-review tree), not once here —
     // see LoopInput.treeHash.
     treeHash: () => workingTreeStateHash(input.repoRoot),
+    // S3b (round-14 W1): resolved FRESH at escalation-announce time, not reused
+    // from gitInfo.sha (captured at gate start) — see LoopInput.freshHeadSha.
+    freshHeadSha: () => gitHeadSha(input.repoRoot),
   });
   const decision = await driver.run();
 

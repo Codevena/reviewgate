@@ -10,10 +10,10 @@
 // (null) hash fails toward "review" (lock path).
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gatherReviewContext, stopProbe } from "../../src/cli/commands/gate.ts";
+import { gatherReviewContext, runGate, stopProbe } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import {
   collectDiff,
@@ -21,7 +21,7 @@ import {
   gitHeadSha,
   workingTreeStateHash,
 } from "../../src/utils/git.ts";
-import { reviewgateDir } from "../../src/utils/paths.ts";
+import { escalationMdPath, reviewgateDir } from "../../src/utils/paths.ts";
 
 function freshRepo(prefix: string): string {
   const repo = mkdtempSync(join(tmpdir(), prefix));
@@ -179,5 +179,142 @@ describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
     );
     expect(ctx.reviewBase).toBeNull();
     expect(ctx.diff).toContain("sneaky2.ts");
+  });
+});
+
+// S3b — the standing-down branch: an escalation handed the range to the human
+// (ESCALATION.md written, escalated_head_sha/escalated_tree_hash recorded at
+// announce). With NOTHING new since then (no dirty flag, HEAD unmoved, tree
+// unmoved, the handoff artifact still present) the probe returns
+// "skip-escalated" so the gate can print the loud 🟠 standing-down message
+// instead of either the green "no changes" or re-running the lock path. Any
+// uncertainty (HEAD moved, tree changed, a hash unknowable, the artifact
+// missing, or a persistent-quota latch) fails toward "review".
+describe("stopProbe — escalated standing-down branch (S3b)", () => {
+  async function seedEscalated(
+    repo: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<StateStore> {
+    const state = new StateStore(repo);
+    await state.initialise("01PROBEESC");
+    await state.update((cur) => ({
+      ...cur,
+      escalated: true,
+      escalation_announced: true,
+      escalation_reason: "max-iterations" as const,
+      last_reviewed_head_sha: "H0",
+      escalated_head_sha: "H1",
+      escalated_tree_hash: "T",
+      ...overrides,
+    }));
+    return state;
+  }
+
+  test("escalated + HEAD unmoved + tree unmoved + no flag → 'skip-escalated' (S3b)", async () => {
+    const repo = freshRepo("rg-probe-escalated-clean-");
+    await seedEscalated(repo);
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T",
+      ),
+    ).toBe("skip-escalated");
+  });
+
+  test("escalated + HEAD MOVED past escalated_head_sha → 'review' (lock path, Path A recovery)", async () => {
+    const repo = freshRepo("rg-probe-escalated-headmoved-");
+    await seedEscalated(repo);
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H2",
+        async () => "T",
+      ),
+    ).toBe("review");
+  });
+
+  test("escalated + HEAD unmoved but TREE changed (post-escalation Bash edit) → 'review' (round-2 C1)", async () => {
+    const repo = freshRepo("rg-probe-escalated-treechanged-");
+    await seedEscalated(repo);
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T-changed",
+      ),
+    ).toBe("review");
+  });
+
+  test("escalated + stored escalated_tree_hash null → 'review' (fail toward review)", async () => {
+    const repo = freshRepo("rg-probe-escalated-storednull-");
+    await seedEscalated(repo, { escalated_tree_hash: null });
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T",
+      ),
+    ).toBe("review");
+  });
+
+  test("escalated + current tree hash null → 'review' (fail toward review)", async () => {
+    const repo = freshRepo("rg-probe-escalated-curnull-");
+    await seedEscalated(repo);
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => null,
+      ),
+    ).toBe("review");
+  });
+
+  test("escalated but ESCALATION.md is missing → 'review', never a stand-down over a stale state bit (round-4 W1)", async () => {
+    const repo = freshRepo("rg-probe-escalated-noartifact-");
+    await seedEscalated(repo);
+    rmSync(escalationMdPath(repo), { force: true }); // never written in this test
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T",
+      ),
+    ).toBe("review");
+  });
+
+  test("escalated + quota-exhausted-persistent latch → 'review', NEVER stands down (round-13 W1)", async () => {
+    const repo = freshRepo("rg-probe-escalated-quotalatch-");
+    await seedEscalated(repo, { escalation_reason: "quota-exhausted-persistent" as const });
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    // Even with head/tree matching and the artifact present, the quota latch
+    // must never stand down — every stop routes through the lock path.
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T",
+      ),
+    ).toBe("review");
+  });
+
+  test("runGate maps 'skip-escalated' to the loud standing-down message, NOT the green no-changes message", async () => {
+    // Integration-level: runGate calls stopProbe with the REAL gitHeadSha/
+    // workingTreeStateHash (no injected stubs), so this needs a real git repo
+    // whose current HEAD/tree match the recorded announce-time values.
+    const repo = gitRepo("rg-probe-escalated-rungate-");
+    const sha = await gitHeadSha(repo);
+    const tree = await workingTreeStateHash(repo);
+    await seedEscalated(repo, { escalated_head_sha: sha, escalated_tree_hash: tree });
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    const out = await runGate({ repoRoot: repo, hook: "stop", hookStdinRaw: "{}" });
+    expect(out.stdout).toBe(""); // no block decision emitted
+    expect(out.stderr).toContain("ESCALATION.md");
+    expect(out.stderr.toLowerCase()).not.toContain("no code changes since last review");
   });
 });

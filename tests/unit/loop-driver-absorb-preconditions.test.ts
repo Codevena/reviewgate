@@ -127,6 +127,7 @@ describe("absorbPriorDecisions runs BEFORE the escalation preconditions (F-04)",
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: neverRunStub(ran),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(ran.value).toBe(false); // escalated at the precondition, no new panel
     expect(decision.reason).toContain("ESCALATED");
@@ -166,6 +167,7 @@ describe("absorbPriorDecisions runs BEFORE the escalation preconditions (F-04)",
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: neverRunStub(ran),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(ran.value).toBe(false);
     expect(decision.reason).toContain("ESCALATED");
@@ -205,6 +207,7 @@ describe("absorbPriorDecisions runs BEFORE the escalation preconditions (F-04)",
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: neverRunStub(ran),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     }).run();
     expect(ran.value).toBe(false);
     expect(decision.reason).toContain("ESCALATED");

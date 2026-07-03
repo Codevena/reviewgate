@@ -45,6 +45,7 @@ describe("stats pipeline (record → load → aggregate)", () => {
         reasonOnFailEnabled: true,
       }),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
 
     await driver.run(); // fake-codex → CRITICAL → FAIL → run.complete emitted

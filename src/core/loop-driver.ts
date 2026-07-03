@@ -92,6 +92,17 @@ export interface LoopInput {
    *  last_reviewed_head_sha. Optional; absent (tests) → null → the next Stop
    *  takes the lock path once and re-records. */
   treeHash?: () => Promise<string | null>;
+  /** S3b (round-14 W1): resolves HEAD FRESH at escalation-announce time — REQUIRED,
+   *  not optional. `this.i.headSha` is captured at gate START, so a commit landing
+   *  mid-review (before the announce) would misrecord as the announce-time sha,
+   *  and the next stop would misread that pre-announce commit as a post-announce
+   *  recovery. An optional field silently falling back to the stale gate-start
+   *  headSha would let any driver construction that forgot to wire it do exactly
+   *  that; making it required forces every constructor to decide. Resolving null
+   *  (git error) records `escalated_head_sha: null` — the standing-down probe
+   *  branch then never fires (it requires non-null) and Path A takes the
+   *  pre-migration fallback: loud/over-review, never a silent advance. */
+  freshHeadSha: () => Promise<string | null>;
   // Post-abort settle cap (ms). Defaults to POST_ABORT_SETTLE_MS_DEFAULT; tests
   // inject a tiny value to exercise the hung-run fail-closed path quickly (M-A0.3).
   postAbortSettleMs?: number;
@@ -884,11 +895,33 @@ export class LoopDriver {
     // a later commit is detectable. A clean PASS re-arms separately (see below).
     const headSha = this.i.headSha ?? null;
     if (headSha !== null && state.last_reviewed_head_sha !== headSha) {
-      const headMovedWhileEscalated = state.last_reviewed_head_sha !== null && state.escalated;
+      // S3b: "commit recovers escalation" must mean a commit made AFTER the
+      // announce. Mid-batch commits (commit-per-task) already satisfy
+      // headSha !== last_reviewed_head_sha at the FIRST post-escalation stop —
+      // re-arming on those would advance last_reviewed_head_sha past work the
+      // panel never cleared and print 🟢 on the next stop. escalated_head_sha
+      // (recorded at announce) is the discriminator; null (pre-migration)
+      // preserves the old behavior.
+      // Round-9 W1: a quota latch is NOT recoverable by committing — nothing
+      // was reviewed and there are no findings a commit could address. While
+      // latched, Path A neither re-arms nor advances last_reviewed_head_sha;
+      // the kept dirty flag routes every stop through handleAllQuotaLocked.
+      const quotaLatched = state.escalation_reason === "quota-exhausted-persistent";
+      const headMovedWhileEscalated =
+        !quotaLatched &&
+        state.last_reviewed_head_sha !== null &&
+        state.escalated &&
+        (state.escalated_head_sha === null || headSha !== state.escalated_head_sha);
+      const stillEscalatedNoNewCommit =
+        state.escalated &&
+        (quotaLatched ||
+          (state.escalated_head_sha !== null && headSha === state.escalated_head_sha));
+      // Task-3 invariant (round-12 W1): EVERY write of last_reviewed_head_sha
+      // records the tree fingerprint alongside — hoisted above the sync updater.
       // S1: hoisted ABOVE the updater — StateStore.update takes a SYNC fn, so an
       // inline await inside it would either fail to compile or (via an
       // accidentally-async updater) persist a Promise-shaped value (round-7 W3).
-      const tree = (await this.i.treeHash?.()) ?? null;
+      const tree = stillEscalatedNoNewCommit ? null : ((await this.i.treeHash?.()) ?? null);
       await this.i.state.update((cur) =>
         ReviewgateStateSchema.parse({
           ...cur,
@@ -926,10 +959,20 @@ export class LoopDriver {
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+                // S3b: the recovered commit closes out the OLD escalated range —
+                // drop its announce-time markers so a stale match can't stand a
+                // FUTURE escalation down early.
+                escalated_head_sha: null,
+                escalated_tree_hash: null,
               }
             : {}),
-          last_reviewed_head_sha: headSha,
-          last_reviewed_tree_hash: tree,
+          // While standing down (still escalated, no post-announce commit) the
+          // state must never claim the escalated range was reviewed — this is the
+          // core S3b invariant: last_reviewed_head_sha stays put until genuinely
+          // new (post-announce) work justifies advancing it.
+          ...(stillEscalatedNoNewCommit
+            ? {}
+            : { last_reviewed_head_sha: headSha, last_reviewed_tree_hash: tree }),
         }),
       );
       // The commit closed the escalated cycle → wipe its decisions too, so a
@@ -978,6 +1021,11 @@ export class LoopDriver {
           cycle_addressed_dispositions: [],
           region_suppressed_hits: 0,
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
+          // S3b: this re-arm closes out the OLD escalated range too (new work is
+          // about to be reviewed in a fresh cycle) — drop its announce-time
+          // markers alongside `escalated: false`.
+          escalated_head_sha: null,
+          escalated_tree_hash: null,
         }),
       );
       clearDecisions(this.i.repoRoot);
@@ -2284,10 +2332,20 @@ export class LoopDriver {
         state.signature_history,
         state.iteration_stats,
       );
+      // Round-7 W2: resolve HEAD *fresh* at announce time. this.i.headSha was
+      // captured at GATE START — a commit landing mid-review (before the
+      // announce) would otherwise read on the next stop as a post-announce
+      // recovery commit and stand the escalation down for work that was not a
+      // response to it. Hoist BOTH async reads above the (sync) updater —
+      // never await inside it (round-7 W3).
+      const escHead = await this.i.freshHeadSha(); // REQUIRED input (round-14 W1); null on git error → never stands down
+      const escTree = (await this.i.treeHash?.()) ?? null;
       await this.i.state.update((cur) => ({
         ...cur,
         escalation_announced: true,
         consecutive_quota_defers: 0,
+        escalated_head_sha: escHead, // S3b
+        escalated_tree_hash: escTree, // round-2 C1
       }));
     }
     // Compare-and-delete (F-005): a flag rewritten mid-review carries a captured

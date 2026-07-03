@@ -53,6 +53,7 @@ function driver(repo: string, state: StateStore, config: ReviewgateConfig): Loop
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: neverRuns,
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
   });
 }
 

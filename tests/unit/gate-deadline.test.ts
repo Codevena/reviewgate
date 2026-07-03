@@ -147,6 +147,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: orch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.kind).toBe("block");
@@ -175,6 +176,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new SlowOrchestrator(10_000),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(decision.reason).toContain("ESCALATED");
@@ -197,6 +199,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new FastOrchestrator(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     const st = await state.load();
@@ -222,6 +225,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new SlowOrchestrator(10_000),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     await driver.run();
     expect(existsSync(pendingJsonPath(repo))).toBe(false);
@@ -248,6 +252,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new SlowOrchestrator(10_000),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       headSha: "1111111111111111111111111111111111111111",
     });
     const decision = await driver.run();
@@ -271,6 +276,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new VerdictDoneOrchestrator(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     // The review actually completed (PASS) — only bounded gravy overran. It must
@@ -294,6 +300,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: new HungOrchestrator(),
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
       // Tiny cap so the test doesn't wait the 30s default.
       postAbortSettleMs: 60,
     });
@@ -317,6 +324,7 @@ describe("LoopDriver self-deadline (fail-closed on incomplete review)", () => {
       audit: new AuditLogger(auditDir(repo)),
       orchestrator: orch,
       stopHookActive: false,
+      freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     });
     const decision = await driver.run();
     expect(orch.aborted).toBe(false);

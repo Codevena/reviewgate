@@ -79,6 +79,7 @@ async function run(
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: passStub(summary),
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
   }).run();
   return decision.reason;
 }

@@ -93,6 +93,7 @@ function driverFor(repo: string, state: StateStore, config: ReviewgateConfig = d
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: { runIteration: async () => failResult() },
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
   });
 }
 

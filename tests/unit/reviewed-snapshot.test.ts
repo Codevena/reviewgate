@@ -77,6 +77,7 @@ function driverFor(repo: string, state: StateStore, result: IterationResult, hea
     audit: new AuditLogger(auditDir(repo)),
     orchestrator: { runIteration: async () => result },
     stopHookActive: false,
+    freshHeadSha: async () => null, // S3b: unused stub for pre-existing fixtures
     ...(headSha ? { headSha } : {}),
   });
 }
