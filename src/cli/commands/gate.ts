@@ -233,7 +233,7 @@ export async function stopProbe(
     // past the announce sha OR the tree changed (a post-escalation Bash
     // mutation — round-2 C1) OR either hash unknowable → "review" (lock path:
     // Path-A recovery / synthesis of the new work).
-    if (st.escalated && st.escalation_announced && st.escalated_head_sha !== null) {
+    if (st.escalated && st.escalation_announced) {
       // Round-13 W1: the persistent-quota latch NEVER stands down — its whole
       // design routes every stop through the lock path into handleAllQuotaLocked
       // (bounded defer + provider-recovery check). Even if the dirty flag were
@@ -244,6 +244,14 @@ export async function stopProbe(
       // was NOT (or is no longer) informed; fail toward the lock path, which
       // re-announces or reviews.
       if (!existsSync(escalationMdPath(repoRoot))) return "review";
+      // A null announce-time sha (freshHeadSha git-error at announce) makes the
+      // full-match stand-down unreachable — but the escalated state must STILL
+      // be captured by this branch: putting the non-null check in the ENTRY
+      // guard instead would fall through to the escalation-blind S1 comparison
+      // below, which can return "skip-clean" (🟢) on an escalated,
+      // un-remediated range — and would silently defeat the two always-review
+      // checks above too.
+      if (st.escalated_head_sha === null) return "review";
       if (sha !== st.escalated_head_sha) return "review"; // `sha` = the probe's single HEAD read (round-5 W1)
       if (st.escalated_tree_hash === null) return "review";
       const tree = await treeHashFn(repoRoot);

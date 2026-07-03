@@ -288,6 +288,32 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
     ).toBe("review");
   });
 
+  test("escalated + escalated_head_sha null (git error at announce) → 'review', NEVER the escalation-blind 'skip-clean'", async () => {
+    // freshHeadSha resolving null at announce time records escalated_head_sha:null.
+    // The probe must still CAPTURE the escalated state and fail toward "review" —
+    // NOT skip the whole branch and fall through to the S1 comparison, which would
+    // return "skip-clean" (🟢) on an escalated, announced, un-remediated range
+    // whenever HEAD/tree happen to match the last CLEAN review. That fall-through
+    // would also silently defeat the quota-latch and missing-ESCALATION.md guards,
+    // which live inside the branch.
+    const repo = freshRepo("rg-probe-escalated-nullsha-");
+    await seedEscalated(repo, {
+      escalated_head_sha: null,
+      // Worst case for the fall-through: seed the S1 baseline so the
+      // escalation-blind comparison WOULD fast-exit to "skip-clean".
+      last_reviewed_head_sha: "H1",
+      last_reviewed_tree_hash: "T",
+    });
+    writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
+    expect(
+      await stopProbe(
+        repo,
+        async () => "H1",
+        async () => "T",
+      ),
+    ).toBe("review");
+  });
+
   test("escalated + quota-exhausted-persistent latch → 'review', NEVER stands down (round-13 W1)", async () => {
     const repo = freshRepo("rg-probe-escalated-quotalatch-");
     await seedEscalated(repo, { escalation_reason: "quota-exhausted-persistent" as const });
