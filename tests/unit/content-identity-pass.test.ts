@@ -230,7 +230,10 @@ describe("S5: ledgerEnvHash compatibility across the cycleRejected/claimedFixed 
   // identical-content fixtures share every env-hash input (config, conventions, topology,
   // version) and differ ONLY by the suppression segments under test.
   it("omitted vs explicit-empty cycleRejected/claimedFixed → identical env_hash (empty adds nothing)", async () => {
-    const omitted = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A", iter: 1 });
+    const omitted = await orch(repoWithCode(), stub("PASS")).runIteration({
+      runId: "01HXS5A",
+      iter: 1,
+    });
     const explicitEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
       runId: "01HXS5B",
       iter: 1,
@@ -241,7 +244,10 @@ describe("S5: ledgerEnvHash compatibility across the cycleRejected/claimedFixed 
   });
 
   it("a non-empty claimedFixedSignatures changes env_hash", async () => {
-    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A2", iter: 1 });
+    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({
+      runId: "01HXS5A2",
+      iter: 1,
+    });
     const nonEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
       runId: "01HXS5C",
       iter: 1,
@@ -251,7 +257,10 @@ describe("S5: ledgerEnvHash compatibility across the cycleRejected/claimedFixed 
   });
 
   it("a non-empty cycleRejectedSignatures changes env_hash", async () => {
-    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({ runId: "01HXS5A3", iter: 1 });
+    const empty = await orch(repoWithCode(), stub("PASS")).runIteration({
+      runId: "01HXS5A3",
+      iter: 1,
+    });
     const nonEmpty = await orch(repoWithCode(), stub("PASS")).runIteration({
       runId: "01HXS5D",
       iter: 1,
