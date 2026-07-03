@@ -20,6 +20,8 @@ import {
   pendingMdPath,
 } from "../utils/paths.ts";
 import type { Adjudication } from "./adjudications.ts";
+import { learnLessonsFromDecisions } from "./agent-lessons/learn.ts";
+import { AgentLessonsStore } from "./agent-lessons/store.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { buildDecisionOutcome } from "./decision-outcome.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
@@ -2121,6 +2123,21 @@ export class LoopDriver {
         nowIso,
         halfLifeDays: this.i.config.phases.reputation.halfLifeDays,
       }).catch(() => undefined);
+    }
+    const alCfg = this.i.config.phases.agentLessons;
+    if (alCfg?.enabled) {
+      const alStore = new AgentLessonsStore(this.i.repoRoot);
+      await learnLessonsFromDecisions({
+        repoRoot: this.i.repoRoot,
+        prevIter: state.iteration,
+        sessionId: state.session_id,
+        cycleSeq: state.reputation_cycle_seq,
+        store: alStore,
+        nowIso,
+      })
+        // Decay AFTER learning so freshly-touched entries are never reaped this pass.
+        .then(() => alStore.decayPass(nowIso, alCfg.ttlDays))
+        .catch(() => undefined); // render-only: a collect failure never blocks the loop
     }
   }
 
