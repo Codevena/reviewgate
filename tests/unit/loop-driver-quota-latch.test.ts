@@ -191,6 +191,28 @@ describe("S4a: bounded + escalated + latched all-quota defer", () => {
     expect(st.consecutive_quota_defers).toBe(0); // reset by the announce
   });
 
+  it("quotaDeferMaxConsecutive=0 (defer disabled) hard-blocks an all-quota turn immediately", async () => {
+    // DoD WARN: `cap > 0 && next > cap` never fires at cap=0, so cap=0 fell
+    // through to the under-cap defer branch FOREVER — unbounded defers, the exact
+    // fail-open S4a exists to close. Mirror handleInfraUnavailable's documented
+    // cap-0 semantic: defer disabled → hard-block immediately (no escalation —
+    // a hard block is the prior behavior the opt-out restores, not a handoff).
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQCAPZERO1");
+    const config = capConfig(0);
+    writeDirty(repo);
+
+    const decision = await mkDriver(repo, state, config, quotaLockedOrchestrator()).run();
+
+    expect(decision.kind).toBe("block");
+    expect(decision.reason).toMatch(/CLOSED/);
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true); // flag survives — re-review next turn
+    expect(existsSync(escPath(repo))).toBe(false); // a hard-block is not an escalation write
+    const st = await state.load();
+    expect(st.escalated).toBe(false);
+  });
+
   it("a successful review resets the all-quota defer streak", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

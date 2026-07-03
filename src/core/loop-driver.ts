@@ -2153,7 +2153,20 @@ export class LoopDriver {
         reason: `🟠 Reviewgate · GATE DEFERRED — still quota-capped; escalation already pending (see .reviewgate/ESCALATION.md). The change stays flagged and is reviewed in full once a reviewer completes.${this.quotaDegradationNote(new Date()) ?? ""}`,
       };
     }
-    if (cap > 0 && next > cap) {
+    // Defer disabled (cap 0) → hard-block immediately, mirroring
+    // handleInfraUnavailable's cap-0 contract ("defer disabled means disabled").
+    // Without this, cap=0 fell through the `next > cap` check into the under-cap
+    // defer branch FOREVER — unbounded defers, the exact fail-open S4a exists to
+    // close (DoD codex WARN). Checked AFTER the latch (a latched state still
+    // defers loudly — the human is already informed) and BEFORE the
+    // cap-exceeded/under-cap branches.
+    if (cap <= 0) {
+      return {
+        kind: "block",
+        reason: `🔴 Reviewgate · GATE CLOSED — every reviewer is quota-capped (iteration ${state.iteration}), so this turn could not be reviewed, and the quota defer is disabled (quotaDeferMaxConsecutive=0). The change stays flagged; end your turn again once quota resets, or raise the cap to defer instead.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` for per-provider status."}`,
+      };
+    }
+    if (next > cap) {
       // Persist THIS turn's bookkeeping BEFORE escalating, exactly like the infra
       // path — the escalation turn is still an all-quota turn and its audit state
       // must say so (the announce site then resets the counter to 0 in its own
@@ -2191,7 +2204,8 @@ export class LoopDriver {
     const note = this.quotaDegradationNote(new Date()) ?? "";
     return {
       kind: "allow_stop",
-      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets (defer ${next}/${cap > 0 ? cap : "∞"}).${note}`,
+      // `cap` is always > 0 here (cap<=0 hard-blocked above) — no "∞" display needed.
+      reason: `🟠 Reviewgate · GATE DEFERRED (iteration ${state.iteration}) — every reviewer is quota-capped right now, so this turn could not be reviewed. NOT blocking (transient outage, not your code); the change stays flagged and is re-reviewed automatically on your next turn once quota resets (defer ${next}/${cap}).${note}`,
     };
   }
 
