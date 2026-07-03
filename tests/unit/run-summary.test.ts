@@ -158,6 +158,8 @@ describe("buildRunSummary", () => {
       providers: [],
       // G0: always present (the SOFT-PASS re-arm gate reads it; 0 = nothing to decide).
       from_critical_demoted: 0,
+      // R5: always present (observability counter for the corroboration clamp).
+      corroboration_clamped: 0,
     });
   });
 

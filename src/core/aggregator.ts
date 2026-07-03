@@ -62,6 +62,13 @@ export interface AggregateInput {
   // demoted to INFO (advisory). security is NEVER demoted. Absent/false → off
   // (preserves the pre-feature behavior; production passes true from config).
   demoteCorrectness?: boolean;
+  // R5 (field report 2026-07-03): when true (and demoteCorrectness is on), a lone
+  // unreliable reviewer's uncorroborated CRITICAL-correctness finding is CLAMPED to a
+  // decision-required WARN (+ demoted_from_critical + reputation_corroboration_required)
+  // instead of the old unconditional exemption that let a chronically-wrong reviewer
+  // manufacture hard FAILs. Requires reviewersTotal >= 2 (the PR#22 singleton failsafe
+  // is untouched); security stays an unconditional hard FAIL. Absent/false → off.
+  corroborateCritical?: boolean;
   // Slice 2 (field report #9): when true, a SECURITY finding whose file classify()s as
   // "tests" is demoted to INFO (advisory). Only security; correctness/other stay. Absent/
   // false → no-op (production passes the config value, default true). Representative-keyed.
@@ -88,6 +95,31 @@ export interface AggregateInput {
   // the critic, confidence-floor, and reputation demote passes skip it so an
   // ineffective "fix" stays blocking. NOT exempt from scopeFindings/fp passes.
   claimedFixed?: Map<string, number>;
+  // T3/R4 (field report 2026-07-03): cycle-scoped REGIONS the agent explicitly
+  // rejected (verdict:rejected / verified-not-applicable). A new blocking finding
+  // overlapping one (±REGION_WINDOW sliding tolerance) is demoted to INFO ONLY
+  // when the region has >= 2 DISTINCT dispositioned findings AND every member
+  // category of the new finding is already in the region's rejected-categories
+  // set — otherwise badge-only (stays blocking). CRITICAL, security and
+  // demoted_from_critical findings are NEVER demoted here (G0/G0b mirror).
+  // Signal source is the agent's own >= 20-char-reason dispositions, so this
+  // layer stays live at panel size 1. Empty/absent → off.
+  rejectedRegions?: Array<{
+    file: string;
+    start_line: number;
+    end_line: number;
+    severity: Finding["severity"];
+    categories: FindingCategory[];
+    reason: string;
+    distinct_count: number;
+  }>;
+  // T4/R2 (field report 2026-07-03): the delta GATING scope for iteration >= 2 —
+  // normalized paths of files changed since the prior reviewed snapshot + new
+  // files + files of all prior blocking findings (computeDeltaScope). A NEW
+  // blocking finding outside it demotes to INFO + delta_scope_demoted (policy
+  // demote; security/correctness + §4.3 pins exempt). null/absent → inert
+  // (full scope: iteration 1, one-shot mode, missing snapshot, incomplete diff).
+  deltaScope?: Set<string> | null;
 }
 
 export interface AggregateResult {
@@ -99,6 +131,11 @@ export interface AggregateResult {
   criticDropped: Finding[];
   /** Convenience count (== criticDropped.length); kept for existing callers. */
   criticDroppedCount: number;
+  /** T3/R4: findings the region-rejection pass demoted to INFO this run. The
+   *  loop-driver folds it into state.region_suppressed_hits, which the contested
+   *  breaker counts as evidence — so suppression can only make escalation fire
+   *  EARLIER, never starve it. */
+  regionSuppressedCount: number;
 }
 
 const DEMOTE: Record<Finding["severity"], Finding["severity"] | "drop"> = {
@@ -152,7 +189,7 @@ const SEVERITY_RANK: Record<Finding["severity"], number> = { CRITICAL: 2, WARN: 
 // the promise at every boundary (lines 5 vs 6 sit in different buckets despite
 // being adjacent, while 1 vs 5 share one) — a sliding window honors the documented
 // guarantee at every line (F-009).
-const REGION_WINDOW = 5;
+export const REGION_WINDOW = 5;
 function sameRegion(a: { file: string; line_start: number }, b: Finding): boolean {
   return a.file === b.file && Math.abs(a.line_start - b.line_start) <= REGION_WINDOW;
 }
@@ -607,6 +644,48 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // anchored to a declaration above the edit whose range overlaps the change.
   const scoped: Finding[] = scopeFindings(survivors, input);
 
+  // T4/R2 (field report 2026-07-03) — delta-scope POLICY demote (iteration >= 2).
+  // The field's #1 pain: every fix re-reviewed the FULL batch diff and the panel
+  // drew fresh nits from the unchanged 95% each round. The reviewer prompt keeps
+  // the full diff (cross-file reasoning preserved) — only the GATING scope
+  // narrows: a NEW blocking finding on a file that is byte-identical to the prior
+  // reviewed snapshot AND carried no prior blocking finding demotes to INFO +
+  // delta_scope_demoted. This is an honest policy demote, not a soundness claim:
+  // the residual class (a genuinely-new quality/testing/perf/docs finding on an
+  // untouched file in iteration >= 2) renders as visible INFO instead of blocking.
+  // Exemptions/fail-safety: security/correctness (any member) always stay
+  // blocking; §4.3 pinned recurrences stay; inert when no deltaScope was computed
+  // (missing/corrupt snapshot, iteration 1, one-shot mode, incomplete diff).
+  const deltaScope = input.deltaScope;
+  const deltaScoped: Finding[] = deltaScope
+    ? scoped.map((f) => {
+        if (f.severity === "INFO") return f;
+        if (f.claimed_fixed_recurred) return f;
+        if (touchesSecurityOrCorrectness(f)) return f;
+        // G0 alignment (adversarial review 2026-07-03): a from-CRITICAL WARN stays
+        // decision-required — pushing it to INFO here would bypass the SOFT-PASS
+        // re-arm blocker (run-summary counts the flag only on CRITICAL/WARN).
+        // Stricter than the sibling structural demotes; costs one decision in a
+        // rare treadmill case, never hides a possibly-real CRITICAL.
+        if (f.demoted_from_critical === true) return f;
+        if (deltaScope.has(normalizeRepoPath(f.file))) return f;
+        // Honor the SAME cross-file escape hatch as scopeFindings/foreign: a
+        // category the maintainer configured to stay blocking out-of-diff must
+        // not be silently demoted by the delta pass either (adversarial review).
+        const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+        const hatch = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+        if (memberCats.some((c) => hatch.has(c))) return f;
+        const note =
+          "\n\n↓ on content already reviewed in an earlier iteration and unchanged since — advisory only (delta scope).";
+        return {
+          ...f,
+          severity: "INFO" as const,
+          delta_scope_demoted: true,
+          details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+        };
+      })
+    : scoped;
+
   // Slice A (P1) — session-ownership demote. A blocking finding on a file FOREIGN to this
   // session (provably byte-identical to its SessionStart baseline, not tool-owned) is demoted
   // to advisory INFO + tagged foreign_to_session (the ownership snapshot the out-of-scope
@@ -619,7 +698,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const foreignFiles = input.foreignFiles;
   const foreignScoped: Finding[] =
     foreignFiles && foreignFiles.size > 0
-      ? scoped.map((f) => {
+      ? deltaScoped.map((f) => {
           if (!foreignFiles.has(normalizeRepoPath(f.file))) return f;
           const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
           const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
@@ -635,7 +714,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
             details: `${f.details.slice(0, 2000 - note.length)}${note}`,
           };
         })
-      : scoped;
+      : deltaScoped;
 
   // M5 Part B1 — reactive FP-ledger demote: a finding whose representative
   // signature (or any merged member signature) matches an active/sticky FP entry
@@ -794,14 +873,29 @@ export function aggregate(input: AggregateInput): AggregateResult {
               : [`${f.reviewer.provider}:${f.reviewer.persona}`];
           if (!keys.every((k) => repUnreliable.has(k))) return f;
           if (isCorrectness) {
-            // A CRITICAL correctness finding is NEVER reputation-demoted: it is an
-            // unconditional hard FAIL, and turning it into a no-decision INFO would
-            // let a real data-corruption bug ship silently from a single unreliable
-            // reviewer (subverting the singleton-CRITICAL-must-FAIL invariant).
-            // Reputation must be at least as conservative as the critic, which
-            // refuses to demote CRITICAL correctness at all (F-022). Only WARN
-            // correctness softens to advisory INFO.
-            if (f.severity === "CRITICAL") return f;
+            // R5 (field report 2026-07-03): a CRITICAL correctness finding is never sent
+            // to a no-decision INFO — but the old UNCONDITIONAL exemption predates G0 and
+            // let a chronically-wrong lone reviewer manufacture unconditional hard FAILs
+            // (the field's ~38%-precision reviewer blocked turns with hallucinated
+            // CRITICALs). With corroborateCritical on and >= 2 reviewers, clamp it to a
+            // decision-required WARN instead: G0 keeps it SOFT-PASS-blocking and forces an
+            // explicit per-finding decision, so a real data-corruption bug still cannot
+            // ship silently — the singleton-CRITICAL-must-FAIL invariant (PR#22) is
+            // untouched because the clamp never fires at reviewersTotal <= 1, and
+            // security remains an unconditional hard FAIL (returned above).
+            if (f.severity === "CRITICAL") {
+              if (input.corroborateCritical !== true || input.reviewersTotal <= 1) return f;
+              const note =
+                "\n\n↓ low reviewer reputation — uncorroborated CRITICAL correctness from a chronically-unreliable reviewer; demoted CRITICAL→WARN pending corroboration. Kept blocking + decision-required: verify the claim in the cited code, then fix it or reject it with evidence.";
+              return {
+                ...f,
+                severity: "WARN" as const,
+                reputation_demoted: true,
+                demoted_from_critical: true,
+                reputation_corroboration_required: true,
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            }
             // G0: a from-CRITICAL finding that wording-merged into a correctness cluster
             // (touchesCorrectness) must not be pushed below WARN by this value-judgment demote —
             // keep it a blocking WARN (decision-required), do not soften to advisory INFO.
@@ -834,6 +928,70 @@ export function aggregate(input: AggregateInput): AggregateResult {
         })
       : confScoped;
 
+  // T3/R4 (field report 2026-07-03) — region-rejection pass. Placed AFTER the
+  // reputation clamp so it evaluates POST-clamp severity (a clamped from-CRITICAL
+  // WARN is visible here but protected by the demoted_from_critical guard). A new
+  // blocking finding overlapping a region the agent already dispositioned-away
+  // this cycle (±REGION_WINDOW sliding tolerance) is:
+  //   - demoted to INFO + region_rejected_match.suppressed ONLY when the region has
+  //     >= 2 DISTINCT dispositioned findings (one mistaken rejection can never
+  //     self-ratchet, codex plan-gate C1) AND every member category of the new
+  //     (post-merge) finding is already in the region's rejected-categories set
+  //     (a category jump is new information) AND the region's recorded severity
+  //     dominates (a rejected WARN never suppresses a new CRITICAL) — with hard
+  //     ceilings: CRITICAL, security, demoted_from_critical (G0), and §4.3
+  //     claimed-fixed recurrences are NEVER demoted here;
+  //   - otherwise badge-only (region_rejected_match.suppressed:false): the prior
+  //     rejection reason is cited so the agent can fast-path a re-reject, but the
+  //     finding stays blocking.
+  // Fail-safe: findings without line data and unparseable regions are untouched.
+  const rejectedRegions = input.rejectedRegions;
+  let regionSuppressedCount = 0;
+  const regionScoped: Finding[] =
+    rejectedRegions && rejectedRegions.length > 0
+      ? repScoped.map((f) => {
+          if (f.severity === "INFO") return f;
+          // Same no-usable-line convention as scopeFindings (0/absent → conservative keep).
+          if (!f.line_start) return f;
+          if (f.claimed_fixed_recurred) return f;
+          const file = normalizeRepoPath(f.file);
+          const lineEnd = typeof f.line_end === "number" ? f.line_end : f.line_start;
+          const match = rejectedRegions.find(
+            (r) =>
+              typeof r.start_line === "number" &&
+              typeof r.end_line === "number" &&
+              normalizeRepoPath(r.file) === file &&
+              f.line_start <= r.end_line + REGION_WINDOW &&
+              lineEnd >= r.start_line - REGION_WINDOW,
+          );
+          if (!match) return f;
+          const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+          const categoryCompatible = memberCats.every((c) => match.categories.includes(c));
+          const severityDominated = SEVERITY_RANK[f.severity] <= SEVERITY_RANK[match.severity];
+          const suppress =
+            match.distinct_count >= 2 &&
+            categoryCompatible &&
+            severityDominated &&
+            f.severity !== "CRITICAL" &&
+            !touchesSecurity(f) &&
+            f.demoted_from_critical !== true;
+          const tag = {
+            distinct_count: match.distinct_count,
+            prior_reason: match.reason.slice(0, 200),
+            suppressed: suppress,
+          };
+          if (!suppress) return { ...f, region_rejected_match: tag };
+          regionSuppressedCount++;
+          const note = `\n\n↓ overlaps a region you already rejected ${match.distinct_count}× this cycle ("${match.reason.slice(0, 120)}") — advisory only.`;
+          return {
+            ...f,
+            severity: "INFO" as const,
+            region_rejected_match: tag,
+            details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        })
+      : repScoped;
+
   // Slice 2 (field report #9): demote a SECURITY finding on a test/fixture file to INFO
   // (advisory). Only category "security"; correctness/other test-file findings stay blocking
   // (a real test bug is a bug). Clustering is per-file (anchorFile) so members share the file.
@@ -846,7 +1004,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // cluster blocking. (members[] includes the representative's own entry; absent → lone finding.)
   const testScoped: Finding[] =
     input.demoteTestSecurity === true
-      ? repScoped.map((f) => {
+      ? regionScoped.map((f) => {
           if (f.category !== "security" || classify(f.file) !== "tests") return f;
           if ((f.members ?? []).some((m) => m.category !== "security")) return f;
           if (f.severity === "INFO") return { ...f, test_severity_demoted: true };
@@ -859,7 +1017,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
             details: `${f.details.slice(0, 2000 - note.length)}${note}`,
           };
         })
-      : repScoped;
+      : regionScoped;
 
   // Slice D (P5) — docs severity cap. A CRITICAL whose FILE classifies as "docs" is
   // over-severity (a stale doc is not a security/data-loss bug). Cap to WARN via demoteOneStep
@@ -966,5 +1124,6 @@ export function aggregate(input: AggregateInput): AggregateResult {
     counts: { critical, warn, info },
     criticDropped,
     criticDroppedCount: criticDropped.length,
+    regionSuppressedCount,
   };
 }

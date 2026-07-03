@@ -55,6 +55,10 @@ export function findingBadges(f: Finding): string | null {
       "⬇ was CRITICAL, one-step-demoted — decide before passing (don't reflexively acknowledge)",
     );
   if (f.scope_demoted) badges.push("📍 outside changed lines");
+  // T4/R2: iteration >= 2 policy demote — fresh nit on content the panel already
+  // reviewed and the agent did not touch since.
+  if (f.delta_scope_demoted)
+    badges.push("🗂 on content already reviewed and unchanged since — advisory (delta scope)");
   // Slice A (P1): on a file this session did not author — advisory (parallel agent / pre-existing).
   if (f.foreign_to_session)
     badges.push(
@@ -102,7 +106,23 @@ export function findingBadges(f: Finding): string | null {
   // would be a lie (codex DoD) — so gate it on a non-INFO severity.
   if (f.protected_high_precision && f.severity !== "INFO")
     badges.push("🛡 kept blocking — high-track-record reviewer (soft demote overridden)");
-  if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
+  // T3/R4 (field report 2026-07-03): region-rejection badge. Suppressed → explains WHY the
+  // finding is advisory; blocking → cites the prior reason and names the fast-path so the
+  // agent re-rejects instead of re-fixing (the treadmill's fuel).
+  if (f.region_rejected_match)
+    badges.push(
+      f.region_rejected_match.suppressed
+        ? `🚫 overlaps a region you rejected ${f.region_rejected_match.distinct_count}× this cycle (last reason: "${f.region_rejected_match.prior_reason.slice(0, 120)}") — suppressed to advisory`
+        : `♻ overlaps a region you already dispositioned this cycle (prior reason: "${f.region_rejected_match.prior_reason.slice(0, 120)}") — if this re-litigates the same point, reject it again citing that reason; only treat it fresh if it raises genuinely new evidence`,
+    );
+  // R5 (field report 2026-07-03): the corroboration clamp gets ONE coherent badge that
+  // subsumes both the generic reputation badge and the low-precision advisory (whose
+  // "consider requiring a 2nd reviewer" read contradictory on a finding that still gated).
+  if (f.reputation_corroboration_required)
+    badges.push(
+      "🧷 needs corroboration — CRITICAL claim from a chronically-unreliable reviewer, clamped to WARN; verify the cited code, then fix or reject with evidence",
+    );
+  else if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
   if (f.claimed_fixed_recurred)
     // A pinned recurrence that survived the demote chain (CRITICAL/WARN) is blocking →
     // assert the fix failed. One that was scope/fp-demoted to advisory INFO recurred but
@@ -118,7 +138,9 @@ export function findingBadges(f: Finding): string | null {
   // before an expensive caller sweep. Render-only — severity/verdict unchanged; a
   // high-precision corroborator clears it. (Demoting it would fail open under the default
   // soft-pass policy, so we annotate rather than demote.)
-  if (f.severity !== "INFO") {
+  // R5: suppressed when the corroboration clamp already fired — the clamp badge above
+  // carries the same signal with a consistent action, so the duplicate would only confuse.
+  if (f.severity !== "INFO" && !f.reputation_corroboration_required) {
     const adv = lowPrecisionAdvisory(f);
     if (adv) badges.push(`⚠ ${adv}`);
   }

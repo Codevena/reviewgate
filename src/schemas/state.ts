@@ -1,5 +1,74 @@
 // src/schemas/state.ts
 import { z } from "zod";
+import { FindingCategory, Severity } from "./finding.ts";
+
+// T1 (field report 2026-07-03): one entry per file of the reviewed diff. The
+// keyset of a snapshot/ledger `files` record is a COMPLETE manifest — a missing
+// key means "not in the reviewed diff", never "unreadable" (unreadable files get
+// an explicit hash:null entry, which consumers treat fail-safe).
+export const SnapshotFileEntrySchema = z.object({
+  status: z.enum(["present", "deleted", "unreadable"]),
+  // sha256 hex of the file's RAW BYTES; null unless status === "present".
+  hash: z.string().nullable(),
+});
+export type SnapshotFileEntry = z.infer<typeof SnapshotFileEntrySchema>;
+
+// Working-tree state the panel ACTUALLY reviewed in the recorded iteration.
+// Substrate for the delta-scope demote (iteration ≥ 2 reviews gate only on what
+// changed since this state) — written only for FULL-PANEL iterations, so a
+// checks-fail or ERROR round can never masquerade as reviewed content.
+export const ReviewedSnapshotSchema = z.object({
+  iter: z.number().int().nonnegative(),
+  verdict: z.string(),
+  base_sha: z.string().nullable(),
+  files: z.record(z.string(), SnapshotFileEntrySchema),
+  // Files of this iteration's blocking (CRITICAL/WARN) findings — persisted here
+  // (not re-read from pending.json) because an ERROR/timeout round clobbers
+  // pending.json while the snapshot deliberately survives it; the delta gating
+  // scope must keep still-contested files in scope across such rounds
+  // (adversarial review 2026-07-03). `.default([])` for back-compat.
+  blocking_files: z.array(z.string()).default([]),
+});
+export type ReviewedSnapshot = z.infer<typeof ReviewedSnapshotSchema>;
+
+// Content that passed a clean FULL-coverage panel review. Unlike the byte-keyed
+// verdict cache this survives diff re-serialization (untracked --no-index
+// synthesis vs committed hunks, message-only amends): a later gate fire whose
+// diff files are all byte-identical ledger entries short-circuits to PASS.
+// Survives re-arms ("this exact content passed" stays true); cleared on session
+// reset; an env_hash mismatch makes it inert.
+export const PassLedgerSchema = z.object({
+  head_sha: z.string().nullable(),
+  // sha256 over the SAME environment inputs as the byte-cache key minus the diff
+  // (configHash + behavior-hash composite incl. brain/FP/prompt/host-tier/
+  // conventions/foreign/delta segments + RG_VERSION + pending schemaVersion) —
+  // a reviewgate upgrade or any behavior-affecting change invalidates the ledger
+  // exactly like it invalidates the byte cache (adversarial review 2026-07-03;
+  // the first cut compared config_hash only, which served stale-semantics PASSes).
+  env_hash: z.string(),
+  files: z.record(z.string(), SnapshotFileEntrySchema),
+});
+export type PassLedger = z.infer<typeof PassLedgerSchema>;
+
+// ONE agent disposition (rejected / verified-not-applicable / fixed) bound to its
+// finding's (file, line-range) — the RAW record region memory is derived from.
+// Stored un-merged (adversarial review 2026-07-03): merging at write time let a
+// later-superseded disposition leave absorbed categories/severity/bounds behind on
+// a surviving region; deriving regions fresh at READ time from the surviving raw
+// dispositions makes the supersede reconciliation exact. `key` = "<iter>:<finding_id>"
+// is the idempotency anchor (re-folding one iteration's decisions can never
+// double-count; superseding drops exactly that key's contribution).
+export const CycleDispositionSchema = z.object({
+  key: z.string(),
+  file: z.string(),
+  start_line: z.number().int().nonnegative(),
+  end_line: z.number().int().nonnegative(),
+  severity: Severity,
+  categories: z.array(FindingCategory),
+  // Agent-authored disposition reason, truncated to ≤ 200 chars at harvest.
+  reason: z.string(),
+});
+export type CycleDisposition = z.infer<typeof CycleDispositionSchema>;
 
 export const EscalationReason = z.enum([
   "max-iterations",
@@ -129,6 +198,32 @@ export const ReviewgateStateSchema = z.object({
   // because a claim only follows iteration ≥1's findings. Reset on re-arm.
   // `.default({})` for back-compat with state.json written before this field.
   claimed_fixed_signatures: z.record(z.string(), z.number().int().positive()).default({}),
+  // T1 (field report 2026-07-03): working-tree manifest of the last FULL-PANEL
+  // iteration this cycle (null on ERROR/checks-only rounds and until the first
+  // panel round). Cleared on re-arm; substrate for the delta-scope demote.
+  // `.default(null)` for back-compat with state.json written before this field.
+  reviewed_snapshot: ReviewedSnapshotSchema.nullable().default(null),
+  // T1/T3: RAW dispositions the agent explicitly REJECTED (verdict:rejected /
+  // verified-not-applicable) resp. ADDRESSED (accepted/action:"fixed") this cycle,
+  // harvested from decisions × pending.json. Regions are DERIVED from these at
+  // read time (region-memory.ts mergeRegions) — see CycleDispositionSchema for why
+  // raw storage. Rejected dispositions feed the region-rejection demote (≥ 2
+  // distinct + category-compatible); addressed ones feed the (follow-up)
+  // contradiction badge. Cleared on re-arm. `.default([])` for back-compat.
+  cycle_rejected_dispositions: z.array(CycleDispositionSchema).default([]),
+  cycle_addressed_dispositions: z.array(CycleDispositionSchema).default([]),
+  // T1/T3/T6: count of findings the region-rejection pass demoted in the LATEST
+  // completed panel iteration (per-iteration, NOT cycle-cumulative — the contested
+  // breaker weighs it against the same iteration's decisions; a cumulative count
+  // re-weighed against every later round's shrinking sample would fire on
+  // HEALTHIER rounds, adversarial review 2026-07-03). Preserved across ERROR
+  // rounds; cleared on re-arm. `.default(0)` for back-compat.
+  region_suppressed_hits: z.number().int().nonnegative().default(0),
+  // T1/T5: content that passed a clean full-coverage panel review. Written on
+  // PASS re-arm (T5), consulted by the content-identity short-circuit, survives
+  // commit/escalation re-arms, cleared on session reset. `.default(null)` for
+  // back-compat with state.json written before this field.
+  pass_ledger: PassLedgerSchema.nullable().default(null),
   last_diff_hash: z.string().nullable(),
   last_stop_ts: z.string().nullable(),
   last_pass_diff_hash: z.string().nullable(),
@@ -189,6 +284,11 @@ export function initialState(sessionId: string): ReviewgateState {
     cycle_rejected_signatures: [],
     agent_touched_files: [],
     claimed_fixed_signatures: {},
+    reviewed_snapshot: null,
+    cycle_rejected_dispositions: [],
+    cycle_addressed_dispositions: [],
+    region_suppressed_hits: 0,
+    pass_ledger: null,
     last_diff_hash: null,
     last_stop_ts: null,
     last_pass_diff_hash: null,

@@ -70,7 +70,7 @@ export function renderStats(report: StatsReport): string {
   out += "\n";
   out += row(
     "panel / cache / skipped / checks",
-    `${window.bySource.panel} / ${window.bySource.cache} / ${window.bySource.skipped} / ${window.bySource.checks}`,
+    `${window.bySource.panel} / ${window.bySource.cache + window.bySource["content-cache"]} / ${window.bySource.skipped} / ${window.bySource.checks}`,
   );
 
   // ── Verdicts ──────────────────────────────────────────────────────────────

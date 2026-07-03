@@ -85,7 +85,10 @@ export const ProviderStatSchema = z.object({
 
 export const RunSummarySchema = z.object({
   verdict: z.enum(["PASS", "SOFT-PASS", "FAIL", "ERROR"]),
-  source: z.enum(["panel", "cache", "skipped", "checks"]),
+  // "content-cache" (T5/R3, field report 2026-07-03): PASS served because every diff
+  // file is byte-identical to the pass_ledger (content that already passed a clean
+  // full-coverage panel) — survives the re-serializations that defeat the byte cache.
+  source: z.enum(["panel", "cache", "skipped", "checks", "content-cache"]),
   counts: z.object({
     critical: z.number().int().nonnegative(),
     warn: z.number().int().nonnegative(),
@@ -108,6 +111,10 @@ export const RunSummarySchema = z.object({
   // `.default(0)` would silently coerce a missing count to 0 = fail-OPEN. buildRunSummary ALWAYS
   // emits it (0 when none), so a real summary is never missing it.
   from_critical_demoted: z.number().int().nonnegative().optional(),
+  // R5 (field report 2026-07-03): count of findings the reputation corroboration clamp
+  // demoted CRITICAL→WARN this run. Pure observability (feeds the decision whether to
+  // extend the clamp with audit-precision evidence later); never read by gating logic.
+  corroboration_clamped: z.number().int().nonnegative().optional(),
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type ProviderStat = z.infer<typeof ProviderStatSchema>;

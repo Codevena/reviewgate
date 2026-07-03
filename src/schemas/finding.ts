@@ -137,6 +137,35 @@ export const FindingSchema = z.object({
   // one severity step because its sole (un-corroborated) reviewer (provider:persona) is currently
   // below the reputation trust floor. Advisory-leaning; never security/correctness.
   reputation_demoted: z.boolean().optional(),
+  // R5 (field report 2026-07-03): set true when the reputation pass clamped a lone
+  // chronically-unreliable reviewer's uncorroborated CRITICAL-correctness finding to a
+  // decision-required WARN (always together with reputation_demoted + demoted_from_critical).
+  // The finding needs corroboration (a 2nd reviewer or the agent's own verification) to be
+  // trusted at CRITICAL; G0 keeps it blocking until the agent decides. Render: this badge
+  // REPLACES the generic low-precision advisory (which reads contradictory on a clamped finding).
+  reputation_corroboration_required: z.boolean().optional(),
+  // T3/R4 (field report 2026-07-03): this finding overlaps a (file, line-range) region the
+  // agent already dispositioned-away this cycle (rejected / verified-not-applicable) — the
+  // renamed-signature treadmill the signature-keyed guards miss. suppressed:true ⇒ the
+  // aggregator demoted it to INFO (>= 2 distinct prior dispositions + category-compatible +
+  // severity-dominated; never CRITICAL/security/demoted_from_critical). suppressed:false ⇒
+  // badge-only: the prior reason is cited so the agent can fast-path a re-reject, but the
+  // finding stays blocking.
+  region_rejected_match: z
+    .object({
+      distinct_count: z.number().int().positive(),
+      prior_reason: z.string(),
+      suppressed: z.boolean(),
+    })
+    .optional(),
+  // T4/R2 (field report 2026-07-03): set true when the delta-scope pass demoted this
+  // finding to INFO because it sits on a file byte-identical to the prior reviewed
+  // snapshot with no prior blocking finding (iteration >= 2 policy demote — a fresh nit
+  // on already-reviewed, untouched content). STRUCTURAL scope demote like
+  // scope_demoted/foreign_to_session: goes to INFO, never sets demoted_from_critical
+  // (G0-EXEMPT — out of the delta scope, not a value judgment). security/correctness
+  // and §4.3 pins are never delta-demoted.
+  delta_scope_demoted: z.boolean().optional(),
   // Non-convergence #1 (field report 2026-06-17): set true when this finding's file:line region
   // was already raised as a finding in an EARLIER iteration of the current review cycle. ADVISORY
   // flag only — never demotes — so the agent verifies it is a genuinely NEW issue before

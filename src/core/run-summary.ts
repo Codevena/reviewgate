@@ -91,6 +91,11 @@ export function buildRunSummary(input: BuildRunSummaryInput): RunSummary {
     signatures,
     providers: [...byProvider.values()],
     from_critical_demoted: fromCriticalDemoted,
+    // R5: observability counter for the reputation corroboration clamp (always
+    // emitted, 0 when the clamp never fired this run).
+    corroboration_clamped: input.findings.filter(
+      (f) => f.reputation_corroboration_required === true,
+    ).length,
     ...(input.ruleUncited !== undefined ? { rule_uncited: input.ruleUncited } : {}),
   };
 }

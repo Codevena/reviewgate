@@ -7,9 +7,10 @@ describe("phases.reputation config", () => {
     expect(defaultConfig.phases.reputation).toEqual({
       enabled: true,
       minSamples: 8,
-      trustFloor: 0.35,
+      trustFloor: 0.45,
       halfLifeDays: 45,
       demoteCorrectness: true,
+      corroborateCritical: true,
       quarantine: { enabled: false, floor: 0.15 },
     });
   });

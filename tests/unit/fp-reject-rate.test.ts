@@ -53,8 +53,18 @@ describe("computeRejectRate", () => {
 
   it("is zero when there are no expected ids or no decisions file", () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-rr3-"));
-    expect(computeRejectRate(repo, 1, [])).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
-    expect(computeRejectRate(repo, 9, ["F-001"])).toEqual({ total: 0, wrongRejects: 0, rate: 0 });
+    expect(computeRejectRate(repo, 1, [])).toEqual({
+      total: 0,
+      wrongRejects: 0,
+      rate: 0,
+      contested: 0,
+    });
+    expect(computeRejectRate(repo, 9, ["F-001"])).toEqual({
+      total: 0,
+      wrongRejects: 0,
+      rate: 0,
+      contested: 0,
+    });
   });
 
   it("dedups duplicate finding_ids (cannot pad the count with repeated lines)", () => {
@@ -103,5 +113,50 @@ describe("computeRejectRate", () => {
     const r = computeRejectRate(repo, 1, ["F-001"]); // only F-001 was a real finding
     expect(r.total).toBe(1); // fabricated ids filtered out → below the min-sample guard
     expect(r.wrongRejects).toBe(1);
+  });
+});
+
+describe("computeRejectRate.contested (T6/R6)", () => {
+  const plainRejected = (id: string) => ({
+    schema: "reviewgate.decision.v1",
+    finding_id: id,
+    verdict: "rejected",
+    reason: "valid concern but wrong here xx",
+  });
+  const vna = (id: string) => ({
+    schema: "reviewgate.decision.v1",
+    finding_id: id,
+    verdict: "accepted",
+    action: "verified-not-applicable",
+    reason: "verified: the constant exists and is typed",
+  });
+
+  it("counts plain rejections AND verified-not-applicable, regardless of reviewer_was_wrong", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rrc1-"));
+    writeDecisions(repo, 1, [
+      rejected("F-001"), // reviewer_was_wrong
+      plainRejected("F-002"), // no flag
+      vna("F-003"),
+      accepted("F-004"), // fixed → not contested
+    ]);
+    const r = computeRejectRate(repo, 1, ["F-001", "F-002", "F-003", "F-004"]);
+    expect(r.total).toBe(4);
+    expect(r.wrongRejects).toBe(1);
+    expect(r.contested).toBe(3);
+  });
+
+  it("a retracted rejection (rejected → fixed) is not contested (last-wins)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rrc2-"));
+    writeDecisions(repo, 1, [plainRejected("F-001"), accepted("F-001")]);
+    const r = computeRejectRate(repo, 1, ["F-001"]);
+    expect(r.contested).toBe(0);
+  });
+
+  it("fabricated ids never count toward contested (anti-padding preserved)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rrc3-"));
+    writeDecisions(repo, 1, [plainRejected("F-001"), plainRejected("F-777"), vna("F-888")]);
+    const r = computeRejectRate(repo, 1, ["F-001"]);
+    expect(r.total).toBe(1);
+    expect(r.contested).toBe(1);
   });
 });

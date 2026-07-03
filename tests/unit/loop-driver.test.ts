@@ -2812,8 +2812,8 @@ describe("LoopDriver convergence-aware max-iterations", () => {
     expect((await state.load()).escalation_reason).toBe("max-iterations");
   });
 
-  it("escalates at the hard cap (2× maxIterations) even while still converging", async () => {
-    // 6 → 5 (decreasing) but iteration == hard cap → backstop escalates anyway.
+  it("escalates at the hard cap (min(2×, +2) over maxIterations) even while still converging", async () => {
+    // 6 → 5 (decreasing) but iteration ≥ hard cap (min(6, 5) = 5) → backstop escalates anyway.
     const { decision, state, repo } = await drive(
       [
         ["a", "b", "c", "d", "e", "f"],

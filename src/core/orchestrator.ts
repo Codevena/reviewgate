@@ -41,6 +41,7 @@ import { buildSandboxProfile } from "../sandbox/profile-builder.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
+import type { PassLedger, ReviewedSnapshot } from "../schemas/state.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
 import { collectChangedFileContents, isExcludedFromReview } from "../utils/git.ts";
@@ -95,9 +96,15 @@ import {
   TIMEOUT_COOLDOWN_MS,
   parseQuotaResetAt,
 } from "./quota-cooldown.ts";
+import type { CycleRegion } from "./region-memory.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { selectActiveReviewers } from "./reputation/quarantine.ts";
 import { ReputationStore } from "./reputation/store.ts";
+import {
+  type SnapshotFileEntry,
+  computeDeltaScope,
+  snapshotReviewedFiles,
+} from "./reviewed-snapshot.ts";
 import { tagUncitedRuleClaims } from "./rule-citation.ts";
 import { buildRunSummary } from "./run-summary.ts";
 import { demoteSelfRefuting } from "./self-refutation.ts";
@@ -239,6 +246,24 @@ export interface IterationResult {
   // `| undefined` (not just `?`) so the return sites can set it unconditionally
   // under exactOptionalPropertyTypes.
   rawReviews?: RawReview[] | undefined;
+  // T1 (field report 2026-07-03): per-file manifest of the working-tree state the
+  // panel reviewed. Set ONLY on the full-panel return path — skip/cache/checks/
+  // error paths leave it undefined so the LoopDriver never records un-reviewed
+  // content as reviewed (fail-safe: no manifest → no snapshot → delta-scope inert).
+  reviewedSnapshotFiles?: Record<string, SnapshotFileEntry> | undefined;
+  // T3/R4: findings the region-rejection pass demoted this run. The loop-driver
+  // folds it into state.region_suppressed_hits (contested-breaker evidence).
+  regionSuppressedThisIter?: number | undefined;
+  // T5/R3: true only on a full-panel PASS over a COMPLETE diff earned at FULL
+  // gating scope (no delta/region/cycle-rejected narrowing) — the orchestrator-side
+  // half of the pass_ledger eligibility check (the loop-driver additionally requires
+  // full reviewer coverage via preliminaryReason before persisting the ledger).
+  passLedgerEligible?: boolean | undefined;
+  // T5/R3: env-hash the ledger must store (byte-cache key inputs minus the diff).
+  passLedgerEnvHash?: string | undefined;
+  // T4/R2: files of this round's blocking findings, persisted in the reviewed
+  // snapshot as the ERROR-proof prior-blocking-files input of the delta scope.
+  blockingFilesThisIter?: string[] | undefined;
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -267,6 +292,18 @@ export interface IterationRunner {
     // finding on a file NOT in this set (while the agent IS editing others) is on code unchanged
     // across the loop → FLAGGED stable_code (advisory, never demoted).
     priorTouchedFiles?: string[];
+    // T3/R4: cycle-scoped regions the agent explicitly dispositioned-away (rejected /
+    // verified-not-applicable), harvested by the loop-driver from decisions × pending.json.
+    // Passed to aggregate() for the region-rejection pass.
+    cycleRejectedRegions?: CycleRegion[];
+    // T4/R2: the prior full-panel iteration's reviewed manifest (state.reviewed_snapshot)
+    // + the files of its blocking findings — inputs of the delta gating scope.
+    reviewedSnapshot?: ReviewedSnapshot | null;
+    priorBlockingFiles?: string[];
+    // T5/R3: content that already passed a clean full-coverage panel (state.pass_ledger).
+    // When every diff file is byte-identical to it, the review short-circuits to a
+    // 'content-cache' PASS — surviving the re-serializations that defeat the byte cache.
+    passLedger?: PassLedger | null;
   }): Promise<IterationResult>;
 }
 
@@ -564,6 +601,10 @@ export class Orchestrator {
     priorAdjudications?: Adjudication[];
     priorLocations?: string[];
     priorTouchedFiles?: string[];
+    cycleRejectedRegions?: CycleRegion[];
+    reviewedSnapshot?: ReviewedSnapshot | null;
+    priorBlockingFiles?: string[];
+    passLedger?: PassLedger | null;
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -932,6 +973,30 @@ export class Orchestrator {
         appTopology = [];
       }
     }
+    // T1 (field report 2026-07-03): capture the per-file manifest of the tree state
+    // the panel is about to review (cheap: hashes only the diff's files). Computed
+    // BEFORE the cache key because the T4 delta scope derived from it must be part
+    // of the key — a PASS produced under a NARROW gating scope must never be served
+    // to a run that would review the full scope. Attached only to the full-panel
+    // return; skip/checks/error paths deliberately leave it undefined.
+    const reviewedSnapshotFiles: Record<string, SnapshotFileEntry> = snapshotReviewedFiles(
+      repo,
+      facts.files.map((f) => f.path),
+    );
+    // T4/R2: the delta GATING scope (null → pass inert / full scope). Active only in
+    // gate mode with the flag on, a prior snapshot present (iteration >= 2 by
+    // construction) and a COMPLETE diff.
+    const deltaScope =
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.deltaReview !== false &&
+      !this.input.diffIncomplete
+        ? computeDeltaScope(
+            reviewedSnapshotFiles,
+            opts.reviewedSnapshot ?? null,
+            opts.priorBlockingFiles ?? [],
+          )
+        : null;
+
     const behaviorHash = computeBehaviorHash({
       brain: brainEngine
         ? brainEngine.snapshotEntries().map((e) => ({ id: e.id, status: e.status }))
@@ -995,16 +1060,42 @@ export class Orchestrator {
     const foreignSegment = foreignSorted.length
       ? `|fgn:${createHash("sha256").update(foreignSorted.join("\n")).digest("hex")}`
       : "";
+    // T4/R2: the delta gating scope is review-scoping input not covered by the diff or
+    // configHash — fold it in so a verdict produced under a NARROW scope is never served
+    // to a run with a different (or no) scope. Inert (null) → empty segment (key
+    // unchanged vs today).
+    const deltaSegment = deltaScope
+      ? `|delta:${createHash("sha256")
+          .update([...deltaScope].sort().join("\n"))
+          .digest("hex")}`
+      : "";
+    // T3/R4: the region-rejection input is verdict-affecting aggregate scoping not
+    // covered by the diff or configHash — fold it in exactly like deltaScope, so a
+    // suppression-assisted PASS is never served to a run whose cycle never made
+    // those dispositions (adversarial review 2026-07-03).
+    const activeRegions =
+      this.input.reportMode !== "one-shot" &&
+      this.input.config.phases.review.regionRejectedSuppression !== false &&
+      opts.cycleRejectedRegions &&
+      opts.cycleRejectedRegions.length > 0
+        ? opts.cycleRejectedRegions
+        : null;
+    const regionsSegment = activeRegions
+      ? `|rgn:${createHash("sha256").update(JSON.stringify(activeRegions)).digest("hex")}`
+      : "";
+    const configHashHex = createHash("sha256")
+      .update(JSON.stringify(this.input.config))
+      .digest("hex");
     const cacheKey = computeCacheKey({
       diff: this.input.diff,
-      configHash: createHash("sha256").update(JSON.stringify(this.input.config)).digest("hex"),
+      configHash: configHashHex,
       // M3: provider versions not queried; cache invalidates on config/version/
       // schema change. M4+M5: the combined brain+FP behavior-hash is folded in
       // here so any brain OR active-ledger change re-runs the panel deterministically.
       // The host-model tier and project-conventions content are appended too: both
       // affect the review (which reviewer model runs / what context is injected) but
       // are not captured by configHash or the diff hash.
-      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}`,
+      providerVersions: `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}${deltaSegment}${regionsSegment}`,
       reviewgateVersion: RG_VERSION,
       // G0 (field report 2026-06-21): bumped v1 → v2 to invalidate ALL pre-G0 cache entries.
       // G0 changes per-finding semantics (value-judgment demoters now clamp a from-CRITICAL at
@@ -1015,6 +1106,82 @@ export class Orchestrator {
       // correct one-time invalidation (same pattern as the prompt-preamble sha fold).
       schemaVersion: "reviewgate.pending.v2",
     });
+
+    // T5/R3 env-hash: the SAME environment inputs as the byte-cache key minus the
+    // diff bytes. The pass_ledger stores it at write time; a later serve requires
+    // an exact match, so a reviewgate upgrade, prompt/persona change, brain/FP
+    // mutation, host-tier switch or config edit invalidates the ledger exactly like
+    // it invalidates the byte cache (adversarial review 2026-07-03).
+    const ledgerEnvHash = createHash("sha256")
+      .update(
+        [
+          configHashHex,
+          `${behaviorHash}${hostTierSegment}${conventionsSegment}${appTopologySegment}${promptSegment}${foreignSegment}${deltaSegment}${regionsSegment}`,
+          RG_VERSION,
+          "reviewgate.pending.v2",
+        ].join("|"),
+      )
+      .digest("hex");
+
+    // T5/R3 (field report 2026-07-03): content-identity PASS short-circuit. A
+    // commit / --amend / PR re-fire re-serializes IDENTICAL content into different
+    // diff bytes (untracked --no-index synthesis vs committed new-file hunks,
+    // sentinel widening), defeating the byte-keyed verdict cache. Compare CONTENT:
+    // serve a 'content-cache' PASS only when the ledger and the current manifest
+    // have IDENTICAL KEYSETS (both directions — a subset diff after reverting one
+    // file of a passed batch is a tree state no panel ever saw; adversarial review
+    // CRITICAL) with per-file identity (same status; matching non-null sha256 for
+    // present files; deleted==deleted; unreadable never matches), the diff contains
+    // no entries invisible to the manifest (pure renames / binary / mode-only
+    // changes are dropped by diff-facts — count `diff --git` headers), and the
+    // env_hash matches. Fail-safe: any mismatch → full review.
+    const ledger = opts.passLedger;
+    if (
+      ledger &&
+      this.input.reportMode !== "one-shot" &&
+      !this.input.diffIncomplete &&
+      cacheEnabled &&
+      ledger.env_hash === ledgerEnvHash
+    ) {
+      const entries = Object.entries(reviewedSnapshotFiles);
+      const diffHeaderCount = (this.input.diff.match(/^diff --git /gm) ?? []).length;
+      const sameKeys =
+        entries.length > 0 &&
+        entries.length === Object.keys(ledger.files).length &&
+        entries.every(([path]) => Object.hasOwn(ledger.files, path));
+      const contentIdentical =
+        sameKeys &&
+        diffHeaderCount === entries.length &&
+        entries.every(([path, cur]) => {
+          const prev = ledger.files[path];
+          if (!prev || prev.status !== cur.status) return false;
+          if (cur.status === "present")
+            return cur.hash !== null && prev.hash !== null && cur.hash === prev.hash;
+          // A deletion's identity is fully captured by (path, status:"deleted");
+          // "unreadable" can never prove identity → full review.
+          return cur.status === "deleted";
+        });
+      if (contentIdentical) {
+        await this.writeReport(opts, start, [], [], "PASS");
+        return {
+          verdict: "PASS",
+          costUsd: 0,
+          durationMs: Date.now() - start,
+          signaturesThisIter: [],
+          locationsThisIter: [],
+          maxIterationsOverride,
+          summary: buildRunSummary({
+            verdict: "PASS",
+            source: "content-cache",
+            counts: { critical: 0, warn: 0, info: 0 },
+            durationMs: Date.now() - start,
+            criticCostUsd: 0,
+            findings: [],
+            runs: [],
+          }),
+        };
+      }
+    }
 
     if (cacheEnabled) {
       const cached = await getCachedReview(
@@ -1911,6 +2078,7 @@ export class Orchestrator {
       outOfDiffBlocking: this.input.config.phases.review.outOfDiffBlocking ?? [],
       confidenceFloor: this.input.config.phases.review.confidenceFloor ?? 0,
       demoteCorrectness: repCfg?.demoteCorrectness ?? true,
+      corroborateCritical: repCfg?.corroborateCritical ?? true,
       demoteTestSecurity: this.input.config.phases.review.demoteTestSecurity ?? true,
       capDocsSeverity: this.input.config.phases.review.capDocsSeverity ?? true,
       ...(this.input.foreignFiles ? { foreignFiles: this.input.foreignFiles } : {}),
@@ -1925,6 +2093,13 @@ export class Orchestrator {
       ...(opts.claimedFixedSignatures && Object.keys(opts.claimedFixedSignatures).length > 0
         ? { claimedFixed: new Map(Object.entries(opts.claimedFixedSignatures)) }
         : {}),
+      // T4/R2: delta gating scope (null → inert; activation conditions applied at
+      // computation time above).
+      ...(deltaScope ? { deltaScope } : {}),
+      // T3/R4: region-rejection pass input — only in gate mode with the flag on
+      // (one-shot plan reviews have no decision cycle to bind regions to). The same
+      // value feeds regionsSegment in the cache key above.
+      ...(activeRegions ? { rejectedRegions: activeRegions } : {}),
     });
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
@@ -2149,6 +2324,31 @@ export class Orchestrator {
       verdict: agg.verdict,
       maxIterationsOverride,
       rawReviews,
+      reviewedSnapshotFiles,
+      regionSuppressedThisIter: agg.regionSuppressedCount,
+      // Files of this round's blocking findings — persisted inside the reviewed
+      // snapshot (ERROR/timeout-proof carrier of the delta scope input).
+      blockingFilesThisIter: [
+        ...new Set(
+          agg.dedupedFindings
+            .filter((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+            .map((f) => f.file),
+        ),
+      ],
+      // T5/R3 eligibility (adversarial review 2026-07-03): a PASS may seed the
+      // ledger ONLY when it was earned at FULL gating scope — no delta narrowing,
+      // no cycle-rejected signature demotes, no region suppression. Otherwise the
+      // ledger would launder a narrow-scope verdict into later full-scope runs
+      // (the exact class the deltaSegment/regionsSegment cache folds exist to
+      // prevent). The common case (clean iteration-1 PASS) has all three empty.
+      passLedgerEligible:
+        agg.verdict === "PASS" &&
+        !this.input.diffIncomplete &&
+        deltaScope === null &&
+        (opts.cycleRejectedSignatures ?? []).length === 0 &&
+        activeRegions === null &&
+        agg.regionSuppressedCount === 0,
+      passLedgerEnvHash: ledgerEnvHash,
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),

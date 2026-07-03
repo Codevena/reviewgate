@@ -120,7 +120,13 @@ describe("aggregate", () => {
 
     it("bySource breakdown is correct", () => {
       const report = aggregate(allRuns, 1, fpEntries, brainEntries);
-      expect(report.window.bySource).toEqual({ panel: 2, cache: 1, skipped: 1, checks: 0 });
+      expect(report.window.bySource).toEqual({
+        panel: 2,
+        cache: 1,
+        skipped: 1,
+        checks: 0,
+        "content-cache": 0,
+      });
     });
 
     it("firstTs is the earliest ts", () => {

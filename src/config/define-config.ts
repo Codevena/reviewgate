@@ -173,6 +173,18 @@ export const ConfigSchema = z.object({
       // auto-suppression — recommending a house rule (the durable fix). Render-only;
       // never suppresses a finding. Default on. (No-op unless the FP-ledger is enabled.)
       fpFragmentationHint: z.boolean().optional(),
+      // T3/R4 (field report 2026-07-03): region-keyed rejection suppression — the
+      // agent's explicit dispositions (rejected / verified-not-applicable) bind to
+      // (file, line-range) regions; a renamed-signature re-raise demotes to INFO at
+      // >= 2 distinct category-compatible dispositions, else badge-only. Default ON
+      // via defaults.ts.
+      regionRejectedSuppression: z.boolean().optional(),
+      // T4/R2 (field report 2026-07-03): delta-review — on iteration >= 2 the GATING
+      // scope narrows to files changed since the prior reviewed snapshot (+ files of
+      // prior blocking findings); new blocking findings outside it demote to INFO
+      // (security/correctness exempt). The reviewer prompt keeps the FULL diff.
+      // Default ON via defaults.ts.
+      deltaReview: z.boolean().optional(),
     }),
     critic: z
       .object({ provider: ProviderId, model: z.string().optional(), persona: z.string() })
@@ -240,11 +252,15 @@ export const ConfigSchema = z.object({
       .object({
         enabled: z.boolean(),
         minSamples: z.number().int().nonnegative().default(8),
-        trustFloor: z.number().min(0).max(1).default(0.35),
+        trustFloor: z.number().min(0).max(1).default(0.45),
         halfLifeDays: z.number().positive().default(45),
         // Demote a lone unreliable reviewer's uncorroborated CORRECTNESS finding to
         // INFO (advisory). security is never softened. Default ON.
         demoteCorrectness: z.boolean().default(true),
+        // R5 (field report 2026-07-03): clamp a lone unreliable reviewer's uncorroborated
+        // CRITICAL-correctness finding to a decision-required WARN (needs >= 2 reviewers;
+        // security + the singleton failsafe untouched). Default ON via defaults.ts.
+        corroborateCritical: z.boolean().optional(),
         // Slice C: opt-in quarantine — below `floor` (hard, < trustFloor) skip the
         // reviewer entirely for the cycle. Default OFF (can suppress findings; see spec §4).
         quarantine: z
@@ -257,7 +273,7 @@ export const ConfigSchema = z.object({
       .default({
         enabled: true,
         minSamples: 8,
-        trustFloor: 0.35,
+        trustFloor: 0.45,
         halfLifeDays: 45,
         demoteCorrectness: true,
         quarantine: { enabled: false, floor: 0.15 },
@@ -363,7 +379,7 @@ export const ConfigSchema = z.object({
     // timeout/error backoff — see quotaDegradationNote), before escalating anyway.
     // Mirrors infraDeferMaxConsecutive. 0 disables the defer (escalate immediately
     // even when degraded — prior behavior).
-    quotaDeferMaxConsecutive: z.number().int().nonnegative().default(3),
+    quotaDeferMaxConsecutive: z.number().int().nonnegative().default(1),
     // #5: escalate when a single BLOCKING finding's signature recurs across this many
     // consecutive reviewed iterations (a treadmill where one finding sticks while the
     // set churns — the whole-set stuckThreshold check misses it). Fail-safe (surfaces
@@ -382,6 +398,16 @@ export const ConfigSchema = z.object({
     // gate a later push, so this is a fail-safe nudge; the hard guarantee belongs in CI (docs).
     // false → the installed hook no-ops. Default true.
     prePushWarn: z.boolean().default(true),
+    // T6/R6 (field report 2026-07-03): widen the reject-rate-high breaker to ALSO fire on the
+    // CONTESTED rate — all substantive rejections + verified-not-applicable dispositions of
+    // real blocking ids + suppressed region re-raises — not just reviewer_was_wrong rejections
+    // (which starved the breaker through the field's ~8 FP-dominated rounds). Escalate-only;
+    // suppressors/learners stay keyed to reviewer_was_wrong. Default ON via defaults.ts.
+    rejectRateCountsAllRejects: z.boolean().optional(),
+    // T7/R7 (field report 2026-07-03): deny convergence churn-credit to an FP-dominated round
+    // (confirmed-FP rejections >= half the round's blocking findings) — confirmed-FP churn must
+    // not read as "approach-switching progress" and extend the loop. Default ON via defaults.ts.
+    fpChurnGuard: z.boolean().optional(),
   }),
   sandbox: z.object({
     mode: z.enum(["strict", "permissive", "off"]),

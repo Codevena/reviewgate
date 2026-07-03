@@ -131,6 +131,17 @@ export const defaultConfig = {
       // — recommends a house rule as the durable fix. Render-only; never suppresses.
       // Default ON. No-op unless the FP-ledger is enabled.
       fpFragmentationHint: true,
+      // T3/R4 (field report 2026-07-03): bind the agent's explicit rejections to
+      // (file, line-range) REGIONS — a renamed-signature re-raise on a region with
+      // >= 2 distinct dispositions (category-compatible) demotes to INFO; 1
+      // disposition → advisory badge citing the prior reason. CRITICAL/security/
+      // demoted_from_critical never demoted. Default ON.
+      regionRejectedSuppression: true,
+      // T4/R2 (field report 2026-07-03): delta-review — iteration >= 2 gates only on
+      // files changed since the prior reviewed snapshot (+ prior-finding files); new
+      // blocking findings on unchanged content demote to INFO (sec/corr exempt).
+      // The reviewer prompt keeps the FULL diff. Default ON.
+      deltaReview: true,
     },
     critic: null as null | {
       provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
@@ -181,9 +192,17 @@ export const defaultConfig = {
     reputation: {
       enabled: true,
       minSamples: 8,
-      trustFloor: 0.35,
+      // 0.35→0.45 (field report 2026-07-03): Beta(1,1)-smoothed trust of a ~38%-raw-
+      // precision reviewer sits ABOVE 0.35, so a chronically-wrong reviewer was never
+      // demoted at all. minSamples=8 keeps cold-start reviewers neutral.
+      trustFloor: 0.45,
       halfLifeDays: 45,
       demoteCorrectness: true,
+      // R5 (field report 2026-07-03): a chronically-unreliable lone reviewer's
+      // uncorroborated CRITICAL-correctness clamps to a decision-required WARN
+      // instead of an unconditional hard FAIL (G0 keeps it blocking; singleton
+      // panels and security are exempt).
+      corroborateCritical: true,
       quarantine: { enabled: false, floor: 0.15 },
     },
     implicitOutcomes: { enabled: true, cap: 5000 },
@@ -201,7 +220,10 @@ export const defaultConfig = {
     maxIterations: 3,
     costCapUsd: 1.5,
     stuckThreshold: 2,
-    rejectRateEscalation: 0.8,
+    // 0.8→0.7 (field report 2026-07-03): earlier hand-off when a round is dominated
+    // by rejected FPs; real lever once the contested-rate widening counts plain
+    // (non-reviewer_was_wrong) rejections too.
+    rejectRateEscalation: 0.7,
     fpStreakThreshold: 3,
     softPassPolicy: "allow" as const,
     // When true, the gate blocks ONCE on a passing verdict so the agent is told
@@ -239,7 +261,10 @@ export const defaultConfig = {
     // and ESCALATES to the human (ESCALATION.md) after N — so a persistent misconfig is
     // surfaced, not silently waved through. Set 0 to restore the old hard-block.
     infraDeferMaxConsecutive: 3,
-    quotaDeferMaxConsecutive: 3,
+    // 3→1 (field report 2026-07-03): a quota cooldown rarely clears within 3 agent
+    // turns, so 3 consecutive non-advancing defer turns only stretched the loop
+    // (part of the field's ~8-round latency). One defer turn, then proceed.
+    quotaDeferMaxConsecutive: 1,
     maxSignatureRecurrence: 3,
     // Non-convergence (field report 2026-06-17): escalate when a file:line region is re-raised as
     // a blocking finding across this many consecutive iterations (the location treadmill under a
@@ -248,6 +273,13 @@ export const defaultConfig = {
     // Rec #3 (deep half): the installed git pre-push hook warns (never blocks) when the pushed
     // commit has no recorded clean Reviewgate PASS. Default on; set false to make it a no-op.
     prePushWarn: true,
+    // T6/R6 (field report 2026-07-03): the reject-rate breaker also counts plain rejections,
+    // verified-not-applicable dispositions and suppressed region re-raises (contested rate) —
+    // not just reviewer_was_wrong. Escalate-only. Default ON.
+    rejectRateCountsAllRejects: true,
+    // T7/R7 (field report 2026-07-03): an FP-dominated round earns no convergence churn-credit
+    // (it must not extend the loop past maxIterations). Default ON.
+    fpChurnGuard: true,
   },
   sandbox: {
     // Default 'off' = opt-in isolation. 'strict'/'permissive' DO isolate the

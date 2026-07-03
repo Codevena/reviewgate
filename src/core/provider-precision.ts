@@ -83,10 +83,13 @@ export function highPrecisionProviders(
 }
 
 // P1 (field report 2026-06-21): a sub-50%-precision reviewer (the report's openrouter at
-// 8 TP / 12 FP) should not silently cost the agent a full verification sweep. The gating-path
-// demote is REJECTED as fail-open (a demoted lone CRITICAL→WARN soft-passes under the default
-// allow-policy and auto-hides), so this is RENDER-ONLY: a loud up-front advisory on a GATING
-// finding raised SOLELY by low-precision reviewer(s), so the agent verifies cheaply first.
+// 8 TP / 12 FP) should not silently cost the agent a full verification sweep. This advisory
+// stays RENDER-ONLY. (The original "gating-path demote is fail-open" rationale is OBSOLETE
+// since G0 shipped: a demoted_from_critical WARN is forced decision-required by the
+// loop-driver, so a clamp no longer auto-hides — the reputation-keyed corroboration clamp
+// (R5, field report 2026-07-03) now does exactly that in the aggregator. This audit-precision
+// signal remains advisory; wiring it into the clamp as a second evidence source is a
+// follow-up, gated on the corroboration_clamped counter.)
 export const LOW_PRECISION_FLOOR = 0.5;
 
 // Returns the advisory text, or null when the finding has a high/unknown-precision contributor

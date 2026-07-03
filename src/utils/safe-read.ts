@@ -59,6 +59,25 @@ export function safeReadContained(
   maxBytes: number,
   repoReal?: string,
 ): string | null {
+  const buf = safeReadContainedBytes(repoRoot, rel, maxBytes, repoReal);
+  if (buf === null) return null;
+  const content = buf.toString("utf8");
+  return content.includes("\0") ? null : content; // 5. binary guard (text variant)
+}
+
+/**
+ * RAW-BYTES variant of safeReadContained — same containment/no-follow/size
+ * guards, but returns the untouched Buffer and applies NO binary/NUL guard.
+ * Use for content HASHING (adversarial review 2026-07-03): hashing the utf8
+ * DECODE collapses every invalid byte sequence to U+FFFD, so two different byte
+ * contents could hash identically and defeat a byte-identity check.
+ */
+export function safeReadContainedBytes(
+  repoRoot: string,
+  rel: string,
+  maxBytes: number,
+  repoReal?: string,
+): Buffer | null {
   let root: string;
   try {
     root = repoReal ?? realpathSync(repoRoot);
@@ -90,8 +109,7 @@ export function safeReadContained(
     const fst = fstatSync(fd);
     if (!fst.isFile()) return null; // defensive: opened inode must be a regular file
     if (fst.size > maxBytes) return null; // 4. size guard — never over-read
-    const content = readFileSync(fd, "utf8"); // SAME inode — no path re-resolution
-    return content.includes("\0") ? null : content; // 5. binary guard
+    return readFileSync(fd); // SAME inode — no path re-resolution; raw bytes
   } catch {
     return null;
   } finally {

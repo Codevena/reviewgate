@@ -28,6 +28,7 @@ import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { locationKey, recurringBlockingLocations } from "./location-recurrence.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { QuotaCooldownStore } from "./quota-cooldown.ts";
+import { foldDispositions, harvestDispositions, mergeRegions } from "./region-memory.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { learnReputationFromDecisions } from "./reputation/learn.ts";
 import { ReputationStore } from "./reputation/store.ts";
@@ -756,6 +757,8 @@ function formatCoverageNote(summary: RunSummary): string | null {
 function preliminaryReason(summary: RunSummary, configuredReviewers: number): string | null {
   if (summary.source === "skipped") return "triage-skipped — no reviewer panel ran";
   if (summary.source === "cache") return "served from cache — no fresh panel ran";
+  if (summary.source === "content-cache")
+    return "byte-identical to content that already passed a full panel — no fresh panel ran";
   if (summary.source === "checks") return "deterministic checks only — no reviewer panel ran";
   const okReviewers = summary.providers.filter((p) => p.runs > p.errors).length;
   if (configuredReviewers > 0 && okReviewers < configuredReviewers) {
@@ -904,6 +907,14 @@ export class LoopDriver {
                 cycle_rejected_signatures: [],
                 agent_touched_files: [],
                 claimed_fixed_signatures: {},
+                // T1: fresh cycle → drop the reviewed manifest + region memory.
+                // pass_ledger deliberately SURVIVES ("this exact content passed a
+                // full panel" stays true across re-arms; only a session reset or a
+                // newer PASS replaces it).
+                reviewed_snapshot: null,
+                cycle_rejected_dispositions: [],
+                cycle_addressed_dispositions: [],
+                region_suppressed_hits: 0,
                 // Bump the reputation cycle sequence so the new cycle's event-ids
                 // don't collide with the escalated cycle's events.
                 reputation_cycle_seq: cur.reputation_cycle_seq + 1,
@@ -951,6 +962,12 @@ export class LoopDriver {
           cycle_rejected_signatures: [],
           agent_touched_files: [],
           claimed_fixed_signatures: {},
+          // T1: fresh cycle → drop the reviewed manifest + region memory
+          // (pass_ledger survives — see the commit re-arm above).
+          reviewed_snapshot: null,
+          cycle_rejected_dispositions: [],
+          cycle_addressed_dispositions: [],
+          region_suppressed_hits: 0,
           reputation_cycle_seq: cur.reputation_cycle_seq + 1,
         }),
       );
@@ -990,7 +1007,7 @@ export class LoopDriver {
     // where each round's REAL finding count (total − confirmed reviewer FPs) is
     // strictly DECREASING (healthy spec/code refinement, e.g. 5 → 3 → 1 → 0) — is
     // genuinely making progress, not stuck, so it is allowed to continue past
-    // maxIterations up to a hard backstop (2× the cap). Only a NON-progressing loop
+    // maxIterations up to a hard backstop (min(2×cap, cap+2) — T7/R7). Only a NON-progressing loop
     // (real findings flat or rising) escalates at the cap. Total finding count is NOT
     // used: the panel can add fresh FPs faster than real findings are fixed, masking
     // real progress. The hard backstop + cost-cap + stuck-signature detection remain
@@ -1075,15 +1092,47 @@ export class LoopDriver {
       }
       const hasNewLocation =
         state.location_history.length === 0 || latestRegions.some((r) => !priorRegionSet.has(r));
+      // T7/R7 (field report 2026-07-03): an FP-DOMINATED round earns no churn credit.
+      // When at least half of the just-completed round's blocking findings were
+      // confirmed reviewer false positives, "different findings than last round" is
+      // hallucination churn, not approach-switching progress — extending the loop on
+      // it is how the field session stretched to ~8 rounds. The other two progress
+      // signals (real count strictly decreasing — already FP-discounted — and
+      // severity improving) are untouched. Not applicable when the round had zero
+      // blocking findings (nothing to dominate). Deny-credit-only = fail-safe
+      // direction (can only escalate EARLIER).
+      const lastBlocking = lastStats ? lastStats.critical + lastStats.warn : 0;
+      // max() of the fresh recompute and the already-folded history value: after a
+      // deferred/timeout round pending.json is clobbered, so the fresh recompute
+      // reads 0 for a round whose FP-rejects were already folded — taking the max
+      // keeps the guard armed (fail-safe: can only deny MORE churn credit).
+      const lastWrong =
+        lastIdx >= 0
+          ? lastIdx === n - 1
+            ? Math.max(latestWrong, fpHist[lastIdx] ?? 0)
+            : (fpHist[lastIdx] ?? 0)
+          : 0;
+      const fpDominated =
+        this.i.config.loop.fpChurnGuard !== false &&
+        lastBlocking > 0 &&
+        lastWrong >= Math.ceil(lastBlocking / 2);
       const churnProgressing =
-        Number.isFinite(prevReal) && prevReal > 0 && recurring < prevReal && hasNewLocation;
+        Number.isFinite(prevReal) &&
+        prevReal > 0 &&
+        recurring < prevReal &&
+        hasNewLocation &&
+        !fpDominated;
       const progressing =
         m >= 2 &&
         (lastReal < prevReal ||
           (lastReal === 0 && fpStreakOn) ||
           severityImproving ||
           churnProgressing);
-      const hardCap = maxIter * 2;
+      // T7/R7: the convergence grace extends the loop by at most two rounds beyond
+      // the configured cap — and never past the old 2× bound, so a maxIterations=1
+      // repo is NOT extended from 2 to 3 (adversarial review: min() keeps the change
+      // a pure tightening at every setting; default 3 → 5 instead of 6).
+      const hardCap = Math.min(maxIter * 2, maxIter + 2);
       if (state.iteration >= hardCap) {
         return this.escalateAndDecide(
           state,
@@ -1246,6 +1295,43 @@ export class LoopDriver {
         // re-flagged-then-re-fixed signature must not advance its recorded iter).
         if (existing === undefined || claimedIter < existing) mergedClaimedFixed[sig] = claimedIter;
       }
+      // T3/R4: harvest this iteration's dispositions into cycle-scoped REGION memory
+      // (rejected/verified-not-applicable → rejected; accepted/fixed → addressed).
+      // Same last-wins decisions + pending.json join as the signature folds above;
+      // foldDispositions is idempotent + supersede-safe across multiple stops of one
+      // iteration (per-key reconciliation on RAW records — regions are derived at
+      // read time). GUARD (adversarial review 2026-07-03): when pending.json no
+      // longer describes this iteration (an ERROR round overwrote it with
+      // findings:[], a timeout round deleted it), the join yields an empty findings
+      // map — re-running the fold would then DROP this iteration's already-harvested
+      // records as "superseded". Skip the fold entirely in that case (nothing real
+      // to harvest; existing memory preserved).
+      const pendingFindingsById = new Map(
+        readPendingReport(this.i.repoRoot).findings.map((f) => [f.id, f]),
+      );
+      const harvested =
+        pendingFindingsById.size > 0
+          ? harvestDispositions(
+              lastDecisionsById(this.i.repoRoot, state.iteration).values(),
+              pendingFindingsById,
+            )
+          : null;
+      const mergedRejectedDispositions =
+        harvested === null
+          ? state.cycle_rejected_dispositions
+          : foldDispositions(
+              state.cycle_rejected_dispositions,
+              harvested.filter((h) => h.disposition === "rejected"),
+              state.iteration,
+            );
+      const mergedAddressedDispositions =
+        harvested === null
+          ? state.cycle_addressed_dispositions
+          : foldDispositions(
+              state.cycle_addressed_dispositions,
+              harvested.filter((h) => h.disposition === "addressed"),
+              state.iteration,
+            );
       const rejectedChanged = mergedRejected.length !== state.cycle_rejected_signatures.length;
       const touchedChanged = mergedTouched.length !== state.agent_touched_files.length;
       const claimedChanged =
@@ -1254,18 +1340,27 @@ export class LoopDriver {
         Object.entries(mergedClaimedFixed).some(
           ([k, v]) => state.claimed_fixed_signatures[k] !== v,
         );
-      if (rejectedChanged || claimedChanged || touchedChanged) {
+      const regionsChanged =
+        JSON.stringify(mergedRejectedDispositions) !==
+          JSON.stringify(state.cycle_rejected_dispositions) ||
+        JSON.stringify(mergedAddressedDispositions) !==
+          JSON.stringify(state.cycle_addressed_dispositions);
+      if (rejectedChanged || claimedChanged || touchedChanged || regionsChanged) {
         await this.i.state.update((cur) => ({
           ...cur,
           cycle_rejected_signatures: mergedRejected,
           agent_touched_files: mergedTouched,
           claimed_fixed_signatures: mergedClaimedFixed,
+          cycle_rejected_dispositions: mergedRejectedDispositions,
+          cycle_addressed_dispositions: mergedAddressedDispositions,
         }));
         state = {
           ...state,
           cycle_rejected_signatures: mergedRejected,
           agent_touched_files: mergedTouched,
           claimed_fixed_signatures: mergedClaimedFixed,
+          cycle_rejected_dispositions: mergedRejectedDispositions,
+          cycle_addressed_dispositions: mergedAddressedDispositions,
         };
       }
 
@@ -1417,6 +1512,37 @@ export class LoopDriver {
         );
       }
 
+      // (a2) T6/R6 (field report 2026-07-03): contested-rate widening. The breaker
+      // above counts only reviewer_was_wrong rejections — the field agent's plain
+      // rejections and verified-not-applicable dispositions starved it through ~8
+      // FP-dominated rounds. Count ALL substantive contest dispositions of real
+      // blocking ids, PLUS the cycle's region-suppression hits (a suppressed
+      // re-raise of an already-rejected region IS contested evidence — folding the
+      // hits into numerator AND denominator means suppression can only make this
+      // fire EARLIER, never starve it). Escalate-only = fail-safe direction; the
+      // suppressors/learners stay keyed to reviewer_was_wrong. Anti-padding
+      // guarantees inherited from computeRejectRate (real-id restriction,
+      // last-wins, >= 20-char reasons) + the aggregator-controlled hit counter.
+      if (
+        this.i.config.loop.rejectRateCountsAllRejects !== false &&
+        this.i.config.loop.rejectRateEscalation > 0
+      ) {
+        const hits = state.region_suppressed_hits;
+        const contested = rr.contested + hits;
+        const denom = rr.total + hits;
+        const contestedRate = denom === 0 ? 0 : contested / denom;
+        if (
+          denom >= MIN_DECISIONS_FOR_REJECT_RATE &&
+          contestedRate >= this.i.config.loop.rejectRateEscalation
+        ) {
+          return this.escalateAndDecide(
+            state,
+            "reject-rate-high",
+            `${contested}/${denom} dispositions this cycle contested the reviewers' blocking findings (rejections + verified-not-applicable + suppressed region re-raises; rate ${(contestedRate * 100).toFixed(0)}% ≥ ${(this.i.config.loop.rejectRateEscalation * 100).toFixed(0)}%) — the panel appears misaligned with this change; surfacing to the human instead of another round.`,
+          );
+        }
+      }
+
       // (b) Cross-iteration slow drip: a reviewer that hallucinates a FRESH confirmed-FP
       // each iteration evades (a) (1 FP/iter never reaches the sample floor), the
       // signature-keyed FP-ledger + stuck-detection (mutating signature), AND the
@@ -1480,7 +1606,14 @@ export class LoopDriver {
         iter: nextIter,
         signal: ac.signal,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        cycleRejectedRegions: mergeRegions(state.cycle_rejected_dispositions),
         claimedFixedSignatures: state.claimed_fixed_signatures,
+        // T4/R2: delta-scope inputs — the prior full-panel manifest, which carries
+        // its own blocking-finding files (ERROR/timeout-proof; pending.json is not).
+        reviewedSnapshot: state.reviewed_snapshot,
+        priorBlockingFiles: state.reviewed_snapshot?.blocking_files ?? [],
+        // T5/R3: content that already passed a clean full-coverage panel.
+        passLedger: state.pass_ledger,
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
         priorTouchedFiles: state.agent_touched_files,
@@ -1538,7 +1671,14 @@ export class LoopDriver {
         runId: state.session_id,
         iter: nextIter,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
+        cycleRejectedRegions: mergeRegions(state.cycle_rejected_dispositions),
         claimedFixedSignatures: state.claimed_fixed_signatures,
+        // T4/R2: delta-scope inputs — the prior full-panel manifest, which carries
+        // its own blocking-finding files (ERROR/timeout-proof; pending.json is not).
+        reviewedSnapshot: state.reviewed_snapshot,
+        priorBlockingFiles: state.reviewed_snapshot?.blocking_files ?? [],
+        // T5/R3: content that already passed a clean full-coverage panel.
+        passLedger: state.pass_ledger,
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
         priorTouchedFiles: state.agent_touched_files,
@@ -1603,6 +1743,30 @@ export class LoopDriver {
     const softPassBlocks =
       result.verdict === "SOFT-PASS" && (softPolicy === "block" || fromCriticalDemoted > 0);
     const passed = (result.verdict === "PASS" || result.verdict === "SOFT-PASS") && !softPassBlocks;
+    // T5/R3: persist the reviewed manifest as the PASS ledger ONLY for a clean
+    // FULL-coverage panel PASS: orchestrator half (passLedgerEligible: full-panel
+    // PASS over a COMPLETE diff) AND loop-driver half (no reduced coverage / not
+    // preliminary — a cache/skipped/checks source is preliminary by definition, so
+    // a content-cache PASS can never re-write the ledger). Any ineligible pass
+    // leaves the EXISTING ledger untouched ("that content passed" stays true).
+    const passLedgerUpdate =
+      passed &&
+      result.verdict === "PASS" &&
+      result.passLedgerEligible === true &&
+      result.summary.source === "panel" &&
+      result.reviewedSnapshotFiles !== undefined &&
+      typeof result.passLedgerEnvHash === "string" &&
+      formatCoverageNote(result.summary) === null &&
+      preliminaryReason(result.summary, this.i.config.phases.review.reviewers?.length ?? 0) === null
+        ? {
+            head_sha: headSha ?? null,
+            // Computed by the orchestrator over the SAME environment inputs as the
+            // byte-cache key minus the diff — see PassLedgerSchema (a config,
+            // version, prompt or behavior-hash change invalidates the ledger).
+            env_hash: result.passLedgerEnvHash,
+            files: result.reviewedSnapshotFiles,
+          }
+        : null;
     await this.i.state.update((cur) =>
       ReviewgateStateSchema.parse({
         ...cur,
@@ -1649,6 +1813,42 @@ export class LoopDriver {
         agent_touched_files: passed ? [] : cur.agent_touched_files,
         // §4.3: claimed-fixed map is cycle-scoped — cleared on re-arm, preserved across a cycle's FAILs.
         claimed_fixed_signatures: passed ? {} : cur.claimed_fixed_signatures,
+        // T1 (field report 2026-07-03): persist the manifest of what THIS panel round
+        // actually reviewed. PASS → cleared (re-arm). ERROR → no review happened, so
+        // the previous panel round's snapshot stays authoritative. FAIL/blocking
+        // SOFT-PASS without a manifest (checks-fail path, legacy stubs) → null, which
+        // keeps the delta-scope pass inert (fail-safe: never treat un-panel-reviewed
+        // content as reviewed).
+        reviewed_snapshot: passed
+          ? null
+          : result.verdict === "ERROR"
+            ? cur.reviewed_snapshot
+            : result.reviewedSnapshotFiles
+              ? {
+                  iter: nextIter,
+                  verdict: result.verdict,
+                  base_sha: this.capturedFlag?.base_sha ?? null,
+                  files: result.reviewedSnapshotFiles,
+                  // ERROR/timeout-proof carrier of the delta scope's
+                  // prior-blocking-files input (pending.json is clobbered by
+                  // those rounds; the snapshot deliberately survives them).
+                  blocking_files: result.blockingFilesThisIter ?? [],
+                }
+              : null,
+        // T1/T3: cycle-scoped region memory — cleared on re-arm, preserved (and
+        // grown by the harvest) across a cycle's FAILs. The suppression counter is
+        // PER-ITERATION (the contested breaker weighs it against the same
+        // iteration's decisions); an ERROR round preserves the last panel value.
+        cycle_rejected_dispositions: passed ? [] : cur.cycle_rejected_dispositions,
+        cycle_addressed_dispositions: passed ? [] : cur.cycle_addressed_dispositions,
+        region_suppressed_hits: passed
+          ? 0
+          : result.verdict === "ERROR"
+            ? cur.region_suppressed_hits
+            : (result.regionSuppressedThisIter ?? 0),
+        // T5/R3: a clean full-coverage panel PASS replaces the ledger; every other
+        // outcome (FAIL, preliminary/cache/content-cache pass, ERROR) leaves it.
+        pass_ledger: passLedgerUpdate ?? cur.pass_ledger,
         // The review actually completed (any verdict) → the incomplete-run
         // streak is broken; reset so a later timeout starts counting fresh.
         incomplete_runs: 0,

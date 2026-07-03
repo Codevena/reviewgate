@@ -6,9 +6,16 @@ export interface RejectRate {
   total: number;
   wrongRejects: number;
   rate: number;
+  // T6/R6 (field report 2026-07-03): decisions that CONTESTED a real blocking
+  // finding without acting on it — verdict:"rejected" REGARDLESS of the
+  // reviewer_was_wrong flag, plus accepted/action:"verified-not-applicable"
+  // (same >= 20-char evidence bar; the field's dominant disposition class).
+  // Feeds ONLY the widened reject-rate-high escalation — suppressors/learners
+  // (fp-ledger, reputation, fp-streak) stay keyed to reviewer_was_wrong.
+  contested: number;
 }
 
-const EMPTY: RejectRate = { total: 0, wrongRejects: 0, rate: 0 };
+const EMPTY: RejectRate = { total: 0, wrongRejects: 0, rate: 0, contested: 0 };
 
 // Reject rate over the iteration's decisions for the REAL blocking findings only:
 // (rejected & reviewer_was_wrong) / (decisions addressing an expected id).
@@ -47,10 +54,17 @@ export function computeRejectRate(
   // reject-rate-high / reviewer-fp-streak escalation counters.
   let total = 0;
   let wrongRejects = 0;
+  let contested = 0;
   for (const [id, d] of foldLastDecisions(readFileSync(p, "utf8"))) {
     if (!allowed.has(id)) continue; // real findings only, once each (Map = unique ids)
     total++;
     if (d.verdict === "rejected" && d.reviewer_was_wrong === true) wrongRejects++;
+    if (
+      d.verdict === "rejected" ||
+      (d.verdict === "accepted" && d.action === "verified-not-applicable")
+    ) {
+      contested++;
+    }
   }
-  return { total, wrongRejects, rate: total === 0 ? 0 : wrongRejects / total };
+  return { total, wrongRejects, rate: total === 0 ? 0 : wrongRejects / total, contested };
 }
