@@ -11,7 +11,7 @@ export interface AgentLessonsCfg {
 }
 
 const HEADER =
-  "Reviewgate — recurring mistakes it has caught in this repo (advisory, not blocking):";
+  "Reviewgate - recurring mistakes it has caught in this repo (advisory, not blocking):";
 
 // Build the SessionStart hook stdout: the hookSpecificOutput JSON, or "" (a guaranteed
 // no-op). NEVER throws — any error, missing/corrupt store, or empty result → "" so
