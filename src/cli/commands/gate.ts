@@ -5,6 +5,7 @@ import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
 import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
+import { buildSessionStartInjection } from "../../core/agent-lessons/inject.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
 import { computeForeignFiles } from "../../core/session-manifest.ts";
@@ -337,7 +338,19 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     } finally {
       if (resetLock) await resetLock.release();
     }
-    return { exitCode: 0, stdout: "", stderr };
+    // Agent Lessons: after reset (read-only + additive; handleReset already seeded the
+    // reviewed-through markers), emit recurring-mistake lessons as SessionStart
+    // additionalContext. buildSessionStartInjection NEVER throws and returns "" (a
+    // guaranteed no-op) when disabled, not startup/resume, empty, or on ANY error — so
+    // reset can never break session startup.
+    const source =
+      (parseHookStdin(input.hookStdinRaw) as { source?: string } | null)?.source ?? null;
+    const stdout = await buildSessionStartInjection({
+      repoRoot: input.repoRoot,
+      cfg: cfg.phases.agentLessons,
+      source,
+    });
+    return { exitCode: 0, stdout, stderr };
   }
 
   if (input.hook === "trigger") {
