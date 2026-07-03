@@ -1,6 +1,6 @@
 // tests/unit/working-tree-state-hash.test.ts
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workingTreeStateHash } from "../../src/utils/git.ts";
@@ -103,5 +103,59 @@ describe("workingTreeStateHash", () => {
   test("non-repo directory returns null", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-wtsh-norepo-"));
     expect(await workingTreeStateHash(dir)).toBeNull();
+  });
+
+  // Critical-finding regression: a symlink entry in the `meta:` fallback used to
+  // carry ONLY `status path size mtimeMs ctimeMs` — no content component. A
+  // same-length retarget (`ln -sf b link` -> `ln -sf c link`) on a coarse-
+  // timestamp filesystem changes neither size nor times, so the old line was
+  // identical across two Stops despite a real change (under-review). The fix
+  // adds a readlink-target hash (`link:<sha256>`) to the line, which is
+  // content-true REGARDLESS of what size/mtime/ctime happen to do — that is
+  // the property this test pins. (On this dev machine's fine-grained-timestamp
+  // filesystem, mtimeMs/ctimeMs already drift across the two calls below by the
+  // time it takes the intervening `git status` subprocess to run, so this
+  // specific scenario was not reliably RED pre-fix here — same caveat as the
+  // pre-existing "SAME-TICK" test above; the coarse-FS collision this guards
+  // against is real but not reproducible from userspace on APFS/ext4. The
+  // assertion is still a true regression guard: post-fix it is guaranteed by
+  // content, not by hoping timestamps collide.)
+  test("a same-length symlink retarget under the meta: fallback flips the hash", async () => {
+    const dir = await initRepo();
+    writeFileSync(join(dir, "a-new.ts"), "0123456789".repeat(10)); // trips the cap
+    writeFileSync(join(dir, "b-new.ts"), "z");
+    symlinkSync("aaaa", join(dir, "link")); // target length 4
+    const cap = { untrackedByteCap: 10 };
+    const h1 = await workingTreeStateHash(dir, cap);
+    expect(h1).toStartWith("meta:");
+    unlinkSync(join(dir, "link"));
+    symlinkSync("bbbb", join(dir, "link")); // same-length retarget, different target
+    const h2 = await workingTreeStateHash(dir, cap);
+    expect(h2).toStartWith("meta:");
+    expect(h2).not.toBe(h1);
+  });
+
+  // Critical-finding regression: ANY non-regular, non-symlink dirty entry
+  // (directory/gitlink, fifo, …) cannot be made content-sensitive by this
+  // coarse fallback — a submodule-dirty tree's "content" is the nested repo's
+  // own state, not something a stat/read on the gitlink path exposes. Fail
+  // the WHOLE fingerprint toward review (null) rather than emit a line that
+  // can miss a real change. Exercised via an embedded git repo (a directory
+  // containing its own .git) — `git status --porcelain` collapses it to a
+  // single `?? sub/` entry it will not recurse into, and `lstatSync` reports
+  // it as a plain directory — the same shape a real gitlink/submodule takes
+  // on the filesystem, without needing `git submodule add` machinery.
+  test("a non-regular non-symlink dirty entry (embedded repo dir) fails the whole fingerprint toward review", async () => {
+    const dir = await initRepo();
+    writeFileSync(join(dir, "a-new.ts"), "0123456789".repeat(10)); // trips the cap
+    writeFileSync(join(dir, "b-new.ts"), "z");
+    const subDir = join(dir, "sub");
+    mkdirSync(subDir);
+    await Bun.$`git -C ${subDir} init -q`.quiet();
+    writeFileSync(join(subDir, "f.txt"), "x");
+    await Bun.$`git -C ${subDir} add f.txt`.quiet();
+    await Bun.$`git -C ${subDir} -c user.email=t@t -c user.name=t commit -q -m sub`.quiet();
+    const cap = { untrackedByteCap: 10 };
+    expect(await workingTreeStateHash(dir, cap)).toBeNull();
   });
 });

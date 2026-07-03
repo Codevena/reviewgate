@@ -1,6 +1,6 @@
 // src/utils/git.ts
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readSync, readlinkSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { safeReadContained } from "./safe-read.ts";
 import { spawnCapture } from "./spawn-capture.ts";
@@ -442,12 +442,25 @@ function readHeadBytes(absPath: string, n: number): Buffer | null {
 // `gone` — a deletion is still a change. Bounded: more than 500 dirty entries
 // → return null (fail toward review). Any git error → null.
 //
-// ACCEPTED RESIDUAL (documented, not silent): a rewrite that is simultaneously
-// (a) on an over-cap tree, (b) same size, (c) within one timestamp tick, AND
-// (d) byte-identical in the first 4096 bytes, evades the fallback. Full
-// content hashing is exactly what the `diff:` form does — the fallback exists
-// because content was too large; this four-way conjunction is the deliberate
-// trade against re-reading multi-GB trees on every Stop.
+// ACCEPTED RESIDUAL (documented, not silent), per entry kind:
+//   - Regular files: a rewrite evades the fallback only if it is simultaneously
+//     (a) on an over-cap tree, (b) same size, (c) within one timestamp tick, AND
+//     (d) byte-identical in the first 4096 bytes. Full content hashing is
+//     exactly what the `diff:` form does — the fallback exists because content
+//     was too large; this four-way conjunction is the deliberate trade against
+//     re-reading multi-GB trees on every Stop.
+//   - Symlinks: the entry line includes a sha256 of the link's readlink target,
+//     so ANY retarget (same-length or not) changes the hash regardless of
+//     size/mtime/ctime — the four-way conjunction above does not apply here.
+//     The only residual is a symlink pointing to the exact same target string
+//     both times, which is not a change to detect. A readlink failure fails
+//     the WHOLE fingerprint to `null` (toward review), not just this line.
+//   - Any other non-regular entry (directory/gitlink submodule, fifo, socket,
+//     device, …): content-sensitivity cannot be guaranteed by a stat/read on
+//     the path (a gitlink's "content" is the nested repo's own dirty state),
+//     so the WHOLE fingerprint fails to `null` — this tree never fast-exits.
+//     Over-review (never skipping) is acceptable; under-review is the bug
+//     class this function exists to close.
 async function workingTreeMetaFingerprint(repoRoot: string): Promise<string | null> {
   const r = await git(repoRoot, ["status", "--porcelain=v1", "-uall", "-z"]);
   if (r.status !== 0 || r.timedOut || r.truncated) return null;
@@ -493,11 +506,31 @@ async function workingTreeMetaFingerprint(repoRoot: string): Promise<string | nu
       lines.push(`${e.status} ${e.path} gone`);
       continue;
     }
-    if (!st.isFile()) {
-      // Symlink/dir/special: no content to head-hash; status+size+times remain
-      // change-sensitive enough for this coarse fallback.
-      lines.push(`${e.status} ${e.path} ${st.size} ${st.mtimeMs} ${st.ctimeMs}`);
+    if (st.isSymbolicLink()) {
+      // Content-sensitive: hash the readlink target so a same-length retarget
+      // (`ln -sf b link` -> `ln -sf c link`) flips the line even when size and
+      // times land on the same coarse tick — status+size+times alone cannot
+      // cover this entry type (see ACCEPTED RESIDUAL above).
+      let target: string;
+      try {
+        target = readlinkSync(abs);
+      } catch {
+        // Vanished/permission failure mid-scan: can't guarantee content-
+        // sensitivity for this entry — fail the whole fingerprint toward
+        // review rather than silently degrade to a non-content line.
+        return null;
+      }
+      const linkHash = createHash("sha256").update(target).digest("hex");
+      lines.push(`${e.status} ${e.path} ${st.size} ${st.mtimeMs} ${st.ctimeMs} link:${linkHash}`);
       continue;
+    }
+    if (!st.isFile()) {
+      // Directory (submodule gitlink), fifo, socket, device, …: no reliable
+      // way to make these content-sensitive within this coarse fallback — fail
+      // the WHOLE fingerprint toward review instead of emitting a status+size+
+      // times-only line that can under-report a real change (see ACCEPTED
+      // RESIDUAL above).
+      return null;
     }
     const head = readHeadBytes(abs, 4096);
     const headHash = head ? createHash("sha256").update(head).digest("hex") : "unreadable";
