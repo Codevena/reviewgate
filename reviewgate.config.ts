@@ -61,6 +61,11 @@ export default {
     // FP-ledger: learns which finding signatures you reject as false
     // positives and stops re-reporting them. Standalone.
     fpLedger: { enabled: true },
+    // Agent Lessons: the agent-facing twin of the FP-ledger. Collects the agent's
+    // accepted+fixed findings (verified real mistakes) and injects the recurring ones
+    // back at SessionStart as advisory context. Render-only, never verdict-affecting,
+    // fail-safe, opt-in. Dogfooded here so this repo's gate feeds its own lessons back.
+    agentLessons: { enabled: true },
     // S6 grounding layer 2: an LLM judge demotes a CRITICAL whose claim is not supported
     // by the actual code (e.g. an invented XSS sink). openrouter = deepseek-v4-flash via
     // alibaba (cheap). Demote-only, fail-safe, CRITICAL-only.
