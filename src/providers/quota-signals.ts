@@ -29,8 +29,21 @@ const QUOTA_SIGNATURES: RegExp[] = [
   // agy (Antigravity) — "⚠ Individual quota reached. Contact your administrator to
   // enable overages." The overage phrase is distinctive enough to key on by itself.
   /enable overages/i,
-  // HTTP status used by all three when throttled
-  /\b429\b/,
+  // HTTP status used by all three when throttled. NOT plain /\b429\b/: `:`/`.`
+  // are word boundaries, so a stack frame `foo.ts:429:12` or a bundle path
+  // `main.js:1429:3` would classify a CRASH as quota → wrong multi-minute
+  // cooldown on a healthy-but-crashing provider, and a bare prose count
+  // ("expected 429 items") is not a status either. A bare 429 counts only:
+  //  (a) followed by the canonical reason phrase ("429 Too Many Requests"),
+  //  (b) preceded by an HTTP-ish context token within a short non-digit gap —
+  //      covers "status code 429", "error: 429", "HTTP/2 429", "HTTPError: 429"
+  //      — where the char directly before 429 must not be `:`/`.` (kills
+  //      "error a.ts:429:2"-shaped crash lines) and no digit/`.`/`:` follows,
+  //  (c) "429 from/received/returned …" (proxy phrasing).
+  /(?<![:.\d])429(?=[^\S\n]+too many requests)/i,
+  /\b(?:status(?:[^\S\n]+code)?|code|http\S{0,8}|error|response|received|returned|got):?[^\S\n]{1,3}429(?!\d|\.\d|:\d)/i,
+  /\berror:429(?!\d|\.\d|:\d)/i,
+  /(?<![:.\d])429(?=[^\S\n]+(?:from|received|returned)\b)/i,
   /too many requests/i,
   /insufficient[_ ]quota/i,
 ];
