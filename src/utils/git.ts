@@ -444,9 +444,11 @@ function readHeadBytes(absPath: string, n: number): Buffer | null {
 // sorted, where headHash = sha256 of the file's FIRST 4096 bytes (round-15 W1:
 // coarse-timestamp filesystems — HFS+ has 1-second granularity — can leave a
 // same-size same-tick rewrite invisible to size+times alone; the head sample
-// catches it cheaply). Deleted files stat-fail → keep the status line with
-// `gone` — a deletion is still a change. Bounded: more than 500 dirty entries
-// → return null (fail toward review). Any git error → null.
+// catches it cheaply). A head-read failure (permission change, vanished
+// mid-scan, …) fails the WHOLE fingerprint to `null`, not just this line —
+// same posture as a readlink failure below. Deleted files stat-fail → keep the
+// status line with `gone` — a deletion is still a change. Bounded: more than
+// 500 dirty entries → return null (fail toward review). Any git error → null.
 //
 // ACCEPTED RESIDUAL (documented, not silent), per entry kind:
 //   - Regular files: a rewrite evades the fallback only if it is simultaneously
@@ -539,7 +541,15 @@ async function workingTreeMetaFingerprint(repoRoot: string): Promise<string | nu
       return null;
     }
     const head = readHeadBytes(abs, 4096);
-    const headHash = head ? createHash("sha256").update(head).digest("hex") : "unreadable";
+    if (!head) {
+      // Stat succeeded but the content read failed (permission change, vanished
+      // mid-scan, …): can't guarantee content-sensitivity for this entry — fail
+      // the whole fingerprint toward review, same posture as the readlink
+      // failure two branches above, rather than emit a stable non-content
+      // sentinel line that would silently defeat the head-sample's purpose.
+      return null;
+    }
+    const headHash = createHash("sha256").update(head).digest("hex");
     lines.push(`${e.status} ${e.path} ${st.size} ${st.mtimeMs} ${st.ctimeMs} ${headHash}`);
   }
   lines.sort();

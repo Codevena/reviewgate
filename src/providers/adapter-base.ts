@@ -84,7 +84,11 @@ export interface ReviewResult {
   // The unwrapped inner model text (the assistant's answer), already extracted
   // from each provider's CLI/API envelope. Used by non-review calls such as the
   // critic phase, which needs the raw model JSON ({verdicts:[...]}) rather than
-  // the mapped findings. Absent when the call errored.
+  // the mapped findings. Absent when the call errored — EXCEPT the S2 lossy-
+  // mapping ERROR branch (claude/gemini/opencode's `mappingLooksLossy` path),
+  // which deliberately carries rawText as the only surviving triage evidence
+  // for the finding(s) that died in schema mapping (the temp run dir is reaped
+  // before triage could otherwise recover them).
   rawText?: string;
   status: ReviewStatus;
   statusDetail?: string;

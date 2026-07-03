@@ -1,6 +1,6 @@
 // tests/unit/working-tree-state-hash.test.ts
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workingTreeStateHash } from "../../src/utils/git.ts";
@@ -99,6 +99,30 @@ describe("workingTreeStateHash", () => {
     writeFileSync(join(dir, "a-new.ts"), "bbbbbbbbbb".repeat(10)); // same byte length, immediately
     expect(await workingTreeStateHash(dir, cap)).not.toBe(h1); // caught by headHash
   });
+
+  // Final-review pre-merge fix: a head-read failure on a regular file (permission
+  // denied, vanished mid-scan, …) must fail the WHOLE fingerprint toward review —
+  // same posture as the readlink failure above — not settle for a stable,
+  // non-content-sensitive "unreadable" sentinel line, which would make two
+  // genuinely different unreadable-file states hash identically (under-review).
+  // chmod 000 on the untracked file makes BOTH `git diff --no-index` (exit 128 →
+  // DIFF_INCOMPLETE_MARKER, routing into the meta: fallback with no cap trick
+  // needed) and the fallback's own head-read fail the same way. Skipped when
+  // running as root, where an unreadable-by-mode file is still openable and the
+  // test premise (a real read failure) would not hold.
+  test.skipIf(process.getuid?.() === 0)(
+    "an unreadable regular file fails the WHOLE fingerprint toward review, not a stable 'unreadable' sentinel",
+    async () => {
+      const dir = await initRepo();
+      writeFileSync(join(dir, "secret.ts"), "x\n");
+      chmodSync(join(dir, "secret.ts"), 0o000);
+      try {
+        expect(await workingTreeStateHash(dir)).toBeNull();
+      } finally {
+        chmodSync(join(dir, "secret.ts"), 0o644); // restore so tmpdir cleanup can remove it
+      }
+    },
+  );
 
   test("non-repo directory returns null", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-wtsh-norepo-"));
