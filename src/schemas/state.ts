@@ -90,6 +90,9 @@ export const EscalationReason = z.enum([
   // to the human so a persistent provider outage / misconfig is never silently
   // deferred forever — distinct from a code-quality FAIL.
   "infra-unavailable",
+  // EVERY reviewer was quota-capped for quotaDeferMaxConsecutive+1 consecutive turns;
+  // bounded like infra-unavailable.
+  "quota-exhausted-persistent",
   // A single BLOCKING finding's signature recurred across loop.maxSignatureRecurrence
   // consecutive reviewed iterations — a treadmill where one finding sticks while the
   // set churns (the whole-set stuck-signatures check misses it). Surfaced to the
@@ -230,6 +233,20 @@ export const ReviewgateStateSchema = z.object({
   // HEAD sha at the last review. Used to detect a commit (HEAD moved) between
   // stops, which re-arms the gate for the next batch of uncommitted changes.
   last_reviewed_head_sha: z.string().nullable().default(null),
+  // S1: working-tree fingerprint recorded together with last_reviewed_head_sha.
+  // The Stop fast-exit compares the CURRENT hash against this; a mismatch means
+  // the tree changed without a dirty flag (e.g. a Bash-tool edit) → lock path.
+  last_reviewed_tree_hash: z.string().nullable().default(null),
+  // S3b: HEAD at escalation-announce time. The commit-recovers-escalation re-arm
+  // (Path A) requires HEAD to have moved PAST this — a mid-batch commit made
+  // BEFORE the escalation must not count as "the agent addressed it".
+  escalated_head_sha: z.string().nullable().default(null),
+  // S3b (Plan-Gate round-2 C1): working-tree fingerprint at announce time. The
+  // standing-down probe may return "skip-escalated" ONLY while BOTH head and
+  // tree are unchanged since the announce — a post-escalation Bash mutation
+  // (no flag, no commit) must take the lock path and be reviewed, not stood
+  // down over. Null (hash uncomputable at announce) → never stand down.
+  escalated_tree_hash: z.string().nullable().default(null),
   started_at: z.string(),
   escalated: z.boolean(),
   escalation_reason: EscalationReason.nullable(),
@@ -293,6 +310,9 @@ export function initialState(sessionId: string): ReviewgateState {
     last_stop_ts: null,
     last_pass_diff_hash: null,
     last_reviewed_head_sha: null,
+    last_reviewed_tree_hash: null,
+    escalated_head_sha: null,
+    escalated_tree_hash: null,
     started_at: new Date().toISOString(),
     escalated: false,
     escalation_reason: null,
