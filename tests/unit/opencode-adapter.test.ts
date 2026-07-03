@@ -159,6 +159,73 @@ describe("OpenCodeAdapter (mocked binary)", () => {
     expect(result.findings).toHaveLength(0);
     expect(result.statusDetail).toContain("opencode");
   });
+
+  it("reviewer JSON whose only finding dies on the LINE-TYPE guard → status error, never PASS (S2)", async () => {
+    // verdict FAIL, one finding with line as string "42" — fails the typeof
+    // guard BEFORE any category handling → 0 mapped findings. Must fail closed
+    // (ERROR), never silently collapse to an empty PASS.
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-linetype-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-opencode-linetype.sh",
+      `#!/usr/bin/env bash\nprintf '%s\\n' '{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"correctness","rule_id":"x","file":"a.ts","line":"42","message":"bad line type","details":"d","confidence":0.9}]}'\nexit 0\n`,
+    );
+    const promptFile = join(dir, "prompt.txt");
+    const diffPath = join(dir, "diff.patch");
+    writeFileSync(promptFile, "review this");
+    writeFileSync(diffPath, "diff --git a/a.ts b/a.ts");
+
+    const adapter = new OpenCodeAdapter({ binPath });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "minimax/minimax-m2.7", timeoutMs: 60_000 },
+      reviewerId: "opencode-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "security",
+      diffPath,
+    });
+    expect(result.status).toBe("error");
+    expect(result.verdict).toBe("ERROR");
+    expect(result.findings).toEqual([]);
+    expect(result.statusDetail ?? "").toMatch(
+      /survived mapping|no blocking finding|blocking-severity/,
+    );
+    // Triageability (round-11 W4): the lossy-ERROR result points at the SAME
+    // rawEventsPath the ok-path would have returned, and the counts ride along.
+    expect(result.rawEventsPath).toBeTruthy();
+    expect(result.rawEventsPath.endsWith("out.txt")).toBe(true);
+    expect(result.statusDetail ?? "").toMatch(/dropped \d+, blocking \d+/);
+  });
+
+  it("UNKNOWN category with an otherwise-valid finding also fails closed (S2, round-3 I1)", async () => {
+    // verdict FAIL, one finding with category "vibes", numeric line 42 — passes
+    // the typeof guard, dies in FindingSchema.safeParse → 0 mapped findings.
+    const dir = mkdtempSync(join(tmpdir(), "rg-oc-unkcat-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-opencode-unkcat.sh",
+      `#!/usr/bin/env bash\nprintf '%s\\n' '{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"vibes","rule_id":"x","file":"a.ts","line":42,"message":"bad category","details":"d","confidence":0.9}]}'\nexit 0\n`,
+    );
+    const promptFile = join(dir, "prompt.txt");
+    const diffPath = join(dir, "diff.patch");
+    writeFileSync(promptFile, "review this");
+    writeFileSync(diffPath, "diff --git a/a.ts b/a.ts");
+
+    const adapter = new OpenCodeAdapter({ binPath });
+    const result = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "minimax/minimax-m2.7", timeoutMs: 60_000 },
+      reviewerId: "opencode-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "findings.md"),
+      persona: "security",
+      diffPath,
+    });
+    expect(result.status).toBe("error");
+    expect(result.verdict).toBe("ERROR");
+    expect(result.findings).toEqual([]);
+  });
 });
 
 describe("OpenCodeAdapter.complete (judge completion)", () => {

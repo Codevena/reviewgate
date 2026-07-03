@@ -205,6 +205,81 @@ describe("GeminiAdapter (agy, mocked)", () => {
     expect(res.verdict).toBe("ERROR");
     expect(res.status).toBe("quota-exhausted");
   });
+
+  it("reviewer JSON whose only finding dies on the LINE-TYPE guard → status error, never PASS (S2)", async () => {
+    // verdict FAIL, one finding with line as string "42" — fails the typeof
+    // guard BEFORE any category handling → 0 mapped findings. Must fail closed
+    // (ERROR), never silently collapse to an empty PASS.
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-linetype-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-gemini-linetype.sh",
+      [
+        "#!/usr/bin/env bash",
+        "cat <<'JSON'",
+        '{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"correctness","rule_id":"gem-rule","file":"a.ts","line":"42","message":"bad line type","details":"d","confidence":0.9}]}',
+        "JSON",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+      reviewerId: "gemini-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("error");
+    expect(res.verdict).toBe("ERROR");
+    expect(res.findings).toEqual([]);
+    expect(res.statusDetail ?? "").toMatch(
+      /survived mapping|no blocking finding|blocking-severity/,
+    );
+    // Triageability (round-11 W4): the lossy-ERROR result points at the SAME
+    // rawEventsPath the ok-path would have returned, and the counts ride along.
+    expect(res.rawEventsPath).toBeTruthy();
+    expect(res.rawEventsPath.endsWith("out.txt")).toBe(true);
+    expect(res.statusDetail ?? "").toMatch(/dropped \d+, blocking \d+/);
+  });
+
+  it("UNKNOWN category with an otherwise-valid finding also fails closed (S2, round-3 I1)", async () => {
+    // verdict FAIL, one finding with category "vibes", numeric line 42 — passes
+    // the typeof guard, dies in FindingSchema.safeParse → 0 mapped findings.
+    const dir = mkdtempSync(join(tmpdir(), "rg-gem-unkcat-"));
+    const binPath = makeFakeBin(
+      dir,
+      "fake-gemini-unkcat.sh",
+      [
+        "#!/usr/bin/env bash",
+        "cat <<'JSON'",
+        '{"verdict":"FAIL","findings":[{"severity":"CRITICAL","category":"vibes","rule_id":"gem-rule","file":"a.ts","line":42,"message":"bad category","details":"d","confidence":0.9}]}',
+        "JSON",
+        "exit 0",
+        "",
+      ].join("\n"),
+    );
+    const promptFile = join(dir, "prompt.txt");
+    writeFileSync(promptFile, "review this");
+    const adapter = new GeminiAdapter({ binPath });
+    const res = await adapter.review({
+      cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 60_000 },
+      reviewerId: "gemini-security",
+      promptFile,
+      workingDir: dir,
+      findingsPath: join(dir, "f.md"),
+      persona: "security",
+      diffPath: join(dir, "d.patch"),
+    });
+    expect(res.status).toBe("error");
+    expect(res.verdict).toBe("ERROR");
+    expect(res.findings).toEqual([]);
+  });
 });
 
 describe("GeminiAdapter.review — silent stall (agy quota hang)", () => {

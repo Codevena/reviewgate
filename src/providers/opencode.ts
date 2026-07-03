@@ -16,7 +16,11 @@ import { verdictFromFindings } from "./adapter-base.ts";
 import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
-import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
+import {
+  mapReviewOutputToFindingsCounted,
+  mappingLooksLossy,
+  parseReviewOutput,
+} from "./review-output.ts";
 
 export interface OpenCodeAdapterOptions {
   binPath?: string;
@@ -176,12 +180,33 @@ export class OpenCodeAdapter implements ProviderAdapter {
           : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
       };
     }
-    const findings = mapReviewOutputToFindings(out, {
+    const mapped = mapReviewOutputToFindingsCounted(out, {
       provider: "opencode",
       model: input.cfg.model,
       persona: input.persona,
       workingDir: input.workingDir,
     });
+    const findings = mapped.findings;
+    const lossy = mappingLooksLossy(out, mapped);
+    if (lossy) {
+      // S2 fail-closed: "all findings failed mapping" must be indistinguishable
+      // from a crash, NOT from a clean pass — verdictFromFindings([]) === PASS
+      // would ship a CRITICAL the reviewer actually reported. ERROR routes into
+      // the existing failover/retry machinery instead.
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+        durationMs: res.durationMs,
+        exitCode: res.exitCode,
+        rawEventsPath: stdoutFile,
+        status: "error",
+        // Round-12 W3: the counts ride along in EVERY lossy branch, not just
+        // the blocking-drop reason string.
+        statusDetail: `review output failed schema mapping: ${lossy} (dropped ${mapped.droppedCount}, blocking ${mapped.droppedBlockingCount})`,
+      };
+    }
 
     return {
       reviewerId: input.reviewerId,
@@ -193,6 +218,11 @@ export class OpenCodeAdapter implements ProviderAdapter {
       exitCode: 0,
       rawEventsPath: stdoutFile,
       rawText: stdout,
+      // S2: partial (non-lossy) drops are advisory-only — some blocking findings
+      // survived, so the review is still trustworthy, but note the loss for triage.
+      ...(mapped.droppedCount > 0
+        ? { statusDetail: `${mapped.droppedCount} finding(s) dropped in schema mapping` }
+        : {}),
       status: "ok",
     };
   }

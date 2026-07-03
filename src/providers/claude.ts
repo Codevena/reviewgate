@@ -2,7 +2,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Finding } from "../schemas/finding.ts";
 import { safeJsonParse } from "../utils/safe-json.ts";
 import { spawnSafely } from "../utils/spawn.ts";
 import type {
@@ -18,7 +17,12 @@ import { verdictFromFindings } from "./adapter-base.ts";
 import { scrubReviewerEnv } from "./availability.ts";
 import { COMPLETE_TIMEOUT_MS, failureReason, readFileSafe } from "./complete-helpers.ts";
 import { isQuotaBanner, isQuotaExhausted } from "./quota-signals.ts";
-import { mapReviewOutputToFindings, parseReviewOutput } from "./review-output.ts";
+import {
+  type MappedReview,
+  mapReviewOutputToFindingsCounted,
+  mappingLooksLossy,
+  parseReviewOutput,
+} from "./review-output.ts";
 
 const DISALLOWED = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,TodoWrite,Task";
 
@@ -182,7 +186,7 @@ export class ClaudeAdapter implements ProviderAdapter {
         statusDetail: errText.slice(0, 1000),
       };
     }
-    const { out, findings, usage, rawText } = this.parse(
+    const { out, mapped, usage, rawText } = this.parse(
       outFile,
       input.cfg.model,
       input.persona,
@@ -210,6 +214,27 @@ export class ClaudeAdapter implements ProviderAdapter {
           : "reviewer exited 0 but produced no valid review JSON (unparseable output)",
       };
     }
+    const findings = mapped.findings;
+    const lossy = mappingLooksLossy(out, mapped);
+    if (lossy) {
+      // S2 fail-closed: "all findings failed mapping" must be indistinguishable
+      // from a crash, NOT from a clean pass — verdictFromFindings([]) === PASS
+      // would ship a CRITICAL the reviewer actually reported. ERROR routes into
+      // the existing failover/retry machinery instead.
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "ERROR",
+        findings: [],
+        usage,
+        durationMs: res.durationMs,
+        exitCode: res.exitCode,
+        rawEventsPath: outFile,
+        status: "error",
+        // Round-12 W3: the counts ride along in EVERY lossy branch, not just
+        // the blocking-drop reason string.
+        statusDetail: `review output failed schema mapping: ${lossy} (dropped ${mapped.droppedCount}, blocking ${mapped.droppedBlockingCount})`,
+      };
+    }
     return {
       reviewerId: input.reviewerId,
       verdict: verdictFromFindings(findings),
@@ -219,6 +244,11 @@ export class ClaudeAdapter implements ProviderAdapter {
       exitCode: 0,
       rawEventsPath: outFile,
       rawText,
+      // S2: partial (non-lossy) drops are advisory-only — some blocking findings
+      // survived, so the review is still trustworthy, but note the loss for triage.
+      ...(mapped.droppedCount > 0
+        ? { statusDetail: `${mapped.droppedCount} finding(s) dropped in schema mapping` }
+        : {}),
       status: "ok",
     };
   }
@@ -300,7 +330,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     workingDir: string,
   ): {
     out: ReturnType<typeof parseReviewOutput>;
-    findings: Finding[];
+    mapped: MappedReview;
     usage: ReviewResult["usage"];
     rawText: string;
   } {
@@ -321,12 +351,17 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
     const text = env.result ?? fileText;
     const out = parseReviewOutput(text);
-    const findings = out
-      ? mapReviewOutputToFindings(out, { provider: "claude-code", model, persona, workingDir })
-      : [];
+    const mapped = out
+      ? mapReviewOutputToFindingsCounted(out, {
+          provider: "claude-code",
+          model,
+          persona,
+          workingDir,
+        })
+      : { findings: [], droppedCount: 0, droppedBlockingCount: 0 };
     return {
       out,
-      findings,
+      mapped,
       usage: {
         inputTokens: env.usage?.input_tokens ?? 0,
         outputTokens: env.usage?.output_tokens ?? 0,
