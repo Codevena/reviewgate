@@ -67,10 +67,17 @@ const ANTIGRAVITY_ARTIFACT = /(^|\/)\.antigravitycli(\/|$)/i;
 // P6 (field report 2026-06-22): the user's DoD scratch dir `.review/` (codex/agy prompt +
 // findings files, `rm -rf`'d before commit). In a repo that doesn't gitignore it, these
 // transient files entered the reviewed diff AND the cache key and got reviewed (F-001/F-002
-// in the field report were on `.review/plan-gate-*`). Excluded at ANY depth like the
-// antigravity artifact. Matched as a DOTDIR boundary so it never catches `review-notes.md`
-// or `docs/reviews/…` (over-broad-match guard).
-const REVIEW_SCRATCH = /(^|\/)\.review(\/|$)/i;
+// in the field report were on `.review/plan-gate-*`). Matched as a DOTDIR boundary so it
+// never catches `review-notes.md` or `docs/reviews/…` (over-broad-match guard).
+//
+// S6 (2026-07-03, documented deviation from P6): root-anchored ONLY, not any-depth like the
+// antigravity artifact below. The DoD scratch dir only ever exists at the repo ROOT (it's a
+// fixed convention, not something agy scaffolds per-subdir like `.antigravitycli`); an
+// any-depth exclude is a place to hide reviewable code — `sub/.review/evil.ts` shipped
+// silently, out of both the diff and the cache key. Worst case after root-anchoring: a
+// nested `.review/` in some repo gets reviewed and produces FP noise — over-review, the
+// safe direction.
+const REVIEW_SCRATCH = /^\.review(\/|$)/i;
 
 // The git-pathspec form of the same exclusion set isExcludedFromReview() applies
 // to path strings. Defined ONCE here so collectDiff and collectChangedFileContents
@@ -82,12 +89,11 @@ export const EXCLUDE_PATHSPEC = [
   ":(exclude)reviewgate.config.ts",
   ":(exclude).reviewgate",
   ":(exclude).reviewgate/**",
-  // P6: the user's DoD scratch dir — see REVIEW_SCRATCH. Mirror this set in
+  // P6/S6: the user's DoD scratch dir — see REVIEW_SCRATCH. Root-anchored only (S6) —
+  // NO `**/.review` any-depth pair, unlike `.antigravitycli` below. Mirror this set in
   // isExcludedFromReview (the untracked side) exactly (shared-source invariant).
   ":(exclude).review",
   ":(exclude).review/**",
-  ":(exclude)**/.review",
-  ":(exclude)**/.review/**",
   ":(exclude).antigravitycli",
   ":(exclude).antigravitycli/**",
   ":(exclude)**/.antigravitycli",
