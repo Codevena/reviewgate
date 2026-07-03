@@ -10,8 +10,9 @@ import {
   recordSessionOwned,
 } from "../core/session-manifest.ts";
 import { StateStore } from "../core/state-store.ts";
+import { normalizeRepoPath } from "../diff/repo-path.ts";
 import { ReviewgateStateSchema } from "../schemas/state.ts";
-import { gitHeadSha, workingTreeStateHash } from "../utils/git.ts";
+import { gitHeadSha, isExcludedFromReview, workingTreeStateHash } from "../utils/git.ts";
 import {
   decisionsDir,
   deferredFlagPath,
@@ -80,7 +81,44 @@ const BASE_TS_SAFETY_MARGIN_MS = 30_000;
 // re-review (F-015).
 export const BASE_TS_NO_SCOPING_SENTINEL = new Date(0).toISOString();
 
+// S3a: the PostToolUse matcher only fires for these tools, each of which carries
+// exactly ONE canonical file_path — the shape the excluded-path skip below relies
+// on being "fully understood" before it dares to no-op.
+const KNOWN_SINGLE_PATH_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
 export async function handleTrigger(input: TriggerInput): Promise<void> {
+  // S3a: an edit that ONLY touches reviewgate-managed/excluded paths (e.g. the
+  // decisions file the escalation block message asks the agent to write) is not
+  // reviewable work and must not arm the gate — a post-escalation decisions
+  // write would otherwise mint a fresh dirty flag at the CURRENT head, re-arm
+  // the cycle against an empty diff, and neutralize the escalation with a 🟢.
+  // Fail-safe (round-6 W2): the skip requires a FULLY-understood tool shape,
+  // not merely "some paths parsed" — a partially-parsed multi-path payload
+  // could hide a reviewable path behind an excluded one. Anything else (unknown
+  // tool name, missing/extra path fields, unparseable stdin, zero extracted
+  // paths) → fall through and arm.
+  // (round-8 I1: if editedPathsOf expands MultiEdit per-operation into several
+  // entries for the SAME file, dedupe before the length check; if they are
+  // genuinely different paths, arming is the correct fail-closed outcome.)
+  try {
+    const parsed = parseHookStdin(input.hookStdinRaw);
+    const toolName =
+      typeof (parsed as { tool_name?: unknown } | null)?.tool_name === "string"
+        ? ((parsed as { tool_name?: string }).tool_name as string)
+        : null;
+    const files = [...new Set(editedPathsOf(parsed))];
+    const shapeFullyUnderstood =
+      toolName !== null && KNOWN_SINGLE_PATH_TOOLS.has(toolName) && files.length === 1;
+    if (
+      shapeFullyUnderstood &&
+      files.every((f) => isExcludedFromReview(normalizeRepoPath(f, input.repoRoot)))
+    ) {
+      return;
+    }
+  } catch {
+    /* fall through: arm the flag (fail toward review) */
+  }
+
   const dir = reviewgateDir(input.repoRoot);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const diffHash = createHash("sha256").update(input.hookStdinRaw).digest("hex").slice(0, 16);
