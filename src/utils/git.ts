@@ -1,5 +1,6 @@
 // src/utils/git.ts
-import { lstatSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { safeReadContained } from "./safe-read.ts";
 import { spawnCapture } from "./spawn-capture.ts";
@@ -373,6 +374,137 @@ export async function collectDiff(
     out += `${out.endsWith("\n") ? "" : "\n"}\n${DIFF_INCOMPLETE_MARKER}\n`;
   }
   return out;
+}
+
+// Content-true working-tree fingerprint for the Stop fast-exit (S1): sha256
+// over collectDiff's working-tree-vs-HEAD output. collectDiff already carries
+// full content hunks (tracked mods) + --no-index synthesis (untracked),
+// applies the review exclusions (hash scope ≡ diff scope), and is byte/time-
+// capped. A status/path fingerprint would be blind to a SECOND edit of an
+// already-dirty file (round-3 C1).
+//
+// Truncated diff (cap exceeded): a `null` here on EVERY stop would make each
+// post-review Stop on a large dirty tree take the lock path forever (round-5
+// W3). Fall back to a METADATA fingerprint over the non-excluded dirty paths —
+// status line + size + mtimeMs + ctimeMs per file. size/ctime changes catch a
+// practical M→M or ??→?? content edit (ctime cannot be back-dated by touch;
+// same resistance the untracked mtime-gate relies on). The "meta:"/"diff:"
+// prefixes keep the two forms from EVER comparing equal across a cap-status
+// change — a stored content hash vs a current meta hash mismatches → review.
+// `null` = could not determine at all — callers MUST treat null as "changed"
+// (fail toward review, never toward skip).
+export async function workingTreeStateHash(
+  repoRoot: string,
+  opts?: { untrackedByteCap?: number },
+): Promise<string | null> {
+  try {
+    const diff =
+      opts?.untrackedByteCap !== undefined
+        ? await collectDiff(repoRoot, null, undefined, null, opts.untrackedByteCap)
+        : await collectDiff(repoRoot, null);
+    if (!diff.includes(DIFF_INCOMPLETE_MARKER)) {
+      return `diff:${createHash("sha256").update(diff).digest("hex")}`;
+    }
+    return await workingTreeMetaFingerprint(repoRoot); // "meta:…" or null
+  } catch {
+    return null;
+  }
+}
+
+// Reads at most `n` bytes from the start of `absPath`. Used for the meta
+// fallback's head-sample (below) — a cheap, bounded stand-in for a full
+// content hash. null on any open/read failure (gone, EACCES, …).
+function readHeadBytes(absPath: string, n: number): Buffer | null {
+  let fd: number;
+  try {
+    fd = openSync(absPath, "r");
+  } catch {
+    return null;
+  }
+  try {
+    const buf = Buffer.alloc(n);
+    const bytesRead = readSync(fd, buf, 0, n, 0);
+    return buf.subarray(0, bytesRead);
+  } catch {
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Fallback: `git status --porcelain=v1 -uall -z` (quote-safe), drop excluded
+// paths (isExcludedFromReview on path AND rename-origin), then for each entry
+// stat() the file and hash `XY path size mtimeMs ctimeMs headHash` lines,
+// sorted, where headHash = sha256 of the file's FIRST 4096 bytes (round-15 W1:
+// coarse-timestamp filesystems — HFS+ has 1-second granularity — can leave a
+// same-size same-tick rewrite invisible to size+times alone; the head sample
+// catches it cheaply). Deleted files stat-fail → keep the status line with
+// `gone` — a deletion is still a change. Bounded: more than 500 dirty entries
+// → return null (fail toward review). Any git error → null.
+//
+// ACCEPTED RESIDUAL (documented, not silent): a rewrite that is simultaneously
+// (a) on an over-cap tree, (b) same size, (c) within one timestamp tick, AND
+// (d) byte-identical in the first 4096 bytes, evades the fallback. Full
+// content hashing is exactly what the `diff:` form does — the fallback exists
+// because content was too large; this four-way conjunction is the deliberate
+// trade against re-reading multi-GB trees on every Stop.
+async function workingTreeMetaFingerprint(repoRoot: string): Promise<string | null> {
+  const r = await git(repoRoot, ["status", "--porcelain=v1", "-uall", "-z"]);
+  if (r.status !== 0 || r.timedOut || r.truncated) return null;
+  // -z record layout: `XY PATH\0` per entry, except a rename/copy (X === 'R' or
+  // 'C') which emits an EXTRA `ORIG_PATH\0` token immediately after — consume it
+  // as part of the SAME entry rather than mis-parsing it as its own record.
+  const tokens = r.stdout.split("\0").filter((s) => s.length > 0);
+  const entries: { status: string; path: string; origPath?: string }[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    i++;
+    if (token === undefined || token.length < 3) continue; // malformed record guard — skip, don't crash
+    const status = token.slice(0, 2);
+    const path = token.slice(3);
+    const entry: { status: string; path: string; origPath?: string } = { status, path };
+    if (status[0] === "R" || status[0] === "C") {
+      const origPath = tokens[i];
+      if (origPath !== undefined) {
+        entry.origPath = origPath;
+        i++;
+      }
+    }
+    entries.push(entry);
+  }
+  const filtered = entries.filter(
+    (e) =>
+      !isExcludedFromReview(e.path) &&
+      !(e.origPath !== undefined && isExcludedFromReview(e.origPath)),
+  );
+  // Bounded: a massive dirty tree would mean per-file stat + head-read on every
+  // Stop — fail toward review instead of doing unbounded work on the hot path.
+  if (filtered.length > 500) return null;
+  const lines: string[] = [];
+  for (const e of filtered) {
+    const abs = join(repoRoot, e.path);
+    let st: ReturnType<typeof lstatSync>;
+    try {
+      st = lstatSync(abs);
+    } catch {
+      // Deleted (or vanished mid-read) — a deletion is still a change; the
+      // status line alone still perturbs the hash without a nonexistent stat.
+      lines.push(`${e.status} ${e.path} gone`);
+      continue;
+    }
+    if (!st.isFile()) {
+      // Symlink/dir/special: no content to head-hash; status+size+times remain
+      // change-sensitive enough for this coarse fallback.
+      lines.push(`${e.status} ${e.path} ${st.size} ${st.mtimeMs} ${st.ctimeMs}`);
+      continue;
+    }
+    const head = readHeadBytes(abs, 4096);
+    const headHash = head ? createHash("sha256").update(head).digest("hex") : "unreadable";
+    lines.push(`${e.status} ${e.path} ${st.size} ${st.mtimeMs} ${st.ctimeMs} ${headHash}`);
+  }
+  lines.sort();
+  return `meta:${createHash("sha256").update(lines.join("\n")).digest("hex")}`;
 }
 
 // #7: working-tree-dirty file paths, base-independent — `git diff --name-only -z HEAD`
