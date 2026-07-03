@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentLessonsStore } from "../../src/core/agent-lessons/store.ts";
@@ -94,4 +101,31 @@ test("a read-only snapshot does NOT back up a corrupt store", async () => {
   const idx = await new AgentLessonsStore(repo).snapshot({ backupCorrupt: false });
   expect(idx.entries).toHaveLength(0);
   expect(existsSync(agentLessonsPath(repo))).toBe(true); // untouched — no rename (pure read)
+});
+
+test("rethrows a transient read I/O error instead of wiping the store inside mutate", async () => {
+  // A raw fs error (EACCES here, standing in for EBUSY/AV-lock/EIO/network FS)
+  // on an EXISTING store must fail the mutate loudly — never be misread as
+  // "empty" and then atomically persisted as empty (data loss).
+  const repo = tmpRepo();
+  const store = new AgentLessonsStore(repo);
+  await store.recordOccurrence(
+    meta,
+    { run_id: "s:0:1", session_id: "s", signature: "sig1" },
+    "2026-07-03T00:00:00.000Z",
+  );
+  const p = agentLessonsPath(repo);
+  chmodSync(p, 0o000); // transient read failure: file exists but is unreadable
+  await expect(
+    store.recordOccurrence(
+      meta,
+      { run_id: "s:0:2", session_id: "s", signature: "sig2" },
+      "2026-07-03T00:01:00.000Z",
+    ),
+  ).rejects.toThrow();
+  // The accumulated store survives untouched (no wipe persisted).
+  chmodSync(p, 0o600);
+  const snap = await store.snapshot();
+  expect(snap.entries).toHaveLength(1);
+  expect(snap.entries[0]?.occurrences).toHaveLength(1);
 });
