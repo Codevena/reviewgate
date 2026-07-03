@@ -18,6 +18,8 @@
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { surfacedLessons } from "../../core/agent-lessons/distill.ts";
+import { AgentLessonsStore } from "../../core/agent-lessons/store.ts";
 import { CandidateStore } from "../../core/brain/candidate-store.ts";
 import { ProposalStore } from "../../core/brain/proposal-store.ts";
 import { BrainStore } from "../../core/brain/store.ts";
@@ -41,6 +43,9 @@ export interface LearnStatusInput {
    *  actually computes. (We do NOT auto-read the config because this command
    *  intentionally has no config-loader dependency.) */
   halfLifeDays?: number;
+  /** Recurrence threshold for the agent-lessons view. Defaults to 3 (the
+   *  phases.agentLessons.minRecurrence default). No config loader here by design. */
+  agentLessonsMinRecurrence?: number;
   /** Emit JSON instead of text. */
   json?: boolean;
   write?: (s: string) => void;
@@ -112,6 +117,17 @@ export interface LearnStatusReport {
     total: number;
     by_reason: Record<string, number>;
     by_reviewer: Record<string, number>;
+  };
+  agent_lessons: {
+    total_entries: number;
+    surfaced: Array<{
+      id: string;
+      category: string;
+      rule_id: string;
+      count: number;
+      sessions: number;
+      files: number;
+    }>;
   };
 }
 
@@ -272,6 +288,24 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
     byReviewer[o.reviewer_key] = (byReviewer[o.reviewer_key] ?? 0) + 1;
   }
 
+  // --- Agent lessons (accepted+fixed recurrence) ---
+  let alSnap: Awaited<ReturnType<AgentLessonsStore["snapshot"]>>;
+  try {
+    alSnap = await new AgentLessonsStore(input.repoRoot).snapshot({ backupCorrupt: false });
+  } catch {
+    alSnap = { schema: "reviewgate.agentlessons.v1", entries: [] };
+  }
+  const alSurfaced = surfacedLessons(alSnap, input.agentLessonsMinRecurrence ?? 3)
+    .slice(0, 5)
+    .map((l) => ({
+      id: l.entry.id,
+      category: l.entry.category,
+      rule_id: l.entry.rule_id,
+      count: l.count,
+      sessions: l.sessions,
+      files: l.files,
+    }));
+
   return {
     generated_at: now.toISOString(),
     since: sinceDate.toISOString(),
@@ -320,6 +354,7 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
     },
     reputation,
     implicit_outcomes: { total: implicit.length, by_reason: byReason, by_reviewer: byReviewer },
+    agent_lessons: { total_entries: alSnap.entries.length, surfaced: alSurfaced },
   };
 }
 
@@ -440,6 +475,17 @@ function renderText(r: LearnStatusReport): string {
     lines.push(`  total: ${r.implicit_outcomes.total}`);
     lines.push(`  by reason: ${JSON.stringify(r.implicit_outcomes.by_reason)}`);
     lines.push(`  by reviewer: ${JSON.stringify(r.implicit_outcomes.by_reviewer)}`);
+  }
+
+  // Agent lessons
+  lines.push("");
+  lines.push(
+    `Agent lessons        ${r.agent_lessons.total_entries} entries · ${r.agent_lessons.surfaced.length} surfaced`,
+  );
+  for (const l of r.agent_lessons.surfaced) {
+    lines.push(
+      `    ${l.id}  ${l.count}x [${l.category}] ${l.rule_id}  (${l.files}f/${l.sessions}s)`,
+    );
   }
 
   return `${lines.join("\n")}\n`;
