@@ -719,6 +719,39 @@ async function runStopGate(
   }
   const { host, adapters, ctx } = setup;
   const { gitInfo, diff, reviewBase, workspaceUnsettled, foreignFiles, attribution } = ctx;
+
+  // S1-C1 BELT (codex CRITICAL, reviewed 2026-07-03): gatherReviewContext can hand
+  // back a correctly populated, non-empty `diff` WITHOUT a dirty.flag ever landing
+  // on disk — either because last_reviewed_head_sha was null (the null-last branch's
+  // `sinceLast` short-circuits to "" so its persistence write never even runs) or
+  // because that write silently FAILED (ENOSPC/EACCES, swallowed by the try/catch in
+  // gatherReviewContext). LoopDriver.run() independently RE-READS the flag from disk
+  // and green-allows ("No code changes since last review") when it finds none — so a
+  // diff that only ever existed in THIS function's memory would ship unreviewed even
+  // though the Orchestrator below is built with the correct diff. Belt: whenever we're
+  // holding a non-empty diff and no flag is on disk at this point, synthesize one now
+  // (no base_sha — legal; handleTrigger writes base_sha conditionally, and an absent
+  // base means "working-tree review" on any later read of it). If that write ALSO
+  // fails, fail CLOSED instead of letting the driver's disk read silently win. This
+  // single check covers both origin cases — no per-branch fix needed upstream.
+  if (diff.trim().length > 0 && !existsSync(dirtyFlagPath(input.repoRoot))) {
+    try {
+      writeFileAtomic(
+        dirtyFlagPath(input.repoRoot),
+        JSON.stringify({
+          diff_hash: gitInfo.sha.slice(0, 16),
+          ts: new Date().toISOString(),
+          base_ts: BASE_TS_NO_SCOPING_SENTINEL,
+        }),
+        { mode: 0o600 },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = `🔴 Reviewgate · GATE CLOSED — a non-empty diff could not be flagged for review (dirty.flag persistence failed: ${msg}). Failing closed rather than let this turn end unreviewed. Ensure .reviewgate is writable, then re-run; \`reviewgate doctor\` for diagnostics.`;
+      return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
+    }
+  }
+
   // Slice 3: warn EARLY (stderr survives a self-deadline abort that writes no pending.md)
   // when the diff is large enough to risk a timeout. This runs in the gate, OUTSIDE the
   // loop self-deadline (which wraps only LoopDriver→runIteration). WARN-only — never

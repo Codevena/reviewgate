@@ -152,7 +152,20 @@ describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
     expect(ctx.diff).toContain("sneaky.ts"); // synthesis reviewed the untracked file
   });
 
-  test("last=null + no flag + uncommitted Bash edit → the working tree IS reviewed (round-13 C1)", async () => {
+  // round-13 C1 originally read this as proof the null-`last` fallthrough is
+  // reviewed — WRONG in one respect: `ctx.diff` being correctly populated here is
+  // necessary but NOT sufficient. `gatherReviewContext` alone never persists a
+  // dirty.flag on this branch (`sinceLast` short-circuits to "" before that write
+  // is reached), and `LoopDriver.run()` independently RE-READS the flag FROM DISK
+  // — finding none, it green-allows ("No code changes since last review") WITHOUT
+  // ever consulting `ctx.diff`, so the change shipped unreviewed despite this
+  // assertion holding (S1-C1, codex CRITICAL, reviewed 2026-07-03). The actual
+  // persist-or-fail-closed invariant is enforced by a BELT in `runStopGate`, not
+  // here — see the full `runGate({hook:"stop"})` end-to-end coverage in
+  // tests/unit/gate-stop-diff-always-flagged.test.ts (case a), which is what would
+  // have caught this. This test still pins the narrower, still-true fact that
+  // `gatherReviewContext` computes the right diff on this branch.
+  test("last=null + no flag + uncommitted Bash edit → gatherReviewContext computes the right diff (round-13 C1; flag persistence is NOT proven here)", async () => {
     const repo = gitRepo("rg-probe-e2e-nulllast-");
     const state = new StateStore(repo);
     await state.initialise("01PROBEE2ENULL"); // last_reviewed_head_sha = null default; no dirty flag
