@@ -729,18 +729,34 @@ async function runStopGate(
   // and green-allows ("No code changes since last review") when it finds none — so a
   // diff that only ever existed in THIS function's memory would ship unreviewed even
   // though the Orchestrator below is built with the correct diff. Belt: whenever we're
-  // holding a non-empty diff and no flag is on disk at this point, synthesize one now
-  // (no base_sha — legal; handleTrigger writes base_sha conditionally, and an absent
-  // base means "working-tree review" on any later read of it). If that write ALSO
-  // fails, fail CLOSED instead of letting the driver's disk read silently win. This
-  // single check covers both origin cases — no per-branch fix needed upstream.
+  // holding a non-empty diff and no flag is on disk at this point, synthesize one now.
+  // If that write ALSO fails, fail CLOSED instead of letting the driver's disk read
+  // silently win. This single check covers both origin cases — no per-branch fix
+  // needed upstream.
+  //
+  // base_sha: preserve the last-reviewed base whenever the state knows it. A
+  // base-LESS flag scopes the NEXT cycle to working-tree-only — fine when `last`
+  // is null (there IS no wider base), but when `last` is non-null (the
+  // failed-synthesis origin) it would silently DROP committed last..HEAD work
+  // from the follow-up cycle's scope if THIS turn's review FAILs (the flag
+  // survives a FAIL and becomes that cycle's review base) — a fail-open one
+  // cycle later. Same conditional shape as handleTrigger/consumeDeferredFlag:
+  // base_sha present iff known. An unreadable state here (pathological — setup
+  // just loadOrRecover'd it) degrades to the base-less flag, never skips the belt.
   if (diff.trim().length > 0 && !existsSync(dirtyFlagPath(input.repoRoot))) {
+    let lastReviewed: string | null = null;
+    try {
+      lastReviewed = (await state.load()).last_reviewed_head_sha ?? null;
+    } catch {
+      lastReviewed = null;
+    }
     try {
       writeFileAtomic(
         dirtyFlagPath(input.repoRoot),
         JSON.stringify({
           diff_hash: gitInfo.sha.slice(0, 16),
           ts: new Date().toISOString(),
+          ...(lastReviewed ? { base_sha: lastReviewed } : {}),
           base_ts: BASE_TS_NO_SCOPING_SENTINEL,
         }),
         { mode: 0o600 },

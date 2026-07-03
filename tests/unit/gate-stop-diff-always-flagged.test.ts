@@ -20,11 +20,19 @@
 // reviewed" is observable as "did the turn BLOCK".
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
+import { BASE_TS_NO_SCOPING_SENTINEL } from "../../src/hooks/handlers.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import { collectDiff, gitHeadSha, workingTreeStateHash } from "../../src/utils/git.ts";
@@ -113,6 +121,14 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     // the CRITICAL finding actually blocks the turn.
     expect(decision.decision).toBe("block");
     expect(out.stderr.toLowerCase()).not.toContain("no code changes");
+    // Belt-flag shape on the null-`last` path: no base to preserve → base_sha is
+    // OMITTED (working-tree review), with the no-scoping base_ts sentinel.
+    const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as {
+      base_sha?: string;
+      base_ts?: string;
+    };
+    expect(flag.base_sha).toBeUndefined();
+    expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL);
   }, 30_000);
 
   it("(b) last≠null + HEAD unchanged + tree DIFFERS (uncommitted Bash edit) stays reviewed end-to-end through runGate", async () => {
@@ -187,5 +203,52 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     expect(decision.reason?.toLowerCase()).toContain("dirty.flag");
     // The write genuinely failed — nothing was silently left half-persisted.
     expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+  }, 30_000);
+
+  it("(d) the belt flag preserves base_sha = last_reviewed_head_sha when known (no under-review window next cycle)", async () => {
+    // A base-LESS belt flag is only safe when there IS no known base: if `last`
+    // is non-null and the belt fires (the pre-existing synthesis never persisted a
+    // flag), a base-less flag makes the NEXT cycle diff working-tree-only —
+    // silently dropping committed last..HEAD work from scope if THIS turn's
+    // review FAILs (fail-open on the follow-up cycle). The belt must carry
+    // base_sha = last whenever the state knows it; only the null-`last` case
+    // (test a) legitimately omits it.
+    //
+    // Belt-firing scenario with a non-null `last`, no fs-failure injection needed:
+    // HEAD advanced past `last` (probe → review), but the working tree was
+    // reverted to the exact last-reviewed content — so `sinceLast` (diff vs
+    // `last`) is EMPTY and the synthesis block never runs (no flag persisted),
+    // while the fallback HEAD-relative diff is non-empty (the uncommitted revert)
+    // → the belt is the only thing that writes the flag.
+    const repo = gitRepo("rg-stopc1-beltbase-");
+    const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
+    const lastSha = await gitHeadSha(repo); // "last reviewed" = the v1 commit
+    if (lastSha === null) throw new Error("test setup: HEAD sha unavailable");
+    writeFileSync(join(repo, "a.ts"), "export const a = 2;\n");
+    run("add", "a.ts");
+    run("commit", "-qm", "v2"); // HEAD moves past lastSha (e.g. committed via Bash)
+    writeFileSync(join(repo, "a.ts"), "export const a = 1;\n"); // Bash-revert to v1 content
+    const state = new StateStore(repo);
+    await state.initialise("01STOPC1BELTBASE");
+    await state.update((cur) => ({ ...cur, last_reviewed_head_sha: lastSha }));
+    expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+
+    const out = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: stubReviewer("a.ts") },
+      sandboxModeOverride: "off",
+    });
+
+    expect(out.exitCode).toBe(0);
+    const decision = JSON.parse(out.stdout || "{}") as { decision?: string };
+    expect(decision.decision).toBe("block"); // CRITICAL on the reverted file → the flag survives
+    const flag = JSON.parse(readFileSync(dirtyFlagPath(repo), "utf8")) as {
+      base_sha?: string;
+      base_ts?: string;
+    };
+    expect(flag.base_sha).toBe(lastSha); // the known base is preserved, not dropped
+    expect(flag.base_ts).toBe(BASE_TS_NO_SCOPING_SENTINEL);
   }, 30_000);
 });
