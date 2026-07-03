@@ -419,6 +419,47 @@ describe("S4a: bounded + escalated + latched all-quota defer", () => {
     expect(readFlag(repo).base_sha).toBe(flagBefore.base_sha); // original base — nothing exits scope
   });
 
+  it("a misconfig ERROR (neither all-quota nor all-infra) never clears the quota-escalation latch", async () => {
+    // Exercises the `result.verdict !== "ERROR"` half of quotaLatchClears in the
+    // MAIN post-iteration state update: a plain ERROR (mapping failure/misconfig,
+    // allReviewersQuotaLocked and allReviewersInfraFailed both absent) bypasses
+    // BOTH early-return defer branches above it and reaches that block directly —
+    // the only ERROR shape that does. Nothing was reviewed, so the latch must
+    // survive; clearing on it would erase the persistent quota handoff.
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQMISCONF1");
+    const config = capConfig(1);
+    await state.update((cur) => ({
+      ...cur,
+      escalated: true,
+      escalation_reason: "quota-exhausted-persistent",
+      escalation_announced: true,
+      escalated_head_sha: "H1",
+      escalated_tree_hash: "T1",
+    }));
+    writeDirty(repo);
+
+    const misconfigError: IterationRunner = {
+      runIteration: async (): Promise<IterationResult> => ({
+        verdict: "ERROR",
+        costUsd: 0,
+        durationMs: 1,
+        signaturesThisIter: [],
+        summary: baseSummary({ verdict: "ERROR" }),
+      }),
+    };
+    const decision = await mkDriver(repo, state, config, misconfigError).run();
+    expect(decision.kind).toBe("block"); // the normal misconfig-ERROR hard-block
+
+    const st = await state.load();
+    expect(st.escalated).toBe(true); // latch survives — nothing was reviewed
+    expect(st.escalation_reason).toBe("quota-exhausted-persistent");
+    expect(st.escalated_head_sha).toBe("H1"); // announce-time markers survive too
+    expect(st.escalated_tree_hash).toBe("T1");
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+  });
+
   it("a mid-outage commit does not recover the quota latch (Path A exemption)", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);
