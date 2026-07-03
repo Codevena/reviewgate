@@ -93,10 +93,7 @@ LessonEntry {
   key: string                        // sha256(category + normalizeRuleId(rule_id))
   category: FindingCategory
   rule_id: string                    // normalized (drift-tolerant, per signature.ts)
-  count: number                      // total distinct occurrences
-  distinct_sessions: string[]        // session_ids seen (dedup); shown as "across M sessions"
-  distinct_files: string[]           // files seen (dedup, capped)
-  occurrences: Occurrence[]          // capped to last 20, newest last
+  occurrences: Occurrence[]          // append-only within the TTL window; newest last
   exemplar_message: string           // most-recent finding.message, SANITIZED, ≤200 chars
   first_seen_at: string              // ISO
   last_seen_at: string               // ISO
@@ -111,12 +108,18 @@ Occurrence {
 }
 ```
 
+`count`, `distinct_sessions`, and `distinct_files` are **derived at read time** from `occurrences`
+(`count = occurrences.length`, `distinct_* = unique(...)`) — they are NOT stored. This deliberately
+mirrors the FP-ledger, which derives `distinct_providers` and never stores a separate counter.
+
 **Idempotency:** an occurrence is deduped on `(run_id, signature)` — re-absorbing the same
-iteration never double-counts (mirrors the FP-ledger's `(run_id, provider)` dedup, not a
-watermark). **Pruning:** cap `occurrences` per entry at 20 (drop oldest); TTL-reap entries whose
-`last_seen_at` is older than 90 days on a `decayPass()`-style write pass. No global size cap in v1
-(match FP-ledger's time-decay model); if the store grows unbounded in the field, add an
-entry-count cap as a fast-follow.
+iteration never double-counts (mirrors the FP-ledger's `(run_id, provider)` dedup, not a watermark).
+**Pruning:** `occurrences` are **TTL-pruned** on a `decayPass()`-style write (drop occurrences older
+than `ttlDays`, default 90; an entry with zero surviving occurrences is dropped). There is **no
+per-entry occurrence cap** — a fixed cap that drops old occurrences would break the `(run_id,
+signature)` dedup (a dropped occurrence can no longer be recognized as a duplicate → double-count),
+exactly the tension the FP-ledger avoids by capping nothing. If an entry's occurrence list grows
+unbounded within the window in the field, add a cap-with-compatible-dedup as a fast-follow.
 
 ### B · Collect
 
@@ -199,7 +202,6 @@ agentLessons: z
     minRecurrence: z.number().int().min(1).default(3),
     topK: z.number().int().min(1).default(5),
     maxInjectChars: z.number().int().min(200).default(1500),
-    occurrenceCap: z.number().int().min(1).default(20),
     ttlDays: z.number().int().min(1).default(90),
   })
   .nullable()
@@ -229,7 +231,7 @@ and the top-K surfaced lessons with counts. No new subcommand, no mutation comma
 - **Safety:** a malicious `exemplar_message` (injection markers, fences, control bytes, high-entropy
   secret) is neutralized in both the store and the injected block.
 - **Store:** flock/atomic/corrupt-backup parity with FP-ledger; transient I/O error does not persist
-  an empty snapshot; `occurrenceCap` and `ttlDays` pruning.
+  an empty snapshot; `ttlDays` pruning drops stale occurrences and empties-out entries.
 - **Config off = zero behavior change:** with `agentLessons: null`, no store writes, no stdout,
   cache key path unaffected beyond the (already-hashed) config value.
 
