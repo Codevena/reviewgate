@@ -114,7 +114,10 @@ export class AgentLessonsStore {
     // neutralized + backticks stripped — so it is safe rendered into injected lesson text AND
     // pending.md code spans, at every render site, without per-site sanitizing (plan-gate WARN).
     // The stored `rule_id` stays the normalized bucket token that matches `key`.
-    const displayRuleId = neutralizeInjectionMarkers(meta.rule_id.trim()).replace(/`/g, "");
+    const displayRuleId = neutralizeInjectionMarkers(meta.rule_id.trim())
+      .replace(/`/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
     await this.mutate((idx) => {
       let e = idx.entries.find((x) => x.key === key);
       if (!e) {
