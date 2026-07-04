@@ -54,3 +54,11 @@ test("renderLesson is a deterministic imperative one-liner", () => {
     '- [correctness] rule "rule-a" - caught 3x in this repo (2 files, 2 sessions). Last: "msg-rule-a". Check for this before ending your turn.',
   );
 });
+
+test("renderLesson prefers display_rule_id, falls back to rule_id", () => {
+  // biome-ignore lint/style/noNonNullAssertion: test asserts presence
+  const base = surfacedLessons(idx, 3)[0]!; // AL-001, rule_id "rule-a"
+  expect(renderLesson(base)).toContain('rule "rule-a"'); // no display_rule_id → falls back
+  const withDisplay = { ...base, entry: { ...base.entry, display_rule_id: "Rule A (raw)" } };
+  expect(renderLesson(withDisplay)).toContain('rule "Rule A (raw)"');
+});

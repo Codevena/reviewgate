@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { neutralizeInjectionMarkers } from "../../diff/sanitizer.ts";
 import { normalizeRuleId } from "../../diff/signature.ts";
 import {
   type AgentLessonsIndex,
@@ -109,6 +110,14 @@ export class AgentLessonsStore {
     nowIso: string,
   ): Promise<void> {
     const key = lessonKey(meta.category, meta.rule_id);
+    // Human-readable display form: the RAW rule_id, but DEFANGED at write — injection markers
+    // neutralized + backticks stripped — so it is safe rendered into injected lesson text AND
+    // pending.md code spans, at every render site, without per-site sanitizing (plan-gate WARN).
+    // The stored `rule_id` stays the normalized bucket token that matches `key`.
+    const displayRuleId = neutralizeInjectionMarkers(meta.rule_id.trim())
+      .replace(/`/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
     await this.mutate((idx) => {
       let e = idx.entries.find((x) => x.key === key);
       if (!e) {
@@ -119,6 +128,7 @@ export class AgentLessonsStore {
           key,
           category: meta.category,
           rule_id: normalizeRuleId(meta.rule_id),
+          display_rule_id: displayRuleId,
           occurrences: [],
           exemplar_message: meta.message,
           first_seen_at: nowIso,
@@ -146,6 +156,7 @@ export class AgentLessonsStore {
         ts: nowIso,
       });
       e.exemplar_message = meta.message; // most-recent sanitized message wins
+      e.display_rule_id = displayRuleId; // most-recent raw (sanitized) rule_id wins, like exemplar_message
       e.last_seen_at = nowIso;
       return { next: idx, result: undefined };
     });

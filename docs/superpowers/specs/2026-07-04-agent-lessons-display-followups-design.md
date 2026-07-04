@@ -34,9 +34,11 @@ occurrence, exactly like `exemplar_message`). The existing `rule_id` stays the n
 token (it must match `key = sha256(category + "|" + normalizeRuleId(rule_id))`).
 
 **Collect (`store.recordOccurrence`):** the caller already passes the raw `rule_id` in
-`meta.rule_id` (learn.ts passes `f.rule_id`). Set `display_rule_id = meta.rule_id.trim()` on
-create AND on each non-dup occurrence (most-recent-wins), alongside the existing
-`rule_id: normalizeRuleId(meta.rule_id)`.
+`meta.rule_id` (learn.ts passes `f.rule_id`). Set `display_rule_id` to the **defanged** raw rule_id
+— `neutralizeInjectionMarkers(meta.rule_id.trim())` with backticks stripped — on create AND on each
+non-dup occurrence (most-recent-wins), alongside the existing `rule_id: normalizeRuleId(meta.rule_id)`.
+Sanitizing **at write** means every render site (renderLesson, learn-status, recurrence note) uses a
+safe value directly, with no per-site sanitizing to forget.
 
 **Render (`distill.renderLesson`, `learn-status`):** use `entry.display_rule_id ?? entry.rule_id`.
 Back-compat: entries written before this change have no `display_rule_id` → the `?? entry.rule_id`

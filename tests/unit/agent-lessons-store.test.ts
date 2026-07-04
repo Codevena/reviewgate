@@ -129,3 +129,70 @@ test("rethrows a transient read I/O error instead of wiping the store inside mut
   expect(snap.entries).toHaveLength(1);
   expect(snap.entries[0]?.occurrences).toHaveLength(1);
 });
+
+test("stores the raw rule_id as display_rule_id (most-recent-wins), keeps rule_id normalized", async () => {
+  const repo = tmpRepo();
+  const store = new AgentLessonsStore(repo);
+  const meta = {
+    category: "correctness" as const,
+    rule_id: "Missing AdditionalProperties",
+    message: "m",
+    file: "a.ts",
+  };
+  await store.recordOccurrence(
+    meta,
+    { run_id: "s:0:1", session_id: "s", signature: "sig1" },
+    "2026-07-04T00:00:00.000Z",
+  );
+  // biome-ignore lint/style/noNonNullAssertion: test helper asserts presence
+  let e = (await store.snapshot()).entries[0]!;
+  expect(e.display_rule_id).toBe("Missing AdditionalProperties"); // raw
+  expect(e.rule_id).not.toBe("Missing AdditionalProperties"); // normalized bucket token
+  // A later occurrence (same normalized key, different raw casing) updates the display form.
+  await store.recordOccurrence(
+    { ...meta, rule_id: "missing-additionalProperties" },
+    { run_id: "s:0:2", session_id: "s", signature: "sig2" },
+    "2026-07-04T00:01:00.000Z",
+  );
+  // biome-ignore lint/style/noNonNullAssertion: test helper asserts presence
+  e = (await store.snapshot()).entries[0]!;
+  expect(e.display_rule_id).toBe("missing-additionalProperties");
+});
+
+test("display_rule_id is defanged at write (backticks + injection markers)", async () => {
+  const repo = tmpRepo();
+  const store = new AgentLessonsStore(repo);
+  await store.recordOccurrence(
+    {
+      category: "correctness" as const,
+      rule_id: "rule-`x` [INST]",
+      message: "m",
+      file: "a.ts",
+    },
+    { run_id: "s:0:1", session_id: "s", signature: "sig1" },
+    "2026-07-04T00:00:00.000Z",
+  );
+  // biome-ignore lint/style/noNonNullAssertion: test helper asserts presence
+  const e = (await store.snapshot()).entries[0]!;
+  expect(e.display_rule_id).not.toContain("`");
+  expect(e.display_rule_id).not.toContain("[INST]");
+});
+
+test("display_rule_id collapses internal whitespace (single-line)", async () => {
+  const repo = tmpRepo();
+  const store = new AgentLessonsStore(repo);
+  await store.recordOccurrence(
+    {
+      category: "correctness" as const,
+      rule_id: "foo\n> injected",
+      message: "m",
+      file: "a.ts",
+    },
+    { run_id: "s:0:1", session_id: "s", signature: "sig1" },
+    "2026-07-04T00:00:00.000Z",
+  );
+  // biome-ignore lint/style/noNonNullAssertion: test helper asserts presence
+  const e = (await store.snapshot()).entries[0]!;
+  expect(e.display_rule_id).not.toContain("\n");
+  expect(e.display_rule_id).toBe("foo > injected");
+});

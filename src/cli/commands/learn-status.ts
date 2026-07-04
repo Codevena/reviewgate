@@ -300,7 +300,7 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
     .map((l) => ({
       id: l.entry.id,
       category: l.entry.category,
-      rule_id: l.entry.rule_id,
+      rule_id: l.entry.display_rule_id ?? l.entry.rule_id,
       count: l.count,
       sessions: l.sessions,
       files: l.files,

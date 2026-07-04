@@ -329,6 +329,12 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
         "",
       ]
     : [];
+  // Agent Lessons (2026-07-04): pre-rendered + sanitized recurrence notes (a finding this round
+  // matches a recurring accepted+fixed lesson). Render-only; the verdict/counts are unaffected.
+  const agentLessonRecurrenceBanner = (r.agent_lesson_recurrences ?? []).flatMap((note) => [
+    note,
+    "",
+  ]);
   // P11: a PURE docs-only review (every changed file is prose/markdown) — frame it as a
   // spec/docs review so a prose finding (e.g. a framework misread in a design doc) reads with
   // prose-review weight, not code-review CRITICAL weight. Render-only; the verdict is unchanged.
@@ -408,6 +414,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     ...singleReviewerBanner,
     ...largeDiffBanner,
     ...unsettledBanner,
+    ...agentLessonRecurrenceBanner,
     ...fragmentationBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,

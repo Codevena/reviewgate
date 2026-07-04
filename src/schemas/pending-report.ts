@@ -77,6 +77,10 @@ export const PendingReportSchema = z.object({
       }),
     )
     .optional(),
+  // Agent Lessons (2026-07-04): advisory notes when a finding in THIS round matches a recurring
+  // accepted+fixed lesson (count >= minRecurrence). Pre-rendered + sanitized by the orchestrator;
+  // report-writer renders them as a `> ⚠` banner. Render-only; the verdict/counts are unaffected.
+  agent_lesson_recurrences: z.array(z.string()).optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)
