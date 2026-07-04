@@ -35,7 +35,7 @@ export function renderLesson(l: SurfacedLesson): string {
   // ASCII only (no em dash / multiplication sign) — keeps the source and the injected
   // text plain, consistent with the learn-status renderer (plan-gate INFO).
   return (
-    `- [${entry.category}] rule "${entry.rule_id}" - caught ${count}x in this repo ` +
+    `- [${entry.category}] rule "${entry.display_rule_id ?? entry.rule_id}" - caught ${count}x in this repo ` +
     `(${files} ${fw}, ${sessions} ${sw}). ` +
     `Last: "${entry.exemplar_message}". Check for this before ending your turn.`
   );

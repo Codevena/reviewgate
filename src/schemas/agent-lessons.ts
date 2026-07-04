@@ -15,6 +15,10 @@ export const LessonEntrySchema = z.object({
   key: z.string(), // sha256(category + "|" + normalizeRuleId(rule_id))
   category: FindingCategory,
   rule_id: z.string(),
+  // The RAW rule_id as the reviewer wrote it (most-recent-wins) — for human-readable display.
+  // `rule_id` above stays the NORMALIZED bucket token (it must match `key`). Optional for
+  // back-compat: entries written before this field fall back to `rule_id` at render time.
+  display_rule_id: z.string().optional(),
   occurrences: z.array(LessonOccurrenceSchema),
   exemplar_message: z.string(),
   first_seen_at: z.string(),
