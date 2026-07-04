@@ -50,6 +50,7 @@ import { modelIdForTier, reviewerTierFor } from "../utils/host-model.ts";
 import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
 import { type Adjudication, renderAdjudications } from "./adjudications.ts";
+import { recurrenceNotesForFindings } from "./agent-lessons/recurrence.ts";
 import { aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
@@ -2654,6 +2655,14 @@ export class Orchestrator {
     // would clobber/contradict LoopDriver's "did not complete" decision (which
     // already cleared pending.*). Guarding here covers every call site at once.
     opts.signal?.throwIfAborted();
+    // Agent Lessons (render-only): advisory notes when a finding this round matches a recurring
+    // accepted+fixed lesson. recurrenceNotesForFindings NEVER throws (returns [] on disabled /
+    // no-match / any error), so this is safe on every writeReport path (ERROR/PASS pass no findings).
+    const agentLessonRecurrences = await recurrenceNotesForFindings(
+      this.input.repoRoot,
+      this.input.config.phases.agentLessons,
+      findings,
+    ).catch(() => [] as string[]);
     const writer = new ReportWriter(this.input.repoRoot);
     const reviewers =
       runs.length > 0
@@ -2696,6 +2705,9 @@ export class Orchestrator {
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),
         ...(docsReview ? { docs_review: true } : {}),
+        ...(agentLessonRecurrences.length
+          ? { agent_lesson_recurrences: agentLessonRecurrences }
+          : {}),
         ...(wholeDiffAttributable !== undefined
           ? { whole_diff_attributable: wholeDiffAttributable }
           : {}),
