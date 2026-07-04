@@ -33,7 +33,7 @@ test("emits hookSpecificOutput JSON on startup", async () => {
   const out = await buildSessionStartInjection({ repoRoot: repo, cfg: CFG, source: "startup" });
   const parsed = JSON.parse(out);
   expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
-  expect(parsed.hookSpecificOutput.additionalContext).toContain('rule "rule"');
+  expect(parsed.hookSpecificOutput.additionalContext).toContain('rule "rule-a"');
 });
 
 test("emits nothing on clear/compact, when disabled, or below threshold", async () => {
