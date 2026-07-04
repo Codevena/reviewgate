@@ -1,6 +1,6 @@
 {
   "name": "reviewgate",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Multi-agent code review gate for Claude Code's agent loop — blocks the agent from ending its turn until an independent LLM reviewer panel signs off.",
   "type": "module",
   "license": "MIT",
