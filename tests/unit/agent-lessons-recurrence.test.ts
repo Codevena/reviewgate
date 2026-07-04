@@ -101,3 +101,18 @@ test("sanitizes a malicious exemplar message in the note", async () => {
   expect(notes[0]).not.toContain("[INST]");
   expect(notes[0]).not.toContain("```` ");
 });
+
+test("caps emitted notes at topK when multiple recurring lessons match", async () => {
+  const repo = tmpRepo();
+  // Seed 6 distinct lessons, each with 3 occurrences (above minRecurrence 3)
+  for (let i = 0; i < 6; i++) {
+    await seed(repo, "correctness", `rule-${i}`, 3);
+  }
+  // Build 6 findings, one per rule
+  const findings = Array.from({ length: 6 }, (_, i) =>
+    finding({ id: `F-${i}`, rule_id: `rule-${i}` }),
+  );
+  const notes = await recurrenceNotesForFindings(repo, CFG, findings);
+  // CFG.topK is 5, so must cap to 5 despite 6 matching
+  expect(notes).toHaveLength(5);
+});

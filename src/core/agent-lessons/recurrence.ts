@@ -20,11 +20,11 @@ export async function recurrenceNotesForFindings(
     const idx = await new AgentLessonsStore(repoRoot).snapshot({ backupCorrupt: false });
     const surfaced = surfacedLessons(idx, cfg.minRecurrence);
     if (surfaced.length === 0) return [];
-    const byKey = new Map(surfaced.map((s) => [s.entry.key, s]));
+    const surfacedKeys = new Set(surfaced.map((s) => s.entry.key));
     const matchedKeys = new Set<string>();
     for (const f of findings) {
       const k = lessonKey(f.category, f.rule_id);
-      if (byKey.has(k)) matchedKeys.add(k);
+      if (surfacedKeys.has(k)) matchedKeys.add(k);
     }
     if (matchedKeys.size === 0) return [];
     // surfaced is already sorted count-desc; emit one note per matched lesson (deduped by key),
