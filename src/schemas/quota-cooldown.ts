@@ -17,6 +17,12 @@ export const QuotaCooldownSchema = z.object({
       // → 4h cap. Absent/0 on a parsed reset (we know the exact reset, no guessing).
       // Optional for back-compat with cooldown files written before this field existed.
       consecutive_failures: z.number().int().nonnegative().optional(),
+      // The CAUSE of a default-source backoff: a genuine quota/rate-limit signal, a
+      // reviewer timeout, or a slow error. Lets the degradation note label honestly
+      // ("timed out — backing off" vs "quota until") instead of calling every backoff
+      // "quota" (field report: a merely-slow reviewer reported as quota-capped). A
+      // "parsed" reset is always a real quota, so it carries none. Optional for back-compat.
+      reason: z.enum(["quota", "timeout", "error"]).optional(),
     }),
   ),
 });

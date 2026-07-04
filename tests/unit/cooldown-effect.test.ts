@@ -28,7 +28,7 @@ describe("cooldownEffectFor", () => {
   it("emits a default-source backoff on quota-exhausted with no parseable reset", () => {
     // No reset time in the banner → the store applies the escalating backoff window.
     const e = cooldownEffectFor("codex", res("quota-exhausted"), NOW);
-    expect(e).toEqual({ provider: "codex", source: "default" });
+    expect(e).toEqual({ provider: "codex", source: "default", reason: "quota" });
   });
 
   it("records a PARSED window when the quota banner carries a reset time", () => {
@@ -56,7 +56,7 @@ describe("cooldownEffectFor", () => {
     // escalating window (5min → 20min → 4h) is computed in the store (recordBackoff).
     // timeoutCooldownMs is a GATE (>0 = penalize the timeout), NOT the duration.
     const e = cooldownEffectFor("claude-code", res("timeout"), NOW, 300_000);
-    expect(e).toEqual({ provider: "claude-code", source: "default" });
+    expect(e).toEqual({ provider: "claude-code", source: "default", reason: "timeout" });
   });
 
   it("a FAST error (< slow threshold) stays inconclusive — no cooldown", () => {
@@ -69,7 +69,7 @@ describe("cooldownEffectFor", () => {
     // (overload / oversized prompt) — as expensive to re-burn every iteration as a
     // timeout, so it must be cooled down rather than retried forever.
     const e = cooldownEffectFor("claude-code", res("error", "", 216_000), NOW, 300_000);
-    expect(e).toEqual({ provider: "claude-code", source: "default" });
+    expect(e).toEqual({ provider: "claude-code", source: "default", reason: "error" });
   });
 
   it("a slow error is NOT cooled down on a self-deadline abort (timeoutCooldownMs=0)", () => {
@@ -91,9 +91,9 @@ describe("applyCooldownEffects", () => {
     // cycle, defeating the gentle 3-step schedule.
     const s = new QuotaCooldownStore(repo());
     const effects: CooldownEffect[] = [
-      { provider: "claude-code", source: "default" },
-      { provider: "claude-code", source: "default" },
-      { provider: "claude-code", source: "default" },
+      { provider: "claude-code", source: "default", reason: "timeout" },
+      { provider: "claude-code", source: "default", reason: "timeout" },
+      { provider: "claude-code", source: "default", reason: "timeout" },
     ];
     applyCooldownEffects(s, effects, NOW, false);
     expect(s.activeUntil("claude-code", NOW)).toBe(
@@ -105,7 +105,12 @@ describe("applyCooldownEffects", () => {
     // The gate self-deadline SIGKILLs healthy reviewers (error/timeout, large duration).
     // They must NOT be cooled down — that is the gate's teardown, not the provider's fault.
     const s = new QuotaCooldownStore(repo());
-    applyCooldownEffects(s, [{ provider: "claude-code", source: "default" }], NOW, true);
+    applyCooldownEffects(
+      s,
+      [{ provider: "claude-code", source: "default", reason: "timeout" }],
+      NOW,
+      true,
+    );
     expect(s.activeUntil("claude-code", NOW)).toBeNull();
     expect(s.skipUntil("claude-code", NOW)).toBeNull();
   });
@@ -122,7 +127,7 @@ describe("applyCooldownEffects", () => {
     applyCooldownEffects(
       s,
       [
-        { provider: "gemini", source: "default" },
+        { provider: "gemini", source: "default", reason: "quota" },
         { provider: "gemini", clear: true },
       ],
       NOW,
@@ -137,7 +142,7 @@ describe("applyCooldownEffects", () => {
     applyCooldownEffects(
       s,
       [
-        { provider: "gemini", source: "default" },
+        { provider: "gemini", source: "default", reason: "quota" },
         { provider: "gemini", resetAt, source: "parsed" },
       ],
       NOW,

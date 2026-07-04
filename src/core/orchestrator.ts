@@ -92,6 +92,7 @@ import {
   loadProviderPrecision,
 } from "./provider-precision.ts";
 import {
+  type CooldownReason,
   QuotaCooldownStore,
   SLOW_ERROR_THRESHOLD_MS,
   TIMEOUT_COOLDOWN_MS,
@@ -406,9 +407,11 @@ const DOCS_TOTAL_TIMEOUT_MS = 30_000;
 export type CooldownEffect =
   // A KNOWN reset time (parsed from the provider's banner) → record an exact window.
   | { provider: ProviderId; resetAt: string; source: "parsed" }
-  // No parseable reset (timeout / silent agy quota stall) → the store applies an
-  // ESCALATING backoff (5min → 20min → 4h) keyed on the provider's failure streak.
-  | { provider: ProviderId; source: "default" }
+  // No parseable reset (real quota w/o reset, a timeout, or a slow error) → the store
+  // applies an ESCALATING backoff (5min → 20min → 4h) keyed on the failure streak. The
+  // `reason` records the CAUSE so the degradation note labels honestly instead of calling
+  // every backoff "quota" (field report: a merely-slow reviewer reported as quota-capped).
+  | { provider: ProviderId; source: "default"; reason: CooldownReason }
   | { provider: ProviderId; clear: true };
 
 // What a finished run implies for the provider's quota cooldown:
@@ -439,16 +442,16 @@ export function cooldownEffectFor(
     const parsed = parseQuotaResetAt(res.statusDetail, now);
     return parsed
       ? { provider, resetAt: parsed, source: "parsed" }
-      : { provider, source: "default" };
+      : { provider, source: "default", reason: "quota" };
   }
   if (res.status === "ok") return { provider, clear: true };
   if (res.status === "timeout" && timeoutCooldownMs > 0) {
-    return { provider, source: "default" };
+    return { provider, source: "default", reason: "timeout" };
   }
   // A SLOW error (ran a while, THEN failed) is as costly to re-burn as a timeout —
   // back it off. A FAST error stays inconclusive (cheap one-off, immediately retryable).
   if (res.status === "error" && timeoutCooldownMs > 0 && res.durationMs > SLOW_ERROR_THRESHOLD_MS) {
-    return { provider, source: "default" };
+    return { provider, source: "default", reason: "error" };
   }
   return null;
 }
@@ -492,7 +495,7 @@ export function applyCooldownEffects(
   for (const e of byProvider.values()) {
     if ("clear" in e) store.clear(e.provider);
     else if (e.source === "parsed") store.record(e.provider, e.resetAt, now, "parsed");
-    else if (!aborted) store.recordBackoff(e.provider, now);
+    else if (!aborted) store.recordBackoff(e.provider, now, e.reason);
   }
 }
 

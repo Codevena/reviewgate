@@ -57,6 +57,27 @@ export const BACKOFF_SCHEDULE_MS = [5 * 60_000, 20 * 60_000, BACKOFF_CAP_MS];
  */
 export const BACKOFF_STREAK_STALE_MS = 24 * 60 * 60_000;
 
+/** The recorded cause of a default-source backoff. A "parsed" reset is always a real quota. */
+export type CooldownReason = "quota" | "timeout" | "error";
+
+/**
+ * Honest user-facing prefix for a cooled-down provider's reset time. ONLY a genuine
+ * quota/rate-limit signal is called "quota"; a reviewer timeout or a slow error is
+ * labeled as such — so a merely-slow reviewer is never misreported as quota-capped
+ * (field report: "claude-code quota bis 18:52" while the model works fine). An entry
+ * with no recorded reason (back-compat, or a "parsed" real-quota reset) uses the quota wording.
+ */
+export function cooldownReasonLabel(reason: CooldownReason | undefined): string {
+  switch (reason) {
+    case "timeout":
+      return "timed out — backing off until";
+    case "error":
+      return "errored — backing off until";
+    default:
+      return "quota until";
+  }
+}
+
 /**
  * Extract the reset time from a quota/rate-limit error. Handles codex's
  * "try again at May 27th, 2026 12:57 AM." banner and generic "retry after N
@@ -180,6 +201,14 @@ export class QuotaCooldownStore {
     return Date.parse(e.reset_at) > now.getTime() ? e.reset_at : null;
   }
 
+  /** The recorded CAUSE of `provider`'s currently-active cooldown, for honest labeling
+   *  (quota vs timeout vs error). undefined if not capped, or an older entry with no reason
+   *  (back-compat / a parsed real-quota reset) — both of which read as the quota wording. */
+  activeReason(provider: string, now: Date): CooldownReason | undefined {
+    if (this.activeUntil(provider, now) === null) return undefined;
+    return this.read().providers[provider]?.reason;
+  }
+
   /**
    * The reset time to SKIP `provider` until, or null if it should be ATTEMPTED.
    * Skips while the cooldown is active AND it was recorded within the last
@@ -232,7 +261,7 @@ export class QuotaCooldownStore {
    * really capped for hours from being re-probed — and re-burning the full review
    * budget — every few minutes.
    */
-  recordBackoff(provider: string, now: Date): void {
+  recordBackoff(provider: string, now: Date, reason: CooldownReason): void {
     const c = this.read();
     const prev = c.providers[provider];
     // Continue the streak only if the prior cooldown was itself a backoff (default
@@ -249,6 +278,7 @@ export class QuotaCooldownStore {
       recorded_at: now.toISOString(),
       source: "default",
       consecutive_failures: failures,
+      reason,
     };
     this.write(c);
   }

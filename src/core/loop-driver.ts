@@ -29,7 +29,7 @@ import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { locationKey, recurringBlockingLocations } from "./location-recurrence.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
-import { QuotaCooldownStore } from "./quota-cooldown.ts";
+import { type CooldownReason, QuotaCooldownStore, cooldownReasonLabel } from "./quota-cooldown.ts";
 import { foldDispositions, harvestDispositions, mergeRegions } from "./region-memory.ts";
 import { ReportWriter } from "./report-writer.ts";
 import { learnReputationFromDecisions } from "./reputation/learn.ts";
@@ -2371,7 +2371,10 @@ export class LoopDriver {
       return missing
         .map((p) => {
           const until = store.activeUntil(p, now);
-          if (until) return `${p}: quota until ${until}`;
+          // Honest label: only a genuine quota signal reads "quota"; a timeout / slow-error
+          // backoff reads "timed out / errored — backing off" (field report: a merely-slow
+          // reviewer was reported as quota-capped).
+          if (until) return `${p}: ${cooldownReasonLabel(store.activeReason(p, now))} ${until}`;
           if (providers[p]?.enabled === false) return `${p}: disabled in config`;
           return `${p}: did not complete this turn (see pending.md)`;
         })
@@ -2389,9 +2392,19 @@ export class LoopDriver {
     const reviewers = this.i.config.phases.review.reviewers ?? [];
     const providers = [...new Set(reviewers.map((r) => r.provider))];
     const store = new QuotaCooldownStore(this.i.repoRoot);
+    // Only GENUINE quota caps belong in this "quota-degraded panel" note (per its contract) —
+    // a timeout / slow-error backoff is a different degradation, surfaced via formatCoverageNote.
+    // Back-compat: an entry with no recorded reason is treated as quota.
     const capped = providers
-      .map((p) => ({ p: p as string, until: store.activeUntil(p, now) }))
-      .filter((x): x is { p: string; until: string } => x.until !== null);
+      .map((p) => ({
+        p: p as string,
+        until: store.activeUntil(p, now),
+        reason: store.activeReason(p, now),
+      }))
+      .filter(
+        (x): x is { p: string; until: string; reason: CooldownReason | undefined } =>
+          x.until !== null && (x.reason === "quota" || x.reason === undefined),
+      );
     if (capped.length === 0) return null;
     const list = capped.map((x) => `${x.p} (capped until ${x.until})`).join(", ");
     return `\n\n⚠ Quota-degraded panel: ${list} could not review this cycle. A capped reviewer cannot corroborate or refute the others' findings — if its failover did not cover the slot, this escalation rests on a degraded panel. Consider waiting for the quota reset, then re-run \`reviewgate reset\` before treating these findings as final.`;
