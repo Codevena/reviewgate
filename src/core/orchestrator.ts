@@ -21,7 +21,7 @@ import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
 import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
 import { isProviderAvailable } from "../providers/availability.ts";
-import type { ProviderId } from "../providers/registry.ts";
+import { type ProviderId, SUBPROCESSLESS_PROVIDERS } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
 import { type AppTopologyEntry, loadAppTopology } from "../research/app-topology.ts";
 import { type CollaboratorSource, collectCollaboratorSources } from "../research/collaborators.ts";
@@ -37,7 +37,10 @@ import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
 import { analyzeUiFiles } from "../research/ui-analysis.ts";
 import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
-import { buildSandboxProfile } from "../sandbox/profile-builder.ts";
+import {
+  type ProviderId as SandboxCliProviderId,
+  buildSandboxProfile,
+} from "../sandbox/profile-builder.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
@@ -1368,14 +1371,20 @@ export class Orchestrator {
       // turned into a fail-closed ERROR for THIS reviewer (never a silent PASS).
       // openrouter and ollama are both HTTP-API adapters (no local subprocess), so
       // sandbox-exec — which wraps a spawned CLI — does not apply; they get no
-      // sandbox key. The four CLI providers (codex/claude-code/gemini/opencode)
-      // match the profile builder's (narrower, local) ProviderId.
+      // sandbox key (SUBPROCESSLESS_PROVIDERS). The four CLI providers
+      // (codex/claude-code/gemini/opencode) match the profile builder's
+      // (narrower, local) ProviderId.
       const sandbox =
-        this.input.sandboxMode === "off" || provider === "openrouter" || provider === "ollama"
+        this.input.sandboxMode === "off" || SUBPROCESSLESS_PROVIDERS.has(provider)
           ? undefined
           : {
               profile: buildSandboxProfile({
-                providerId: provider,
+                // Safe narrowing cast: this branch is only reached when
+                // SUBPROCESSLESS_PROVIDERS.has(provider) is false, i.e. provider
+                // is one of the 4 CLI ids — SandboxCliProviderId's exact members
+                // (Set.has() on a ReadonlySet<string> doesn't type-narrow, unlike
+                // the literal `provider === "..."` comparisons this replaced).
+                providerId: provider as SandboxCliProviderId,
                 mode: this.input.sandboxMode,
                 workingDir: repo,
                 findingsPath,
@@ -1672,8 +1681,11 @@ export class Orchestrator {
           // cooled/unavailable), but ANOTHER configured+enabled+available+non-cooled
           // provider may still work. Try them (deterministic, OAuth/$0 first) so a
           // quota outage on the chain doesn't collapse the panel to zero when a
-          // working reviewer exists — i.e. fall back to claude/openrouter even if
-          // they were not listed in this slot's chain. Same cooldown/availability
+          // working reviewer exists — i.e. fall back to another reviewer from
+          // LAST_RESORT_ORDER (claude-code/codex/gemini/opencode; openrouter and
+          // ollama are explicit-only and deliberately excluded from this list —
+          // see LAST_RESORT_ORDER's definition above) even if they were not
+          // listed in this slot's chain. Same cooldown/availability
           // gates as the chain walk; skipped on a self-deadline abort.
           if (
             run.res.status !== "ok" &&
@@ -1955,8 +1967,8 @@ export class Orchestrator {
         | undefined;
       if (criticAdapter && cProviderCfg) {
         // Critic runs via the adapter's free-form complete() (see runCritic), NOT
-        // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter and
-        // makes the critic a silent no-op. No cost is attributed: complete()
+        // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter/ollama
+        // and makes the critic a silent no-op. No cost is attributed: complete()
         // returns only text (no usage envelope), so the critic phase is $0 here.
         const r = await runCritic(
           criticAdapter,

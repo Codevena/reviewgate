@@ -9,6 +9,10 @@ import { OpenRouterAdapter } from "./openrouter.ts";
 
 export type ProviderId = "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
 
+// HTTP-API adapters with no local subprocess to sandbox (sandbox-exec/bwrap wrap
+// a spawned CLI, which these don't have). The orchestrator skips the sandbox for them.
+export const SUBPROCESSLESS_PROVIDERS: ReadonlySet<string> = new Set(["openrouter", "ollama"]);
+
 export function createAdapter(id: ProviderId): ProviderAdapter {
   switch (id) {
     case "codex":
