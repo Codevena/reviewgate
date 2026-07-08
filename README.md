@@ -228,6 +228,8 @@ scar from one of the failures above.
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (OAuth)
   - [Claude Code](https://claude.com/claude-code) (OAuth)
   - …or an [OpenRouter](https://openrouter.ai) API key for any hosted model
+  - …or an [Ollama](https://ollama.com) API key (Ollama Cloud, or point `baseUrl`
+    at a local `ollama serve`)
 - macOS or Linux (Windows: use WSL2)
 - git
 
@@ -326,6 +328,9 @@ Zero to your first blocked review in ~5 minutes.
      `openrouter` reviewer to `phases.review.reviewers` (paid per call).
    - **$0 within your subscription:** install + log in to one OAuth CLI — `codex
      login`, Claude Code, or the Gemini CLI — they're already in the starter config.
+   - **Ollama Cloud (also no CLI, $0 within your Ollama subscription quota):** set
+     `OLLAMA_API_KEY` and add an `ollama` reviewer — see
+     [Choosing the Ollama model](#choosing-the-ollama-model) below.
 
    Then confirm what's actually ready: **`reviewgate doctor`** tells you exactly
    which reviewers it can reach and what to fix.
@@ -419,6 +424,30 @@ export default {
 };
 ```
 
+Codex with an Ollama Cloud fallback (also $0 within your Ollama subscription
+quota — no CLI, just an API key):
+
+```ts
+export default {
+  providers: {
+    codex: { enabled: true, auth: "oauth", model: "gpt-5.5", timeoutMs: 300_000 },
+    ollama: {
+      enabled: true,
+      auth: "apikey",
+      apiKeyEnv: "OLLAMA_API_KEY",
+      model: "glm-5.2:cloud",              // ← any model ollama.com serves
+      baseUrl: "https://ollama.com/v1",    // self-hosted: "http://localhost:11434/v1"
+      timeoutMs: 300_000,
+    },
+  },
+  phases: {
+    review: {
+      reviewers: [{ provider: "codex", persona: "security", fallback: ["ollama"] }],
+    },
+  },
+};
+```
+
 Anything you omit falls back to the defaults. The config is zod-validated.
 
 ### Deterministic checker tier (`phases.checks`)
@@ -501,6 +530,48 @@ export OPENROUTER_API_KEY=sk-or-...   # e.g. in ~/.zshrc
 
 Reviewgate sends a strict JSON schema via OpenRouter's `response_format`; models
 that ignore it are still recovered by the tolerant parser.
+
+### Choosing the Ollama model
+
+The `ollama` reviewer is an OpenAI-compat HTTP adapter (no CLI, no subprocess —
+same shape as `openrouter`), pointed at Ollama Cloud by default:
+
+```bash
+export OLLAMA_API_KEY=...   # ollama.com → Account → API Keys, e.g. in ~/.zshrc
+```
+
+```ts
+ollama: {
+  enabled: true,
+  auth: "apikey",
+  apiKeyEnv: "OLLAMA_API_KEY",
+  model: "glm-5.2:cloud",             // any model ollama.com serves; verified with glm-5.2:cloud
+  baseUrl: "https://ollama.com/v1",
+  timeoutMs: 300_000,
+},
+```
+
+**Self-hosted instead of the cloud:** point `baseUrl` at a local `ollama serve`
+daemon:
+
+```ts
+ollama: { enabled: true, auth: "apikey", apiKeyEnv: "OLLAMA_API_KEY", model: "glm-5.2:cloud", baseUrl: "http://localhost:11434/v1", timeoutMs: 300_000 },
+```
+
+Run `ollama serve` (and `ollama signin` first if you want to pull Ollama's
+`:cloud` models through your local daemon). **Availability is key-based, not
+URL-based** — `reviewgate doctor` and reviewer selection check for a non-empty
+`OLLAMA_API_KEY` env var regardless of `baseUrl`, so even a pure-localhost setup
+is treated as unavailable with no key at all. Set `OLLAMA_API_KEY` to *any*
+non-empty placeholder in that case: a local daemon ignores a bogus Bearer
+token, but the loopback request itself doesn't require a real key.
+
+Note: unlike OpenRouter, Ollama's `/v1` endpoint accepts a `response_format`
+JSON schema in the request but does **not enforce** it server-side — schema
+conformance is prompt-driven, the same way it is for the `claude` and `gemini`
+adapters. The tolerant parser (plus a reasoning-block stripper for `<think>`
+output) recovers the JSON regardless; verified working end-to-end with
+`glm-5.2:cloud`.
 
 ---
 
