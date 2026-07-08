@@ -214,10 +214,13 @@ adapter distinction is actually load-bearing (comments may just need the mention
 
 ## Feature 6 — `doctor` check (slim)
 
-`reviewgate doctor` gains an `ollama` check mirroring the OpenRouter entry: reports whether
-`OLLAMA_API_KEY` (or the configured `apiKeyEnv`) is set, and — when `ollama` is a consumed provider —
-notes the effective `baseUrl`. Keep it a config/key presence check (no unconditional network call in
-`doctor`); an optional reachability ping MAY be added behind the existing doctor patterns if cheap.
+`reviewgate doctor` reuses the existing provider-availability checks (which already route `ollama`
+through `isProviderAvailable`, so an unavailable ollama critic/curator/grounding is already
+reported); the only ollama-specific change is the HINT text, which names `OLLAMA_API_KEY` and points
+at `providers.ollama.baseUrl` (cloud vs local daemon) instead of misdirecting to `OPENROUTER_API_KEY`.
+Keep it a config/key presence check (no unconditional network call in `doctor`). A separate
+"effective baseUrl" report line and an optional reachability ping are explicitly OUT of scope for
+this milestone (the hint already surfaces `baseUrl`).
 
 ## Data flow
 

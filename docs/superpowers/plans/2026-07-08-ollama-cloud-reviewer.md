@@ -622,6 +622,7 @@ git commit -m "feat(ollama): OllamaAdapter for Ollama Cloud OpenAI-compat /v1 en
 - Modify: `src/config/defaults.ts` (`ollama` provider block; `| "ollama"` in the critic/triage/grounding/curator union annotations)
 - Modify: `src/providers/registry.ts` (`ProviderId` union; import + `createAdapter` case)
 - Modify: `src/providers/availability.ts` (`PROVIDER_BIN.ollama`; `isProviderAvailable` branch)
+- Modify (ProviderId-derived, Step 6b): `src/schemas/audit-event.ts` (export + `ProviderIdEnum`), `src/schemas/cassette.ts` (`ProviderIdSchema`), `src/cli/setup/build-config.ts` (`DEFAULT_AUTH` Record + auth-type widen), `src/cli/setup/prefill.ts` (`MODEL_DEFAULT` Record). Setup-wizard integration (`setup.ts`) is DEFERRED — see Step 6b.
 - Test: `tests/unit/ollama-wiring.test.ts`
 
 **Interfaces:**
@@ -640,8 +641,15 @@ import { defaultConfig } from "../../src/config/defaults.ts";
 import { createAdapter } from "../../src/providers/registry.ts";
 import { isProviderAvailable } from "../../src/providers/availability.ts";
 import { OllamaAdapter } from "../../src/providers/ollama.ts";
+import { ProviderIdEnum } from "../../src/schemas/audit-event.ts";
 
 describe("ollama wiring", () => {
+  it("the persisted audit ProviderIdEnum accepts 'ollama' (stats/audit records)", () => {
+    // Guards the Step-6b gap: adding ollama to registry ProviderId without the
+    // persisted enum makes RunSummarySchema.parse reject an ollama stat at runtime.
+    expect(ProviderIdEnum.safeParse("ollama").success).toBe(true);
+  });
+
   it("defaults include a disabled ollama provider pointing at glm-5.2:cloud + cloud baseUrl", () => {
     expect(defaultConfig.providers.ollama).toMatchObject({
       enabled: false,
@@ -749,6 +757,23 @@ grep -rn '"codex" | "gemini" | "claude-code" | "openrouter" | "opencode"' src/
 ```
 Append `| "ollama"` to each hit. In `defaults.ts` these are `critic`, `triage`, `grounding`, and `brain.curator`; the grep surfaces any others (e.g. in reputation / fp-ledger / other modules) that a hardcoded list would miss. Leave any `provider: "openrouter"` LITERAL (e.g. `brain.embeddings.provider`) unchanged. `tsc` will NOT flag a missed annotation that is only compared at runtime, so the grep must be exhaustive — re-run it after editing and confirm zero un-extended hits remain.
 
+- [ ] **Step 6b: Extend the ProviderId-DERIVED sites (Plan-Gate WARN, Claude reviewer)**
+
+Adding `"ollama"` to the `ProviderId` union ALSO breaks sites that use `z.enum([...])` / `Record<ProviderId>` forms — which the Step-6 string-union grep CANNOT match. `bunx tsc --noEmit` (Step 7) catches the tsc ones, but fix them here (one needs a design decision). Verified against the real repo:
+
+1. `src/schemas/audit-event.ts` — the persisted `ProviderIdEnum = z.enum([...])` (currently a private `const`): add `"ollama"` AND `export` it (the wiring test asserts it). Without the `"ollama"` value, `run-summary.ts` assigning a registry `ProviderId` into `ProviderStat.provider` is a **tsc error**, and `stats/load.ts`'s `RunSummarySchema.parse` would **reject a persisted ollama stat at runtime** (NOT tsc-caught).
+2. `src/schemas/cassette.ts` — `ProviderIdSchema` (exported): add `"ollama"` so cassette record/replay validates an ollama reviewer.
+3. `src/cli/setup/build-config.ts` — `DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter">` requires an `ollama` key. **DESIGN DECISION:** the value type cannot express ollama's `"apikey"` auth → **widen the value type to `"oauth" | "openrouter" | "apikey"`** and add `ollama: "apikey"`. Do NOT use `ollama: "openrouter"` (path-of-least-resistance but semantically wrong — it would emit the wrong `auth` in a generated config).
+4. `src/cli/setup/prefill.ts` — `MODEL_DEFAULT: Record<ProviderId, string>` requires `ollama: defaultConfig.providers.ollama.model` (`"glm-5.2:cloud"`).
+
+**DEFERRED — full setup-wizard integration:** `src/cli/commands/setup.ts` uses an ARRAY provider list (no tsc break) plus `authFor(p): "oauth" | "openrouter"` (would need the same `"apikey"` widening) and an availability/hint branch. Offering `ollama` in the interactive wizard is a UX follow-up, not part of the core feature — for now ollama is enabled by editing `reviewgate.config.ts` directly (documented in Task 5). Do NOT add ollama to the wizard list in this task, or `authFor(ollama)` silently returns the wrong `"oauth"`.
+
+Then run these to prove no OTHER tsc-breaking site is missed:
+```bash
+grep -rn 'Record<ProviderId\|z\.enum(\[' src/ | grep -iE 'provider'
+bunx tsc --noEmit
+```
+
 - [ ] **Step 7: Run tests + gates**
 
 Run: `bun test tests/unit/ollama-wiring.test.ts && bunx tsc --noEmit && bun run lint`
@@ -762,8 +787,10 @@ Expected: green. If a snapshot of default config / provider counts fails, update
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/config/define-config.ts src/config/defaults.ts src/providers/registry.ts src/providers/availability.ts tests/unit/ollama-wiring.test.ts
-git commit -m "feat(ollama): wire ollama into config schema, defaults, registry, availability"
+git add src/config/define-config.ts src/config/defaults.ts src/providers/registry.ts src/providers/availability.ts \
+  src/schemas/audit-event.ts src/schemas/cassette.ts src/cli/setup/build-config.ts src/cli/setup/prefill.ts \
+  tests/unit/ollama-wiring.test.ts
+git commit -m "feat(ollama): wire ollama into config schema, defaults, registry, availability, audit/cassette/setup-prefill"
 ```
 
 ---
@@ -973,4 +1000,4 @@ Note in the final commit / PR description: endpoint path used (`/v1` vs native),
 
 **2. Placeholder scan:** No "TBD/TODO/handle edge cases". Task 4 Step 1 points the implementer at an existing test harness to reuse rather than inventing one blind — the assertion string is given verbatim.
 
-**3. Type consistency:** `OllamaAdapter`, `stripReasoningBlocks`, `isLoopbackUrl`, `estimateCostUsd`, `SUBPROCESSLESS_PROVIDERS` are named identically at definition (Tasks 1, 3) and use (Tasks 2, 3 tests). `ProviderId` gains `"ollama"` in both the zod enum (define-config) and the registry union in the same task (Task 2) so `consumedProviders` typechecks. `ProviderConfig.baseUrl` (adapter-base, Task 1) and the zod `baseUrl` (define-config, Task 2) share the name. Default model `glm-5.2:cloud`, key `OLLAMA_API_KEY`, base `https://ollama.com/v1` are consistent across adapter defaults, config defaults, tests, and docs.
+**3. Type consistency:** `OllamaAdapter`, `stripReasoningBlocks`, `isLoopbackUrl`, `lastBalancedJsonObject`, `estimateCostUsd`, `SUBPROCESSLESS_PROVIDERS` are named identically at definition (Tasks 1, 3) and use (Tasks 2, 3 tests). `ProviderId` gains `"ollama"` in both the zod enum (define-config) and the registry union in the same task (Task 2) so `consumedProviders` typechecks. **`ProviderId` is ALSO consumed by `z.enum([...])`/`Record<ProviderId>` sites that the string-union grep can't see — `audit-event.ts` `ProviderIdEnum`, `cassette.ts` `ProviderIdSchema`, `build-config.ts` `DEFAULT_AUTH`, `prefill.ts` `MODEL_DEFAULT` — all enumerated and fixed in Task 2 Step 6b (with the `DEFAULT_AUTH` value-type widened to include `"apikey"`); the setup wizard is deliberately deferred (Plan-Gate WARN, Claude reviewer).** `ProviderConfig.baseUrl` (adapter-base, Task 1) and the zod `baseUrl` (define-config, Task 2) share the name. Default model `glm-5.2:cloud`, key `OLLAMA_API_KEY`, base `https://ollama.com/v1` are consistent across adapter defaults, config defaults, tests, and docs.
