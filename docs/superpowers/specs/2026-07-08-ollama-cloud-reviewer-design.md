@@ -93,10 +93,15 @@ remote, `review()` returns `ERROR` ("OLLAMA_API_KEY not set") — same fail-fast
   slice and fail the review closed on the *exact* model this adapter targets (Plan-Gate CONFIRMED
   by both reviewers).
 
-Markdown fences are already handled by `parseReviewOutput`. This runs regardless of whether
-`response_format` was honored — so a model that ignores strict mode and wraps its JSON still parses.
-On `!out` → **fail CLOSED** via `errorResult` (never a zero-finding PASS), identical to OpenRouter's
-`!out` guard, with the same `isQuotaExhausted(content)` check to surface a 429 for quota/usage-limit
+Markdown fences are already handled by `parseReviewOutput`. If the parse still fails (the
+pathological unclosed-`<think>`-with-braces case where the stray brace survives the strip),
+`lastBalancedJsonObject(content)` recovers the **last** balanced top-level `{…}` object — a
+reasoning model emits reasoning first and its answer last, so the review JSON is the final object —
+and re-parses that (string-aware brace matching, so braces inside JSON string values don't
+miscount; Plan-Gate CRITICAL, Codex). This runs regardless of whether `response_format` was honored
+— so a model that ignores strict mode and wraps its JSON still parses. On `!out` → **fail CLOSED**
+via `errorResult` (never a zero-finding PASS), identical to OpenRouter's `!out` guard, with the same
+`isQuotaExhausted(content)` check to surface a 429 for quota/usage-limit
 CONTENT.
 
 **Findings mapping.** `mapReviewOutputToFindings(out, { provider: "ollama", model, persona,

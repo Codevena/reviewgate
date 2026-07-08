@@ -81,7 +81,7 @@ Delete `scripts/ollama-smoke.ts` after (no commit). This task has no automated t
 
 **Interfaces:**
 - Consumes: `ProviderAdapter`, `ProviderConfig`, `CompleteOptions`, `Preflight`, `ReviewInput`, `ReviewResult`, `verdictFromFindings` (from `adapter-base.ts`); `isQuotaExhausted` (`quota-signals.ts`); `REVIEW_OUTPUT_SCHEMA`, `parseReviewOutput`, `mapReviewOutputToFindings` (`review-output.ts`).
-- Produces: `class OllamaAdapter implements ProviderAdapter` with `readonly id = "ollama"`, constructor `{ fetchImpl?: typeof fetch }`, methods `preflight`, `review`, `complete`. Exported helpers `stripReasoningBlocks(text: string): string`, `isLoopbackUrl(url: string): boolean`, `estimateCostUsd(inputTokens, outputTokens, pricePerMTokensUsd?): number`.
+- Produces: `class OllamaAdapter implements ProviderAdapter` with `readonly id = "ollama"`, constructor `{ fetchImpl?: typeof fetch }`, methods `preflight`, `review`, `complete`. Exported helpers `stripReasoningBlocks(text: string): string`, `isLoopbackUrl(url: string): boolean`, `lastBalancedJsonObject(text: string): string | null`, `estimateCostUsd(inputTokens, outputTokens, pricePerMTokensUsd?): number`.
 
 - [ ] **Step 1: Extend `adapter-base.ts` types**
 
@@ -112,7 +112,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { OllamaAdapter, stripReasoningBlocks, isLoopbackUrl } from "../../src/providers/ollama.ts";
+import { OllamaAdapter, stripReasoningBlocks, isLoopbackUrl, lastBalancedJsonObject } from "../../src/providers/ollama.ts";
 
 const ORIG_KEY = process.env.OLLAMA_API_KEY;
 afterAll(() => {
@@ -151,12 +151,22 @@ describe("stripReasoningBlocks", () => {
 });
 
 describe("isLoopbackUrl", () => {
-  it("detects localhost / 127.0.0.0/8 / ::1, rejects remote and 127-prefixed hostnames", () => {
+  it("detects localhost / 127.0.0.0/8 / ::1, rejects remote, 127-prefixed & out-of-range hosts", () => {
     expect(isLoopbackUrl("http://localhost:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://127.0.0.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://127.0.1.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("https://ollama.com/v1")).toBe(false);
     expect(isLoopbackUrl("http://127.evil/v1")).toBe(false); // NOT a numeric 127.0.0.0/8 addr
+    expect(isLoopbackUrl("http://127.999.999.999/v1")).toBe(false); // octets out of 0-255 range
+  });
+});
+
+describe("lastBalancedJsonObject", () => {
+  it("returns the LAST top-level object, ignoring braces inside strings", () => {
+    expect(lastBalancedJsonObject('reasoning {a: 1} then {"b":"}"}')).toBe('{"b":"}"}');
+  });
+  it("returns null when there is no balanced object", () => {
+    expect(lastBalancedJsonObject("no json here {unclosed")).toBe(null);
   });
 });
 
@@ -183,6 +193,15 @@ describe("OllamaAdapter.review (mocked fetch)", () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-ol-think-"));
     process.env.OLLAMA_API_KEY = "k";
     const res = await new OllamaAdapter({ fetchImpl: okFetch("<think>let me look…</think>\n" + FINDING_JSON) }).review({ cfg: baseCfg(), ...reviewArgs(dir) });
+    expect(res.status).toBe("ok");
+    expect(res.findings.length).toBe(1);
+  });
+
+  it("recovers the review JSON when an UNCLOSED <think> preamble contains braces", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-ol-braces-"));
+    process.env.OLLAMA_API_KEY = "k";
+    // unclosed <think> + a brace in the reasoning → lastBalancedJsonObject fallback recovers the answer.
+    const res = await new OllamaAdapter({ fetchImpl: okFetch("<think>the value {a: 1} looks off and\n" + FINDING_JSON) }).review({ cfg: baseCfg(), ...reviewArgs(dir) });
     expect(res.status).toBe("ok");
     expect(res.findings.length).toBe(1);
   });
@@ -368,16 +387,51 @@ export function stripReasoningBlocks(text: string): string {
 }
 
 // A local daemon (loopback) needs no API key; a remote endpoint (Ollama Cloud) does.
-// Accept the whole 127.0.0.0/8 range (e.g. 127.0.1.1) but validate a NUMERIC IPv4 —
-// a prefix match like startsWith("127.") would treat a hostname such as "127.evil"
-// as loopback and bypass the remote-key requirement (Plan-Gate WARN, Codex).
+// Accept the whole 127.0.0.0/8 range (e.g. 127.0.1.1) but validate a NUMERIC IPv4 with
+// in-range octets — a prefix match ("127.evil") or an out-of-range one ("127.999.999.999",
+// which can DNS-resolve to a remote host) would bypass the remote-key requirement
+// (Plan-Gate WARN, Codex).
 export function isLoopbackUrl(url: string): boolean {
   try {
     const h = new URL(url).hostname.replace(/^\[|\]$/g, "");
-    return h === "localhost" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+    if (h === "localhost" || h === "::1") return true;
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (!m) return false;
+    const o = m.slice(1).map(Number);
+    return o[0] === 127 && o.every((n) => n <= 255);
   } catch {
     return false;
   }
+}
+
+// Extract the LAST balanced top-level {…} object from text (string-aware, so braces
+// inside JSON string values don't miscount). A reasoning model emits its reasoning
+// FIRST and its answer LAST, so the review JSON is the final top-level object — this
+// recovers it even when an unclosed <think> preamble carries its own braces.
+export function lastBalancedJsonObject(text: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let last: string | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === "}" && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) last = text.slice(start, i + 1);
+    }
+  }
+  return last;
 }
 
 function endpointFrom(baseUrl: string | undefined): string {
@@ -465,7 +519,17 @@ export class OllamaAdapter implements ProviderAdapter {
     if (json.error?.message) return errorResult(`Ollama error: ${json.error.message}`);
 
     const content = json.choices?.[0]?.message?.content ?? "";
-    const out = parseReviewOutput(stripReasoningBlocks(content));
+    let out = parseReviewOutput(stripReasoningBlocks(content));
+    if (!out) {
+      // Fallback for the pathological case: an UNCLOSED <think> whose reasoning
+      // preamble itself contains braces — stripReasoningBlocks can only strip up to
+      // the FIRST "{", leaving a stray brace ahead of the real JSON so
+      // parseReviewOutput's first-{…last-} slice grabs the wrong object. The review
+      // JSON is the model's ANSWER, which a reasoning model emits LAST, so recover
+      // the last balanced top-level object (Plan-Gate CRITICAL, Codex).
+      const last = lastBalancedJsonObject(content);
+      if (last) out = parseReviewOutput(last);
+    }
     if (!out) {
       return isQuotaExhausted(content)
         ? errorResult("Ollama returned quota/usage-limit content", 429)
