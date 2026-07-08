@@ -25,35 +25,20 @@
 **Rationale:** The cloud-direct `/v1` + `response_format: json_schema` path with `glm-5.2:cloud` is unverified (the field-report reliability was localhost-native + prompt-instructed). Run ONE real call before building the adapter around it, so we learn early whether strict schema is honored and whether `<think>` tokens contaminate `content`. This is a throwaway script (scratchpad, NOT committed).
 
 **Files:**
-- Create (scratchpad, uncommitted): `<scratchpad>/ollama-smoke.ts`
+- Create (uncommitted, deleted after): `scripts/ollama-smoke.ts` (inside the repo so the real-schema import resolves)
 
 - [ ] **Step 1: Write the smoke script**
 
 ```ts
-// <scratchpad>/ollama-smoke.ts  — run: bun run <scratchpad>/ollama-smoke.ts
+// scripts/ollama-smoke.ts (uncommitted; run from repo root, then delete)
+// run: OLLAMA_API_KEY=… bun run scripts/ollama-smoke.ts
+// Use the REAL REVIEW_OUTPUT_SCHEMA, never a simplified one — a simplified schema
+// can be accepted while the real (deeper/stricter) schema is rejected, giving a
+// FALSE GREEN (Plan-Gate INFO, GLM).
+import { REVIEW_OUTPUT_SCHEMA } from "../src/providers/review-output.ts";
 const key = process.env.OLLAMA_API_KEY;
 if (!key) throw new Error("set OLLAMA_API_KEY");
-const schema = {
-  type: "object", additionalProperties: false,
-  required: ["verdict", "findings"],
-  properties: {
-    verdict: { type: "string", enum: ["PASS", "FAIL"] },
-    findings: {
-      type: "array",
-      items: {
-        type: "object", additionalProperties: false,
-        required: ["severity", "category", "rule_id", "file", "line", "message", "details", "confidence"],
-        properties: {
-          severity: { type: "string", enum: ["CRITICAL", "WARN", "INFO"] },
-          category: { type: "string" }, rule_id: { type: "string" },
-          file: { type: "string" }, line: { type: "number" },
-          message: { type: "string" }, details: { type: "string" },
-          confidence: { type: "number" },
-        },
-      },
-    },
-  },
-};
+const schema = REVIEW_OUTPUT_SCHEMA;
 const body = {
   model: "glm-5.2:cloud",
   messages: [{ role: "user", content: "Review this diff. Return ONLY the review JSON.\n\n+ const x = 1 == '1';" }],
@@ -81,9 +66,9 @@ Expected: `HTTP 200`, `CONTENT` is (or contains) review-shaped JSON. Record: doe
 
 - If JSON is clean and schema-valid → proceed with `/v1` + `response_format` (the plan's default).
 - If `<think>` appears → confirms the `stripReasoningBlocks` need in Task 1 (already planned).
-- If `response_format` strict is rejected/ignored AND output is unusable → switch the adapter to native `/api/chat` + `format: <schema>` (documented fallback; Task 1's body/parse change accordingly). **Note this outcome in the Task 1 commit message.**
+- If `response_format` strict is rejected/ignored AND output is unusable → switch the adapter to the native `/api/chat` fallback. This is NOT a drop-in: the request body uses `format: <schema>` (not `response_format`) and `stream:false`, and the RESPONSE SHAPE differs — the answer is at **`json.message.content`**, not `json.choices[0].message.content`. So Task 1's `ChatResponse` interface, the `endpointFrom` path (`/api/chat`, no `/chat/completions`), the request body, and the content-extraction line all change together. **Note this outcome in the Task 1 commit message** and adjust the Task 1 tests' mock response shape to match.
 
-No commit (scratchpad only). This task has no automated test — it is a manual de-risking probe.
+Delete `scripts/ollama-smoke.ts` after (no commit). This task has no automated test — it is a manual de-risking probe.
 
 ---
 
@@ -156,16 +141,20 @@ function reviewArgs(dir: string) {
 }
 
 describe("stripReasoningBlocks", () => {
-  it("removes <think> and <thinking> blocks", () => {
+  it("removes paired <think> and <thinking> blocks", () => {
     expect(stripReasoningBlocks("<think>reasoning {a:1}</think>\n" + FINDING_JSON)).toBe(FINDING_JSON);
     expect(stripReasoningBlocks("<thinking>x</thinking>" + FINDING_JSON)).toBe(FINDING_JSON);
+  });
+  it("strips an UNCLOSED <think> opener up to the JSON (truncated reasoning)", () => {
+    expect(stripReasoningBlocks("<think>let me review this diff carefully\n" + FINDING_JSON)).toBe(FINDING_JSON);
   });
 });
 
 describe("isLoopbackUrl", () => {
-  it("detects localhost / 127.0.0.1 / ::1, rejects remote", () => {
+  it("detects localhost / 127.0.0.0/8 / ::1, rejects remote", () => {
     expect(isLoopbackUrl("http://localhost:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://127.0.0.1:11434/v1")).toBe(true);
+    expect(isLoopbackUrl("http://127.0.1.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("https://ollama.com/v1")).toBe(false);
   });
 });
@@ -251,6 +240,15 @@ describe("OllamaAdapter.review (mocked fetch)", () => {
     expect(res.verdict).not.toBe("PASS");
   });
 
+  it("fails closed when the response has no choices array", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-ol-noch-"));
+    process.env.OLLAMA_API_KEY = "k";
+    const fetchImpl = (async () => new Response(JSON.stringify({ usage: {} }), { status: 200 })) as unknown as typeof fetch;
+    const res = await new OllamaAdapter({ fetchImpl }).review({ cfg: baseCfg(), ...reviewArgs(dir) });
+    expect(res.status).not.toBe("ok");
+    expect(res.verdict).not.toBe("PASS");
+  });
+
   it("maps quota/usage-limit content in a 200 to quota-exhausted", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-ol-qc-"));
     process.env.OLLAMA_API_KEY = "k";
@@ -296,6 +294,24 @@ describe("OllamaAdapter.complete", () => {
     process.env.OLLAMA_API_KEY = "";
     await expect(new OllamaAdapter({ fetchImpl: okFetch("x") }).complete("x", { model: "m" })).rejects.toThrow();
   });
+
+  it("strips <think> from complete() output (thinking-model judge safety)", async () => {
+    process.env.OLLAMA_API_KEY = "k";
+    const text = await new OllamaAdapter({ fetchImpl: okFetch('<think>hmm</think>{"accept":true}') }).complete("j", { model: "m" });
+    expect(text).toBe('{"accept":true}');
+  });
+
+  it("proceeds without a key on a loopback baseUrl", async () => {
+    process.env.OLLAMA_API_KEY = "";
+    let hdr: Record<string, string> = {};
+    const fetchImpl = (async (_u: string, init: { headers: Record<string, string> }) => {
+      hdr = init.headers;
+      return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }], usage: {} }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const text = await new OllamaAdapter({ fetchImpl }).complete("j", { model: "m", baseUrl: "http://localhost:11434/v1" });
+    expect(text).toBe("ok");
+    expect(hdr.Authorization).toBeUndefined();
+  });
 });
 ```
 
@@ -339,16 +355,23 @@ interface ChatResponse {
 // Ollama serves reasoning models (e.g. glm-5.2:cloud) that may prepend a
 // <think>…</think> block to the JSON. parseReviewOutput already strips markdown
 // fences and slices { … }, but a think block can carry braces that derail the
-// slice — so remove think/thinking blocks BEFORE parsing.
+// slice — so remove think/thinking blocks BEFORE parsing. Also handle an UNCLOSED
+// opener (a thinking model that truncates at its output-token limit never emits
+// </think>): drop it up to the first "{" so the JSON answer still survives
+// (Plan-Gate CRITICAL/WARN, both reviewers).
 export function stripReasoningBlocks(text: string): string {
-  return text.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "").trim();
+  return text
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "") // paired blocks
+    .replace(/<think(?:ing)?>[\s\S]*?(?=\{)/i, "") // unclosed leading opener → up to first "{"
+    .trim();
 }
 
 // A local daemon (loopback) needs no API key; a remote endpoint (Ollama Cloud) does.
+// Accept the whole 127.0.0.0/8 range (e.g. 127.0.1.1), not just 127.0.0.1.
 export function isLoopbackUrl(url: string): boolean {
   try {
     const h = new URL(url).hostname.replace(/^\[|\]$/g, "");
-    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+    return h === "localhost" || h.startsWith("127.") || h === "::1";
   } catch {
     return false;
   }
@@ -504,7 +527,9 @@ export class OllamaAdapter implements ProviderAdapter {
       opts.signal?.removeEventListener("abort", onExternalAbort);
     }
     if (json.error?.message) throw new Error(`Ollama complete error: ${json.error.message}`);
-    return json.choices?.[0]?.message?.content ?? "";
+    // GLM is a thinking model — strip <think> so a judge/critic never receives
+    // reasoning-contaminated text (Plan-Gate WARN, GLM).
+    return stripReasoningBlocks(json.choices?.[0]?.message?.content ?? "");
   }
 }
 ```
@@ -609,7 +634,10 @@ In `PROVIDER_BIN`, add:
 ```ts
   ollama: null,
 ```
-In `isProviderAvailable`, before the `const bin = …` line, add:
+In `isProviderAvailable`, right after the existing `openrouter` branch (both key off the
+function's local `const env = deps.env ?? process.env`, already declared above — this is the SAME
+`env` the `openrouter` branch uses; the wiring test's `{ env: … }` third arg is an `AvailabilityDeps`,
+NOT a bare env record, so `env[apiKeyEnv]` resolves correctly), add:
 ```ts
   if (id === "ollama") return Boolean(env[apiKeyEnv ?? "OLLAMA_API_KEY"]);
 ```
@@ -648,7 +676,11 @@ After the `opencode` provider block (inside `providers`), add:
       costPerMTokensUsd: 0,
     },
 ```
-In the four provider-union type annotations (`critic`, `triage`, `grounding`, and `brain.curator`), append `| "ollama"` to each `"codex" | "gemini" | "claude-code" | "openrouter" | "opencode"`. Leave `brain.embeddings.provider: "openrouter"` unchanged.
+Then append `| "ollama"` to **every** provider-union type annotation — do NOT assume a fixed count (Plan-Gate WARN, GLM: the spec said "~5 sites incl. reputation / fp-ledger", the plan must not undercount). Find them all first:
+```bash
+grep -rn '"codex" | "gemini" | "claude-code" | "openrouter" | "opencode"' src/
+```
+Append `| "ollama"` to each hit. In `defaults.ts` these are `critic`, `triage`, `grounding`, and `brain.curator`; the grep surfaces any others (e.g. in reputation / fp-ledger / other modules) that a hardcoded list would miss. Leave any `provider: "openrouter"` LITERAL (e.g. `brain.embeddings.provider`) unchanged. `tsc` will NOT flag a missed annotation that is only compared at runtime, so the grep must be exhaustive — re-run it after editing and confirm zero un-extended hits remain.
 
 - [ ] **Step 7: Run tests + gates**
 
@@ -681,6 +713,8 @@ git commit -m "feat(ollama): wire ollama into config schema, defaults, registry,
 - Consumes: it, in the orchestrator sandbox decision.
 
 **Policy note (no code change):** `ollama` is deliberately NOT added to `LAST_RESORT_ORDER` (orchestrator ~511). That auto-recruits only OAuth/$0 providers as last-resort reviewers; `openrouter` is excluded because it is paid-per-token. Ollama is $0-within-subscription, but whether the plan hard-caps (429 only) or bills overage is unconfirmed — so it stays **explicit-only** like `openrouter` (usable as a reviewer/fallback/critic only when a user lists it). As a critic it is enabled purely by config (`phases.critic.provider = "ollama"`, type-allowed via Task 2's union annotations) with no code change. Flag both facts for the Plan-Gate; revisit `LAST_RESORT_ORDER` inclusion once hard-cap behavior is confirmed.
+
+**Known limitation (documented, no wiring — Plan-Gate WARN, Codex; decision: document):** `complete()` accepts `opts.baseUrl`, but the critic / curator / grounding call sites that invoke `adapter.complete()` are NOT changed to pass `cfg.providers.ollama.baseUrl` — so an Ollama used in those `complete()`-based roles hits the **cloud** default endpoint regardless of a configured localhost `baseUrl`. A **localhost-only** Ollama should therefore be used as a **reviewer** (which honors `baseUrl`), not as a critic/curator/grounding judge. Failure mode is fail-safe: a keyless cloud call throws → the judge falls back to its default (critic is demote-only → no demotion), never a wrong verdict. Wiring `opts.baseUrl` at those call sites is a deferred one-liner per site.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -726,6 +760,18 @@ to:
         this.input.sandboxMode === "off" || SUBPROCESSLESS_PROVIDERS.has(provider)
 ```
 Update the adjacent comment (~1369) to name both HTTP adapters: `openrouter AND ollama are HTTP-API adapters (no local subprocess), so sandbox-exec/bwrap — which wrap a spawned CLI — do not apply; they get no sandbox key.`
+
+- [ ] **Step 4b: Audit the OTHER `openrouter` runtime sites (SPEC Feature 5 — Plan-Gate WARN, GLM)**
+
+The spec's Feature 5 flags `provider === "openrouter"` / `"openrouter"` sites at orchestrator ~1675 and ~1958 beyond the sandbox skip. Enumerate ALL of them and decide each:
+```bash
+grep -n '"openrouter"' src/core/orchestrator.ts
+```
+For each hit that is NOT the sandbox-skip just changed:
+- **Comment-only** (e.g. the review schema-forcing note ~1958, the fallback note ~1675): if the prose names the HTTP adapters, add "ollama"; no runtime effect.
+- **Runtime `provider === "openrouter"` comparison gating HTTP-specific behavior** (a subprocess-less distinction like the sandbox one): replace with `SUBPROCESSLESS_PROVIDERS.has(provider)` so `ollama` gets the same handling. `tsc` will NOT catch a missed runtime string compare — this audit is the only guard.
+- **Deliberately openrouter-only** — `LAST_RESORT_ORDER` (~511, paid-exclusion policy) and `this.input.adapters.openrouter` (~2475, brain-embeddings lookup): confirm and leave unchanged.
+Record in the commit message which sites you found and how each was resolved.
 
 - [ ] **Step 5: Run test + gates + full suite**
 

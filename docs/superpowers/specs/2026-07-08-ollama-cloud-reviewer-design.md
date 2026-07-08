@@ -63,8 +63,9 @@ daemon instead. A single trailing-slash normalization on `baseUrl` (strip one tr
 
 **Auth.** `Authorization: Bearer <key>` is sent **only when a key resolves** (`cfg.apiKeyEnv`,
 default `OLLAMA_API_KEY`). When the key is absent AND the baseUrl is a loopback host, the request is
-sent unauthenticated (local daemon needs no key). When the key is absent AND the baseUrl is remote,
-`review()` returns `ERROR` ("OLLAMA_API_KEY not set") — same fail-fast as OpenRouter.
+sent unauthenticated (local daemon needs no key). Loopback = `localhost`, any `127.0.0.0/8` address
+(not just `127.0.0.1` — e.g. `127.0.1.1`), or `::1`. When the key is absent AND the baseUrl is
+remote, `review()` returns `ERROR` ("OLLAMA_API_KEY not set") — same fail-fast as OpenRouter.
 
 **Request body.** Identical shape to OpenRouter minus `provider` routing:
 
@@ -83,16 +84,20 @@ sent unauthenticated (local daemon needs no key). When the key is absent AND the
 `response_format` payload as-is.
 
 **Response parse — robust against reasoning contamination.** GLM is a reasoning model. Before
-`parseReviewOutput(content)`, strip:
+`parseReviewOutput(content)`, `stripReasoningBlocks(content)` removes:
 
-- `<think>…</think>` blocks (and any leading reasoning preamble), and
-- Markdown fences (```json … ```).
+- **paired** `<think>…</think>` / `<thinking>…</thinking>` blocks, AND
+- an **unclosed** leading `<think>`/`<thinking>` opener up to the first `{` — because a thinking
+  model that truncates at its output-token limit (or omits the closing tag) leaves a reasoning
+  preamble that may itself contain `{`, which would derail `parseReviewOutput`'s first-`{`…last-`}`
+  slice and fail the review closed on the *exact* model this adapter targets (Plan-Gate CONFIRMED
+  by both reviewers).
 
-Then parse. This runs regardless of whether `response_format` was honored — so a model that ignores
-strict mode and wraps its JSON still parses. Reuse `parseReviewOutput`'s existing extraction if it
-already fence-strips; add a small `stripReasoning(content)` helper otherwise. On `!out` → **fail
-CLOSED** via `errorResult` (never a zero-finding PASS), identical to OpenRouter's `!out` guard, with
-the same `isQuotaExhausted(content)` check to surface a 429 for quota/usage-limit CONTENT.
+Markdown fences are already handled by `parseReviewOutput`. This runs regardless of whether
+`response_format` was honored — so a model that ignores strict mode and wraps its JSON still parses.
+On `!out` → **fail CLOSED** via `errorResult` (never a zero-finding PASS), identical to OpenRouter's
+`!out` guard, with the same `isQuotaExhausted(content)` check to surface a 429 for quota/usage-limit
+CONTENT.
 
 **Findings mapping.** `mapReviewOutputToFindings(out, { provider: "ollama", model, persona,
 workingDir })`. `Finding.provider` is `z.string()` — **no schema change**.
@@ -110,8 +115,17 @@ short — otherwise it reintroduces the silent fail-open.
 
 **`complete()`.** Cloned from OpenRouter's `complete()` (free-form, NO review schema — a judge/critic
 routed through `review()` would get review-shaped JSON and silently no-op). Same endpoint-from-
-baseUrl + conditional-auth + signal-forwarding. This makes `ollama` usable as a critic / curator
-judge. **No `embed()`.**
+baseUrl + conditional-auth + signal-forwarding. It also runs `stripReasoningBlocks` on the returned
+content — GLM is a thinking model, so a judge/critic must not receive `<think>`-contaminated text
+(Plan-Gate WARN, GLM). This makes `ollama` usable as a critic / curator judge. **No `embed()`.**
+
+**Known limitation — `complete()`-based roles target the cloud endpoint.** `CompleteOptions` gains
+an optional `baseUrl`, and `complete()` honors it, but the critic / curator / grounding call sites
+that invoke `adapter.complete()` are NOT wired to pass `cfg.providers.ollama.baseUrl` (deferred —
+YAGNI). So an Ollama used as a **critic/curator/grounding** judge hits the **cloud** default; a
+**localhost-only** Ollama (no cloud key) should be used as a **reviewer** (which honors `baseUrl`),
+not as a `complete()`-based judge. The failure mode is fail-safe: a keyless cloud call throws → the
+judge falls back to its default verdict (critic is demote-only → no demotion), never a wrong verdict.
 
 ## Feature 2 — config surface
 
