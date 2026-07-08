@@ -64,11 +64,19 @@ Expected: `HTTP 200`, `CONTENT` is (or contains) review-shaped JSON. Record: doe
 
 - [ ] **Step 3: Decide + record**
 
-- If JSON is clean and schema-valid → proceed with `/v1` + `response_format` (the plan's default).
-- If `<think>` appears → confirms the `stripReasoningBlocks` need in Task 1 (already planned).
-- If `response_format` strict is rejected/ignored AND output is unusable → switch the adapter to the native `/api/chat` fallback. This is NOT a drop-in: the request body uses `format: <schema>` (not `response_format`) and `stream:false`, and the RESPONSE SHAPE differs — the answer is at **`json.message.content`**, not `json.choices[0].message.content`. So Task 1's `ChatResponse` interface, the `endpointFrom` path (`/api/chat`, no `/chat/completions`), the request body, and the content-extraction line all change together. **Note this outcome in the Task 1 commit message** and adjust the Task 1 tests' mock response shape to match.
+**DONE — outcome recorded 2026-07-08 (ran against the live localhost `/v1` daemon, no key needed):**
+- `/v1` accepts `response_format: json_schema strict` (HTTP 200) but does **NOT enforce** it. A bare
+  prompt → fenced, non-conforming output (`severity:"warning"`, `summary`, `suggestion`).
+- A **schema-describing prompt** (what the orchestrator already sends — proven by non-enforcing
+  claude/gemini adapters working) → **clean, fence-free, `<think>`-free, fully conforming** JSON:
+  `parseReviewOutput` OK, `mapReviewOutputToFindingsCounted` = 1 finding, **0 dropped**,
+  `{severity:"WARN", category:"correctness", rule_id:"no-loose-equality"}`.
+- **Decision: proceed with `/v1` + `response_format` as the plan's default.** Conformance is
+  prompt-driven, NOT response_format-enforced — the adapter keeps sending `response_format` (harmless
+  belt) but relies on the prompt + robust parse. **Native `/api/chat` fallback NOT needed.** No Task 1
+  code change from this outcome.
 
-Delete `scripts/ollama-smoke.ts` after (no commit). This task has no automated test — it is a manual de-risking probe.
+Delete the smoke script after (no commit). This task has no automated test — it is a manual de-risking probe.
 
 ---
 

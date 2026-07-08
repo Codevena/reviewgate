@@ -43,14 +43,27 @@ Explicitly OUT (YAGNI):
 - **`reasoningEffort` mapping** — not plumbed; GLM thinking control is out of scope.
 - **Threading `baseUrl` into `isProviderAvailable`** — availability stays key-based (see Feature 4).
 
-## Motivation is a verifiable wager, not an assumption
+## Motivation is a verifiable wager — RESOLVED (Task 0, 2026-07-08)
 
-The 2026-07-08 reliability data was collected on the **local daemon native path**
-(`http://localhost:11434/api/chat`, prompt-instructed FINDINGS format — NOT `response_format`). This
-design ships the **cloud-direct `/v1` + API-key path with `response_format: json_schema`**, which
-**no one has verified yet**. Per the repo's real-verification rule, implementation MUST include one
-real live call against `glm-5.2:cloud` before the feature is called done (see Testing). The unit
-tests use stubs; they cannot catch a compat-shim structured-output failure.
+A live pre-flight against `http://localhost:11434/v1/chat/completions` with `glm-5.2:cloud` and the
+real `REVIEW_OUTPUT_SCHEMA` resolved the wager:
+
+- The `/v1` endpoint **accepts** `response_format: json_schema` `strict:true` (HTTP 200, no 400) — the
+  request shape is valid — but does **NOT enforce** it. With a bare prompt the model returned a
+  fenced, non-conforming shape (`severity:"warning"`, `summary`, `suggestion`).
+- With a **schema-describing prompt** (which is what the orchestrator's reviewer prompt already is —
+  proven by the non-enforcing claude/gemini CLI adapters working in production) the model returned
+  **clean, fence-free, `<think>`-free, fully conforming JSON**: `parseReviewOutput` → OK,
+  `mapReviewOutputToFindingsCounted` → 1 finding, **0 dropped**, `{severity:"WARN",
+  category:"correctness", rule_id:"no-loose-equality"}`.
+
+**Conclusion:** conformance is **prompt-driven** (like claude/gemini), not `response_format`-enforced.
+The adapter still SENDS `response_format` (harmless belt, may help cloud-direct/other backends) but
+must NOT depend on it — reliability comes from the orchestrator prompt + robust parsing
+(`stripReasoningBlocks` + `parseReviewOutput` fence handling + `lastBalancedJsonObject`). The native
+`/api/chat` fallback is therefore **not needed**. Still unverified (Task 6, needs the key): the
+cloud-direct `https://ollama.com/v1` endpoint + `OLLAMA_API_KEY` auth — the model behavior above is
+identical (same `glm-5.2:cloud` backend), only the endpoint/auth differ.
 
 ## Feature 1 — the `ollama` adapter (`src/providers/ollama.ts`)
 
