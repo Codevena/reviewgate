@@ -1366,12 +1366,12 @@ export class Orchestrator {
       // sandbox key (unisolated, the trusted-local default). strict + isolation-
       // unavailable → spawnSafely throws SandboxUnavailableError, caught below and
       // turned into a fail-closed ERROR for THIS reviewer (never a silent PASS).
-      // openrouter is an HTTP-API adapter (no local subprocess), so sandbox-exec —
-      // which wraps a spawned CLI — does not apply; it gets no sandbox key. The
-      // four CLI providers (codex/claude-code/gemini/opencode) match the profile
-      // builder's ProviderId.
+      // openrouter and ollama are both HTTP-API adapters (no local subprocess), so
+      // sandbox-exec — which wraps a spawned CLI — does not apply; they get no
+      // sandbox key. The four CLI providers (codex/claude-code/gemini/opencode)
+      // match the profile builder's (narrower, local) ProviderId.
       const sandbox =
-        this.input.sandboxMode === "off" || provider === "openrouter"
+        this.input.sandboxMode === "off" || provider === "openrouter" || provider === "ollama"
           ? undefined
           : {
               profile: buildSandboxProfile({

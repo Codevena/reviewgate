@@ -35,12 +35,13 @@ export interface CustomAnswers {
   openrouterProvider?: string;
 }
 
-const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter"> = {
+const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter" | "apikey"> = {
   codex: "oauth",
   gemini: "oauth",
   "claude-code": "oauth",
   opencode: "oauth",
   openrouter: "openrouter",
+  ollama: "apikey",
 };
 
 // Enables each used provider with its chosen model. apiKeyEnv is set for openrouter,

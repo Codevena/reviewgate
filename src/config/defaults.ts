@@ -52,6 +52,19 @@ export const defaultConfig = {
       model: "default",
       timeoutMs: 300_000,
     },
+    // Ollama Cloud reviewer (OpenAI-compat /v1). $0 within the subscription quota.
+    // Point baseUrl at http://localhost:11434/v1 to use a local `ollama serve`
+    // daemon instead (loopback needs no key; a placeholder OLLAMA_API_KEY still
+    // registers it as available — availability is key-based, see availability.ts).
+    ollama: {
+      enabled: false,
+      auth: "apikey" as const,
+      apiKeyEnv: "OLLAMA_API_KEY",
+      model: "glm-5.2:cloud",
+      baseUrl: "https://ollama.com/v1",
+      timeoutMs: 300_000,
+      costPerMTokensUsd: 0,
+    },
   },
   phases: {
     review: {
@@ -144,18 +157,18 @@ export const defaultConfig = {
       deltaReview: true,
     },
     critic: null as null | {
-      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
       model?: string;
       persona: string;
     },
     triage: null as null | {
-      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
       model?: string;
     },
     // S6 grounding layer 2 (LLM judge) — default OFF (opt-in). Enable with a cheap
     // provider (e.g. openrouter/deepseek-v4-flash) to demote fabricated CRITICALs.
     grounding: null as null | {
-      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+      provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
       model?: string;
     },
     checks: null as null | {
@@ -172,7 +185,7 @@ export const defaultConfig = {
       enabled: boolean;
       maxPromptTokens: number;
       curator?: {
-        provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+        provider: "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
         model?: string;
         persona: string;
       };

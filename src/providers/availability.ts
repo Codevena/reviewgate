@@ -9,6 +9,7 @@ export const PROVIDER_BIN: Record<ProviderId, string | null> = {
   "claude-code": "claude",
   opencode: "opencode",
   openrouter: null,
+  ollama: null,
 };
 
 export interface AvailabilityDeps {
@@ -93,6 +94,7 @@ export function isProviderAvailable(
   const env = deps.env ?? (process.env as Record<string, string | undefined>);
   const probe = deps.probeBin ?? defaultProbeBin;
   if (id === "openrouter") return Boolean(env[apiKeyEnv ?? "OPENROUTER_API_KEY"]);
+  if (id === "ollama") return Boolean(env[apiKeyEnv ?? "OLLAMA_API_KEY"]);
   const bin = PROVIDER_BIN[id];
   return bin ? probe(bin) : false;
 }

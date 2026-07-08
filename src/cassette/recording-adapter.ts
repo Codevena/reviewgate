@@ -98,15 +98,13 @@ export class RecordingAdapter implements ProviderAdapter {
   ) {
     // Fail fast on an out-of-bounds cassette path (env-supplied) BEFORE any write.
     assertContainedCassettePath(path);
-    // real.id is typed as ProviderAdapter["id"], which can be AHEAD of the registry's
-    // ProviderId during an in-flight provider rollout — adapter-base.ts's id union
-    // widens in the same commit that adds the new adapter (e.g. "ollama"), while
-    // registry.ts's ProviderId (and the persisted CassetteEntry["provider"] schema,
-    // src/schemas/cassette.ts) only widen once that provider is wired into the
-    // registry/config. Recording/replay only supports registry-known providers today,
-    // so narrow here rather than widen the field (which would just push the same
-    // mismatch into the CassetteEntry schema write below).
-    this.id = real.id as ProviderId;
+    // real.id (ProviderAdapter["id"]) and registry.ts's ProviderId are back in sync
+    // now that "ollama" is wired into the registry/config (Task 2) — both unions list
+    // exactly the same 6 ids, so this is a plain assignment again (no cast needed).
+    // A FUTURE in-flight adapter rollout (adapter-base.ts widens id before the new
+    // provider is wired into registry.ts/cassette.ts) would need the narrowing cast
+    // back; see git history on this line for the prior wording.
+    this.id = real.id;
     const realEmbed = (real as { embed?: EmbedFn }).embed;
     if (typeof realEmbed === "function") {
       this.embed = async (text, opts) => {

@@ -9,6 +9,7 @@ export const ProviderIdSchema = z.enum([
   "claude-code",
   "openrouter",
   "opencode",
+  "ollama",
 ]);
 
 const ReviewStatusSchema = z.enum(["ok", "error", "abstain", "timeout", "quota-exhausted"]);

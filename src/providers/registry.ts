@@ -3,10 +3,11 @@ import type { ProviderAdapter } from "./adapter-base.ts";
 import { ClaudeAdapter } from "./claude.ts";
 import { CodexAdapter } from "./codex.ts";
 import { GeminiAdapter } from "./gemini.ts";
+import { OllamaAdapter } from "./ollama.ts";
 import { OpenCodeAdapter } from "./opencode.ts";
 import { OpenRouterAdapter } from "./openrouter.ts";
 
-export type ProviderId = "codex" | "gemini" | "claude-code" | "openrouter" | "opencode";
+export type ProviderId = "codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama";
 
 export function createAdapter(id: ProviderId): ProviderAdapter {
   switch (id) {
@@ -20,5 +21,7 @@ export function createAdapter(id: ProviderId): ProviderAdapter {
       return new OpenRouterAdapter();
     case "opencode":
       return new OpenCodeAdapter();
+    case "ollama":
+      return new OllamaAdapter();
   }
 }

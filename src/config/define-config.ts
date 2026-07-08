@@ -28,9 +28,11 @@ export const ProviderConfigSchema = z.object({
       allowFallbacks: z.boolean().optional(),
     })
     .optional(),
+  // Ollama-only: OpenAI-compat base URL (default https://ollama.com/v1). Other providers ignore it.
+  baseUrl: z.string().url().optional(),
 });
 
-const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
+const ProviderId = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode", "ollama"]);
 
 export const ConfigSchema = z.object({
   version: z.literal(1),
@@ -40,6 +42,7 @@ export const ConfigSchema = z.object({
     "claude-code": ProviderConfigSchema.optional(),
     openrouter: ProviderConfigSchema.optional(),
     opencode: ProviderConfigSchema.optional(),
+    ollama: ProviderConfigSchema.optional(),
   }),
   phases: z.object({
     review: z.object({

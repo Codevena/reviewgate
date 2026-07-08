@@ -70,7 +70,14 @@ const GenAi = z.object({
   "response.finish_reasons": z.array(z.string()).optional(),
 });
 
-const ProviderIdEnum = z.enum(["codex", "gemini", "claude-code", "openrouter", "opencode"]);
+export const ProviderIdEnum = z.enum([
+  "codex",
+  "gemini",
+  "claude-code",
+  "openrouter",
+  "opencode",
+  "ollama",
+]);
 
 export const ProviderStatSchema = z.object({
   provider: ProviderIdEnum,

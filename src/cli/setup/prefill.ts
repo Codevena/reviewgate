@@ -9,6 +9,7 @@ export const MODEL_DEFAULT: Record<ProviderId, string> = {
   "claude-code": defaultConfig.providers["claude-code"].model,
   openrouter: defaultConfig.providers.openrouter.model,
   opencode: defaultConfig.providers.opencode.model,
+  ollama: defaultConfig.providers.ollama.model,
 };
 
 export interface WizardDefaults {
