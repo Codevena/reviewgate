@@ -773,6 +773,7 @@ Then run these to prove no OTHER tsc-breaking site is missed:
 grep -rn 'Record<ProviderId\|z\.enum(\[' src/ | grep -iE 'provider'
 bunx tsc --noEmit
 ```
+Expected: the grep also surfaces `src/sandbox/profile-builder.ts`'s two `Record<ProviderId, …>` tables — these need **NO** edit: that file defines its OWN narrower local `ProviderId` (the 4 CLI providers, excluding even `openrouter`), so the registry-union change does not reach them. Every other full `Record<ProviderId>` is the 4 handled above; the rest are `Partial<…>` (no required key). `tsc` staying green confirms completeness.
 
 - [ ] **Step 7: Run tests + gates**
 
