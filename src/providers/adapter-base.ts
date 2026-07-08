@@ -38,6 +38,8 @@ export interface ProviderConfig {
   costPerMTokensUsd?: number;
   /** OpenRouter-only: upstream-provider routing (see OpenRouterProviderRouting). */
   openrouterProvider?: OpenRouterProviderRouting;
+  /** Ollama-only: OpenAI-compat base URL (default https://ollama.com/v1). Other providers ignore it. */
+  baseUrl?: string;
 }
 
 export interface Preflight {
@@ -113,10 +115,12 @@ export interface CompleteOptions {
   // (loop.runTimeoutMs). Adapters MUST forward this to spawnSafely / their fetch
   // controller so a judge or critic running under the deadline is cut short too.
   signal?: AbortSignal;
+  /** Ollama-only: OpenAI-compat base URL for the completion (critic/judge on a non-cloud daemon). */
+  baseUrl?: string;
 }
 
 export interface ProviderAdapter {
-  readonly id: "codex" | "claude-code" | "gemini" | "openrouter" | "opencode";
+  readonly id: "codex" | "claude-code" | "gemini" | "openrouter" | "opencode" | "ollama";
   preflight(cfg: ProviderConfig): Promise<Preflight>;
   review(input: ReviewInput & { cfg: ProviderConfig; reviewerId: string }): Promise<ReviewResult>;
   /**
