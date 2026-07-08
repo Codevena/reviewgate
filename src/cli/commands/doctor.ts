@@ -109,7 +109,9 @@ export function curatorCheck(cfg: ReviewgateConfig, available: ProviderAvailable
       hint:
         id === "openrouter"
           ? "Set OPENROUTER_API_KEY in your environment (the curator uses it for completions)."
-          : `Install/authenticate the '${id}' CLI — the curator runs it via complete().`,
+          : id === "ollama"
+            ? "Set OLLAMA_API_KEY in your environment (Ollama Cloud), or point providers.ollama.baseUrl at a local daemon."
+            : `Install/authenticate the '${id}' CLI — the curator runs it via complete().`,
     };
   }
   const alsoReviewer = cfg.phases.review.reviewers.some((r) => r.provider === id);
@@ -141,7 +143,9 @@ export function criticCheck(cfg: ReviewgateConfig, available: ProviderAvailable)
       hint:
         id === "openrouter"
           ? "Set OPENROUTER_API_KEY in your environment."
-          : `Install/authenticate the '${id}' CLI — the critic runs it.`,
+          : id === "ollama"
+            ? "Set OLLAMA_API_KEY in your environment (Ollama Cloud), or point providers.ollama.baseUrl at a local daemon."
+            : `Install/authenticate the '${id}' CLI — the critic runs it.`,
     };
   }
   return { name, status: "ok", detail: id };
@@ -164,7 +168,9 @@ export function groundingCheck(cfg: ReviewgateConfig, available: ProviderAvailab
       hint:
         id === "openrouter"
           ? "Set OPENROUTER_API_KEY in your environment (the grounding judge uses it for completions)."
-          : `Install/authenticate the '${id}' CLI — the grounding judge runs it via complete().`,
+          : id === "ollama"
+            ? "Set OLLAMA_API_KEY in your environment (Ollama Cloud), or point providers.ollama.baseUrl at a local daemon."
+            : `Install/authenticate the '${id}' CLI — the grounding judge runs it via complete().`,
     };
   }
   return { name, status: "ok", detail: id };
