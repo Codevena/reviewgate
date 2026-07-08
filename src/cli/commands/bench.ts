@@ -56,6 +56,7 @@ const KNOWN_PROVIDERS: ReadonlySet<string> = new Set([
   "claude-code",
   "openrouter",
   "opencode",
+  "ollama",
 ]);
 
 export interface BenchRunInput {
