@@ -151,11 +151,12 @@ describe("stripReasoningBlocks", () => {
 });
 
 describe("isLoopbackUrl", () => {
-  it("detects localhost / 127.0.0.0/8 / ::1, rejects remote", () => {
+  it("detects localhost / 127.0.0.0/8 / ::1, rejects remote and 127-prefixed hostnames", () => {
     expect(isLoopbackUrl("http://localhost:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://127.0.0.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("http://127.0.1.1:11434/v1")).toBe(true);
     expect(isLoopbackUrl("https://ollama.com/v1")).toBe(false);
+    expect(isLoopbackUrl("http://127.evil/v1")).toBe(false); // NOT a numeric 127.0.0.0/8 addr
   });
 });
 
@@ -367,11 +368,13 @@ export function stripReasoningBlocks(text: string): string {
 }
 
 // A local daemon (loopback) needs no API key; a remote endpoint (Ollama Cloud) does.
-// Accept the whole 127.0.0.0/8 range (e.g. 127.0.1.1), not just 127.0.0.1.
+// Accept the whole 127.0.0.0/8 range (e.g. 127.0.1.1) but validate a NUMERIC IPv4 —
+// a prefix match like startsWith("127.") would treat a hostname such as "127.evil"
+// as loopback and bypass the remote-key requirement (Plan-Gate WARN, Codex).
 export function isLoopbackUrl(url: string): boolean {
   try {
     const h = new URL(url).hostname.replace(/^\[|\]$/g, "");
-    return h === "localhost" || h.startsWith("127.") || h === "::1";
+    return h === "localhost" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
   } catch {
     return false;
   }
