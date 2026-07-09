@@ -17,6 +17,7 @@ describe("RECOMMENDED_DEFAULTS", () => {
     expect(RECOMMENDED_DEFAULTS.critic).toBeNull();
     expect(RECOMMENDED_DEFAULTS.brainCurator).toBeNull();
     expect(RECOMMENDED_DEFAULTS.fpLedger).toBe(true);
+    expect(RECOMMENDED_DEFAULTS.agentLessons).toBe(true);
     expect(RECOMMENDED_DEFAULTS.contextDocs).toBe(false);
     expect(RECOMMENDED_DEFAULTS.reputation).toBe(true);
   });
@@ -35,6 +36,7 @@ describe("answersFromConfig", () => {
         },
         critic: { provider: "opencode", persona: "fp-filter" },
         fpLedger: { enabled: true },
+        agentLessons: { enabled: true },
         contextDocs: { enabled: true },
         reputation: { enabled: true },
         brain: {
@@ -59,6 +61,7 @@ describe("answersFromConfig", () => {
     });
     expect(d.brainCurator?.provider).toBe("codex");
     expect(d.fpLedger).toBe(true);
+    expect(d.agentLessons).toBe(true);
     expect(d.contextDocs).toBe(true);
     expect(d.reputation).toBe(true);
   });
@@ -69,6 +72,7 @@ describe("answersFromConfig", () => {
     expect(d.critic).toBeNull();
     expect(d.brainCurator).toBeNull();
     expect(d.fpLedger).toBe(false);
+    expect(d.agentLessons).toBe(false);
     // phases.reputation defaults ON in the schema, so a bare config reads back enabled.
     expect(d.reputation).toBe(true);
   });

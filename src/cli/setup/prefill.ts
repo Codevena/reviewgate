@@ -21,6 +21,7 @@ export interface WizardDefaults {
   fpLedger: boolean;
   contextDocs: boolean;
   reputation: boolean;
+  agentLessons: boolean;
   /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
    *  re-run prompt. Empty string = none. */
   openrouterProvider: string;
@@ -40,6 +41,7 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   fpLedger: true,
   contextDocs: false,
   reputation: true,
+  agentLessons: true,
   openrouterProvider: "",
   ollamaEndpoint: "cloud",
 };
@@ -84,6 +86,7 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     critic,
     brainCurator,
     fpLedger: Boolean(cfg.phases.fpLedger?.enabled),
+    agentLessons: Boolean(cfg.phases.agentLessons?.enabled),
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
     openrouterProvider,

@@ -378,6 +378,13 @@ async function runCustom(
   });
   if (isCancel(rep)) return null;
 
+  const lessons = await confirm({
+    message:
+      "Enable Agent Lessons (inject the agent's recurring, verified past mistakes at SessionStart)?",
+    initialValue: defaults.agentLessons,
+  });
+  if (isCancel(lessons)) return null;
+
   const ctx = await confirm({
     message: "Enable contextDocs (inject current library docs)?",
     initialValue: defaults.contextDocs,
@@ -435,6 +442,7 @@ async function runCustom(
     fpLedger: Boolean(fp),
     contextDocs: Boolean(ctx),
     reputation: Boolean(rep),
+    agentLessons: Boolean(lessons),
     ...(openrouterProvider ? { openrouterProvider } : {}),
     ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
   });

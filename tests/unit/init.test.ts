@@ -168,6 +168,9 @@ describe("runInit", () => {
     // Must load + validate through the real loader (catches a malformed scaffold).
     const cfg = await loadConfig(cfgPath);
     expect(cfg.phases.fpLedger?.enabled).toBe(true);
+    // Agent Lessons must be surfaced in the scaffold so new users can configure
+    // it in setup — the agent-facing learning loop (accepted+fixed -> SessionStart).
+    expect(cfg.phases.agentLessons?.enabled).toBe(true);
     expect(cfg.phases.brain?.enabled).toBe(true);
     expect(cfg.phases.brain?.curator?.provider).toBe("opencode");
     // openrouter must be enabled — the brain's embeddings depend on it.

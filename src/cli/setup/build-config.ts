@@ -29,6 +29,11 @@ export interface CustomAnswers {
   fpLedger: boolean;
   contextDocs: boolean;
   reputation: boolean;
+  /** Agent Lessons — the agent-facing twin of the FP-ledger: accepted+fixed
+   *  findings (verified real agent mistakes) are distilled into recurring
+   *  patterns and injected at SessionStart as advisory context. Render-only,
+   *  never verdict-affecting. false → phases.agentLessons = null (schema off). */
+  agentLessons: boolean;
   /** OpenRouter upstream-provider slug to pin (e.g. "deepseek" for deepseek/*
    *  models). Empty/absent → auto-route. Written as providers.openrouter
    *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
@@ -104,6 +109,9 @@ export function buildQuickPreset(input: QuickInput): DeepPartial<ReviewgateConfi
       },
       fpLedger: { enabled: true },
       reputation: { enabled: true },
+      // Agent Lessons: recommended ON like the fpLedger — fail-safe/advisory,
+      // and it is the only learning loop that teaches the AGENT (not reviewers).
+      agentLessons: { enabled: true },
       ...brainPhase,
     },
   } as DeepPartial<ReviewgateConfig>;
@@ -128,6 +136,8 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
     },
     fpLedger: { enabled: a.fpLedger },
     reputation: { enabled: a.reputation },
+    // null (not {enabled:false}) is the schema's documented off-state.
+    agentLessons: a.agentLessons ? { enabled: true } : null,
   };
   if (a.critic) {
     const criticEntry: Record<string, unknown> = {
