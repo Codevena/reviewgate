@@ -468,26 +468,22 @@ export function cooldownEffectFor(
 //     the 4h cap in a single review). We collapse to ONE effect per provider, with
 //     precedence clear > parsed > default: a provider that ran ok in ANY slot must win
 //     (it demonstrably works), and a known reset beats a guessed backoff.
-//  2. Suppress default-source backoff on a gate self-deadline abort. The deadline
-//     `ac.abort()` SIGKILLs healthy reviewers mid-run; they surface as error/timeout
-//     with a large durationMs and would be wrongly cooled down. The per-task
-//     `timeoutCooldownMs` snapshot can't catch this (it reads signal.aborted at task
-//     START, before the deadline fires), so we re-check abort state HERE. parsed resets
-//     (a real quota banner) and clears still apply — they are not the abort's doing.
-//     KNOWN TRADE-OFF (deliberate): this suppression is run-level, not per-reviewer —
-//     the effect objects don't carry each run's kill cause, so a reviewer that hit its
-//     OWN timeout BEFORE the deadline also loses its (legitimate) backoff this cycle.
-//     Bounded and self-correcting: that provider is re-attempted next turn and cooled
-//     then (if that turn isn't also aborted), and on an aborted run it ran in parallel
-//     under the same deadline so the delayed cooldown costs no wall-clock. Strictly the
-//     lesser evil vs. the alternative (over-cooling HEALTHY reviewers → hours-long
-//     panel-wide gate closure). Per-reviewer precision would need killedByAbort threaded
-//     through every adapter into ReviewResult — not worth it for this benign delay.
+//  2. Abort attribution happens PER EFFECT, at settle time — not here. The panel's
+//     `effectFor` closure reads `signal.aborted` the moment each reviewer settles:
+//     a reviewer killed BY the deadline abort settles with the signal already
+//     aborted and gets `timeoutCooldownMs=0` (no backoff — the gate tore it down,
+//     not the provider's fault), while one that hit its OWN timeout BEFORE the
+//     deadline settles pre-abort and keeps its (legitimate) backoff. The previous
+//     run-level suppression here dropped that legitimate backoff whenever the run
+//     was later aborted, so a genuinely-hung reviewer was never cooled and the next
+//     run re-burned the identical slow chain until review-timeout escalation
+//     (FlashBuddy field report 2026-07-08). Residual imprecision: a reviewer whose
+//     settle races the abort by milliseconds loses one legitimate backoff for one
+//     cycle — benign and self-correcting.
 export function applyCooldownEffects(
   store: QuotaCooldownStore,
   effects: CooldownEffect[],
   now: Date,
-  aborted: boolean,
 ): void {
   const rank = (e: CooldownEffect): number => ("clear" in e ? 2 : e.source === "parsed" ? 1 : 0);
   const byProvider = new Map<ProviderId, CooldownEffect>();
@@ -498,7 +494,7 @@ export function applyCooldownEffects(
   for (const e of byProvider.values()) {
     if ("clear" in e) store.clear(e.provider);
     else if (e.source === "parsed") store.record(e.provider, e.resetAt, now, "parsed");
-    else if (!aborted) store.recordBackoff(e.provider, now, e.reason);
+    else store.recordBackoff(e.provider, now, e.reason);
   }
 }
 
@@ -1586,16 +1582,25 @@ export class Orchestrator {
           // as the gate self-deadline abort. Suppress the cooldown so a small-diff cap never
           // wrongly cools/penalises a healthy reviewer.
           const triageCapActive = (triage.reviewerTimeoutCapMs ?? null) !== null;
-          const timeoutCooldownMs =
-            opts.signal?.aborted || triageCapActive
-              ? 0
-              : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
+          const configuredTimeoutCooldownMs = triageCapActive
+            ? 0
+            : (this.input.config.loop.timeoutCooldownMs ?? TIMEOUT_COOLDOWN_MS);
           // F-01: anchor each effect at a FRESH clock read (the run has just
           // settled), not the pre-panel `now` — a parsed relative reset
           // ("retry after N seconds") anchored at panel START would under-cool
           // by the run's duration (minutes on a timed-out reviewer).
+          // Abort attribution is read at CALL time (this reviewer just settled),
+          // not snapshotted at task start: a reviewer that hit its OWN timeout
+          // pre-abort keeps its backoff (breaks the repeated-timeout treadmill);
+          // one killed BY the deadline abort settles post-abort and is not
+          // penalized. See applyCooldownEffects' docblock.
           const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
-            cooldownEffectFor(provider, res, this.input.now?.() ?? new Date(), timeoutCooldownMs);
+            cooldownEffectFor(
+              provider,
+              res,
+              this.input.now?.() ?? new Date(),
+              opts.signal?.aborted ? 0 : configuredTimeoutCooldownMs,
+            );
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;
@@ -1741,10 +1746,9 @@ export class Orchestrator {
       .filter((x): x is { run: ReviewerRun; effects: CooldownEffect[] } => x !== null);
     const settled = taskResults.map((t) => t.run);
     // Apply quota-cooldown effects once, after the parallel panel settles (one writer).
-    // Covers the primary AND every fallback tried this run. Deduped per provider, and
-    // default-source backoffs are suppressed if THIS run was aborted by the gate
-    // self-deadline (re-checked here, not from the per-task snapshot) — see
-    // applyCooldownEffects.
+    // Covers the primary AND every fallback tried this run. Deduped per provider.
+    // Abort attribution already happened per effect at settle time (effectFor reads
+    // signal.aborted when each reviewer settles) — see applyCooldownEffects' docblock.
     // F-01: apply with a FRESH timestamp, not the pre-panel `now` — recordBackoff
     // computes reset_at/recorded_at from this value, and a panel can run for
     // minutes (up to loop.runTimeoutMs). Anchored at panel start, a timed-out
@@ -1756,7 +1760,6 @@ export class Orchestrator {
       cooldownStore,
       taskResults.flatMap((t) => t.effects),
       this.input.now?.() ?? new Date(),
-      opts.signal?.aborted ?? false,
     );
     // Permissive fallback WARN: under mode "permissive" with the OS sandbox unavailable,
     // spawnSafely ran the reviewer UNISOLATED (it never throws — it

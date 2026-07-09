@@ -95,30 +95,35 @@ describe("applyCooldownEffects", () => {
       { provider: "claude-code", source: "default", reason: "timeout" },
       { provider: "claude-code", source: "default", reason: "timeout" },
     ];
-    applyCooldownEffects(s, effects, NOW, false);
+    applyCooldownEffects(s, effects, NOW);
     expect(s.activeUntil("claude-code", NOW)).toBe(
       new Date(NOW.getTime() + FIVE_MIN).toISOString(),
     );
   });
 
-  it("suppresses default-source backoff when the run was aborted (self-deadline)", () => {
-    // The gate self-deadline SIGKILLs healthy reviewers (error/timeout, large duration).
-    // They must NOT be cooled down — that is the gate's teardown, not the provider's fault.
+  it("applies default-source backoffs unconditionally (abort attribution is the CALLER's job)", () => {
+    // Since the per-settle attribution fix, an effect only EXISTS if the reviewer's
+    // failure was attributable to the provider at settle time: the panel's effectFor
+    // passes timeoutCooldownMs=0 for a reviewer that settled after the deadline abort
+    // (cooldownEffectFor then returns null — covered above). A default-source effect
+    // that reaches this function must therefore always be recorded; the old run-level
+    // `aborted` suppression here is exactly what let a genuinely-hung reviewer escape
+    // its backoff and re-burn the identical chain every turn (FlashBuddy 2026-07-08).
     const s = new QuotaCooldownStore(repo());
     applyCooldownEffects(
       s,
       [{ provider: "claude-code", source: "default", reason: "timeout" }],
       NOW,
-      true,
     );
-    expect(s.activeUntil("claude-code", NOW)).toBeNull();
-    expect(s.skipUntil("claude-code", NOW)).toBeNull();
+    expect(s.activeUntil("claude-code", NOW)).toBe(
+      new Date(NOW.getTime() + FIVE_MIN).toISOString(),
+    );
   });
 
-  it("still records a PARSED reset on an aborted run (a real quota banner ≠ the abort)", () => {
+  it("records a PARSED reset (a real quota banner is always the provider's own signal)", () => {
     const s = new QuotaCooldownStore(repo());
     const resetAt = new Date(NOW.getTime() + 3_600_000).toISOString();
-    applyCooldownEffects(s, [{ provider: "codex", resetAt, source: "parsed" }], NOW, true);
+    applyCooldownEffects(s, [{ provider: "codex", resetAt, source: "parsed" }], NOW);
     expect(s.activeUntil("codex", NOW)).toBe(resetAt);
   });
 
@@ -131,7 +136,6 @@ describe("applyCooldownEffects", () => {
         { provider: "gemini", clear: true },
       ],
       NOW,
-      false,
     );
     expect(s.activeUntil("gemini", NOW)).toBeNull();
   });
@@ -146,7 +150,6 @@ describe("applyCooldownEffects", () => {
         { provider: "gemini", resetAt, source: "parsed" },
       ],
       NOW,
-      false,
     );
     expect(s.activeUntil("gemini", NOW)).toBe(resetAt);
   });
