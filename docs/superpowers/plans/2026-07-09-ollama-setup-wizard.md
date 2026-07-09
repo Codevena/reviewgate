@@ -277,7 +277,7 @@ export function ollamaNotes(input: {
 ```
 Delete the old private `REVIEWER_PROVIDERS`/`authFor` definitions.
 
-- [ ] **Step 5: Run pure-helper + prefill tests + gates** — `bun test tests/unit/setup-wizard-ollama.test.ts tests/unit/setup-prefill.test.ts && bunx tsc --noEmit && bun run lint` → PASS/clean. (tsc now flags the `runCustom` call sites using the changed helpers — fixed in Step 6.)
+- [ ] **Step 5: Run the new unit tests** — `bun test tests/unit/setup-wizard-ollama.test.ts tests/unit/setup-prefill.test.ts` → PASS. **Do NOT run `bunx tsc --noEmit` yet:** widening `authFor`'s return type intentionally breaks the not-yet-widened `runCustom`/`promptModelWithProbe` call sites, so tsc is EXPECTED to fail between Step 4 and Step 6. `bun test` transpiles without type-checking, so these tests still run. The full `tsc --noEmit` + `lint` gate is Step 7, after Step 6 wires `runCustom`.
 
 - [ ] **Step 6: Wire the interactive `runCustom` walk**
 
@@ -345,9 +345,10 @@ async function promptModelWithProbe(
   baseUrl?: string,
 ): Promise<string | null> {
   // …loop…
+    const keyEnv = apiKeyEnvFor(provider); // hoist: a double call yields `string | undefined`, tripping TS2379 under exactOptionalPropertyTypes
     const r = await probeModel({
       provider, model: chosen, auth,
-      ...(apiKeyEnvFor(provider) ? { apiKeyEnv: apiKeyEnvFor(provider) } : {}),
+      ...(keyEnv ? { apiKeyEnv: keyEnv } : {}),
       ...(baseUrl ? { baseUrl } : {}),
     });
   // …remainder…

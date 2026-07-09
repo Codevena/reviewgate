@@ -82,8 +82,9 @@ tests + a functional check):
   `apiKeyEnvFor(p) ? "no API key" : "CLI not found"` (a provider needs a key iff it HAS a key env — no
   coupling to `SUBPROCESSLESS_PROVIDERS`).
 - `avail(p)` passes `apiKeyEnvFor(p)` as the apiKeyEnv (generalizing the openrouter-only special-case).
-- `ollamaNotes({ usedAsReviewer, usedAsJudge, endpoint, keyPresent }): string[]` (new, pure) — the
-  endpoint-aware advisory lines, so the tricky conditional wording is unit-tested:
+- `ollamaNotes({ usedAsJudge, endpoint, keyPresent }): string[]` (new, pure) — the endpoint-aware
+  advisory lines, so the tricky conditional wording is unit-tested (`endpoint` can only be `"local"`
+  when ollama is a reviewer, so a separate `usedAsReviewer` flag is unnecessary):
   - key missing → "ollama needs `OLLAMA_API_KEY` (availability is key-based — even a local daemon needs
     one set; a placeholder works for localhost). Cloud keys: ollama.com → API Keys. Config is written but
     ollama stays inert until it's set."
