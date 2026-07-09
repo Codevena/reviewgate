@@ -4,6 +4,7 @@ import type { AuditLogger } from "../audit/logger.ts";
 import {
   MIN_RUN_TIMEOUT_MS,
   POST_ABORT_SETTLE_MS_DEFAULT,
+  RUN_CLAMP_TEARDOWN_SLACK_MS,
   SETUP_BUDGET_MS_DEFAULT,
 } from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
@@ -1694,8 +1695,14 @@ export class LoopDriver {
     // on every retry (post-implementation review CRITICAL, 2026-07-09).
     // Unknown hook timeout (no settings / no gate hook / no timeout field) →
     // trust the configured value. A pathologically small hook cap floors at
-    // MIN_RUN_TIMEOUT_MS — never disables the deadline (that would GUARANTEE
-    // the fail-open this exists to prevent).
+    // MIN_RUN_TIMEOUT_MS — the clamp never disables an ENABLED deadline (that
+    // would GUARANTEE the fail-open this exists to prevent). runTimeoutMs=0 is
+    // different: the schema documents it as an EXPLICIT opt-out ("0 disables
+    // the deadline — legacy behavior"), so the clamp deliberately does not
+    // overrule it; that config accepts the OS-kill exposure by contract.
+    // The cap subtracts setup + settle + a teardown slack: the invariant is
+    // STRICT (<), so at margin-equality the boundary could still tip into an
+    // OS-kill fail-open (doctor's hookTimeoutCheck codifies exactly this).
     const configuredRunTimeoutMs = this.i.config.loop.runTimeoutMs;
     const installedHookS = installedGateStopTimeoutS(this.i.repoRoot);
     const hookCapMs =
@@ -1703,7 +1710,8 @@ export class LoopDriver {
         ? Number.POSITIVE_INFINITY
         : installedHookS * 1000 -
           SETUP_BUDGET_MS_DEFAULT -
-          (this.i.postAbortSettleMs ?? POST_ABORT_SETTLE_MS_DEFAULT);
+          (this.i.postAbortSettleMs ?? POST_ABORT_SETTLE_MS_DEFAULT) -
+          RUN_CLAMP_TEARDOWN_SLACK_MS;
     const runTimeoutMs =
       configuredRunTimeoutMs > 0
         ? Math.min(configuredRunTimeoutMs, Math.max(MIN_RUN_TIMEOUT_MS, hookCapMs))

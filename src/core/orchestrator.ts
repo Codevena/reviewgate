@@ -1943,6 +1943,11 @@ export class Orchestrator {
       // all — that is a deterministic SIZING condition (runTimeoutMs too small for
       // any reviewer), not a transient outage: hard-block too, so the bounded
       // infra-defer can't let turns end un-reviewed over a config problem.
+      // MIXED panels (≥1 real failure + budget-skips) DELIBERATELY still defer:
+      // budget-skips in a mixed panel are DOWNSTREAM of the real failures (they
+      // burned the budget the skipped slots would have used), so the root cause
+      // IS transient infra — hard-blocking there would punish the dev for a
+      // provider outage, exactly what the bounded defer exists to soften.
       const allReviewersInfraFailed = settled.length > 0 && settled.some((s) => !s.budgetSkipped);
       return {
         verdict: "ERROR",

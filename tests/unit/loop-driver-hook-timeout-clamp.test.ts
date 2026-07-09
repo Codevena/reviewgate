@@ -17,6 +17,7 @@ import { AuditLogger } from "../../src/audit/logger.ts";
 import {
   MIN_RUN_TIMEOUT_MS,
   POST_ABORT_SETTLE_MS_DEFAULT,
+  RUN_CLAMP_TEARDOWN_SLACK_MS,
   SETUP_BUDGET_MS_DEFAULT,
 } from "../../src/config/budgets.ts";
 import { defaultConfig } from "../../src/config/defaults.ts";
@@ -114,8 +115,14 @@ describe("loop clamps its self-deadline to the installed Stop-hook timeout", () 
     expect(seen.deadlineAt).toHaveLength(1);
     const deadlineAt = seen.deadlineAt[0];
     expect(deadlineAt).toBeDefined();
-    // Effective deadline = 900_000 − setup − settle, NOT the configured 1800s.
-    const expected = 900_000 - SETUP_BUDGET_MS_DEFAULT - POST_ABORT_SETTLE_MS_DEFAULT;
+    // Effective deadline = 900_000 − setup − settle − teardown slack (= 720s,
+    // exactly the old default pairing), NOT the configured 1800s. The slack
+    // matters: the invariant is STRICT, margin-equality is boundary fail-open.
+    const expected =
+      900_000 -
+      SETUP_BUDGET_MS_DEFAULT -
+      POST_ABORT_SETTLE_MS_DEFAULT -
+      RUN_CLAMP_TEARDOWN_SLACK_MS;
     const effective = (deadlineAt as number) - before;
     expect(effective).toBeGreaterThan(expected - 10_000);
     expect(effective).toBeLessThanOrEqual(expected + 10_000);

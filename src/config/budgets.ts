@@ -37,6 +37,12 @@ export const MIN_CRITIC_BUDGET_MS = 15_000;
 // this, every near-deadline timeout would read as "gate's fault" and the
 // treadmill would return through the back door:
 export const BUDGET_ATTRIBUTION_SLACK_MS = 30_000;
+// Teardown slack reserved ON TOP of setup+settle when clamping the loop's
+// self-deadline to the installed Stop-hook timeout: the budgets.ts invariant is
+// STRICT (setup + run + settle < hook timeout) — at equality the boundary can
+// still tip into an OS-kill/empty-stdout fail-open (doctor codifies this).
+// 900s hook − 120s − 30s − 30s = 720s: exactly the old default pairing.
+export const RUN_CLAMP_TEARDOWN_SLACK_MS = 30_000;
 // Floor for the loop's EFFECTIVE self-deadline after clamping to the installed
 // Stop-hook timeout (loop-driver). When the hook timeout is pathologically
 // small (cap ≤ 0), the deadline must be floored — never disabled: a disabled
