@@ -10,6 +10,13 @@ import { join } from "node:path";
 import { LORE_BROAD_ANCHOR_FILE_CAP } from "../../schemas/lore.ts";
 import type { LoreEntryParsed } from "./store.ts";
 
+// Only "node_modules/" is load-bearing here: Bun.Glob(...).scanSync({ dot:
+// false }) already skips dot-prefixed directories, so ".git/" and
+// ".reviewgate/" would be excluded from the scan results even without this
+// list (verified empirically — a broad "**/*" glob over a tree containing
+// both never yields entries under either). They stay in the list as
+// defense-in-depth against a future `dot: true` scan, not because they're
+// currently doing any exclusion work.
 const EXCLUDED_PREFIXES = [".git/", "node_modules/", ".reviewgate/"];
 
 function isExcluded(relPath: string): boolean {

@@ -118,6 +118,36 @@ describe("computeVerifiedTree", () => {
     const t2 = computeVerifiedTree(repo, ["src/a.ts", "src/b.ts"]);
     expect(t1).toBe(t2);
   });
+
+  it("hashes invalid-UTF-8 raw bytes exactly — catches a readFileSync(path, 'utf8') regression", () => {
+    // Every other fixture in this file is plain ASCII, under which a
+    // readFileSync(path, "utf8") mutation round-trips byte-for-byte and the
+    // suite stays green — the exact "utf8-collision" regression the spec's
+    // Data model section warns about. This fixture contains a byte sequence
+    // that is NOT valid UTF-8 (0xFF, 0xFE, 0x80 mid-string), so decoding it
+    // to a string first (replacing the invalid sequence with U+FFFD) and
+    // then re-encoding to hash it produces DIFFERENT bytes than hashing the
+    // raw buffer directly — the two vectors only agree if the module truly
+    // hashes raw bytes.
+    const repo = repoWith({});
+    const rawBytes = Buffer.from([0x41, 0xff, 0xfe, 0x80, 0x42]);
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src/bin.dat"), rawBytes);
+
+    const files = resolveAnchors(repo, ["src/bin.dat"]);
+    expect(files).toEqual(["src/bin.dat"]);
+
+    // Expected vector recomputed independently from the literal raw bytes
+    // above — NOT via computeVerifiedTree, and NOT by re-reading the
+    // fixture off disk (a re-read would still be raw bytes and wouldn't
+    // prove anything about a utf8-decode regression in the module). Mirrors
+    // the module's exact byte layout: sha256(rawBytes) per file, then
+    // `${relPath}\0${fileHash}` joined by "\n", then sha256 of that join.
+    const fileHash = createHash("sha256").update(rawBytes).digest("hex");
+    const expected = createHash("sha256").update(`src/bin.dat\0${fileHash}`).digest("hex");
+
+    expect(computeVerifiedTree(repo, files)).toBe(expected);
+  });
 });
 
 describe("classifyEntry", () => {
