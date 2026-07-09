@@ -52,6 +52,11 @@ export function computeBehaviorHash(input: {
   // content (covered by the diff hash) BUT also from the resolver tables, so fold it in
   // for determinism/invalidation. Empty/absent → omitted (continuity rule).
   ui?: string | undefined;
+  // Lore v1 (2026-07-09): sha256 hex of the rendered lore injection block (the
+  // trusted "Project lore" text). Not covered by the diff hash (lore lives under
+  // .reviewgate/, which is excluded from the reviewed diff) — fold it in so an
+  // entry edit invalidates a cached verdict. Empty/absent → omitted (continuity rule).
+  lore?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -89,6 +94,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.ui) {
     out += `|ui:${input.ui}`;
+  }
+  if (input.lore) {
+    out += `|lore:${input.lore}`;
   }
   return out;
 }

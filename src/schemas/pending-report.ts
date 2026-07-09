@@ -81,6 +81,18 @@ export const PendingReportSchema = z.object({
   // accepted+fixed lesson (count >= minRecurrence). Pre-rendered + sanitized by the orchestrator;
   // report-writer renders them as a `> ⚠` banner. Render-only; the verdict/counts are unaffected.
   agent_lesson_recurrences: z.array(z.string()).optional(),
+  // Lore v1 (2026-07-09): invalid/broad/zero-match lore entries + the render-budget
+  // drop count. Set only when there is something to show. Render-only (a "Lore"
+  // banner in pending.md) — never affects the verdict; a broken lexicon must never
+  // block reviews (spec, "Failure behavior").
+  lore_banner: z
+    .object({
+      invalid: z.array(z.object({ file: z.string(), error: z.string() })),
+      broad: z.array(z.string()),
+      zero_match: z.array(z.string()),
+      dropped: z.number().int().nonnegative(),
+    })
+    .optional(),
   // Critic-phase observability (absent when no critic is configured). Lets a
   // configured-but-silent critic be diagnosed from pending.json:
   //  status "ran"          — produced parseable verdicts (`verdicts` of them)

@@ -133,4 +133,15 @@ describe("computeBehaviorHash", () => {
     expect(a).not.toBe(none);
     expect(a).not.toBe(b);
   });
+
+  it("lore segment: absent → byte-identical; a changed lore block changes the hash (Lore v1)", () => {
+    const base = { brain: [{ id: "B-1", status: "active" }], fp: [] };
+    const none = computeBehaviorHash(base);
+    expect(computeBehaviorHash({ ...base, lore: undefined })).toBe(none);
+    const a = computeBehaviorHash({ ...base, lore: "loreHashA" });
+    const b = computeBehaviorHash({ ...base, lore: "loreHashB" });
+    expect(a).toBe(`${none}|lore:loreHashA`);
+    expect(a).not.toBe(none);
+    expect(a).not.toBe(b);
+  });
 });
