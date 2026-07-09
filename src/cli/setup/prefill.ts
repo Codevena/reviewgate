@@ -72,6 +72,10 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
   const orRouting = cfg.providers.openrouter?.openrouterProvider;
   const openrouterProvider = orRouting?.only?.[0] ?? orRouting?.order?.[0] ?? "";
   const ollamaBase = cfg.providers.ollama?.baseUrl;
+  // The wizard models the endpoint as a binary Cloud/Local, so a hand-set custom REMOTE
+  // baseUrl (non-loopback, non-default) reads back as "cloud" and reverts to the ollama.com
+  // default on re-serialize — custom remotes aren't wizard-round-trippable (edit
+  // reviewgate.config.ts directly to keep one).
   const ollamaEndpoint: "cloud" | "local" =
     ollamaBase && isLoopbackUrl(ollamaBase) ? "local" : "cloud";
   return {

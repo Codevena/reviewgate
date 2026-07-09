@@ -27,18 +27,34 @@ describe("setup wizard — ollama plumbing", () => {
     expect(availabilityHint("codex", false)).toBe("CLI not found");
     expect(availabilityHint("ollama", true)).toBeUndefined();
   });
-  it("ollamaNotes: key-missing note only when !keyPresent; local+judge note only for local+judge", () => {
+  it("ollamaNotes: cloud reviewer with key → no notes", () => {
     expect(ollamaNotes({ usedAsJudge: false, endpoint: "cloud", keyPresent: true })).toEqual([]);
-    expect(ollamaNotes({ usedAsJudge: false, endpoint: "cloud", keyPresent: false })).toHaveLength(
-      1,
-    );
-    expect(ollamaNotes({ usedAsJudge: false, endpoint: "cloud", keyPresent: false })[0]).toContain(
-      "OLLAMA_API_KEY",
-    );
+  });
+
+  it("ollamaNotes: cloud reviewer without key → one cloud-path note", () => {
+    const notes = ollamaNotes({ usedAsJudge: false, endpoint: "cloud", keyPresent: false });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("ollama.com");
+  });
+
+  it("ollamaNotes: local reviewer without key → local-daemon note, NOT 'stays inert' wording (bug fix)", () => {
+    const notes = ollamaNotes({ usedAsJudge: false, endpoint: "local", keyPresent: false });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("placeholder");
+    expect(notes[0]).not.toContain("stays inert");
+  });
+
+  it("ollamaNotes: local reviewer with key → no notes", () => {
+    expect(ollamaNotes({ usedAsJudge: false, endpoint: "local", keyPresent: true })).toEqual([]);
+  });
+
+  it("ollamaNotes: local + judge with key → one local+judge note", () => {
     const localJudge = ollamaNotes({ usedAsJudge: true, endpoint: "local", keyPresent: true });
     expect(localJudge).toHaveLength(1);
     expect(localJudge[0]).toContain("Cloud");
-    // local + judge + no key → BOTH notes
+  });
+
+  it("ollamaNotes: local + judge without key → cloud-path note (for the judge) + local+judge note", () => {
     expect(ollamaNotes({ usedAsJudge: true, endpoint: "local", keyPresent: false })).toHaveLength(
       2,
     );

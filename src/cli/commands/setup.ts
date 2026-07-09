@@ -115,9 +115,18 @@ export function ollamaNotes(input: {
 }): string[] {
   const notes: string[] = [];
   if (!input.keyPresent) {
-    notes.push(
-      "ollama needs OLLAMA_API_KEY (availability is key-based — even a local daemon needs one set; a placeholder works for localhost). Cloud keys: ollama.com → API Keys. Config is written but ollama stays inert until it's set.",
-    );
+    // A Cloud path needs a real key: a Cloud reviewer, OR any ollama critic/curator (judges always run Cloud).
+    const cloudPath = input.endpoint === "cloud" || input.usedAsJudge;
+    if (cloudPath) {
+      notes.push(
+        "ollama needs OLLAMA_API_KEY — get one at ollama.com → API Keys. The Cloud reviewer and any ollama critic/curator stay inert until it's set.",
+      );
+    } else {
+      // Local reviewer only: it runs against localhost WITHOUT a key, but availability is key-based.
+      notes.push(
+        "Local daemon: set OLLAMA_API_KEY to any placeholder — the daemon ignores the value, but Reviewgate's availability check is key-based (so doctor and fallback recognition need it). The reviewer runs against localhost regardless.",
+      );
+    }
   }
   if (input.endpoint === "local" && input.usedAsJudge) {
     notes.push(
