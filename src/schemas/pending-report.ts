@@ -87,11 +87,14 @@ export const PendingReportSchema = z.object({
   //  status "empty"        — ran but returned nothing parseable
   //  status "error"        — the critic adapter failed
   //  status "misconfigured"— provider/config missing
+  //  status "skipped-budget"— not run: the remaining gate budget was below the
+  //                           critic floor (fail-safe: demote-only, so nothing
+  //                           was demoted; the panel verdict stands unchanged)
   //  demoted               — findings the critic actually downgraded this run
   critic: z
     .object({
       provider: z.string(),
-      status: z.enum(["ran", "error", "empty", "misconfigured"]),
+      status: z.enum(["ran", "error", "empty", "misconfigured", "skipped-budget"]),
       verdicts: z.number().int().nonnegative(),
       demoted: z.number().int().nonnegative(),
     })

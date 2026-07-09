@@ -17,6 +17,8 @@ import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cach
 import { cassetteFromEnv } from "../cassette/store.ts";
 import {
   BUDGET_ATTRIBUTION_SLACK_MS,
+  CRITIC_TAIL_RESERVE_MS,
+  MIN_CRITIC_BUDGET_MS,
   MIN_REVIEWER_BUDGET_MS,
   PANEL_TAIL_RESERVE_MS,
 } from "../config/budgets.ts";
@@ -2033,7 +2035,11 @@ export class Orchestrator {
     // so a configured-but-silent critic (e.g. unparseable output) is visible in
     // pending.json instead of being indistinguishable from "no critic".
     let criticInfo:
-      | { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number }
+      | {
+          provider: string;
+          status: "ran" | "error" | "empty" | "misconfigured" | "skipped-budget";
+          verdicts: number;
+        }
       | undefined;
     // Critic cost is always 0: it runs via complete(), which returns only text
     // (no usage envelope). Kept as a named field for the IterationResult shape.
@@ -2044,7 +2050,19 @@ export class Orchestrator {
       const cProviderCfg = this.input.config.providers[criticCfg.provider] as
         | ProviderConfig
         | undefined;
-      if (criticAdapter && cProviderCfg) {
+      // Deadline-aware: the critic (sequential, AFTER the panel) may not push the
+      // run past the self-deadline. Clamp its timeout to the remaining budget minus
+      // air for aggregate/report; below the floor SKIP it entirely (fail-safe —
+      // demote-only, so skipping demotes nothing). Never floor-and-run: a micro-
+      // critic straddling the deadline would be abort-killed and turn a COMPLETED
+      // panel into an incomplete run.
+      // The floor gates on the remaining BUDGET only — a deliberately small
+      // CONFIGURED timeout (operator's choice) must still run; Infinity (no
+      // deadline) means no pressure and the configured timeout stands.
+      const criticBudgetMs = remainingMs() - CRITIC_TAIL_RESERVE_MS;
+      if (criticAdapter && cProviderCfg && criticBudgetMs < MIN_CRITIC_BUDGET_MS) {
+        criticInfo = { provider: criticCfg.provider, status: "skipped-budget", verdicts: 0 };
+      } else if (criticAdapter && cProviderCfg) {
         // Critic runs via the adapter's free-form complete() (see runCritic), NOT
         // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter/ollama
         // and makes the critic a silent no-op. No cost is attributed: complete()
@@ -2056,7 +2074,7 @@ export class Orchestrator {
             model: criticCfg.model ?? cProviderCfg.model,
             ...(cProviderCfg.apiKeyEnv ? { apiKeyEnv: cProviderCfg.apiKeyEnv } : {}),
             ...(cProviderCfg.auth ? { auth: cProviderCfg.auth } : {}),
-            timeoutMs: cProviderCfg.timeoutMs,
+            timeoutMs: Math.min(cProviderCfg.timeoutMs, criticBudgetMs),
             ...(opts.signal ? { signal: opts.signal } : {}),
             ...(cProviderCfg.openrouterProvider
               ? { openrouterProvider: cProviderCfg.openrouterProvider }
@@ -2730,7 +2748,7 @@ export class Orchestrator {
     counts: { critical: number; warn: number; info: number } = { critical: 0, warn: 0, info: 0 },
     critic?: {
       provider: string;
-      status: "ran" | "error" | "empty" | "misconfigured";
+      status: "ran" | "error" | "empty" | "misconfigured" | "skipped-budget";
       verdicts: number;
       demoted: number;
     },
