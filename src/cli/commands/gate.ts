@@ -51,7 +51,7 @@ import { withTimeout } from "../../utils/with-timeout.ts";
 import { buildAdapters } from "../build-adapters.ts";
 
 // Lock-ACQUIRE timeout for the stop-hook gate lock. Deliberately short and NOT
-// tied to loop.runTimeoutMs (720_000ms default): a contended gate may hold the
+// tied to loop.runTimeoutMs (1_800_000ms default): a contended gate may hold the
 // lock for a full multi-minute review, and waiting that long would let the OS
 // Stop-hook timeout KILL this process before it can emit the fail-closed block
 // (→ fail OPEN). Instead we give up quickly and fail CLOSED with a "re-run"

@@ -90,7 +90,10 @@ const HOOKS_TEMPLATE = {
         {
           type: "command",
           command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
-          timeout: 900,
+          // 120s setup + 1800s runTimeoutMs + 30s settle = 1950s < 2400s
+          // (fail-open invariant, config/budgets.ts). Raise/lower together
+          // with loop.runTimeoutMs.
+          timeout: 2400,
         },
       ],
     },

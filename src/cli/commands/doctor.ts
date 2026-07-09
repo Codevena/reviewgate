@@ -349,7 +349,7 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
   // OS Stop-hook timeout. At margin == setup+settle the sum EQUALS the timeout,
   // leaving no room for post-settle state/audit/stdout work → boundary fail-open.
   // So require the margin to STRICTLY exceed MIN_SETUP_MARGIN_S, and recommend an
-  // extra teardown slack on top (the default 900s hook = 720 + 150 + 30 lands here).
+  // extra teardown slack on top (the default 2400s hook covers 1800 + 150 + 30 amply).
   const TEARDOWN_SLACK_S = 30;
   const recommendedStopS = runTimeoutS + MIN_SETUP_MARGIN_S + TEARDOWN_SLACK_S;
   const issues: string[] = [];

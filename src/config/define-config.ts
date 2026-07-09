@@ -365,11 +365,12 @@ export const ConfigSchema = z.object({
     // time the gate aborts the in-flight reviewers and FAILS CLOSED (blocks
     // "review did not complete — re-run") instead of being killed silently by
     // Claude Code — a killed Stop hook is non-blocking, so the turn would end
-    // UN-reviewed (fail-open). Default 720_000 (12min): ≥120s under the default
-    // 900s hook for pre-deadline setup (git/state load, OUTSIDE this deadline) +
-    // teardown + state/audit writes (M-A0.4). Raise BOTH together when you raise
-    // the hook timeout. 0 disables the deadline (legacy behavior).
-    runTimeoutMs: z.number().int().nonnegative().default(720_000),
+    // UN-reviewed (fail-open). Default 1_800_000 (30min; was 720s — a degraded
+    // panel legitimately needs 10-12min, making 720s a coin flip; FlashBuddy
+    // field report 2026-07-08): 120s setup + 1800s + 30s settle = 1950s under
+    // the 2400s hook timeout init writes (budgets.ts invariant). Raise BOTH
+    // together when you raise either. 0 disables the deadline (legacy behavior).
+    runTimeoutMs: z.number().int().nonnegative().default(1_800_000),
     // Slice 3 (field report #6): warn (stderr + pending.md banner) when the reviewed diff
     // is large enough to risk a self-deadline timeout. WARN-ONLY — never auto-raises
     // runTimeoutMs (that could exceed the OS Stop-hook timeout → fail-open). 0 disables a check.

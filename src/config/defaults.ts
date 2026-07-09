@@ -245,11 +245,15 @@ export const defaultConfig = {
     acknowledgePass: false,
     // Self-imposed run deadline (ms), strictly below the Stop-hook timeout. The
     // gate aborts + fails closed rather than being killed silently. See schema.
-    // M-A0.4: lowered 840s→720s so the default leaves a ≥120s margin under the
-    // 900s Stop-hook timeout for pre-deadline setup (config + git + state load,
-    // which can run long under index.lock contention) + post-abort settle —
-    // otherwise the OS kills the gate mid-run with empty stdout = fail-open.
-    runTimeoutMs: 720_000,
+    // 1800s (was 720s): a degraded panel (hung primary burning its full timeout
+    // → sequential fallback chain → critic) legitimately needs 10–12min, which
+    // made 720s a coin flip against the measured 630–716s wall clock (field
+    // report: FlashBuddy 2026-07-08, repeated 12-min aborts → review-timeout
+    // escalation). Paired with the 2400s Stop-hook timeout init writes:
+    // 120s setup + 1800s + 30s settle = 1950s < 2400s (fail-open invariant,
+    // config/budgets.ts). Deadline-aware budget clamps (PANEL_TAIL_RESERVE_MS
+    // et al.) keep even a degraded run inside this deadline.
+    runTimeoutMs: 1_800_000,
     // Slice 3 (field report #6): warn when the diff is this large (bytes / file count).
     // WARN-only — see schema. 0 disables a check.
     diffWarnBytes: 600_000,
