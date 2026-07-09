@@ -1,8 +1,8 @@
 # Ollama in the Setup Wizard Design
 
-Status: **approved for planning** (brainstorm 2026-07-09). Wire the `ollama` provider into the
-interactive `reviewgate setup` wizard so a fresh user can configure it (as reviewer / critic /
-curator) with a freely-chosen model and endpoint — closing the deferred-wizard gap from
+Status: **approved for planning** (brainstorm 2026-07-09; revised after Plan-Gate r1). Wire the `ollama`
+provider into the interactive `reviewgate setup` wizard so a fresh user can configure it (as reviewer /
+critic / curator) with a freely-chosen model and endpoint — closing the deferred-wizard gap from
 [[2026-07-08-ollama-cloud-reviewer-design]].
 
 ## Problem
@@ -10,116 +10,124 @@ curator) with a freely-chosen model and endpoint — closing the deferred-wizard
 The `ollama` provider ships and works, but `reviewgate setup` does **not** offer it: `REVIEWER_PROVIDERS`
 (setup.ts) lists only `codex/gemini/claude-code/openrouter/opencode`. A new user can enable ollama
 **only** by hand-editing `reviewgate.config.ts` — which fails the "beginner-friendly, self-explanatory"
-bar. Ollama is actually the *lowest-friction* reviewer for a newcomer (an API key + subscription, no
-CLI to install), so its absence from the guided flow is exactly the wrong gap.
-
-The wizard also isn't shaped for a keyless-API provider: `authFor()` only returns `"oauth"|"openrouter"`,
-and the availability hint would mislabel a keyless ollama as `"CLI not found"` (it has no CLI).
+bar. Ollama is actually the *lowest-friction* reviewer for a newcomer (an API key + subscription, no CLI
+to install), so its absence from the guided flow is exactly the wrong gap. The wizard also isn't shaped
+for a keyless-API provider: `authFor()` only returns `"oauth"|"openrouter"`, and the availability hint
+would mislabel a keyless ollama as `"CLI not found"`.
 
 ## Scope & principle
 
-Make ollama a **first-class, selectable option** in the Custom walk of `reviewgate setup`, routed
-through the **existing** per-provider flow (persona → model-with-live-probe → failover), so it inherits
-the wizard's polish for free. **User picks the model** (Markus's explicit requirement): the standard
-`promptModelWithProbe` pre-fills `glm-5.2:cloud` (`MODEL_DEFAULT.ollama`) and the user overrides it with
-any Ollama tag (`qwen3-coder:480b-cloud`, `gpt-oss:120b`, …), live-verified via `OllamaAdapter.complete()`.
+Make ollama a **first-class, selectable option** in the Custom walk, routed through the **existing**
+per-provider flow (persona → `promptModelWithProbe` → failover). **User picks the model** (Markus's
+explicit requirement): `promptModelWithProbe` pre-fills `glm-5.2:cloud` (`MODEL_DEFAULT.ollama`) and the
+user overrides it with any Ollama tag, live-verified via `OllamaAdapter.complete()`.
 
 House principles:
-- **The wizard stores no secrets.** It references the `OLLAMA_API_KEY` env var and notes when it's
-  unset — it never prompts the user to paste a key into the config (same as `OPENROUTER_API_KEY`/brain).
-- **Minimal generated config.** Cloud is the default endpoint, so `baseUrl` is written ONLY when the
-  user picks Local (Cloud omits it → `defaults.ts` supplies `https://ollama.com/v1`), preserving the
-  wizard's diff-from-defaults minimalism.
-- **Quick mode is untouched** (it's codex-only; ollama is reachable via Custom mode only).
+- **No secrets stored.** Reference the `OLLAMA_API_KEY` env var and note when unset — never prompt to
+  paste a key into config (same as `OPENROUTER_API_KEY`/brain).
+- **Minimal generated config.** `providers.ollama.baseUrl` is written ONLY for Local; Cloud omits it
+  (defaults supply `https://ollama.com/v1`).
+- **Runtime-honest.** Only the **reviewer** role honors `providers.ollama.baseUrl` at gate time;
+  critic/curator/grounding go through `complete()`, which targets Cloud (a documented limitation of the
+  prior feature — the `complete()` call sites do NOT thread `baseUrl`). So the wizard offers the
+  Cloud/Local endpoint **only for the reviewer role**, and warns when a Local reviewer is combined with
+  an ollama critic/curator (see Feature 1) — no silent probe-green-but-runtime-Cloud footgun.
+- **Quick mode + `RECOMMENDED_DEFAULTS` are UNTOUCHED** (ollama is a Custom-mode selectable option, not
+  the fresh default).
 
-Explicitly OUT (the "beginner-onboarding" scope Markus did NOT pick): changing `RECOMMENDED_DEFAULTS`
-(ollama stays a selectable option, not the fresh-install default); a "you have no providers, use ollama"
-proactive nudge; threading `baseUrl` into the critic/curator `complete()` call sites at gate-run time
-(a separate documented limitation — the wizard *probe* threads baseUrl, but the running critic/curator
-still target Cloud per [[2026-07-08-ollama-cloud-reviewer-design]]'s known limitation).
+Explicitly OUT (the "beginner-onboarding" scope Markus did NOT pick): changing the fresh-install default
+to ollama; a "you have no providers, use ollama" proactive nudge; threading `baseUrl` into the
+critic/curator `complete()` call sites at gate-run time (kept a documented limitation).
 
-## Feature 1 — endpoint selection (Cloud vs Local), asked once
+## Feature 1 — reviewer endpoint select (Cloud vs Local), asked once
 
-When ollama is first configured in ANY role during the Custom walk, a memoized prompt asks:
+The Cloud/Local prompt is offered **only when ollama is chosen as a reviewer** (the one role that honors
+`baseUrl` at runtime). Asked **once**, the first time an ollama reviewer's model is configured, and cached:
 
 > Ollama endpoint: **Cloud (ollama.com)** / **Local daemon (localhost:11434)**  — default Cloud
 
-- Result is cached in a local `ollamaBaseUrl: string | undefined` (undefined = Cloud) threaded through
-  `runCustom`, so it is asked **once** even when ollama is used as reviewer AND critic AND curator
-  (`baseUrl` is a single `providers.ollama` property, shared across roles).
-- It is asked **before** ollama's first model probe, because the probe must hit the right endpoint.
-- Cloud → `ollamaBaseUrl = undefined` (omitted from config). Local → `ollamaBaseUrl =
-  "http://localhost:11434/v1"` (written to `providers.ollama.baseUrl`).
+- Cached in a `runCustom`-local `ollamaBaseUrl: string | undefined` (undefined = Cloud), asked before the
+  reviewer's first model probe (the probe must hit the chosen endpoint).
+- Cloud → omitted from config. Local → `providers.ollama.baseUrl = "http://localhost:11434/v1"`.
+- **Re-run seeding:** `WizardDefaults` gains an `ollamaEndpoint: "cloud" | "local"` derived by
+  `answersFromConfig` from the existing `providers.ollama?.baseUrl` (loopback host → `"local"`), so a
+  returning Local user sees Local pre-selected — preserving the wizard's prefill-seeds-everything
+  invariant that model/persona/fallback already follow.
+- If ollama is used **only** as critic/curator (never a reviewer), the endpoint prompt is skipped
+  entirely — those roles always run Cloud, so a Local baseUrl would be meaningless.
 
-## Feature 2 — model choice + live probe (already 90% there)
+## Feature 2 — model choice + live probe
 
-ollama flows through the existing `promptModelWithProbe(provider, auth, initialModel)`:
+ollama flows through the existing `promptModelWithProbe(provider, auth, initialModel, baseUrl?)`:
 - `initialModel` = `MODEL_DEFAULT.ollama` = `"glm-5.2:cloud"` (already wired) — user edits freely.
-- `auth` = `"apikey"` (see Feature 3).
-- The probe (`probe.ts`) already accepts `auth: "apikey"`; extend `ProbeInput` with an optional
-  `baseUrl?: string` and pass it through to `adapter.complete()`, so a Local-endpoint probe hits the
-  daemon rather than Cloud. `promptModelWithProbe` gains an optional `baseUrl?` param and forwards it
-  to `probeModel` (along with `apiKeyEnv: "OLLAMA_API_KEY"` for ollama); the ollama call sites pass the
-  memoized `ollamaBaseUrl`.
+- `auth = "apikey"` (Feature 3). The probe (`probe.ts`) already accepts `auth:"apikey"`; extend
+  `ProbeInput` with an optional `baseUrl?` and forward it to `adapter.complete()`. `promptModelWithProbe`
+  gains a `baseUrl?` param forwarded to `probeModel` (with `apiKeyEnv: "OLLAMA_API_KEY"` via `apiKeyEnvFor`).
+- **Probe matches runtime:** the **reviewer** ollama probe is passed `ollamaBaseUrl` (Cloud or Local);
+  the **critic/curator** ollama probe is passed `undefined` (Cloud), because those roles run Cloud at gate
+  time — so a green probe reflects the real endpoint, never a Local-probe/Cloud-runtime mismatch.
 - Existing probe outcomes (ok / un-verifiable-skip / fail→re-enter-or-keep) apply unchanged.
 
-## Feature 3 — provider plumbing in the wizard
+## Feature 3 — provider plumbing + honest notes
 
-`src/cli/commands/setup.ts`:
-- `REVIEWER_PROVIDERS` gains `"ollama"` → it appears in the reviewer multiselect and the critic /
-  curator selects (all three iterate `REVIEWER_PROVIDERS`).
-- `authFor(p)` return type widens to `"oauth" | "openrouter" | "apikey"`; returns `"apikey"` for ollama.
-- Availability hint: replace the `p === "openrouter" ? "no API key" : "CLI not found"` special-case with
-  `SUBPROCESSLESS_PROVIDERS.has(p) ? "no API key" : "CLI not found"` (openrouter + ollama are exactly the
-  API-key/HTTP providers) — so a keyless ollama reads "no API key", not "CLI not found".
-- `avail(p)` passes `"OLLAMA_API_KEY"` as the apiKeyEnv for ollama (openrouter already passes its own);
-  generalize the ternary to map each API-key provider to its env var.
-- When ollama is used in any role and `OLLAMA_API_KEY` is unset, emit a `note(...)` mirroring the brain
-  one: "ollama needs OLLAMA_API_KEY — config is written but ollama stays inert until you set it (from
-  ollama.com → API Keys)."
+`src/cli/commands/setup.ts` (exported pure helpers so the logic is unit-tested; the thin `@clack` glue is
+not — the wizard walk has no automated test today, verified: no test imports `@clack/prompts` or drives
+`runCustom`, so this increment adds no wizard-walk test infra and relies on the pure helpers + data-layer
+tests + a functional check):
+- `REVIEWER_PROVIDERS` gains `"ollama"` → appears in the reviewer multiselect and critic/curator selects.
+- `authFor(p)` widens to `"oauth" | "openrouter" | "apikey"`; returns `"apikey"` for ollama.
+- `apiKeyEnvFor(p): string | undefined` (new) — openrouter → `OPENROUTER_API_KEY`, ollama →
+  `OLLAMA_API_KEY`, CLIs → undefined. Used by `avail()` AND `promptModelWithProbe`.
+- `availabilityHint(p, available): string | undefined` (new, pure) — `available` → undefined; else
+  `apiKeyEnvFor(p) ? "no API key" : "CLI not found"` (a provider needs a key iff it HAS a key env — no
+  coupling to `SUBPROCESSLESS_PROVIDERS`).
+- `avail(p)` passes `apiKeyEnvFor(p)` as the apiKeyEnv (generalizing the openrouter-only special-case).
+- `ollamaNotes({ usedAsReviewer, usedAsJudge, endpoint, keyPresent }): string[]` (new, pure) — the
+  endpoint-aware advisory lines, so the tricky conditional wording is unit-tested:
+  - key missing → "ollama needs `OLLAMA_API_KEY` (availability is key-based — even a local daemon needs
+    one set; a placeholder works for localhost). Cloud keys: ollama.com → API Keys. Config is written but
+    ollama stays inert until it's set."
+  - `endpoint === "local"` AND `usedAsJudge` → "The Local endpoint applies to the ollama **reviewer**; an
+    ollama critic/curator runs against Ollama **Cloud** regardless (needs `OLLAMA_API_KEY`)."
+  `runCustom` emits each returned line via `note(...)`.
 
 `src/cli/setup/build-config.ts`:
-- `providersFor(...)` sets `apiKeyEnv: "OLLAMA_API_KEY"` for ollama (like openrouter gets
-  `OPENROUTER_API_KEY`), and writes `baseUrl` for ollama **only when Local** (a passed
-  `ollamaBaseUrl`). `DEFAULT_AUTH.ollama` is already `"apikey"`.
-- Plumb the selected `ollamaBaseUrl` from `runCustom` → `buildCustomConfig` → `providersFor`
-  (a new optional field on `CustomAnswers`, alongside `openrouterProvider`).
+- `CustomAnswers` gains `ollamaBaseUrl?: string`. `providersFor(...)` sets `apiKeyEnv:"OLLAMA_API_KEY"` for
+  ollama and writes `baseUrl` **only when** `ollamaBaseUrl` is set (Local). `DEFAULT_AUTH.ollama` is
+  already `"apikey"`. `providersFor` already discovers provider ids from ALL roles (reviewers + critic +
+  curator), so a critic/curator-only ollama is enabled correctly.
+
+`src/cli/setup/prefill.ts`:
+- `WizardDefaults` gains `ollamaEndpoint: "cloud" | "local"`; `answersFromConfig` derives it from
+  `providers.ollama?.baseUrl` (loopback → `"local"`, else `"cloud"`); `RECOMMENDED_DEFAULTS.ollamaEndpoint
+  = "cloud"`.
 
 `src/cli/setup/probe.ts`:
-- `ProbeInput` gains `baseUrl?: string`; `probeModel` forwards it into `adapter.complete({ …, baseUrl })`
-  when present. (`OllamaAdapter.complete` already reads `opts.baseUrl`.)
-
-## Data flow (Custom walk, ollama picked)
-
-```
-reviewer multiselect (ollama shown, hint "no API key" if OLLAMA_API_KEY unset)
-  → for ollama: ensureOllamaEndpoint() [memoized Cloud/Local select]
-             → persona select
-             → promptModelWithProbe("ollama", "apikey", "glm-5.2:cloud", baseUrl)  [user edits + live probe]
-             → failover multiselect
-  → (critic / curator selects may also pick ollama → reuse cached ollamaBaseUrl)
-  → if OLLAMA_API_KEY unset: note(...)
-  → buildCustomConfig({ …, ollamaBaseUrl })
-       → providers.ollama = { enabled, auth:"apikey", apiKeyEnv:"OLLAMA_API_KEY", model:<chosen>,
-                              ...(Local ? { baseUrl:"http://localhost:11434/v1" } : {}) }
-```
+- `ProbeInput` gains `baseUrl?: string`; `probeModel` forwards it into `adapter.complete({ …, baseUrl })`.
 
 ## Testing
 
-- **setup unit tests** (mirror the existing `setup.ts`/`build-config` test convention, injected `env`
-  + stubbed prompts / adapter): ollama appears in `REVIEWER_PROVIDERS`; `authFor("ollama") === "apikey"`;
-  availability hint is "no API key" for ollama when `OLLAMA_API_KEY` unset (via `SUBPROCESSLESS_PROVIDERS`);
-  `buildCustomConfig` with an ollama reviewer emits `providers.ollama = { enabled, auth:"apikey",
-  apiKeyEnv:"OLLAMA_API_KEY", model }` and **omits** baseUrl for Cloud / **writes**
-  `http://localhost:11434/v1` for Local.
-- **probe unit test:** `probeModel({ provider:"ollama", auth:"apikey", apiKeyEnv:"OLLAMA_API_KEY",
-  baseUrl })` forwards `baseUrl` into `adapter.complete` (assert via a stub adapter capturing opts).
-- The interactive walk itself is exercised through the existing `runCustom`/`finalizeSetup` seam the
-  current wizard tests use (stubbed `@clack/prompts`), not a live TTY.
+- **probe** (`setup-probe.test.ts`): ollama probe forwards `baseUrl` + `apiKeyEnv` into `adapter.complete`
+  (stub adapter captures opts).
+- **build-config** (`setup-build-config.test.ts`): an ollama **reviewer** → `providers.ollama =
+  {enabled, auth:"apikey", apiKeyEnv:"OLLAMA_API_KEY", model}`, baseUrl omitted for Cloud (partial
+  `hasOwn` false; defineConfig then inherits `https://ollama.com/v1`) / written to localhost for Local; an
+  ollama **critic-only** answer still enables `providers.ollama`.
+- **setup pure helpers** (`setup-wizard-ollama.test.ts`, new): `REVIEWER_PROVIDERS` includes ollama;
+  `authFor`/`apiKeyEnvFor`/`availabilityHint` mappings; **`ollamaNotes`** covers the four cases
+  (key-present vs missing × Cloud vs Local-with-judge).
+- **prefill** (`setup-prefill.test.ts`): `answersFromConfig` derives `ollamaEndpoint:"local"` from a
+  localhost baseUrl, `"cloud"` otherwise.
+- **functional** (scratchpad, no commit): a simulated "ollama **reviewer**, Local, model glm-5.2:cloud"
+  answer → `buildCustomConfig` → `finalizeSetup({print})` → assert the serialized ollama block → build the
+  real `OllamaAdapter` from it and `review()` a planted-bug diff against the **local daemon** (no key) →
+  `status:"ok"` + a finding. Proves the wizard OUTPUT is a working reviewer config.
+- The interactive `runCustom` glue (clack prompts, the `ollamaBaseUrl` memoization) is **not** unit-tested
+  (matching the existing wizard) — verified manually via an optional TTY run.
 
 ## Touch-points summary
 
-`src/cli/commands/setup.ts` (REVIEWER_PROVIDERS, authFor, hint, avail, endpoint select, key note) ·
-`src/cli/setup/build-config.ts` (providersFor apiKeyEnv+baseUrl, CustomAnswers.ollamaBaseUrl) ·
-`src/cli/setup/probe.ts` (ProbeInput.baseUrl) · tests · (no schema/adapter change — those shipped in the
-prior feature).
+`src/cli/commands/setup.ts` (REVIEWER_PROVIDERS, authFor, apiKeyEnvFor, availabilityHint, ollamaNotes,
+avail, reviewer-only endpoint select + threading) · `src/cli/setup/build-config.ts` (providersFor
+apiKeyEnv/baseUrl, CustomAnswers.ollamaBaseUrl) · `src/cli/setup/prefill.ts` (WizardDefaults.ollamaEndpoint
++ answersFromConfig) · `src/cli/setup/probe.ts` (ProbeInput.baseUrl) · tests. No schema/adapter change.
