@@ -31,6 +31,35 @@ verified_tree: "abc123"
 ---
 short.`;
 
+// Same as VALID but with an empty inline-array `tags: []` — this is the exact
+// form the spec's Data model example uses (docs/superpowers/specs/2026-07-09-lore-design.md).
+const VALID_WITH_EMPTY_TAGS = `---
+schema: reviewgate.lore.v1
+id: payment-invariants
+status: canon
+anchors:
+  - "src/lib/pay.ts"
+verified_at: 2026-07-09
+verified_tree: "abc123"
+tags: []
+---
+Every subscription write is a CAS against (status, lastStripeEventAt).
+Why: Stripe delivers out of order.`;
+
+// Same as VALID but with a populated inline-array `tags: [...]`.
+const VALID_WITH_TAGS = `---
+schema: reviewgate.lore.v1
+id: payment-invariants
+status: canon
+anchors:
+  - "src/lib/pay.ts"
+verified_at: 2026-07-09
+verified_tree: "abc123"
+tags: ["release", "billing"]
+---
+Every subscription write is a CAS against (status, lastStripeEventAt).
+Why: Stripe delivers out of order.`;
+
 function repoWith(files: Record<string, string>): string {
   const repo = mkdtempSync(join(tmpdir(), "rg-lore-store-"));
   mkdirSync(join(repo, ".reviewgate", "lore"), { recursive: true });
@@ -65,6 +94,18 @@ describe("parseLoreFile", () => {
     // must be rejected specifically by the body-length guard.
     const r = parseLoreFile(VALID_SHORT_BODY, "payment-invariants");
     expect("error" in r).toBe(true);
+  });
+
+  it("parses an inline empty array `tags: []` (the spec's Data model example)", () => {
+    const r = parseLoreFile(VALID_WITH_EMPTY_TAGS, "payment-invariants");
+    if ("error" in r) throw new Error(r.error);
+    expect(r.entry.tags).toEqual([]);
+  });
+
+  it('parses a populated inline array `tags: ["release", "billing"]`', () => {
+    const r = parseLoreFile(VALID_WITH_TAGS, "payment-invariants");
+    if ("error" in r) throw new Error(r.error);
+    expect(r.entry.tags).toEqual(["release", "billing"]);
   });
 });
 

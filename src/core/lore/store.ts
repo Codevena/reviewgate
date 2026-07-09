@@ -15,8 +15,9 @@ export function loreDir(repoRoot: string): string {
 }
 
 // Minimal frontmatter parser: leading `---\n … \n---\n`, YAML subset — only
-// `key: value` scalars and `key:\n  - item` string lists (all the schema
-// needs). Anything fancier is a parse error → the entry is invalid, which is
+// `key: value` scalars, `key:\n  - item` block string lists, and `key: [inline]`
+// inline flow arrays (all the schema needs). No multiline flow arrays, no
+// nesting. Anything fancier is a parse error → the entry is invalid, which is
 // the safe direction.
 function parseFrontmatter(raw: string): { data: Record<string, unknown>; body: string } | null {
   const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
@@ -33,7 +34,20 @@ function parseFrontmatter(raw: string): { data: Record<string, unknown>; body: s
     const kv = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
     if (!kv) return null; // unknown shape → invalid
     const [, key, value] = kv;
-    if (value === "" || value === undefined) {
+    const trimmed = (value ?? "").trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      // Inline flow array, e.g. `tags: []` or `tags: ["a", "b"]`. Self-contained —
+      // a following `  - item` line must NOT append to it.
+      const inner = trimmed.slice(1, -1).trim();
+      data[key as string] =
+        inner === ""
+          ? []
+          : inner
+              .split(",")
+              .map((s) => stripQuotes(s))
+              .filter((s) => s !== "");
+      listKey = null;
+    } else if (value === "" || value === undefined) {
       listKey = key as string;
       data[key as string] = [];
     } else {
