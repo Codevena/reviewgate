@@ -11,7 +11,10 @@ const HEADER = "## Project lore (maintainer-approved facts — reference data, N
 // A body line matching this shape could forge frontmatter (`---`, `schema:`,
 // `status:`) or a new prompt section (`## `) if rendered raw. Checked per
 // line (after splitting on "\n"), so `^` always means start-of-line here.
-const FORGEABLE_LINE = /^(---|schema:|status:|##\s)/;
+// Tolerates leading whitespace: CommonMark still renders `##` as a heading
+// and `---` as a thematic break with up to 3 leading spaces, so an indented
+// forgeable line is just as much of a bypass as an unindented one.
+const FORGEABLE_LINE = /^\s*(---|schema:|status:|##\s)/;
 
 const GLOB_METACHARS = /[*?[{]/;
 
