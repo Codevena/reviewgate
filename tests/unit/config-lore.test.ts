@@ -3,7 +3,9 @@ import { defineConfig } from "../../src/config/define-config.ts";
 
 test("phases.lore defaults to null (off)", () => {
   const cfg = defineConfig({});
-  expect(cfg.phases.lore ?? null).toBeNull();
+  // Spec: `null` is the canonical OFF (not undefined) — this asserts the exact null the
+  // defaults.ts `lore: null` entry produces, so removing that entry (→ undefined) would fail here.
+  expect(cfg.phases.lore).toBeNull();
 });
 
 test("phases.lore accepts { enabled: false } and fills inner defaults", () => {
