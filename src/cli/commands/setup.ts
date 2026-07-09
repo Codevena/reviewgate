@@ -76,15 +76,55 @@ export interface SetupInput {
 }
 
 const PERSONAS = ["security", "architecture", "adversarial"] as const;
-const REVIEWER_PROVIDERS: ProviderId[] = [
+
+export const REVIEWER_PROVIDERS: ProviderId[] = [
   "codex",
   "gemini",
   "claude-code",
   "openrouter",
   "opencode",
+  "ollama",
 ];
-function authFor(p: ProviderId): "oauth" | "openrouter" {
-  return p === "openrouter" ? "openrouter" : "oauth";
+
+export function authFor(p: ProviderId): "oauth" | "openrouter" | "apikey" {
+  if (p === "openrouter") return "openrouter";
+  if (p === "ollama") return "apikey";
+  return "oauth";
+}
+
+// The env var carrying each API-key provider's credential (CLIs use their own auth → undefined).
+export function apiKeyEnvFor(p: ProviderId): string | undefined {
+  if (p === "openrouter") return "OPENROUTER_API_KEY";
+  if (p === "ollama") return "OLLAMA_API_KEY";
+  return undefined;
+}
+
+// Hint next to an UNAVAILABLE provider in the reviewer multiselect. A provider needs a key iff it
+// HAS a key env (apiKeyEnvFor) — otherwise it's a CLI provider needing its binary.
+export function availabilityHint(p: ProviderId, available: boolean): string | undefined {
+  if (available) return undefined;
+  return apiKeyEnvFor(p) ? "no API key" : "CLI not found";
+}
+
+// Endpoint-aware advisory lines for an ollama-using config. Emitted via note(). `endpoint` is the
+// reviewer's choice ("cloud" when ollama is judge-only, since the endpoint prompt is reviewer-only).
+export function ollamaNotes(input: {
+  usedAsJudge: boolean;
+  endpoint: "cloud" | "local";
+  keyPresent: boolean;
+}): string[] {
+  const notes: string[] = [];
+  if (!input.keyPresent) {
+    notes.push(
+      "ollama needs OLLAMA_API_KEY (availability is key-based — even a local daemon needs one set; a placeholder works for localhost). Cloud keys: ollama.com → API Keys. Config is written but ollama stays inert until it's set.",
+    );
+  }
+  if (input.endpoint === "local" && input.usedAsJudge) {
+    notes.push(
+      "The Local endpoint applies to the ollama reviewer; an ollama critic/curator runs against Ollama Cloud regardless (needs OLLAMA_API_KEY).",
+    );
+  }
+  return notes;
 }
 
 function cancelOut(): number {
@@ -197,19 +237,36 @@ async function runCustom(
   orKey: boolean,
   defaults: WizardDefaults,
 ): Promise<DeepPartial<ReviewgateConfig> | null> {
-  const avail = (p: ProviderId) =>
-    isProviderAvailable(p, p === "openrouter" ? "OPENROUTER_API_KEY" : undefined, { env });
+  const avail = (p: ProviderId) => isProviderAvailable(p, apiKeyEnvFor(p), { env });
 
   const picked = await multiselect({
     message: "Reviewers (space to toggle)",
     options: REVIEWER_PROVIDERS.map((p) => {
-      const hint = avail(p) ? undefined : p === "openrouter" ? "no API key" : "CLI not found";
+      const hint = availabilityHint(p, avail(p));
       return hint !== undefined ? { value: p, label: p, hint } : { value: p, label: p };
     }),
     initialValues: defaults.reviewerProviders,
     required: true,
   });
   if (isCancel(picked)) return null;
+
+  let ollamaBaseUrl: string | undefined; // undefined = Cloud
+  let ollamaEndpointAsked = false;
+  const ensureOllamaEndpoint = async (): Promise<boolean> => {
+    if (ollamaEndpointAsked) return true;
+    const ep = await select({
+      message: "Ollama endpoint (applies to the reviewer role)",
+      options: [
+        { value: "cloud", label: "Cloud (ollama.com)" },
+        { value: "local", label: "Local daemon (localhost:11434)" },
+      ],
+      initialValue: defaults.ollamaEndpoint,
+    });
+    if (isCancel(ep)) return false;
+    ollamaBaseUrl = ep === "local" ? "http://localhost:11434/v1" : undefined;
+    ollamaEndpointAsked = true;
+    return true;
+  };
 
   const reviewers: CustomAnswers["reviewers"] = [];
   for (const p of picked as ProviderId[]) {
@@ -220,7 +277,13 @@ async function runCustom(
       initialValue: seed?.persona ?? "security",
     });
     if (isCancel(persona)) return null;
-    const model = await promptModelWithProbe(p, authFor(p), seed?.model ?? MODEL_DEFAULT[p]);
+    if (p === "ollama" && !(await ensureOllamaEndpoint())) return null;
+    const model = await promptModelWithProbe(
+      p,
+      authFor(p),
+      seed?.model ?? MODEL_DEFAULT[p],
+      p === "ollama" ? ollamaBaseUrl : undefined,
+    );
     if (model === null) return null;
 
     // Quota-failover chain: only providers OTHER than this reviewer that are
@@ -259,6 +322,7 @@ async function runCustom(
       provider,
       authFor(provider),
       defaults.critic?.model ?? MODEL_DEFAULT[provider],
+      undefined,
     );
     if (cm === null) return null;
     critic = { provider, persona: "fp-filter", model: cm };
@@ -287,6 +351,7 @@ async function runCustom(
       provider,
       authFor(provider),
       defaults.brainCurator?.model ?? MODEL_DEFAULT[provider],
+      undefined,
     );
     if (cm === null) return null;
     brain = { curator: { provider, persona: "fp-filter", model: cm } };
@@ -310,6 +375,23 @@ async function runCustom(
   });
   if (isCancel(ctx)) return null;
   if (ctx) note("contextDocs works keyless; set CONTEXT7_API_KEY for higher rate limits.");
+
+  const rolesWithOllama = [
+    ...reviewers.map((r) => r.provider),
+    critic?.provider,
+    brain?.curator.provider,
+  ];
+  if (rolesWithOllama.includes("ollama")) {
+    const usedAsJudge = critic?.provider === "ollama" || brain?.curator.provider === "ollama";
+    const endpoint: "cloud" | "local" = ollamaBaseUrl ? "local" : "cloud";
+    for (const line of ollamaNotes({
+      usedAsJudge,
+      endpoint,
+      keyPresent: Boolean(env.OLLAMA_API_KEY),
+    })) {
+      note(line);
+    }
+  }
 
   // OpenRouter upstream-provider routing — asked ONCE, only when openrouter is
   // actually used (as reviewer/critic/curator). Pins which upstream serves the
@@ -345,6 +427,7 @@ async function runCustom(
     contextDocs: Boolean(ctx),
     reputation: Boolean(rep),
     ...(openrouterProvider ? { openrouterProvider } : {}),
+    ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
   });
 }
 
@@ -354,8 +437,9 @@ async function runCustom(
 // has no completion API → cannot verify) just accepts the entered model.
 async function promptModelWithProbe(
   provider: ProviderId,
-  auth: "oauth" | "openrouter",
+  auth: "oauth" | "openrouter" | "apikey",
   initialModel: string = MODEL_DEFAULT[provider],
+  baseUrl?: string,
 ): Promise<string | null> {
   let initial = initialModel;
   for (;;) {
@@ -372,11 +456,13 @@ async function promptModelWithProbe(
 
     const s = spinner();
     s.start(`probing ${provider}/${chosen} (${auth})…`);
+    const keyEnv = apiKeyEnvFor(provider); // hoist: a double call yields `string | undefined`, tripping TS2379 under exactOptionalPropertyTypes
     const r = await probeModel({
       provider,
       model: chosen,
       auth,
-      ...(provider === "openrouter" ? { apiKeyEnv: "OPENROUTER_API_KEY" } : {}),
+      ...(keyEnv ? { apiKeyEnv: keyEnv } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
     });
     s.stop(r.ok ? "✓ model responds" : r.skipped ? `⚠ ${r.detail}` : `✗ ${r.detail}`);
 

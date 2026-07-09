@@ -1,5 +1,6 @@
 import { defaultConfig } from "../../config/defaults.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
+import { isLoopbackUrl } from "../../providers/ollama.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 
 // Per-provider default model, sourced from the validated defaults. Shared with setup.ts.
@@ -23,6 +24,7 @@ export interface WizardDefaults {
   /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
    *  re-run prompt. Empty string = none. */
   openrouterProvider: string;
+  ollamaEndpoint: "cloud" | "local";
 }
 
 // The fresh-setup recommendation (no existing config). Preserves today's wizard behavior —
@@ -39,6 +41,7 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   contextDocs: false,
   reputation: true,
   openrouterProvider: "",
+  ollamaEndpoint: "cloud",
 };
 
 function modelFor(cfg: ReviewgateConfig, provider: ProviderId, override?: string): string {
@@ -68,6 +71,9 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     : null;
   const orRouting = cfg.providers.openrouter?.openrouterProvider;
   const openrouterProvider = orRouting?.only?.[0] ?? orRouting?.order?.[0] ?? "";
+  const ollamaBase = cfg.providers.ollama?.baseUrl;
+  const ollamaEndpoint: "cloud" | "local" =
+    ollamaBase && isLoopbackUrl(ollamaBase) ? "local" : "cloud";
   return {
     reviewerProviders,
     perReviewer,
@@ -77,5 +83,6 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
     openrouterProvider,
+    ollamaEndpoint,
   };
 }

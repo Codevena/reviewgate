@@ -99,4 +99,31 @@ describe("answersFromConfig", () => {
     } as Parameters<typeof defineConfig>[0]);
     expect(answersFromConfig(cfg).perReviewer.codex?.fallback).toEqual(["gemini"]);
   });
+
+  it("answersFromConfig derives ollamaEndpoint from providers.ollama.baseUrl", () => {
+    const local = answersFromConfig(
+      defineConfig({
+        providers: {
+          codex: { enabled: true, auth: "oauth", model: "x", timeoutMs: 1000 },
+          ollama: {
+            enabled: true,
+            auth: "apikey",
+            apiKeyEnv: "OLLAMA_API_KEY",
+            model: "glm-5.2:cloud",
+            baseUrl: "http://localhost:11434/v1",
+            timeoutMs: 1000,
+          },
+        },
+        phases: { review: { reviewers: [{ provider: "ollama", persona: "security" }] } },
+      } as Parameters<typeof defineConfig>[0]),
+    );
+    expect(local.ollamaEndpoint).toBe("local");
+    const cloud = answersFromConfig(
+      defineConfig({
+        providers: { codex: { enabled: true, auth: "oauth", model: "x", timeoutMs: 1000 } },
+        phases: { review: { reviewers: [{ provider: "codex", persona: "security" }] } },
+      } as Parameters<typeof defineConfig>[0]),
+    );
+    expect(cloud.ollamaEndpoint).toBe("cloud");
+  });
 });
