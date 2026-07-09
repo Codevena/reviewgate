@@ -6,6 +6,8 @@ export interface ProbeInput {
   model: string;
   auth: "oauth" | "apikey" | "openrouter";
   apiKeyEnv?: string;
+  /** Ollama-only endpoint override, forwarded to complete() (Local daemon probes). */
+  baseUrl?: string;
   timeoutMs?: number;
 }
 
@@ -32,6 +34,7 @@ export async function probeModel(input: ProbeInput, deps: ProbeDeps = {}): Promi
       model: input.model,
       auth: input.auth,
       ...(input.apiKeyEnv ? { apiKeyEnv: input.apiKeyEnv } : {}),
+      ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
       timeoutMs: input.timeoutMs ?? 15_000,
     });
     if (text && text.trim().length > 0)

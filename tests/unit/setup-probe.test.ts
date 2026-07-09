@@ -47,4 +47,27 @@ describe("probeModel", () => {
     expect(r.skipped).toBe(true);
     expect(r.detail).toContain("no completion API");
   });
+
+  it("forwards baseUrl + apiKeyEnv to complete() (ollama local probe)", async () => {
+    let captured: Record<string, unknown> | undefined;
+    const r = await probeModel(
+      {
+        provider: "ollama",
+        model: "glm-5.2:cloud",
+        auth: "apikey",
+        apiKeyEnv: "OLLAMA_API_KEY",
+        baseUrl: "http://localhost:11434/v1",
+        timeoutMs: 1000,
+      },
+      {
+        adapter: fakeAdapter(async (_prompt, opts) => {
+          captured = opts as unknown as Record<string, unknown>;
+          return "OK";
+        }),
+      },
+    );
+    expect(r.ok).toBe(true);
+    expect(captured?.baseUrl).toBe("http://localhost:11434/v1");
+    expect(captured?.apiKeyEnv).toBe("OLLAMA_API_KEY");
+  });
 });

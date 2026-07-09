@@ -33,6 +33,8 @@ export interface CustomAnswers {
    *  models). Empty/absent → auto-route. Written as providers.openrouter
    *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
   openrouterProvider?: string;
+  /** Ollama endpoint override (Local). Absent → Cloud (baseUrl omitted). Written as providers.ollama.baseUrl. */
+  ollamaBaseUrl?: string;
 }
 
 const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter" | "apikey"> = {
@@ -49,6 +51,7 @@ const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter" | "apikey"> = {
 function providersFor(
   ids: { provider: ProviderId; model?: string }[],
   openrouterProvider?: string,
+  ollamaBaseUrl?: string,
 ): DeepPartial<ReviewgateConfig>["providers"] {
   const out: Record<string, unknown> = {};
   for (const { provider, model } of ids) {
@@ -58,6 +61,10 @@ function providersFor(
       entry.apiKeyEnv = "OPENROUTER_API_KEY";
       const slug = openrouterProvider?.trim();
       if (slug) entry.openrouterProvider = { only: [slug] };
+    }
+    if (provider === "ollama") {
+      entry.apiKeyEnv = "OLLAMA_API_KEY";
+      if (ollamaBaseUrl) entry.baseUrl = ollamaBaseUrl;
     }
     out[provider] = { ...(out[provider] as object), ...entry };
   }
@@ -149,7 +156,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
   phases.contextDocs = a.contextDocs ? { enabled: true } : null;
 
   return {
-    providers: providersFor(providerIds, a.openrouterProvider),
+    providers: providersFor(providerIds, a.openrouterProvider, a.ollamaBaseUrl),
     phases: phases as DeepPartial<ReviewgateConfig>["phases"],
   } as DeepPartial<ReviewgateConfig>;
 }

@@ -191,4 +191,49 @@ describe("buildCustomConfig", () => {
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(Object.hasOwn(cfg.phases.review.reviewers[0] ?? {}, "fallback")).toBe(false);
   });
+
+  it("ollama reviewer: apikey + OLLAMA_API_KEY; Cloud omits baseUrl (defaults supply it)", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "ollama", persona: "security", model: "glm-5.2:cloud" }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: false,
+    }) as { providers?: { ollama?: Record<string, unknown> } };
+    expect(Object.hasOwn(partial.providers?.ollama ?? {}, "baseUrl")).toBe(false);
+    const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
+    expect(cfg.providers.ollama?.enabled).toBe(true);
+    expect(cfg.providers.ollama?.auth).toBe("apikey");
+    expect(cfg.providers.ollama?.apiKeyEnv).toBe("OLLAMA_API_KEY");
+    expect(cfg.providers.ollama?.model).toBe("glm-5.2:cloud");
+    expect(cfg.providers.ollama?.baseUrl).toBe("https://ollama.com/v1");
+  });
+
+  it("Local endpoint writes providers.ollama.baseUrl=localhost", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "ollama", persona: "security", model: "glm-5.2:cloud" }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: false,
+      ollamaBaseUrl: "http://localhost:11434/v1",
+    }) as { providers?: { ollama?: { baseUrl?: string } } };
+    expect(partial.providers?.ollama?.baseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  it("enables providers.ollama when ollama is CRITIC-only (no ollama reviewer)", () => {
+    const partial = buildCustomConfig({
+      reviewers: [{ provider: "codex", persona: "security", model: "" }],
+      critic: { provider: "ollama", persona: "fp-filter", model: "glm-5.2:cloud" },
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: false,
+    }) as { providers?: { ollama?: Record<string, unknown> } };
+    expect(partial.providers?.ollama?.enabled).toBe(true);
+    expect(partial.providers?.ollama?.auth).toBe("apikey");
+    expect(partial.providers?.ollama?.apiKeyEnv).toBe("OLLAMA_API_KEY");
+  });
 });
