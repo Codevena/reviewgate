@@ -3,7 +3,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { POST_ABORT_SETTLE_MS_DEFAULT, SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
+import {
+  CRITIC_TAIL_RESERVE_MS,
+  PANEL_TAIL_RESERVE_MS,
+  POST_ABORT_SETTLE_MS_DEFAULT,
+  SETUP_BUDGET_MS_DEFAULT,
+} from "../../config/budgets.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
@@ -375,6 +380,46 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
   };
 }
 
+// Advisory: worst-case panel wall-clock vs loop.runTimeoutMs, mirroring the
+// runtime's TWO-reserve model (do not lump the reserves): reviewers run
+// unclamped iff slowestChain + PANEL_TAIL_RESERVE_MS fits; the sequential
+// critic runs unclamped iff slowestChain + critic + CRITIC_TAIL_RESERVE_MS
+// fits. Worst case = slowestChain + max(PANEL_TAIL, critic + CRITIC_TAIL).
+// Slot chains = primary + declared fallbacks (sequential inside one slot;
+// slots are parallel). Reviewer budget-clamping degrades an oversized config
+// gracefully — truncated reviews of large diffs (reduced review quality),
+// skipped fallbacks, skipped critic — instead of aborting, but the user should
+// size deliberately, so WARN, never FAIL. Last-resort failover is unbounded by
+// declaration and deliberately excluded (the runtime clamp bounds it).
+export function panelBudgetCheck(cfg: ReviewgateConfig): Check {
+  const providers = cfg.providers as Record<string, { timeoutMs?: number } | undefined>;
+  const t = (p: string): number => providers[p]?.timeoutMs ?? 300_000;
+  const chains = (cfg.phases.review.reviewers ?? []).map(
+    (r) => t(r.provider) + (r.fallback ?? []).reduce((s, fb) => s + t(fb), 0),
+  );
+  const slowestChainMs = chains.length ? Math.max(...chains) : 0;
+  const criticMs = cfg.phases.critic ? t(cfg.phases.critic.provider) : 0;
+  const tailMs = Math.max(
+    PANEL_TAIL_RESERVE_MS,
+    criticMs > 0 ? criticMs + CRITIC_TAIL_RESERVE_MS : 0,
+  );
+  const worstMs = slowestChainMs + tailMs;
+  const runMs = cfg.loop.runTimeoutMs;
+  const fits = runMs <= 0 || worstMs <= runMs;
+  return {
+    name: "panel budget vs loop.runTimeoutMs",
+    status: fits ? "ok" : "warn",
+    detail: fits
+      ? `worst-case panel ${Math.round(worstMs / 1000)}s fits loop.runTimeoutMs ${Math.round(runMs / 1000)}s`
+      : `worst-case panel wall-clock ${Math.round(worstMs / 1000)}s (slowest slot chain ${Math.round(slowestChainMs / 1000)}s + ${Math.round(tailMs / 1000)}s tail: max(panel reserve, critic + critic reserve)) exceeds loop.runTimeoutMs (${Math.round(runMs / 1000)}s) — the gate will budget-clamp instead of timing out: reviews of large diffs get CUT SHORT (reduced quality), late fallbacks and the critic get skipped`,
+    ...(fits
+      ? {}
+      : {
+          hint: "Raise loop.runTimeoutMs (and the Stop-hook timeout with it: setup 120s + runTimeoutMs + settle 30s must stay below it), or lower per-provider timeoutMs / shorten fallback chains.",
+        }),
+  };
+}
+
 // The single dependency the hooks rely on but that nothing else checked: can the
 // gate shim actually RESOLVE a runnable `reviewgate` binary? The shim runs under
 // the (often non-login) PATH the Claude Code hook process inherits; a bare
@@ -617,6 +662,7 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (fb) checks.push(fb);
     const ht = hookTimeoutCheck(input.repoRoot, cfg);
     if (ht) checks.push(ht);
+    checks.push(panelBudgetCheck(cfg));
     const gb = gateBinaryReachableCheck(input.repoRoot);
     if (gb) checks.push(gb);
     const sbMode = cfg.sandbox.mode;
