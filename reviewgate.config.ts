@@ -102,4 +102,11 @@ export default {
       curator: { provider: "opencode", persona: "fp-filter" },
     },
   },
+  // Gate self-deadline. Raised from the 720s default: a degraded panel (a hung
+  // primary burning its full timeout -> sequential fallback chain -> critic) can
+  // legitimately need 10-12min, which made every such run a coin flip against the
+  // old 720s deadline (repeated "did not complete within 12min" + escalation).
+  // Invariant: 120s setup + runTimeoutMs + 30s settle < Stop-hook `timeout`
+  // (2400s in .claude/settings.json).
+  loop: { runTimeoutMs: 1_800_000 },
 };
