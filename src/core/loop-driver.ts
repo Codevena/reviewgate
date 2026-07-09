@@ -1685,10 +1685,15 @@ export class LoopDriver {
     if (runTimeoutMs > 0) {
       const ac = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // Deadline-aware budgets: ONE absolute deadline shared by the abort timer
+      // below and the orchestrator's per-phase budget clamps, computed where the
+      // timer is armed so the two can never disagree.
+      const deadlineAt = Date.now() + runTimeoutMs;
       const runP = this.i.orchestrator.runIteration({
         runId: state.session_id,
         iter: nextIter,
         signal: ac.signal,
+        deadlineAt,
         cycleRejectedSignatures: state.cycle_rejected_signatures,
         cycleRejectedRegions: mergeRegions(state.cycle_rejected_dispositions),
         claimedFixedSignatures: state.claimed_fixed_signatures,

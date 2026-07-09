@@ -15,6 +15,11 @@ import type { AuditLogger } from "../audit/logger.ts";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
+import {
+  BUDGET_ATTRIBUTION_SLACK_MS,
+  MIN_REVIEWER_BUDGET_MS,
+  PANEL_TAIL_RESERVE_MS,
+} from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import { parseChangedRanges, parseDeletedPaths } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
@@ -279,6 +284,12 @@ export interface IterationRunner {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    // Deadline-aware budgets: the loop's self-deadline as an ABSOLUTE epoch-ms
+    // timestamp. Reviewer spawns clamp their timeout to what is left of it
+    // (minus PANEL_TAIL_RESERVE_MS) and are skipped below MIN_REVIEWER_BUDGET_MS;
+    // the critic clamps likewise. Absent (one-shot review-plan, bench, tests) →
+    // no budget pressure (Infinity).
+    deadlineAt?: number;
     // Per-cycle suppression (2b): signatures the agent already rejected as
     // reviewer_was_wrong earlier this cycle → demoted to INFO by the aggregator.
     cycleRejectedSignatures?: string[];
@@ -590,6 +601,11 @@ interface ReviewerRun {
   provider: ProviderId;
   persona: string;
   model: string;
+  // Deadline-aware budgets: true when this run's granted window was MATERIALLY
+  // shortened by the remaining-budget clamp (more than BUDGET_ATTRIBUTION_SLACK_MS
+  // below the provider's configured timeoutMs). A timeout under such a window is
+  // the GATE's doing, not the provider's → effectFor suppresses its cooldown.
+  budgetCapped?: boolean;
 }
 
 export class Orchestrator {
@@ -599,6 +615,7 @@ export class Orchestrator {
     runId: string;
     iter: number;
     signal?: AbortSignal;
+    deadlineAt?: number;
     cycleRejectedSignatures?: string[];
     claimedFixedSignatures?: Record<string, number>;
     priorAdjudications?: Adjudication[];
@@ -1320,6 +1337,17 @@ export class Orchestrator {
     };
 
     const ZERO_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null } as const;
+    // Deadline-aware budgets: how much wall-clock is left before the loop's
+    // self-deadline aborts this run. Infinity when no deadline was passed
+    // (one-shot review-plan, tests, bench). Uses the injectable clock so the
+    // clamp arithmetic is testable; production passes no `now` → live clock.
+    const remainingMs = (): number =>
+      opts.deadlineAt === undefined
+        ? Number.POSITIVE_INFINITY
+        : opts.deadlineAt - (this.input.now?.() ?? new Date()).getTime();
+    // What a reviewer spawn may still use: the remaining run budget minus the
+    // reserve for the post-panel tail (critic + aggregate + report).
+    const reviewerBudgetMs = (): number => remainingMs() - PANEL_TAIL_RESERVE_MS;
     // Run one provider for a slot, catch-wrapped so a THROWING adapter becomes a
     // synthetic error run (not a Promise rejection allSettled would drop). okRuns
     // still filters status==="ok", so a thrown/errored adapter never counts as a
@@ -1339,9 +1367,21 @@ export class Orchestrator {
       // #7: clamp this reviewer's per-run timeout to the triage cap for a small diff (never
       // ABOVE the provider's own timeout). The full panel still runs — only the wall-clock
       // ceiling drops, so a tiny change can't stall behind one slow slot for the full default.
+      // Deadline-aware: additionally clamp to the remaining run budget so a degraded
+      // panel (hung primary → sequential fallback chain) structurally fits inside
+      // loop.runTimeoutMs instead of coin-flipping against it.
       const capMs = triage.reviewerTimeoutCapMs ?? null;
-      const effectiveTimeoutMs =
-        capMs !== null ? Math.min(providerCfg.timeoutMs, capMs) : providerCfg.timeoutMs;
+      const budgetMs = reviewerBudgetMs(); // Infinity when no deadline
+      const effectiveTimeoutMs = Math.max(
+        1,
+        Math.min(providerCfg.timeoutMs, capMs ?? Number.POSITIVE_INFINITY, budgetMs),
+      );
+      // Materially-clamped ⇔ the granted window is more than the slack below the
+      // configured timeout. 290s of a 300s window ⇒ provider's fault (cool it);
+      // 140s of a 300s window ⇒ gate's fault (don't). Without the slack, every
+      // near-deadline timeout would read as "gate's fault" and the repeated-
+      // timeout treadmill would return through the back door.
+      const budgetCapped = effectiveTimeoutMs < providerCfg.timeoutMs - BUDGET_ATTRIBUTION_SLACK_MS;
       if (!adapter) {
         return {
           res: {
@@ -1403,7 +1443,7 @@ export class Orchestrator {
           ...(opts.signal ? { signal: opts.signal } : {}),
           ...(sandbox ? { sandbox } : {}),
         });
-        return { res, provider, persona, model };
+        return { res, provider, persona, model, budgetCapped };
       } catch (err) {
         // strict + isolation-unavailable: fail closed for this reviewer with a
         // legible statusDetail, so the "0 ok reviewers → ERROR/block" gate handles
@@ -1427,6 +1467,7 @@ export class Orchestrator {
           provider,
           persona,
           model,
+          budgetCapped,
         };
       }
     };
@@ -1594,18 +1635,48 @@ export class Orchestrator {
           // pre-abort keeps its backoff (breaks the repeated-timeout treadmill);
           // one killed BY the deadline abort settles post-abort and is not
           // penalized. See applyCooldownEffects' docblock.
-          const effectFor = (provider: ProviderId, res: ReviewResult): CooldownEffect | null =>
+          // budgetCapped: the run's window was MATERIALLY shortened by the
+          // remaining-budget clamp → a timeout under it is the gate's doing
+          // (same posture as the triage cap / deadline abort): no cooldown.
+          const effectFor = (
+            provider: ProviderId,
+            res: ReviewResult,
+            budgetCapped = false,
+          ): CooldownEffect | null =>
             cooldownEffectFor(
               provider,
               res,
               this.input.now?.() ?? new Date(),
-              opts.signal?.aborted ? 0 : configuredTimeoutCooldownMs,
+              opts.signal?.aborted || budgetCapped ? 0 : configuredTimeoutCooldownMs,
             );
 
           const cappedUntil = cooldownStore.skipUntil(r.provider, now);
           let run: ReviewerRun;
           const effects: CooldownEffect[] = [];
-          if (cappedUntil && r.fallback?.length) {
+          if (reviewerBudgetMs() < MIN_REVIEWER_BUDGET_MS) {
+            // Deadline-aware: not enough panel budget left for even a minimal
+            // review — don't start a doomed spawn. status "error" with
+            // durationMs 0 = FAST error → cooldown-inconclusive (the provider is
+            // not at fault; this is a sizing problem the doctor check flags).
+            // Deliberately fail-CLOSED downstream: all slots skipped → 0 ok
+            // reviewers → verdict ERROR → the turn is blocked, never fail-open.
+            run = {
+              res: {
+                reviewerId: `${r.provider}-${persona}`,
+                verdict: "ERROR",
+                findings: [],
+                usage: { ...ZERO_USAGE },
+                durationMs: 0,
+                exitCode: -1,
+                rawEventsPath: "",
+                status: "error",
+                statusDetail: `budget-skip: ${Math.max(0, Math.round(reviewerBudgetMs() / 1000))}s of panel budget left before the gate deadline — reviewer not spawned`,
+              },
+              provider: r.provider,
+              persona,
+              model,
+            };
+          } else if (cappedUntil && r.fallback?.length) {
             run = {
               res: {
                 reviewerId: `${r.provider}-${persona}`,
@@ -1635,7 +1706,7 @@ export class Orchestrator {
               diffPath,
               runDir,
             );
-            const eff = effectFor(r.provider, run.res);
+            const eff = effectFor(r.provider, run.res, run.budgetCapped);
             if (eff) effects.push(eff);
           }
 
@@ -1651,6 +1722,9 @@ export class Orchestrator {
           // spurious "[fallback from …]" prefixes. Skip the chain entirely (F-045).
           if (run.res.status !== "ok" && r.fallback?.length && !opts.signal?.aborted) {
             for (const fb of r.fallback) {
+              // Deadline-aware: don't start a fallback there is no budget left for
+              // (also covers a budget-skipped primary: the chain stays unspawned).
+              if (reviewerBudgetMs() < MIN_REVIEWER_BUDGET_MS) break;
               const fbCfg = this.input.config.providers[fb] as ProviderConfig | undefined;
               if (!this.input.adapters[fb] || !fbCfg) continue;
               const available = this.input.providerAvailable ?? isProviderAvailable;
@@ -1676,7 +1750,7 @@ export class Orchestrator {
                 `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
                   .trim()
                   .slice(0, 1000);
-              const fbEff = effectFor(fb, run.res); // record/clear the fallback too
+              const fbEff = effectFor(fb, run.res, run.budgetCapped); // record/clear the fallback too
               if (fbEff) effects.push(fbEff);
               if (run.res.status === "ok") break;
             }
@@ -1700,6 +1774,8 @@ export class Orchestrator {
             const attempted = new Set<ProviderId>([r.provider, ...(r.fallback ?? [])]);
             const lrAvailable = this.input.providerAvailable ?? isProviderAvailable;
             for (const lr of LAST_RESORT_ORDER) {
+              // Deadline-aware: same budget floor as the declared chain.
+              if (reviewerBudgetMs() < MIN_REVIEWER_BUDGET_MS) break;
               if (attempted.has(lr)) continue;
               const lrCfg = this.input.config.providers[lr] as ProviderConfig | undefined;
               if (!lrCfg?.enabled || !this.input.adapters[lr]) continue;
@@ -1723,7 +1799,7 @@ export class Orchestrator {
                 `[last-resort from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
                   .trim()
                   .slice(0, 1000);
-              const lrEff = effectFor(lr, run.res);
+              const lrEff = effectFor(lr, run.res, run.budgetCapped);
               if (lrEff) effects.push(lrEff);
               if (run.res.status === "ok") break;
             }
