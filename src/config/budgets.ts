@@ -37,3 +37,10 @@ export const MIN_CRITIC_BUDGET_MS = 15_000;
 // this, every near-deadline timeout would read as "gate's fault" and the
 // treadmill would return through the back door:
 export const BUDGET_ATTRIBUTION_SLACK_MS = 30_000;
+// Floor for the loop's EFFECTIVE self-deadline after clamping to the installed
+// Stop-hook timeout (loop-driver). When the hook timeout is pathologically
+// small (cap ≤ 0), the deadline must be floored — never disabled: a disabled
+// deadline guarantees the OS kill wins (silent, non-blocking = fail-open),
+// while a best-effort short deadline usually still fires first because the
+// SETUP budget is a worst case, not the typical few seconds:
+export const MIN_RUN_TIMEOUT_MS = 60_000;

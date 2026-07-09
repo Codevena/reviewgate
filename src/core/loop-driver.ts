@@ -1,7 +1,11 @@
 // src/core/loop-driver.ts
 import { existsSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import type { AuditLogger } from "../audit/logger.ts";
-import { POST_ABORT_SETTLE_MS_DEFAULT } from "../config/budgets.ts";
+import {
+  MIN_RUN_TIMEOUT_MS,
+  POST_ABORT_SETTLE_MS_DEFAULT,
+  SETUP_BUDGET_MS_DEFAULT,
+} from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type DecisionEntry, DecisionEntrySchema } from "../schemas/decision.ts";
@@ -19,6 +23,7 @@ import {
   pendingJsonPath,
   pendingMdPath,
 } from "../utils/paths.ts";
+import { installedGateStopTimeoutS } from "../utils/stop-hook-timeout.ts";
 import type { Adjudication } from "./adjudications.ts";
 import { learnLessonsFromDecisions } from "./agent-lessons/learn.ts";
 import { AgentLessonsStore } from "./agent-lessons/store.ts";
@@ -1680,7 +1685,29 @@ export class LoopDriver {
     // [] when state.iteration < 1). Injected into the next panel's prompt so it does not
     // re-litigate settled regions.
     const priorAdjs = priorAdjudications(this.i.repoRoot, state.iteration);
-    const runTimeoutMs = this.i.config.loop.runTimeoutMs;
+    // Effective self-deadline: the CONFIGURED runTimeoutMs clamped to the
+    // INSTALLED Stop-hook timeout minus the setup+settle margin, so the
+    // fail-open invariant (budgets.ts) is self-enforcing. Without this, a
+    // binary upgrade that raises the default runTimeoutMs (720s→1800s) past a
+    // pre-upgrade 900s hook timeout would let the OS kill the hook BEFORE the
+    // self-deadline fires — non-blocking, the turn ends UN-reviewed, silently,
+    // on every retry (post-implementation review CRITICAL, 2026-07-09).
+    // Unknown hook timeout (no settings / no gate hook / no timeout field) →
+    // trust the configured value. A pathologically small hook cap floors at
+    // MIN_RUN_TIMEOUT_MS — never disables the deadline (that would GUARANTEE
+    // the fail-open this exists to prevent).
+    const configuredRunTimeoutMs = this.i.config.loop.runTimeoutMs;
+    const installedHookS = installedGateStopTimeoutS(this.i.repoRoot);
+    const hookCapMs =
+      installedHookS === null
+        ? Number.POSITIVE_INFINITY
+        : installedHookS * 1000 -
+          SETUP_BUDGET_MS_DEFAULT -
+          (this.i.postAbortSettleMs ?? POST_ABORT_SETTLE_MS_DEFAULT);
+    const runTimeoutMs =
+      configuredRunTimeoutMs > 0
+        ? Math.min(configuredRunTimeoutMs, Math.max(MIN_RUN_TIMEOUT_MS, hookCapMs))
+        : configuredRunTimeoutMs;
     let result: IterationResult;
     if (runTimeoutMs > 0) {
       const ac = new AbortController();

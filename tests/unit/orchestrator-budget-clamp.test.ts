@@ -122,6 +122,11 @@ describe("deadline-aware reviewer budgets", () => {
     expect(seenP.timeoutMs).toEqual([]);
     expect(seenF.timeoutMs).toEqual([]);
     expect(res.verdict).toBe("ERROR");
+    // Review-gate WARN 2026-07-09: an ALL-budget-skipped panel is a deterministic
+    // SIZING condition, not a transient infra outage — it must NOT feed the
+    // bounded infra-defer (which would allow_stop up to 3 un-reviewed turns).
+    // Falsy here → the LoopDriver hard-blocks on the ERROR verdict (fail-closed).
+    expect(res.allReviewersInfraFailed ?? false).toBe(false);
   });
 
   it("a MATERIALLY budget-capped timeout is not cooldown-penalized", async () => {

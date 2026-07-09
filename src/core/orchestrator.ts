@@ -608,6 +608,12 @@ interface ReviewerRun {
   // below the provider's configured timeoutMs). A timeout under such a window is
   // the GATE's doing, not the provider's → effectFor suppresses its cooldown.
   budgetCapped?: boolean;
+  // True for the SYNTHETIC run emitted when the spawn was skipped for lack of
+  // panel budget. Distinguishes a deterministic SIZING condition from a real
+  // provider infra failure: an all-budget-skipped panel must hard-block
+  // (verdict ERROR), never feed the bounded infra-defer (which would allow the
+  // turn to end un-reviewed and label a config problem "transient outage").
+  budgetSkipped?: boolean;
 }
 
 export class Orchestrator {
@@ -1660,8 +1666,10 @@ export class Orchestrator {
             // review — don't start a doomed spawn. status "error" with
             // durationMs 0 = FAST error → cooldown-inconclusive (the provider is
             // not at fault; this is a sizing problem the doctor check flags).
-            // Deliberately fail-CLOSED downstream: all slots skipped → 0 ok
-            // reviewers → verdict ERROR → the turn is blocked, never fail-open.
+            // budgetSkipped marks it as a deterministic sizing condition so an
+            // ALL-skipped panel yields allReviewersInfraFailed=false → the
+            // LoopDriver HARD-BLOCKS on the ERROR verdict (fail-closed) instead
+            // of infra-deferring (which would end the turn un-reviewed).
             run = {
               res: {
                 reviewerId: `${r.provider}-${persona}`,
@@ -1677,6 +1685,7 @@ export class Orchestrator {
               provider: r.provider,
               persona,
               model,
+              budgetSkipped: true,
             };
           } else if (cappedUntil && r.fallback?.length) {
             run = {
@@ -1930,7 +1939,11 @@ export class Orchestrator {
       // branch okRuns is empty, so every settled run is non-ok). That is a transient
       // infra outage. settled.length === 0 (none enabled/available, or all threw
       // before producing a result) is a real MISCONFIG → stays a hard block.
-      const allReviewersInfraFailed = settled.length > 0;
+      // A panel where EVERY run is a synthetic budget-skip was never attempted at
+      // all — that is a deterministic SIZING condition (runTimeoutMs too small for
+      // any reviewer), not a transient outage: hard-block too, so the bounded
+      // infra-defer can't let turns end un-reviewed over a config problem.
+      const allReviewersInfraFailed = settled.length > 0 && settled.some((s) => !s.budgetSkipped);
       return {
         verdict: "ERROR",
         allReviewersQuotaLocked,
