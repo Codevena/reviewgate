@@ -17,6 +17,7 @@ import {
 import { runGate, runGateSafe } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
+import { runLoreStatus } from "./commands/lore.ts";
 import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
@@ -225,6 +226,25 @@ const brain = defineCommand({
       async run({ args }) {
         const exitCode = await runBrainRevoke({ repoRoot: process.cwd(), id: args.id as string });
         process.exit(exitCode);
+      },
+    }),
+  },
+});
+
+const lore = defineCommand({
+  meta: {
+    name: "lore",
+    description: "Per-repo curated project knowledge (lore, draft->canon) inspection",
+  },
+  subCommands: {
+    status: defineCommand({
+      meta: {
+        name: "status",
+        description:
+          "Read-only table of lore entries (id, status, state, anchors) + totals; exit 0 always",
+      },
+      async run() {
+        process.exit(await runLoreStatus({ repoRoot: process.cwd() }));
       },
     }),
   },
@@ -608,6 +628,7 @@ const main = defineCommand({
     reset,
     audit,
     brain,
+    lore,
     fp,
     stats,
     report,
