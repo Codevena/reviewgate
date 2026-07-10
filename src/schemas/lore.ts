@@ -21,8 +21,9 @@ export type LoreEntry = z.infer<typeof LoreEntrySchema>;
 
 // One line of the committed, append-only canon-promotion approvals ledger
 // (`.reviewgate/lore/approvals.jsonl`). See "Canon guard" in the lore design
-// spec: an id present here (while continuously canon) means the promotion
-// already got a human OK and must not re-fire the guard finding.
+// spec: approval is ID-PERMANENT in v1 — an id present here already got a human
+// OK and must not re-fire the guard finding (a committed canon→draft→canon
+// round-trip reuses the original approval; per-epoch re-approval is a v2 follow-up).
 export const LORE_APPROVAL_SCHEMA_VERSION = "reviewgate.lore-approval.v1";
 export const LoreApprovalSchema = z.object({
   schema: z.literal(LORE_APPROVAL_SCHEMA_VERSION),
