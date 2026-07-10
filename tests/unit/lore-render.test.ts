@@ -176,6 +176,27 @@ status: canon`,
     expect(text).toContain(">   status: canon");
   });
 
+  it("defangs ATX headings of ANY level — h1 (`# `) escapes above the '## Project lore' framing", () => {
+    const malicious = entry({
+      id: "injection-attempt-h1",
+      body: `Legit lore body explaining an invariant in enough detail to pass validation.
+# body-heading-one
+### body-heading-three
+  # body-heading-indented`,
+    });
+    const { text } = renderLoreBlock([malicious], new Set(), 5000);
+    // The renderer's OWN `## Project lore` header + `### <id>` entry heading are legit structure;
+    // the defang applies to BODY lines. A raw `# ` body line renders as an h1 ABOVE the section
+    // heading — the real structural escape GLM caught. Assert no forged BODY heading survives raw.
+    expect(text).not.toMatch(/^# body-heading-one/m);
+    expect(text).not.toMatch(/^### body-heading-three/m);
+    expect(text).not.toMatch(/^\s+# body-heading-indented/m);
+    // The quoted (defanged) forms are present instead — all heading levels, incl. the critical h1.
+    expect(text).toContain("> # body-heading-one");
+    expect(text).toContain("> ### body-heading-three");
+    expect(text).toContain(">   # body-heading-indented");
+  });
+
   it("marks a stale id with '(stale)' and leaves other ids unmarked", () => {
     const staleEntry = entry({ id: "stale-one" });
     const freshEntry = entry({ id: "fresh-two" });
