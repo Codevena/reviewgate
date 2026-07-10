@@ -201,6 +201,26 @@ export const ReviewgateStateSchema = z.object({
   // because a claim only follows iteration ≥1's findings. Reset on re-arm.
   // `.default({})` for back-compat with state.json written before this field.
   claimed_fixed_signatures: z.record(z.string(), z.number().int().positive()).default({}),
+  // Lore v1 (2026-07-09, Task 7): the local-timezone YYYY-MM-DD date the last lore
+  // staleness reminder was emitted (spec, "Staleness + reminder" — "no UTC
+  // conversion", single-machine semantics). null ⇒ no reminder emitted yet. NOT
+  // reset on cycle re-arm (calendar-day scoped, not cycle-scoped — a re-arm within
+  // the same day must not grant a fresh reminder). `.default(null)` for back-compat
+  // with state.json written before this field.
+  lore_reminder_last_date: z.string().nullable().default(null),
+  // Lore v1 (Task 7): entry id → ISO-until a rejected staleness reminder is in its
+  // cooldown (spec: "cooldown never consumes the daily cap"). Pruned (expired
+  // entries dropped) whenever read. NOT cycle-scoped (time-based like the date
+  // above). `.default({})` for back-compat with state.json written before this
+  // field.
+  lore_rejection_cooldowns: z.record(z.string(), z.string()).default({}),
+  // Lore v1 (Task 7): entry ids the agent claimed (accepted/action:"fixed") to have
+  // refreshed, mirroring claimed_fixed_signatures' §4.3 "verified, not trusted"
+  // mechanics — re-classified on the NEXT gate run; still-stale re-fires and
+  // BYPASSES the daily cap (self-reporting a fix without touching the file must not
+  // buy a free day), fresh drops the claim. NOT cycle-scoped. `.default([])` for
+  // back-compat with state.json written before this field.
+  lore_claimed_fixed: z.array(z.string()).default([]),
   // T1 (field report 2026-07-03): working-tree manifest of the last FULL-PANEL
   // iteration this cycle (null on ERROR/checks-only rounds and until the first
   // panel round). Cleared on re-arm; substrate for the delta-scope demote.
@@ -301,6 +321,9 @@ export function initialState(sessionId: string): ReviewgateState {
     cycle_rejected_signatures: [],
     agent_touched_files: [],
     claimed_fixed_signatures: {},
+    lore_reminder_last_date: null,
+    lore_rejection_cooldowns: {},
+    lore_claimed_fixed: [],
     reviewed_snapshot: null,
     cycle_rejected_dispositions: [],
     cycle_addressed_dispositions: [],

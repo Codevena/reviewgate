@@ -90,6 +90,11 @@ import { renderHouseRules } from "./house-rules.ts";
 import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
 import { locationKey } from "./location-recurrence.ts";
+import { readApprovals } from "./lore/approvals.ts";
+import { type LorePromotion, detectPromotions } from "./lore/guard.ts";
+import { orderForBudget, renderLoreBlock, selectForDiff } from "./lore/render.ts";
+import { classifyEntry } from "./lore/staleness.ts";
+import { type LoreEntryParsed, loadLore } from "./lore/store.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import {
   HIGH_PRECISION_FLOOR,
@@ -276,6 +281,13 @@ export interface IterationResult {
   // T4/R2: files of this round's blocking findings, persisted in the reviewed
   // snapshot as the ERROR-proof prior-blocking-files input of the delta scope.
   blockingFilesThisIter?: string[] | undefined;
+  // Lore v1 (2026-07-09): this iteration's lore outcomes, for the LoopDriver
+  // (Task 7) to persist the daily-cap/cooldown state and write approval-ledger
+  // lines. Absent when lore processing never ran this iteration (phases.lore
+  // off/null, OR the triage-skip / deterministic-checks-fail early-return paths
+  // — a documented v1 boundary: the canon-guard finding fires on the NEXT gate
+  // run instead, see docs/superpowers/specs/2026-07-09-lore-design.md).
+  loreOutcomes?: { reminderEmittedId?: string; promotions: string[] };
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -322,6 +334,17 @@ export interface IterationRunner {
     // When every diff file is byte-identical to it, the review short-circuits to a
     // 'content-cache' PASS — surviving the re-serializations that defeat the byte cache.
     passLedger?: PassLedger | null;
+    // Lore v1 (2026-07-09): the daily-cap/cooldown state for the staleness
+    // reminder, computed by the LoopDriver (Task 7). ABSENT is treated as
+    // `{ allowed: false, cooldownIds: [] }` — fail quiet until Task 7 wires the
+    // real value through. `claimedFixedStaleIds` (Task 7): entries the agent
+    // previously claimed fixed but are STILL stale (§4.3-style re-verification) —
+    // optional/defaulted to [] so pre-Task-7 callers/tests are unaffected.
+    loreReminderBudget?: {
+      allowed: boolean;
+      cooldownIds: string[];
+      claimedFixedStaleIds?: string[];
+    };
   }): Promise<IterationResult>;
 }
 
@@ -533,6 +556,35 @@ export function effectiveReviewerCount(
   return new Set(okRuns.map((s) => `${s.provider}:${s.persona}`)).size;
 }
 
+// Lore v1 (2026-07-09): builds one of the two synthetic, verdict-neutral lore
+// findings (reminder / canon-promotion). NEVER fed through aggregate() — built
+// separately and concatenated after the panel verdict is final (see the
+// emission block in runIteration). Signature is stable per (kind, entry id),
+// mirroring the deterministic checker tier's `check:<name>` pattern.
+function buildLoreFinding(
+  idNum: number,
+  kind: "reminder" | "canon-promotion",
+  entryId: string,
+  text: { message: string; details: string },
+): Finding {
+  return {
+    id: `F-L${String(idNum).padStart(2, "0")}`,
+    signature: `lore:${kind}:${entryId}`,
+    severity: "INFO",
+    category: "quality",
+    rule_id: kind === "reminder" ? "lore.reminder" : "lore.canon-guard",
+    file: `.reviewgate/lore/${entryId}.md`,
+    line_start: 1,
+    line_end: 1,
+    message: text.message.slice(0, 200),
+    details: text.details.slice(0, 2000),
+    reviewer: { provider: "lore", model: "deterministic", persona: "lore" },
+    confidence: 1,
+    consensus: "singleton",
+    lore: kind,
+  };
+}
+
 // M6: best-effort diagnostic — per-lib docs outcomes for "why no docs". Written
 // under .reviewgate/ (excluded from the reviewed diff). Never throws.
 function writeDocsDebugArtifact(repoRoot: string, docs: RenderedContextDocs): void {
@@ -633,6 +685,13 @@ export class Orchestrator {
     reviewedSnapshot?: ReviewedSnapshot | null;
     priorBlockingFiles?: string[];
     passLedger?: PassLedger | null;
+    // Lore v1 (Task 7): see the identical field's doc comment on IterationRunner
+    // above — this concrete method signature mirrors it.
+    loreReminderBudget?: {
+      allowed: boolean;
+      cooldownIds: string[];
+      claimedFixedStaleIds?: string[];
+    };
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -1011,6 +1070,94 @@ export class Orchestrator {
       repo,
       facts.files.map((f) => f.path),
     );
+    // --- Lore v1 (2026-07-09): per-repo curated project knowledge (draft→canon).
+    // Load/classify/select/render + run the canon-promotion guard, ALL inside one
+    // try/catch — lore is optional context (spec, "Failure behavior"): any error
+    // here leaves loreText="" and empty banners, and the review proceeds without
+    // it (fail OPEN). `phases.lore: null` is the canonical OFF (nothing runs).
+    //
+    // v1 boundary: this block sits AFTER the triage-skip return (line ~700) and
+    // the deterministic-checks fail-fast return (line ~795) — a lore-only change
+    // on a diff that triages to SKIP, or a diff whose checks fail first, never
+    // reaches here THIS iteration (no injection, no reminder, no canon-guard
+    // finding). The guard finding fires on the next gate run instead (spec
+    // explicitly allows this — the approval-gated injection stays fail-closed
+    // regardless: an unapproved canon entry is never injected no matter when the
+    // guard finding fires).
+    // M-1 (task 6 review): lore is a gate-only feature (mirrors deltaScope above).
+    // report-writer only renders the lore section when mode !== "one-shot", so
+    // running lore under one-shot (review-plan) would compute + emit a
+    // canon-promotion into plan-review.json that is INVISIBLE in the .md
+    // (json/md inconsistency) plus needless loadLore/detectPromotions work.
+    // Forcing loreCfg to undefined here short-circuits every downstream
+    // `loreCfg?.enabled` check (load/inject, findings emission, banner,
+    // loreOutcomes) — lore never runs in one-shot mode.
+    const loreCfg =
+      this.input.reportMode !== "one-shot" ? this.input.config.phases.lore : undefined;
+    let loreText = "";
+    let loreInvalid: { file: string; error: string }[] = [];
+    let loreBroad: string[] = [];
+    let loreZeroMatch: string[] = [];
+    let loreDropped = 0;
+    let loreSelected: LoreEntryParsed[] = [];
+    let loreAnchorFilesById = new Map<string, string[]>();
+    let loreStaleIds = new Set<string>();
+    let lorePromotions: LorePromotion[] = [];
+    if (loreCfg?.enabled) {
+      try {
+        const { entries, invalid } = loadLore(repo);
+        const anchorFilesById = new Map<string, string[]>();
+        const staleIds = new Set<string>();
+        const okStale: LoreEntryParsed[] = [];
+        const broad: string[] = [];
+        const zeroMatch: string[] = [];
+        for (const entry of entries) {
+          const classified = classifyEntry(repo, entry);
+          if (classified.state === "broad") {
+            broad.push(entry.id);
+            continue;
+          }
+          if (classified.state === "zero-match") {
+            zeroMatch.push(entry.id);
+            continue;
+          }
+          anchorFilesById.set(entry.id, classified.files);
+          if (classified.state === "stale") staleIds.add(entry.id);
+          okStale.push(entry);
+        }
+        const approvedIds = readApprovals(repo);
+        const diffFiles = facts.files.map((f) => f.path);
+        const selected = selectForDiff(okStale, diffFiles, approvedIds, anchorFilesById);
+        const ordered = orderForBudget(selected, anchorFilesById);
+        const rendered = renderLoreBlock(ordered, staleIds, loreCfg.maxInjectChars);
+
+        loreInvalid = invalid;
+        loreBroad = broad;
+        loreZeroMatch = zeroMatch;
+        loreAnchorFilesById = anchorFilesById;
+        loreStaleIds = staleIds;
+        loreSelected = selected;
+        loreText = rendered.text;
+        loreDropped = rendered.dropped;
+        // Canon guard: `.reviewgate/` is excluded from the reviewer diff, so this
+        // is the ONLY place a draft→canon transition / born-as-canon entry is
+        // ever caught. Same review base as collectDiff (pre-batch HEAD from
+        // dirty.flag, fallback HEAD) — see "Canon guard" in the spec.
+        lorePromotions = await detectPromotions(repo, this.input.reviewBaseSha ?? null);
+      } catch {
+        // lore is optional context — the review proceeds without it.
+        loreText = "";
+        loreInvalid = [];
+        loreBroad = [];
+        loreZeroMatch = [];
+        loreDropped = 0;
+        loreSelected = [];
+        loreAnchorFilesById = new Map();
+        loreStaleIds = new Set();
+        lorePromotions = [];
+      }
+    }
+
     // T4/R2: the delta GATING scope (null → pass inert / full scope). Active only in
     // gate mode with the flag on, a prior snapshot present (iteration >= 2 by
     // construction) and a COMPLETE diff.
@@ -1046,6 +1193,23 @@ export class Orchestrator {
         : undefined,
       // N7: fold the UI facts block (derived from the changed files + resolver tables).
       ui: uiFacts ? createHash("sha256").update(uiFacts).digest("hex") : undefined,
+      // Lore v1: a rendered lore-block change (entry edit, staleness flip, budget
+      // truncation) must invalidate a cached verdict — .reviewgate/ is excluded
+      // from the diff hash, so this is the only cache-key coverage it gets.
+      lore: loreText ? createHash("sha256").update(loreText).digest("hex") : undefined,
+      // Lore v1 fix (2026-07-10, task 6 review I-1): a pending (unapproved) canon
+      // promotion is BY DEFINITION not injected (detectPromotions/selectForDiff
+      // filter approved ids out), so it never reaches `lore` above. Without this
+      // segment, a code-diff-identical run hits the byte/content cache and the
+      // canon-promotion decision-required finding (emitted only on a real panel
+      // run, below) is swallowed indefinitely. Sorted for determinism; empty →
+      // omitted (continuity rule — a repo with lore off/no pending promotion gets
+      // the byte-identical key it had before this fix).
+      lorePromotions: lorePromotions.length
+        ? createHash("sha256")
+            .update(JSON.stringify(lorePromotions.map((p) => `${p.id}:${p.kind}`).sort()))
+            .digest("hex")
+        : undefined,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -1545,6 +1709,9 @@ export class Orchestrator {
           ];
           // House rules first — the most authoritative trusted context (maintainer ground truth).
           if (houseRulesText) promptParts.push(houseRulesText, "");
+          // Lore v1: maintainer-approved project knowledge (draft→canon). renderLoreBlock
+          // emits its own "## Project lore" header + defanged per-entry bodies.
+          if (loreText) promptParts.push(loreText, "");
           if (depSurface)
             promptParts.push(
               "## Installed dependency API surface (from this repo's node_modules — the ACTUALLY-installed versions; prefer this over your training data, which may be stale)",
@@ -2355,13 +2522,116 @@ export class Orchestrator {
       wholeDiffAttributable = stamped.wholeDiffAttributable;
     }
 
+    // Lore v1: emit the verdict-neutral reminder / canon-promotion findings AFTER
+    // the panel verdict + aggregation are FINAL (severity INFO, so this can never
+    // move agg.verdict) — built SEPARATELY and concatenated, NEVER fed through
+    // aggregate() (dedup/scope/demote rules are written for reviewer opinions, not
+    // a deterministic repo-authored finding). Mutation-tested: the CRITICAL-
+    // suppression check just below reads agg.counts.critical, which does not exist
+    // until AFTER aggregate() returns — feeding the reminder candidate INTO
+    // aggregate()'s input (instead of after) breaks that check and turns test (g)
+    // red (a reminder fires despite a CRITICAL present); test (d) alone stays green
+    // under that same mutation (aggregate()'s INFO-preserving spread happens not to
+    // corrupt a lone advisory finding), so (g) is the test that actually enforces
+    // this boundary.
+    const loreFindingsBuilt: Finding[] = [];
+    let reminderEmittedId: string | undefined;
+    if (loreCfg?.enabled) {
+      const budget = opts.loreReminderBudget ?? { allowed: false, cooldownIds: [] };
+      // Task 7: entries the agent previously claimed fixed but a fresh
+      // classifyEntry() re-check (in the LoopDriver, this same turn) found STILL
+      // stale. Defaulted to [] so every pre-Task-7 caller/test (which never sets
+      // this field) is unaffected — see the loreReminderBudget doc comment above.
+      const claimedFixedStaleIds = opts.loreReminderBudget?.claimedFixedStaleIds ?? [];
+      const diffFilesSet = new Set(facts.files.map((f) => f.path));
+      // Cooldown-filtered BEFORE selection (spec: "cooldown never consumes the daily cap").
+      const candidates = loreSelected.filter(
+        (e) => loreStaleIds.has(e.id) && !budget.cooldownIds.includes(e.id),
+      );
+      // Spec: suppressed entirely in rounds with a CRITICAL finding (maintenance must
+      // not distract from real problems) — checked against the FINAL post-aggregation
+      // count, not any single reviewer's pre-aggregation opinion. The (g)/(i)
+      // mutation-tested boundary: removing this condition must turn test (g) red.
+      if (budget.allowed && agg.counts.critical === 0 && candidates.length > 0) {
+        // Deterministic target selection (spec, "Staleness + reminder"): most diff
+        // files matched DESC, then oldest verified_at ASC, then id ASC. Task 7 adds
+        // ONE higher-priority tiebreak ahead of all three: a claimed-fixed-but-
+        // still-stale entry is preferred over an unrelated stale entry — the point
+        // of the daily-cap bypass is to make the agent's ignored claim visible
+        // again, not to let a different entry's reminder quietly absorb the bypass.
+        const sorted = [...candidates].sort((a, b) => {
+          const aClaimed = claimedFixedStaleIds.includes(a.id);
+          const bClaimed = claimedFixedStaleIds.includes(b.id);
+          if (aClaimed !== bClaimed) return aClaimed ? -1 : 1;
+          const matchedA = (loreAnchorFilesById.get(a.id) ?? []).filter((f) =>
+            diffFilesSet.has(f),
+          ).length;
+          const matchedB = (loreAnchorFilesById.get(b.id) ?? []).filter((f) =>
+            diffFilesSet.has(f),
+          ).length;
+          if (matchedA !== matchedB) return matchedB - matchedA;
+          if (a.verified_at !== b.verified_at) return a.verified_at < b.verified_at ? -1 : 1;
+          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        });
+        const picked = sorted[0];
+        if (picked) {
+          reminderEmittedId = picked.id;
+          // Task 7: an honest re-fire note when this exact reminder was previously
+          // claimed fixed but the anchored files still don't match verified_tree —
+          // the daily cap was bypassed FOR this fact, so the message says so.
+          const claimedNote = claimedFixedStaleIds.includes(picked.id)
+            ? " — you previously marked this fixed, but its anchored files STILL don't match verified_tree (no free day for a self-reported fix)."
+            : "";
+          loreFindingsBuilt.push(
+            buildLoreFinding(loreFindingsBuilt.length + 1, "reminder", picked.id, {
+              message: `Lore entry \`${picked.id}\` is stale — update it or reject with a reason.${claimedNote}`,
+              details: `Lore entry \`${picked.id}\` is stale: files it anchors changed since verified_tree. Update it — confirm it states only the WHY (not what the code says), narrow the anchors if broad, then refresh verified_at + verified_tree. Or reject (≥20-char reason) if it's still accurate.${claimedNote}`,
+            }),
+          );
+        }
+      }
+      // Canon-promotion guard fires regardless of budget/CRITICAL (spec: "trust
+      // guard is not capped") — one finding per detected promotion.
+      for (const promo of lorePromotions) {
+        loreFindingsBuilt.push(
+          buildLoreFinding(loreFindingsBuilt.length + 1, "canon-promotion", promo.id, {
+            message: `Canon promotion of \`${promo.id}\` (${promo.kind}) — human-approved?`,
+            details: `Canon promotion of \`${promo.id}\` (${promo.kind}) — did the human (Markus) approve this? If yes, keep status:canon (the approval line is written on your \`fixed\` decision). If not, revert to draft.`,
+          }),
+        );
+      }
+    }
+    // Concatenation, never aggregation — see the comment above. Counts are bumped
+    // by the same amount so the pending.md header stays accurate.
+    const finalFindings =
+      loreFindingsBuilt.length > 0 ? [...reportFindings, ...loreFindingsBuilt] : reportFindings;
+    const finalCounts =
+      loreFindingsBuilt.length > 0
+        ? { ...agg.counts, info: agg.counts.info + loreFindingsBuilt.length }
+        : agg.counts;
+    // Banner data for invalid/broad/zero-match entries + the render-budget drop
+    // count — render-only (report-writer.ts), never affects the verdict.
+    const loreBanner =
+      loreCfg?.enabled &&
+      (loreInvalid.length > 0 ||
+        loreBroad.length > 0 ||
+        loreZeroMatch.length > 0 ||
+        loreDropped > 0)
+        ? {
+            invalid: loreInvalid,
+            broad: loreBroad,
+            zero_match: loreZeroMatch,
+            dropped: loreDropped,
+          }
+        : undefined;
+
     await this.writeReport(
       opts,
       start,
       settled,
-      reportFindings,
+      finalFindings,
       agg.verdict,
-      agg.counts,
+      finalCounts,
       criticInfo ? { ...criticInfo, demoted } : undefined,
       panelNote,
       fpFragmentation,
@@ -2370,6 +2640,7 @@ export class Orchestrator {
       // diff is "default"), so this never relaxes the framing on a commit that touches code.
       triage.riskClass === "docs",
       wholeDiffAttributable,
+      loreBanner,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2489,19 +2760,41 @@ export class Orchestrator {
         deltaScope === null &&
         (opts.cycleRejectedSignatures ?? []).length === 0 &&
         activeRegions === null &&
-        agg.regionSuppressedCount === 0,
+        agg.regionSuppressedCount === 0 &&
+        // Lore v1 (belt, not the buckle — corrected task 6 review I-1): stops
+        // THIS iteration's PASS — the one that just fired a lore finding — from
+        // seeding a ledger entry a later run could serve back as findings:[].
+        // It does NOT, by itself, guarantee the finding re-fires on a later,
+        // code-diff-identical run — an already-cached PASS from an EARLIER
+        // iteration (before the promotion/staleness appeared) would still be
+        // served by the byte/content cache. That guarantee comes from the
+        // `lorePromotions` behaviorHash segment above (→ providerVersions → both
+        // cacheKey and ledgerEnvHash): an appearing/vanishing unapproved-canon
+        // promotion changes the key, so ANY cache built before it existed misses
+        // and the panel re-runs. This check remains as defense-in-depth.
+        loreFindingsBuilt.length === 0,
       passLedgerEnvHash: ledgerEnvHash,
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),
       durationMs: Date.now() - start,
       signaturesThisIter: agg.dedupedFindings.map((f) => f.signature).sort(),
       locationsThisIter: agg.dedupedFindings.map((f) => locationKey(f.file, f.line_start)).sort(),
+      // Lore v1: absent when lore processing never ran this iteration (phases.lore
+      // off/null) — see the IterationResult.loreOutcomes doc comment.
+      ...(loreCfg?.enabled
+        ? {
+            loreOutcomes: {
+              ...(reminderEmittedId ? { reminderEmittedId } : {}),
+              promotions: lorePromotions.map((p) => p.id),
+            },
+          }
+        : {}),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",
-        counts: agg.counts,
+        counts: finalCounts,
         durationMs: Date.now() - start,
         criticCostUsd,
-        findings: agg.dedupedFindings,
+        findings: finalFindings,
         runs: reviewerOutcomes,
         ruleUncited,
       }),
@@ -2778,6 +3071,16 @@ export class Orchestrator {
     // treats absent as TRUE → disown unavailable (fail-closed: a PASS has no blockers to disown, an
     // ERROR/deterministic-FAIL must not be disownable).
     wholeDiffAttributable?: boolean,
+    // Lore v1: banner data for invalid/broad/zero-match entries + the render-budget
+    // drop count. Set ONLY on the main aggregate path (the only path lore processing
+    // runs — see the v1 boundary comment above the LORE PROCESSING block).
+    // Render-only; never affects the verdict.
+    loreBanner?: {
+      invalid: { file: string; error: string }[];
+      broad: string[];
+      zero_match: string[];
+      dropped: number;
+    },
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -2841,6 +3144,7 @@ export class Orchestrator {
         ...(wholeDiffAttributable !== undefined
           ? { whole_diff_attributable: wholeDiffAttributable }
           : {}),
+        ...(loreBanner ? { lore_banner: loreBanner } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

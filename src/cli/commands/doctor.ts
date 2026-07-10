@@ -12,6 +12,8 @@ import {
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
+import { classifyEntry } from "../../core/lore/staleness.ts";
+import { loadLore } from "../../core/lore/store.ts";
 import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
 import { ReputationStore } from "../../core/reputation/store.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
@@ -92,6 +94,47 @@ export function singleReviewerCheck(cfg: ReviewgateConfig): Check | null {
     detail: `Single effective reviewer (${enabled[0]}): consensus, FP-ledger promotion, and reputation demote are all inert — expect more lone-finding noise and slower convergence.`,
     hint: "Add a 2nd provider to phases.review.reviewers and enable it in providers.<id> so corroboration and cross-provider FP-suppression engage.",
   };
+}
+
+// Lore (per-repo curated project knowledge, draft->canon). Optional/advisory —
+// never a hard `fail`, only `ok`/`warn`, mirroring curatorCheck's posture. Returns
+// null when `phases.lore` is null (off, the default), matching curatorCheck's
+// null-when-not-applicable contract. Healthy = no parse-invalid files, no
+// zero-match anchors, no broad (>200-file) anchors; `stale` entries alone don't
+// flip the status (staleness is informational here — the reminder mechanics live
+// in the loop-driver, not doctor). synchronous: loadLore/classifyEntry are both
+// synchronous by contract (see src/core/lore/staleness.ts header).
+export function loreCheck(repoRoot: string, cfg: ReviewgateConfig): Check | null {
+  if (!cfg.phases.lore) return null;
+  const name = "lore";
+  const { entries, invalid } = loadLore(repoRoot);
+  let canon = 0;
+  let draft = 0;
+  let stale = 0;
+  let inert = 0;
+  const issues: string[] = [];
+  for (const inv of invalid) issues.push(`${inv.file}: ${inv.error}`);
+  for (const entry of entries) {
+    if (entry.status === "canon") canon++;
+    else draft++;
+    const cls = classifyEntry(repoRoot, entry);
+    if (cls.state === "stale") stale++;
+    if (cls.state === "broad") {
+      inert++;
+      issues.push(`${entry.id}: anchor too broad — narrow it`);
+    } else if (cls.state === "zero-match") {
+      inert++;
+      issues.push(`${entry.id}: anchors match zero files`);
+    }
+  }
+  if (issues.length === 0) {
+    return {
+      name,
+      status: "ok",
+      detail: `${canon} canon, ${draft} draft, ${stale} stale, ${inert} inert`,
+    };
+  }
+  return { name, status: "warn", detail: issues.join("; ") };
 }
 
 // The brain Curator / FP↔Brain Contradiction judge calls the curator provider's
@@ -656,6 +699,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     if (rep) checks.push(rep);
     const cur = curatorCheck(cfg, curatorAvailable);
     if (cur) checks.push(cur);
+    const lc = loreCheck(input.repoRoot, cfg);
+    if (lc) checks.push(lc);
     const cd = contextDocsCheck(cfg, process.env as Record<string, string | undefined>);
     if (cd) checks.push(cd);
     const fb = fallbackChainCheck(cfg, curatorAvailable);

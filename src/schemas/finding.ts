@@ -288,6 +288,15 @@ export const FindingSchema = z.object({
   // compiler) and exempt from the aggregator's demote passes (it short-circuits
   // the panel entirely). Signature is stable per check (`check:<name>`).
   deterministic: z.boolean().optional(),
+  // Lore v1 (2026-07-09): set on the two synthetic lore findings — a staleness
+  // "reminder" (a stale canon entry's anchors overlap the diff) or a
+  // "canon-promotion" guard (a draft→canon transition / born-as-canon entry
+  // needing human approval). Both are severity INFO and NEVER go through
+  // aggregate() (built separately, concatenated after) — they are
+  // VERDICT-NEUTRAL by construction (a PASS stays a PASS) but DECISION-REQUIRED
+  // via the loop-driver (Task 7), same mechanics as G0/demoted_from_critical.
+  // See docs/superpowers/specs/2026-07-09-lore-design.md.
+  lore: z.enum(["reminder", "canon-promotion"]).optional(),
   contradicts_memory: z
     .object({
       brain_entry_id: z.string(),

@@ -257,6 +257,21 @@ export const ConfigSchema = z.object({
       .nullable()
       .default(null)
       .optional(),
+    // Lore v1: per-repo curated project knowledge (draft->canon, .reviewgate/lore/).
+    // Reminder + canon-guard findings are decision-required but verdict-neutral —
+    // never blocks/fails a review on their own. Opt-in (null = off), mirroring
+    // agentLessons's nullable-object shape. { enabled: false } validates and is
+    // equivalent to off.
+    lore: z
+      .object({
+        enabled: z.boolean(),
+        maxInjectChars: z.number().int().min(200).default(2000),
+        reminderDailyCap: z.number().int().min(0).default(1),
+        rejectedReminderCooldownDays: z.number().int().min(0).default(7),
+      })
+      .nullable()
+      .default(null)
+      .optional(),
     // P0 self-improving: write-only capture of demoted/dropped finding outcomes.
     // Default ON; cap bounds the NDJSON (oldest-drop). No verdict/behavior effect.
     implicitOutcomes: z

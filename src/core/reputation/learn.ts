@@ -43,6 +43,12 @@ export async function learnReputationFromDecisions(input: {
   for (const d of foldLastDecisions(readFileSync(dp, "utf8")).values()) {
     const f = byId.get(d.finding_id);
     if (!f) continue;
+    // Lore v1 WARN-1 fix (2026-07-10): the two synthetic lore findings
+    // (`f.lore` set) carry reviewer.provider:"lore" — a deterministic gate
+    // check, not a real reviewer/persona. Crediting/debiting a "lore:lore"
+    // reputation key from routine reminder-reject / canon-promotion-approve
+    // decisions would be pure noise (no real reviewer to reward or punish).
+    if (f.lore !== undefined) continue;
     let outcome: "correct" | "wrong" | null = null;
     // An `accepted` verdict means the reviewer was RIGHT regardless of how the agent
     // resolved it (fixed / addressed-elsewhere / deferred-with-followup). Crediting only

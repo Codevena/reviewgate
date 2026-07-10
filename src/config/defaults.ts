@@ -202,6 +202,12 @@ export const defaultConfig = {
         maxEntries: number;
       };
     },
+    lore: null as null | {
+      enabled: boolean;
+      maxInjectChars: number;
+      reminderDailyCap: number;
+      rejectedReminderCooldownDays: number;
+    },
     reputation: {
       enabled: true,
       minSamples: 8,

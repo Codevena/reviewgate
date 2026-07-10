@@ -144,6 +144,18 @@ export function findingBadges(f: Finding): string | null {
     const adv = lowPrecisionAdvisory(f);
     if (adv) badges.push(`⚠ ${adv}`);
   }
+  // Lore v1 (2026-07-09): both lore finding types are severity INFO but
+  // DECISION-REQUIRED (verdict-neutral, same mechanics as G0/demoted_from_critical)
+  // — without this badge an INFO finding reads as "no decision needed" like any
+  // other advisory note.
+  if (f.lore === "reminder")
+    badges.push(
+      "📚 lore reminder — verdict-neutral but DECISION REQUIRED: update the entry (action:fixed), or reject with a ≥20-char reason",
+    );
+  if (f.lore === "canon-promotion")
+    badges.push(
+      "🛡 lore canon-promotion guard — verdict-neutral but DECISION REQUIRED: approve (action:fixed) or revert the entry to draft",
+    );
   return badges.length === 0 ? null : `> ${badges.join("  ·  ")}`;
 }
 
@@ -379,6 +391,33 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
       "",
     ];
   });
+  // Lore v1 (2026-07-09): invalid/broad/zero-match entries + the render-budget
+  // drop count. file/error/id are lore-file-derived (committed, but not fully
+  // trusted input either), so neutralize like the other banners.
+  const loreBanner = r.lore_banner
+    ? (() => {
+        const lines: string[] = [];
+        for (const inv of r.lore_banner.invalid) {
+          lines.push(
+            `  - invalid (ignored): \`${neutralizeInjectionMarkers(inv.file)}\` — ${neutralizeInjectionMarkers(inv.error)}`,
+          );
+        }
+        for (const id of r.lore_banner.broad) {
+          lines.push(
+            `  - broad anchors (>200 files — inert: not hashed, not injected): \`${neutralizeInjectionMarkers(id)}\``,
+          );
+        }
+        for (const id of r.lore_banner.zero_match) {
+          lines.push(`  - zero-match anchors (ignored): \`${neutralizeInjectionMarkers(id)}\``);
+        }
+        if (r.lore_banner.dropped > 0) {
+          lines.push(
+            `  - ${r.lore_banner.dropped} entr${r.lore_banner.dropped === 1 ? "y" : "ies"} dropped by the injection budget (maxInjectChars)`,
+          );
+        }
+        return lines.length === 0 ? [] : ["> ⚠ **Lore:**", ...lines, ""];
+      })()
+    : [];
   const actions =
     mode === "one-shot"
       ? []
@@ -416,12 +455,19 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     ...unsettledBanner,
     ...agentLessonRecurrenceBanner,
     ...fragmentationBanner,
+    ...loreBanner,
     ...(r.panel_note ? [`> ⛔ **Panel:** ${r.panel_note}`, ""] : []),
     ...actions,
     "---",
     "",
   ].join("\n");
 
+  // Lore v1 (2026-07-09): both lore finding types are severity INFO but
+  // DECISION-REQUIRED (verdict-neutral, same mechanics as G0/demoted_from_critical)
+  // — split them out FIRST so they never land in the "Advisory ... no decision
+  // needed" bucket below, and render them in their own section instead.
+  const loreFindings = r.findings.filter((f) => f.lore !== undefined);
+  const nonLoreFindings = r.findings.filter((f) => f.lore === undefined);
   // Advisory = INFO, or anything the aggregator demoted (scope_demoted) / the
   // FP-ledger suppressed. These need no decision (the decisions-gate ignores
   // them); render them in a separate section so the agent doesn't re-reject them.
@@ -430,8 +476,8 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     f.scope_demoted === true ||
     f.fp_ledger_match?.suppressed === true ||
     f.fp_cluster_match?.suppressed === true;
-  const blocking = r.findings.filter((f) => !isAdvisory(f));
-  const advisoryAll = r.findings.filter(isAdvisory);
+  const blocking = nonLoreFindings.filter((f) => !isAdvisory(f));
+  const advisoryAll = nonLoreFindings.filter(isAdvisory);
   // #2 (field report 2026-06-17): hard-separate repo-wide (out-of-diff) findings from the
   // agent's own in-scope advisory list. scope_demoted is the repo-wide marker — these are
   // findings on files/lines the change never touched (e.g. SQL/Redis issues in untouched
@@ -446,6 +492,18 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
   const warn = blocking.filter((f) => f.severity === "WARN");
   if (crit.length > 0) sections.push("## CRITICAL ●\n", ...crit.map(fmtFinding));
   if (warn.length > 0) sections.push("## WARN ▲\n", ...warn.map(fmtFinding));
+  // Lore v1: rendered right after CRITICAL/WARN (NOT folded into "Required actions"
+  // above, which is generated once before findings are known) — INFO severity, but
+  // still requires a decision line in decisions/<iter>.jsonl (same JSONL format the
+  // "Required actions" instructions above describe), even though counts.critical/
+  // warn/verdict are untouched.
+  if (mode !== "one-shot" && loreFindings.length > 0) {
+    sections.push(
+      "## Lore — decision required (INFO, verdict-neutral) 📚\n",
+      "These are NOT reviewer findings — they are Reviewgate's own project-knowledge maintenance nudges. They do not affect the verdict/counts above, but each still needs ONE decision line in the same `decisions/<iter>.jsonl` (accepted/fixed to update the entry or approve a promotion; rejected with a ≥20-char reason otherwise) before Reviewgate stops re-surfacing it.\n",
+      ...loreFindings.map(fmtFinding),
+    );
+  }
   if (inScopeAdvisory.length > 0) {
     // #3/#5: fold solo low-track-record INFO into a collapsed block (render-only; nothing
     // dropped). The rest render inline as before.

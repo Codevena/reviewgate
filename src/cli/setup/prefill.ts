@@ -22,6 +22,8 @@ export interface WizardDefaults {
   contextDocs: boolean;
   reputation: boolean;
   agentLessons: boolean;
+  /** Lore — opt-in; a fresh setup and an existing config without phases.lore both prefill false. */
+  lore: boolean;
   /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
    *  re-run prompt. Empty string = none. */
   openrouterProvider: string;
@@ -42,6 +44,8 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   contextDocs: false,
   reputation: true,
   agentLessons: true,
+  // Opt-in — the recommended preset never enables it (must be turned on explicitly).
+  lore: false,
   openrouterProvider: "",
   ollamaEndpoint: "cloud",
 };
@@ -87,6 +91,7 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     brainCurator,
     fpLedger: Boolean(cfg.phases.fpLedger?.enabled),
     agentLessons: Boolean(cfg.phases.agentLessons?.enabled),
+    lore: Boolean(cfg.phases.lore?.enabled),
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
     openrouterProvider,
