@@ -385,6 +385,20 @@ async function runCustom(
   });
   if (isCancel(lessons)) return null;
 
+  const lore = await confirm({
+    message:
+      "Enable Lore (inject your committed project 'why'-notes into reviews as trusted context)?",
+    initialValue: defaults.lore,
+  });
+  if (isCancel(lore)) return null;
+  if (lore) {
+    note(
+      "Lore = committed .reviewgate/lore/<slug>.md notes (invariants, gotchas, decisions the reviewer should know).\n" +
+        "Write them as `status: draft`; a maintainer promotes to `status: canon` to inject (unapproved canon is never injected).\n" +
+        "See them with `reviewgate lore status`. Nothing is injected until you add an approved canon entry.",
+    );
+  }
+
   const ctx = await confirm({
     message: "Enable contextDocs (inject current library docs)?",
     initialValue: defaults.contextDocs,
@@ -443,6 +457,7 @@ async function runCustom(
     contextDocs: Boolean(ctx),
     reputation: Boolean(rep),
     agentLessons: Boolean(lessons),
+    lore: Boolean(lore),
     ...(openrouterProvider ? { openrouterProvider } : {}),
     ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
   });

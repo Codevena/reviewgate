@@ -34,6 +34,10 @@ export interface CustomAnswers {
    *  patterns and injected at SessionStart as advisory context. Render-only,
    *  never verdict-affecting. false → phases.agentLessons = null (schema off). */
   agentLessons: boolean;
+  /** Lore — committed .reviewgate/lore/*.md project-knowledge entries (draft->canon)
+   *  injected into reviews as trusted context. true → phases.lore = { enabled: true };
+   *  false → null (schema off). Opt-in. */
+  lore: boolean;
   /** OpenRouter upstream-provider slug to pin (e.g. "deepseek" for deepseek/*
    *  models). Empty/absent → auto-route. Written as providers.openrouter
    *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
@@ -138,6 +142,7 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
     reputation: { enabled: a.reputation },
     // null (not {enabled:false}) is the schema's documented off-state.
     agentLessons: a.agentLessons ? { enabled: true } : null,
+    lore: a.lore ? { enabled: true } : null,
   };
   if (a.critic) {
     const criticEntry: Record<string, unknown> = {

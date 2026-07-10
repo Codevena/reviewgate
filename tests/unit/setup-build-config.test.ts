@@ -47,6 +47,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     };
     const on = buildCustomConfig({ ...base, agentLessons: true }) as {
       phases?: { agentLessons?: { enabled?: boolean } | null };
@@ -58,6 +59,27 @@ describe("buildCustomConfig", () => {
     expect(off.phases?.agentLessons).toBeNull();
   });
 
+  it("maps the lore answer: true => { enabled: true }, false => null (schema off-state, opt-in)", () => {
+    const base = {
+      reviewers: [{ provider: "codex" as const, persona: "security", model: "" }],
+      critic: null,
+      brain: null,
+      fpLedger: false,
+      contextDocs: false,
+      reputation: false,
+      agentLessons: false,
+      lore: false,
+    };
+    const on = buildCustomConfig({ ...base, lore: true }) as {
+      phases?: { lore?: { enabled?: boolean } | null };
+    };
+    expect(on.phases?.lore).toEqual({ enabled: true });
+    const off = buildCustomConfig({ ...base, lore: false }) as {
+      phases?: { lore?: { enabled?: boolean } | null };
+    };
+    expect(off.phases?.lore).toBeNull();
+  });
+
   it("emits phases.reputation.enabled reflecting the answer", () => {
     const off = buildCustomConfig({
       reviewers: [{ provider: "codex", persona: "security", model: "" }],
@@ -67,6 +89,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     }) as { phases?: { reputation?: { enabled?: boolean } } };
     expect(off.phases?.reputation?.enabled).toBe(false);
     const on = buildCustomConfig({
@@ -77,6 +100,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: true,
       agentLessons: false,
+      lore: false,
     }) as { phases?: { reputation?: { enabled?: boolean } } };
     expect(on.phases?.reputation?.enabled).toBe(true);
   });
@@ -93,6 +117,7 @@ describe("buildCustomConfig", () => {
         contextDocs: false,
         reputation: false,
         agentLessons: false,
+        lore: false,
         openrouterProvider: "deepseek",
       }) as Parameters<typeof defineConfig>[0],
     );
@@ -109,6 +134,7 @@ describe("buildCustomConfig", () => {
         contextDocs: false,
         reputation: false,
         agentLessons: false,
+        lore: false,
       }) as Parameters<typeof defineConfig>[0],
     );
     expect(cfg.providers.openrouter?.openrouterProvider).toBeUndefined();
@@ -126,6 +152,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.gemini?.enabled).toBe(true);
@@ -149,6 +176,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.phases.brain?.curator).toEqual({
@@ -167,6 +195,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     // critic/curator entries present but WITHOUT an explicit model key (→ provider default)
     const ph = (
@@ -190,6 +219,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.providers.codex.model).toBe("gpt-5.4-codex");
@@ -206,6 +236,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(cfg.phases.review.reviewers[0]).toEqual({
@@ -224,6 +255,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     });
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
     expect(Object.hasOwn(cfg.phases.review.reviewers[0] ?? {}, "fallback")).toBe(false);
@@ -238,6 +270,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     }) as { providers?: { ollama?: Record<string, unknown> } };
     expect(Object.hasOwn(partial.providers?.ollama ?? {}, "baseUrl")).toBe(false);
     const cfg = defineConfig(partial as Parameters<typeof defineConfig>[0]);
@@ -257,6 +290,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
       ollamaBaseUrl: "http://localhost:11434/v1",
     }) as { providers?: { ollama?: { baseUrl?: string } } };
     expect(partial.providers?.ollama?.baseUrl).toBe("http://localhost:11434/v1");
@@ -271,6 +305,7 @@ describe("buildCustomConfig", () => {
       contextDocs: false,
       reputation: false,
       agentLessons: false,
+      lore: false,
     }) as { providers?: { ollama?: Record<string, unknown> } };
     expect(partial.providers?.ollama?.enabled).toBe(true);
     expect(partial.providers?.ollama?.auth).toBe("apikey");
