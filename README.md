@@ -484,6 +484,62 @@ Key properties:
 - Combine with `sandbox.mode` to isolate only the LLM reviewers — the checks
   tier always runs unsandboxed regardless of the sandbox setting.
 
+### Project knowledge — "Lore" (`phases.lore`)
+
+Reviewers keep re-deriving the same project facts — invariants, past decisions,
+gotchas — and sometimes get them wrong (a hallucinated "bug" that's actually a
+deliberate design choice). **Lore** lets you write those facts down once, as
+committed Markdown, and have the gate inject the relevant ones into each review
+as **trusted context**. One maintainer-authored note can end a whole class of
+repeated false positives.
+
+Turn it on in `reviewgate setup` (it asks, and explains — **off by default**), or
+by hand:
+
+```ts
+phases: {
+  lore: { enabled: true },
+}
+```
+
+Then write one file per fact under `.reviewgate/lore/<slug>.md`:
+
+```markdown
+---
+schema: reviewgate.lore.v1
+id: payment-webhook-invariants        # must equal the file name
+status: draft                          # draft | canon — only canon is injected
+anchors:                               # which files this fact is about (globs ok)
+  - "src/lib/stripe-webhook-handlers.ts"
+  - "src/app/api/webhooks/**"
+verified_at: 2026-07-10
+verified_tree: "…"                     # hash of the anchored files at verify time
+---
+Every subscription write is a compare-and-set on (status, lastStripeEventAt).
+Why: Stripe delivers webhooks out of order, so a naive "last write wins" corrupts state.
+Write the WHY — never restate what the code already says.
+```
+
+How it behaves (all fail-safe — a broken lore file never blocks a review):
+
+- **Draft → canon, with approval.** New notes start as `status: draft`
+  (never injected). A maintainer promotes one to `status: canon`; the gate then
+  raises a one-time, **verdict-neutral** "did a human approve this promotion?"
+  finding. Approving it records a line in the committed
+  `.reviewgate/lore/approvals.jsonl` — and **only an approved canon note is ever
+  injected**. This keeps a compromised or careless commit from silently feeding
+  the reviewer instructions.
+- **Relevant-only injection.** A note is injected only when its `anchors`
+  overlap the files in the current diff — so reviews stay focused and cheap.
+- **Freshness, enforced.** When the anchored files change, the note goes *stale*
+  (a content hash no longer matches). The gate then raises a **verdict-neutral,
+  once-per-day** reminder to update or re-confirm it — so your knowledge base
+  can't quietly rot. Rejecting a reminder (with a reason) snoozes it.
+- **Never changes a verdict.** Both lore findings are advisory INFO — a PASS
+  stays a PASS. They just cost one turn via the decision requirement.
+- **`reviewgate lore status`** lists every note with its status and freshness;
+  **`reviewgate doctor`** flags broken, un-anchored, or too-broad notes.
+
 ### Completion signal
 
 A passing review used to be silent (the Stop hook just exits 0). Now the gate
