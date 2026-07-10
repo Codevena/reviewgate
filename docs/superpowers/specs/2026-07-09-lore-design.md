@@ -160,9 +160,16 @@ loophole).
 - **Approval is persisted** in a committed append-only ledger
   `.reviewgate/lore/approvals.jsonl`: one line per approval
   `{ id, approved_at, decision_ref }`. The guard finding's `fixed` decision
-  writes the line; an id already approved while continuously canon does not
-  re-fire (idempotent). A canon→draft→canon round trip is a NEW promotion and
-  needs a new approval line.
+  writes the line; an approved id does not re-fire (idempotent). **Approval is
+  id-permanent in v1** (amended 2026-07-10 after the final whole-branch review):
+  once an id is approved, subsequent promotions of that id are NOT re-guarded.
+  This is deliberately consistent with the accepted design that body edits of an
+  approved canon entry ride the same approval — approvals key on id/promotion
+  events, not a body-content hash. LIMITATION (accepted for the single-maintainer
+  dogfood): a committed canon→draft→canon round-trip therefore reuses the original
+  approval rather than requiring a fresh one; the maintainer reviews every lore
+  commit, so the exposure is bounded. Per-epoch re-approval (a demotion
+  invalidating the approval) is a documented v2 follow-up, not v1 scope.
 - **Unapproved canon is NOT injected:** injection requires `status: canon`
   AND a matching approval line — an unapproved canon entry behaves as a draft.
   This bounds the human-commit window by construction: worst case the
@@ -226,7 +233,8 @@ phases: {
   (and cooldown filtering precedes cap selection); claimed-fixed-but-still-
   stale re-fires past the cap; canon guard detects transition AND
   born-as-canon AND malformed-file-with-canon-status; approval-ledger
-  idempotence (approved id does not re-fire; canon→draft→canon does);
+  idempotence (an approved id does not re-fire — id-permanent in v1, so even a
+  re-promoted approved id stays suppressed; see the Canon guard section);
   unapproved canon is not injected; broad-anchor (>200 files) entry is neither
   hashed nor injected; zero-match anchors → invalid + banner; PASS stays PASS
   with a lore finding present; unparseable file degrades gracefully.
