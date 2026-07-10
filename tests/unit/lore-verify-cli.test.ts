@@ -105,6 +105,30 @@ describe("runLoreVerify", () => {
     expect(lines.join("").toLowerCase()).toContain("no lore entries");
   });
 
+  it("--all reports a malformed lore file as an error and exits 1, while still verifying the valid one", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-cli-invalid-"));
+    writeFileSync(join(repo, "a.ts"), "a");
+    const treeA = computeVerifiedTree(repo, ["a.ts"]);
+    writeLoreEntry(repo, "entry-a", { anchors: ["a.ts"], verifiedTree: treeA });
+
+    const dir = join(repo, ".reviewgate", "lore");
+    mkdirSync(dir, { recursive: true });
+    // Malformed: fails LoreEntrySchema (missing required fields), so it lands
+    // in loadLore's `invalid` bucket, not `entries`.
+    writeFileSync(join(dir, "broken.md"), "---\nnot: valid\n---\nsome body\n");
+
+    const lines: string[] = [];
+    const code = await runLoreVerify({ repoRoot: repo, all: true, write: (s) => lines.push(s) });
+
+    expect(code).toBe(1);
+    const out = lines.join("");
+    // The valid entry still gets verified normally.
+    expect(out).toContain("entry-a · already fresh ·");
+    // The broken file is surfaced as an error, by its repo-relative path, and
+    // is NOT silently skipped (which would make --all falsely report success).
+    expect(out).toContain(".reviewgate/lore/broken.md · ERROR ·");
+  });
+
   it("--all ignores positional slugs when both are given", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-cli-both-"));
     writeFileSync(join(repo, "a.ts"), "a");

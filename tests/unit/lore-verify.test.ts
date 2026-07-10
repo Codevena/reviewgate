@@ -1,6 +1,6 @@
 // tests/unit/lore-verify.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { computeVerifiedTree } from "../../src/core/lore/staleness.ts";
@@ -162,5 +162,112 @@ describe("verifyLoreEntry", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error?.toLowerCase()).toContain("not found");
+  });
+
+  it("(f) a slug with a path-traversal shape is rejected before any read/write, no throw", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-f-"));
+    // Fresh tmpdir — no .reviewgate/ exists yet. If the guard were absent, a
+    // traversal slug joined into loreDir()/`${slug}.md` could resolve outside
+    // the repo; the assertion below confirms the call neither throws nor
+    // creates anything under the repo as a side effect of the attempt.
+
+    const result = verifyLoreEntry(repo, "../../../etc/passwd", new Date(2026, 6, 10));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error?.toLowerCase()).toContain("invalid slug");
+    expect(existsSync(join(repo, ".reviewgate"))).toBe(false);
+  });
+
+  it("(g) a slug with disallowed characters (uppercase, underscore, empty) is rejected", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-g-"));
+    for (const slug of ["Has-Upper", "has_underscore", "", "-leading-hyphen"]) {
+      const result = verifyLoreEntry(repo, slug, new Date(2026, 6, 10));
+      expect(result.ok).toBe(false);
+      if (result.ok) continue;
+      expect(result.error?.toLowerCase()).toContain("invalid slug");
+    }
+  });
+
+  it("(h) a read error other than ENOENT is reported as 'unreadable', not 'not found'", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-h-"));
+    const dir = join(repo, ".reviewgate", "lore");
+    mkdirSync(dir, { recursive: true });
+    // A directory named "<slug>.md" makes readFileSync fail with EISDIR, not
+    // ENOENT — the file "exists" (in the sense the path resolves to something)
+    // but can't be read as a file. This must NOT be reported as "not found".
+    mkdirSync(join(dir, "a-dir-not-a-file.md"));
+
+    const result = verifyLoreEntry(repo, "a-dir-not-a-file", new Date(2026, 6, 10));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error?.toLowerCase()).toContain("unreadable");
+    expect(result.error?.toLowerCase()).not.toContain("not found");
+  });
+
+  it("(i) body lines that look like frontmatter fields are left byte-for-byte intact — only the real frontmatter is rewritten", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-lore-verify-i-"));
+    writeFileSync(join(repo, "target.ts"), "export const z = 3;\n");
+    const correctTree = computeVerifiedTree(repo, ["target.ts"]);
+
+    const decoyBody = [
+      "This body explains the WHY behind this anchor, well over forty chars long.",
+      "",
+      'verified_tree: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"',
+      "verified_at: 1999-01-01",
+      "Those two decoy lines must never be rewritten — they are BODY, not frontmatter.",
+    ].join("\n");
+
+    const dir = join(repo, ".reviewgate", "lore");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "confinement.md");
+    writeFileSync(
+      path,
+      [
+        "---",
+        "schema: reviewgate.lore.v1",
+        "id: confinement",
+        "status: draft",
+        "anchors:",
+        "  - target.ts",
+        "verified_at: 2020-01-01",
+        `verified_tree: "${"0".repeat(64)}"`,
+        "tags: []",
+        "---",
+        decoyBody,
+        "",
+      ].join("\n"),
+    );
+
+    const result = verifyLoreEntry(repo, "confinement", new Date(2026, 6, 10));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.newTree).toBe(correctTree);
+
+    const after = readFileSync(path, "utf8");
+    // The real frontmatter WAS rewritten with the new hash / date.
+    expect(after).toContain(`verified_tree: "${correctTree}"`);
+    expect(after).toContain("verified_at: 2026-07-10");
+    // The decoy lines inside the BODY are untouched — still the placeholder
+    // hash and the 1999 date, not the recomputed values.
+    expect(after).toContain(
+      'verified_tree: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"',
+    );
+    expect(after).toContain("verified_at: 1999-01-01");
+    // And the body is present verbatim after the closing frontmatter fence.
+    expect(after.endsWith(`---\n${decoyBody}\n`)).toBe(true);
+
+    // MUTATION-PROVEN: swapping verify.ts's capture-group assignment —
+    // `const frontmatter = m[2]; const body = m[1];` instead of the correct
+    // `m[1]`/`m[2]` — makes the `.replace(/^verified_tree:.../m, ...)` calls
+    // run over the BODY text instead of the frontmatter. That rewrites this
+    // test's decoy lines (turning them into the new hash/date) while leaving
+    // the real frontmatter's placeholder "000...0" hash untouched, which
+    // flips both the "decoy lines untouched" assertions and the "real
+    // frontmatter was rewritten" assertion above to fail — verified by
+    // applying that exact swap to src/core/lore/verify.ts, confirming this
+    // test goes red, then reverting (git diff confirmed clean revert).
   });
 });

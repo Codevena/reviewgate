@@ -55,9 +55,22 @@ export interface LoreVerifyInput {
 // error is worse than one that never ran.
 export async function runLoreVerify(input: LoreVerifyInput): Promise<number> {
   const out = input.write ?? ((s: string) => process.stdout.write(s));
-  const slugs = input.all ? loadLore(input.repoRoot).entries.map((e) => e.id) : (input.slugs ?? []);
 
-  if (slugs.length === 0) {
+  // `--all` must also surface unparseable lore files (loadLore's `invalid`
+  // bucket), not just the entries that parsed cleanly — otherwise a broken
+  // .reviewgate/lore/*.md is silently skipped and `--all` reports a false-clean
+  // exit 0. Named-slug mode is unaffected: `invalid` stays empty there.
+  let slugs: string[];
+  let invalid: { file: string; error: string }[] = [];
+  if (input.all) {
+    const loaded = loadLore(input.repoRoot);
+    slugs = loaded.entries.map((e) => e.id);
+    invalid = loaded.invalid;
+  } else {
+    slugs = input.slugs ?? [];
+  }
+
+  if (slugs.length === 0 && invalid.length === 0) {
     out("no lore entries\n");
     return 0;
   }
@@ -78,6 +91,12 @@ export async function runLoreVerify(input: LoreVerifyInput): Promise<number> {
     } else {
       out(`${slug} · already fresh · ${result.verifiedAt}\n`);
     }
+  }
+  // Invalid (unparseable) files are reported but never written to — there's
+  // nothing safe to recompute against a file that didn't parse.
+  for (const inv of invalid) {
+    anyError = true;
+    out(`${inv.file} · ERROR · ${inv.error}\n`);
   }
   return anyError ? 1 : 0;
 }
