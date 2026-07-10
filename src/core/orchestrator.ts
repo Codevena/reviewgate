@@ -337,8 +337,14 @@ export interface IterationRunner {
     // Lore v1 (2026-07-09): the daily-cap/cooldown state for the staleness
     // reminder, computed by the LoopDriver (Task 7). ABSENT is treated as
     // `{ allowed: false, cooldownIds: [] }` — fail quiet until Task 7 wires the
-    // real value through.
-    loreReminderBudget?: { allowed: boolean; cooldownIds: string[] };
+    // real value through. `claimedFixedStaleIds` (Task 7): entries the agent
+    // previously claimed fixed but are STILL stale (§4.3-style re-verification) —
+    // optional/defaulted to [] so pre-Task-7 callers/tests are unaffected.
+    loreReminderBudget?: {
+      allowed: boolean;
+      cooldownIds: string[];
+      claimedFixedStaleIds?: string[];
+    };
   }): Promise<IterationResult>;
 }
 
@@ -679,7 +685,13 @@ export class Orchestrator {
     reviewedSnapshot?: ReviewedSnapshot | null;
     priorBlockingFiles?: string[];
     passLedger?: PassLedger | null;
-    loreReminderBudget?: { allowed: boolean; cooldownIds: string[] };
+    // Lore v1 (Task 7): see the identical field's doc comment on IterationRunner
+    // above — this concrete method signature mirrors it.
+    loreReminderBudget?: {
+      allowed: boolean;
+      cooldownIds: string[];
+      claimedFixedStaleIds?: string[];
+    };
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
@@ -2526,6 +2538,11 @@ export class Orchestrator {
     let reminderEmittedId: string | undefined;
     if (loreCfg?.enabled) {
       const budget = opts.loreReminderBudget ?? { allowed: false, cooldownIds: [] };
+      // Task 7: entries the agent previously claimed fixed but a fresh
+      // classifyEntry() re-check (in the LoopDriver, this same turn) found STILL
+      // stale. Defaulted to [] so every pre-Task-7 caller/test (which never sets
+      // this field) is unaffected — see the loreReminderBudget doc comment above.
+      const claimedFixedStaleIds = opts.loreReminderBudget?.claimedFixedStaleIds ?? [];
       const diffFilesSet = new Set(facts.files.map((f) => f.path));
       // Cooldown-filtered BEFORE selection (spec: "cooldown never consumes the daily cap").
       const candidates = loreSelected.filter(
@@ -2537,8 +2554,15 @@ export class Orchestrator {
       // mutation-tested boundary: removing this condition must turn test (g) red.
       if (budget.allowed && agg.counts.critical === 0 && candidates.length > 0) {
         // Deterministic target selection (spec, "Staleness + reminder"): most diff
-        // files matched DESC, then oldest verified_at ASC, then id ASC.
+        // files matched DESC, then oldest verified_at ASC, then id ASC. Task 7 adds
+        // ONE higher-priority tiebreak ahead of all three: a claimed-fixed-but-
+        // still-stale entry is preferred over an unrelated stale entry — the point
+        // of the daily-cap bypass is to make the agent's ignored claim visible
+        // again, not to let a different entry's reminder quietly absorb the bypass.
         const sorted = [...candidates].sort((a, b) => {
+          const aClaimed = claimedFixedStaleIds.includes(a.id);
+          const bClaimed = claimedFixedStaleIds.includes(b.id);
+          if (aClaimed !== bClaimed) return aClaimed ? -1 : 1;
           const matchedA = (loreAnchorFilesById.get(a.id) ?? []).filter((f) =>
             diffFilesSet.has(f),
           ).length;
@@ -2552,10 +2576,16 @@ export class Orchestrator {
         const picked = sorted[0];
         if (picked) {
           reminderEmittedId = picked.id;
+          // Task 7: an honest re-fire note when this exact reminder was previously
+          // claimed fixed but the anchored files still don't match verified_tree —
+          // the daily cap was bypassed FOR this fact, so the message says so.
+          const claimedNote = claimedFixedStaleIds.includes(picked.id)
+            ? " — you previously marked this fixed, but its anchored files STILL don't match verified_tree (no free day for a self-reported fix)."
+            : "";
           loreFindingsBuilt.push(
             buildLoreFinding(loreFindingsBuilt.length + 1, "reminder", picked.id, {
-              message: `Lore entry \`${picked.id}\` is stale — update it or reject with a reason.`,
-              details: `Lore entry \`${picked.id}\` is stale: files it anchors changed since verified_tree. Update it — confirm it states only the WHY (not what the code says), narrow the anchors if broad, then refresh verified_at + verified_tree. Or reject (≥20-char reason) if it's still accurate.`,
+              message: `Lore entry \`${picked.id}\` is stale — update it or reject with a reason.${claimedNote}`,
+              details: `Lore entry \`${picked.id}\` is stale: files it anchors changed since verified_tree. Update it — confirm it states only the WHY (not what the code says), narrow the anchors if broad, then refresh verified_at + verified_tree. Or reject (≥20-char reason) if it's still accurate.${claimedNote}`,
             }),
           );
         }

@@ -1,5 +1,6 @@
 // src/core/loop-driver.ts
 import { existsSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { basename } from "node:path";
 import type { AuditLogger } from "../audit/logger.ts";
 import {
   MIN_RUN_TIMEOUT_MS,
@@ -34,6 +35,9 @@ import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { locationKey, recurringBlockingLocations } from "./location-recurrence.ts";
+import { appendApproval } from "./lore/approvals.ts";
+import { classifyEntry } from "./lore/staleness.ts";
+import { loadLore } from "./lore/store.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
 import { type CooldownReason, QuotaCooldownStore, cooldownReasonLabel } from "./quota-cooldown.ts";
 import { foldDispositions, harvestDispositions, mergeRegions } from "./region-memory.ts";
@@ -82,6 +86,16 @@ const ALLOW_STOP_ESCALATIONS: ReadonlySet<EscalationReason> = new Set<Escalation
   // codex/agy). ESCALATION.md + audit inform the human; the stop is allowed.
   "quota-exhausted-persistent",
 ]);
+
+// Lore v1 (2026-07-09, Task 7): LOCAL calendar date as YYYY-MM-DD (NOT UTC —
+// spec, "Staleness + reminder": "local-timezone … no UTC conversion", single-
+// machine semantics). Uses the Date object's local getters, never
+// toISOString() (which is UTC and would misclassify the daily cap near a
+// timezone's midnight boundary).
+function localDateString(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 // Human-readable deadline duration for messages: "300ms" / "45s" / "14min"
 // (a sub-second deadline must not round down to a confusing "0s").
@@ -158,15 +172,20 @@ function previousFindingIds(repoRoot: string): string[] {
   if (!existsSync(p)) return [];
   try {
     const report = JSON.parse(readFileSync(p, "utf8")) as {
-      findings?: Array<{ id?: string; severity?: string }>;
+      findings?: Array<{ id?: string; severity?: string; lore?: string }>;
     };
     if (!Array.isArray(report.findings)) return [];
     // Only CRITICAL/WARN findings are blocking and therefore require a decision.
     // INFO (incl. M5 scope_demoted / fp_ledger_match.suppressed advisories) never
     // blocks the verdict, so demanding a decision for it would defeat the
     // demote-to-INFO mechanism — the agent would have to re-reject every advisory.
+    // Lore v1 (Task 7): the two synthetic lore findings (reminder / canon-promotion,
+    // `lore` set) are the one deliberate exception — INFO severity but
+    // decision-required by design (spec: "decision-required, verdict-neutral"),
+    // exactly like G0's demoted-from-critical forcing. `f.lore !== undefined`
+    // catches both kinds without caring which.
     return report.findings
-      .filter((f) => f.severity === "CRITICAL" || f.severity === "WARN")
+      .filter((f) => f.severity === "CRITICAL" || f.severity === "WARN" || f.lore !== undefined)
       .map((f) => f.id)
       .filter((id): id is string => typeof id === "string");
   } catch {
@@ -1079,6 +1098,13 @@ export class LoopDriver {
     // no-op at iteration < 1, so the single hoisted call here is safe; it remains
     // the ONLY call site (a second call later in this run would double-count).
     await this.absorbPriorDecisions(state);
+    // Lore v1 (Task 7): absorbPriorDecisions' absorbLoreDecisions sub-call is the
+    // ONLY one of the four that writes to the MAIN state.json (lore_claimed_fixed /
+    // lore_rejection_cooldowns) rather than its own store (FP-ledger/reputation/
+    // agent-lessons all persist elsewhere) — reload so every downstream read this
+    // SAME turn (decisions-gate, computeLoreReminderBudget) sees it fresh, exactly
+    // like the reload after the commit-recovery update above.
+    state = await this.i.state.load();
 
     // Escalation precondition: cost cap reached (apikey/openrouter mode only;
     // OAuth mode cost is 0 so this never fires there).
@@ -1716,6 +1742,9 @@ export class LoopDriver {
       configuredRunTimeoutMs > 0
         ? Math.min(configuredRunTimeoutMs, Math.max(MIN_RUN_TIMEOUT_MS, hookCapMs))
         : configuredRunTimeoutMs;
+    // Lore v1 (Task 7): computed ONCE per run() (not per branch below) so both the
+    // deadline-raced and the no-deadline call sites see the identical budget.
+    const loreReminderBudget = await this.computeLoreReminderBudget(state);
     let result: IterationResult;
     if (runTimeoutMs > 0) {
       const ac = new AbortController();
@@ -1741,6 +1770,7 @@ export class LoopDriver {
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
         priorTouchedFiles: state.agent_touched_files,
+        loreReminderBudget,
       });
       let raced: "timeout" | { ok: true; r: IterationResult };
       try {
@@ -1806,6 +1836,7 @@ export class LoopDriver {
         priorAdjudications: priorAdjs,
         priorLocations: [...new Set(state.location_history.flat())],
         priorTouchedFiles: state.agent_touched_files,
+        loreReminderBudget,
       });
     }
 
@@ -1965,6 +1996,14 @@ export class LoopDriver {
         agent_touched_files: passed ? [] : cur.agent_touched_files,
         // §4.3: claimed-fixed map is cycle-scoped — cleared on re-arm, preserved across a cycle's FAILs.
         claimed_fixed_signatures: passed ? {} : cur.claimed_fixed_signatures,
+        // Lore v1 (Task 7): consume the daily cap whenever THIS run actually emitted a
+        // reminder — regardless of the round's verdict (a reminder can accompany a
+        // FAIL/SOFT-PASS just as easily as a PASS; the finding is verdict-neutral).
+        // NOT cycle-scoped (unlike the fields above) — calendar-day semantics, so a
+        // re-arm on the same local day must not grant a fresh reminder.
+        lore_reminder_last_date: result.loreOutcomes?.reminderEmittedId
+          ? localDateString(new Date())
+          : cur.lore_reminder_last_date,
         // T1 (field report 2026-07-03): persist the manifest of what THIS panel round
         // actually reviewed. PASS → cleared (re-arm). ERROR → no review happened, so
         // the previous panel round's snapshot stays authoritative. FAIL/blocking
@@ -2178,6 +2217,139 @@ export class LoopDriver {
         // Decay AFTER learning so freshly-touched entries are never reaped this pass.
         .then(() => alStore.decayPass(nowIso, alCfg.ttlDays))
         .catch(() => undefined); // render-only: a collect failure never blocks the loop
+    }
+    await this.absorbLoreDecisions(state);
+  }
+
+  // Lore v1 (2026-07-09, Task 7): fold `state.iteration`'s decisions on the two
+  // synthetic lore findings (reminder / canon-promotion) into lore_claimed_fixed /
+  // lore_rejection_cooldowns / the approvals ledger. Mirrors the sibling absorb
+  // calls above (FP-ledger/reputation/agent-lessons) but is the only one that
+  // writes to the MAIN state.json rather than its own store — the caller reloads
+  // `state` immediately after absorbPriorDecisions returns so every downstream
+  // read (decisions-gate, computeLoreReminderBudget) sees the fresh values within
+  // the SAME turn. try/catch: lore enforcement is optional context (spec, "Failure
+  // behavior") — any error here must never break the gate.
+  private async absorbLoreDecisions(state: ReviewgateState): Promise<void> {
+    const loreCfg = this.i.config.phases.lore;
+    if (!loreCfg?.enabled) return;
+    try {
+      const decisions = lastDecisionsById(this.i.repoRoot, state.iteration);
+      if (decisions.size === 0) return;
+      const p = pendingJsonPath(this.i.repoRoot);
+      if (!existsSync(p)) return;
+      const report = JSON.parse(readFileSync(p, "utf8")) as {
+        findings?: Array<{ id?: string; lore?: string; file?: string }>;
+      };
+      // Loose read (same convention as previousFindingIds): finding_id -> which
+      // lore entry it's about. entryId = the finding's file basename without
+      // ".md" (buildLoreFinding always writes `.reviewgate/lore/<entryId>.md`).
+      const meta = new Map<string, { lore: "reminder" | "canon-promotion"; entryId: string }>();
+      for (const f of report.findings ?? []) {
+        if (typeof f.id !== "string" || typeof f.file !== "string") continue;
+        if (f.lore !== "reminder" && f.lore !== "canon-promotion") continue;
+        meta.set(f.id, { lore: f.lore, entryId: basename(f.file, ".md") });
+      }
+      if (meta.size === 0) return;
+      const now = new Date();
+      const claimedFixedAdds = new Set<string>();
+      const cooldownAdds: Record<string, string> = {};
+      for (const [findingId, d] of decisions) {
+        const m = meta.get(findingId);
+        if (!m) continue;
+        if (m.lore === "reminder") {
+          if (d.verdict === "accepted" && d.action === "fixed") {
+            claimedFixedAdds.add(m.entryId);
+          } else if (d.verdict === "rejected") {
+            cooldownAdds[m.entryId] = new Date(
+              now.getTime() + loreCfg.rejectedReminderCooldownDays * 86_400_000,
+            ).toISOString();
+          }
+        } else if (m.lore === "canon-promotion") {
+          // Only a `fixed` decision writes the approval line (spec, "Canon
+          // guard": "the guard finding's fixed decision writes the line"); a
+          // rejected canon-promotion is a revert-to-draft the human/agent makes
+          // in the FILE, not a gate-side write.
+          if (d.verdict === "accepted" && d.action === "fixed") {
+            appendApproval(this.i.repoRoot, m.entryId, findingId, now);
+          }
+        }
+      }
+      if (claimedFixedAdds.size === 0 && Object.keys(cooldownAdds).length === 0) return;
+      await this.i.state.update((cur) => ({
+        ...cur,
+        lore_claimed_fixed: [...new Set([...cur.lore_claimed_fixed, ...claimedFixedAdds])],
+        lore_rejection_cooldowns: { ...cur.lore_rejection_cooldowns, ...cooldownAdds },
+      }));
+    } catch {
+      // fail quiet — lore enforcement is optional context, must never break the gate
+    }
+  }
+
+  // Lore v1 (Task 7): the daily-cap/cooldown/claimed-fixed budget for the CURRENT
+  // turn's staleness reminder, computed once per run() and passed into
+  // runIteration. Reclassifies every lore_claimed_fixed entry against the LIVE
+  // repo tree (classifyEntry) — "verified, not trusted" (spec): a claim that is
+  // STILL stale re-fires and BYPASSES the daily cap; a claim that is now fresh (or
+  // whose entry vanished/went invalid) is dropped. Prunes expired cooldowns.
+  // Persists the pruned lore_claimed_fixed/lore_rejection_cooldowns when changed.
+  // try/catch: any error (malformed lore file, fs hiccup) returns the DISABLED
+  // budget — fail quiet, never blocks the gate on optional context.
+  private async computeLoreReminderBudget(
+    state: ReviewgateState,
+  ): Promise<{ allowed: boolean; cooldownIds: string[]; claimedFixedStaleIds: string[] }> {
+    const disabled = { allowed: false, cooldownIds: [], claimedFixedStaleIds: [] };
+    const loreCfg = this.i.config.phases.lore;
+    if (!loreCfg?.enabled) return disabled;
+    try {
+      const now = new Date();
+      const { entries } = loadLore(this.i.repoRoot);
+      const entryById = new Map(entries.map((e) => [e.id, e]));
+      const keptClaimedFixed: string[] = [];
+      const claimedFixedStaleIds: string[] = [];
+      for (const id of state.lore_claimed_fixed) {
+        const entry = entryById.get(id);
+        if (!entry) continue; // entry gone (deleted/renamed) → drop the claim
+        const cls = classifyEntry(this.i.repoRoot, entry);
+        if (cls.state === "stale") {
+          keptClaimedFixed.push(id);
+          claimedFixedStaleIds.push(id);
+        }
+        // fresh ("ok") / broad / zero-match → the claim is resolved or moot, drop it
+      }
+      const keptCooldowns: Record<string, string> = {};
+      const cooldownIds: string[] = [];
+      for (const [id, until] of Object.entries(state.lore_rejection_cooldowns)) {
+        const untilMs = Date.parse(until);
+        if (Number.isNaN(untilMs)) continue; // malformed → drop
+        if (untilMs > now.getTime()) {
+          keptCooldowns[id] = until;
+          cooldownIds.push(id);
+        }
+        // expired → drop (prune)
+      }
+      const claimedChanged =
+        keptClaimedFixed.length !== state.lore_claimed_fixed.length ||
+        keptClaimedFixed.some((id, idx) => id !== state.lore_claimed_fixed[idx]);
+      const cooldownsChanged =
+        Object.keys(keptCooldowns).length !== Object.keys(state.lore_rejection_cooldowns).length ||
+        Object.entries(keptCooldowns).some(([k, v]) => state.lore_rejection_cooldowns[k] !== v);
+      if (claimedChanged || cooldownsChanged) {
+        await this.i.state.update((cur) => ({
+          ...cur,
+          lore_claimed_fixed: keptClaimedFixed,
+          lore_rejection_cooldowns: keptCooldowns,
+        }));
+      }
+      // Daily cap: a NEW calendar day always re-opens it; a still-consumed cap
+      // (same local day) is bypassed ONLY by a still-stale claimed-fixed entry
+      // (spec: "self-reporting fixed without touching the file must not buy a
+      // free day").
+      const allowed =
+        localDateString(now) !== state.lore_reminder_last_date || claimedFixedStaleIds.length > 0;
+      return { allowed, cooldownIds, claimedFixedStaleIds };
+    } catch {
+      return disabled;
     }
   }
 

@@ -58,6 +58,7 @@ function writeLoreEntry(
     anchors: string[];
     verifiedTree: string;
     body: string;
+    verifiedAt?: string;
   },
 ): void {
   const anchorsYaml = opts.anchors.map((a) => `  - "${a}"`).join("\n");
@@ -68,7 +69,7 @@ function writeLoreEntry(
     `status: ${opts.status}`,
     "anchors:",
     anchorsYaml,
-    "verified_at: 2026-07-01",
+    `verified_at: ${opts.verifiedAt ?? "2026-07-01"}`,
     `verified_tree: "${opts.verifiedTree}"`,
     "---",
     opts.body,
@@ -369,6 +370,73 @@ describe("orchestrator lore integration", () => {
     expect(loreFindings).toHaveLength(1);
     expect(loreFindings[0].lore).toBe("reminder");
     expect(loreFindings[0].severity).toBe("INFO");
+    expect(loreFindings[0].file).toBe(".reviewgate/lore/stale-entry.md");
+  });
+
+  it("(Task 7) a claimed-fixed-but-still-stale entry's reminder message notes the self-reported-fix bypass", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content v1");
+    writeLoreEntry(repo, {
+      id: "stale-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "0".repeat(64), // deliberately wrong → stale
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    appendApproval(repo, "stale-entry", "test", new Date());
+    commitAll(repo);
+
+    const state = { calls: 0, prompts: [] as string[] };
+    const res = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      loreReminderBudget: { allowed: true, cooldownIds: [], claimedFixedStaleIds: ["stale-entry"] },
+    });
+
+    expect(res.verdict).toBe("PASS");
+    const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+    const loreFindings = loreFindingsFrom(pending).filter((f) => f.lore === "reminder");
+    expect(loreFindings).toHaveLength(1);
+    expect(loreFindings[0].message).toContain("previously marked this fixed");
+    expect(loreFindings[0].details).toContain("STILL don't match verified_tree");
+  });
+
+  it("(Task 7) a claimed-fixed-but-still-stale candidate is preferred over a non-claimed stale entry that would otherwise win the tiebreak", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content v1");
+    // Older verified_at → would normally win the "oldest verified_at" tiebreak
+    // (both anchor the SAME single diff file, so matched-file counts tie).
+    writeLoreEntry(repo, {
+      id: "alpha-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "0".repeat(64),
+      verifiedAt: "2020-01-01",
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    writeLoreEntry(repo, {
+      id: "stale-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "1".repeat(64),
+      verifiedAt: "2025-01-01", // newer — would normally LOSE the tiebreak
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    appendApproval(repo, "alpha-entry", "test", new Date());
+    appendApproval(repo, "stale-entry", "test", new Date());
+    commitAll(repo);
+
+    const state = { calls: 0, prompts: [] as string[] };
+    const res = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      loreReminderBudget: { allowed: true, cooldownIds: [], claimedFixedStaleIds: ["stale-entry"] },
+    });
+
+    expect(res.verdict).toBe("PASS");
+    const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+    const loreFindings = loreFindingsFrom(pending).filter((f) => f.lore === "reminder");
+    expect(loreFindings).toHaveLength(1);
     expect(loreFindings[0].file).toBe(".reviewgate/lore/stale-entry.md");
   });
 
