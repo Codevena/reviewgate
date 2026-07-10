@@ -81,6 +81,12 @@ export default {
     // back at SessionStart as advisory context. Render-only, never verdict-affecting,
     // fail-safe, opt-in. Dogfooded here so this repo's gate feeds its own lessons back.
     agentLessons: { enabled: true },
+    // Lore v1: per-repo curated project knowledge (draft->canon, .reviewgate/lore/).
+    // Approved-canon entries whose anchors intersect the diff are injected as trusted
+    // reviewer context; stale canon surfaces a decision-required (verdict-neutral) reminder;
+    // draft->canon promotions raise a decision-required approval guard. DOGFOOD ONLY for now —
+    // deliberately NOT in the init scaffold until the reminder feel is calibrated here.
+    lore: { enabled: true },
     // S6 grounding layer 2: an LLM judge demotes a CRITICAL whose claim is not supported
     // by the actual code (e.g. an invented XSS sink). openrouter = deepseek-v4-flash via
     // alibaba (cheap). Demote-only, fail-safe, CRITICAL-only.
