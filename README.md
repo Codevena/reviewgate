@@ -538,7 +538,10 @@ How it behaves (all fail-safe — a broken lore file never blocks a review):
 - **Never changes a verdict.** Both lore findings are advisory INFO — a PASS
   stays a PASS. They just cost one turn via the decision requirement.
 - **`reviewgate lore status`** lists every note with its status and freshness;
-  **`reviewgate doctor`** flags broken, un-anchored, or too-broad notes.
+  **`reviewgate lore verify <slug>`** (or `--all`) recomputes `verified_tree`/
+  `verified_at` for the named entries and writes them back, so you never have to
+  hand-compute the hash; **`reviewgate doctor`** flags broken, un-anchored, or
+  too-broad notes.
 
 ### Completion signal
 

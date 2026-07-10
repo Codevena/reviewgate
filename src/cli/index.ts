@@ -17,7 +17,7 @@ import {
 import { runGate, runGateSafe } from "./commands/gate.ts";
 import { runInit } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
-import { runLoreStatus } from "./commands/lore.ts";
+import { runLoreStatus, runLoreVerify } from "./commands/lore.ts";
 import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
@@ -245,6 +245,32 @@ const lore = defineCommand({
       },
       async run() {
         process.exit(await runLoreStatus({ repoRoot: process.cwd() }));
+      },
+    }),
+    verify: defineCommand({
+      meta: {
+        name: "verify",
+        description:
+          "Recompute verified_tree/verified_at for one or more lore entries (or --all) and write them back; exit 1 if any entry errors",
+      },
+      args: {
+        slug: {
+          type: "positional",
+          required: false,
+          description: "Lore entry id(s) to verify (omit when using --all)",
+        },
+        all: { type: "boolean", description: "Verify every entry under .reviewgate/lore/" },
+      },
+      async run({ args }) {
+        const all = args.all === true;
+        const slugs = (args._ ?? []).filter((s) => typeof s === "string" && s.length > 0);
+        process.exit(
+          await runLoreVerify({
+            repoRoot: process.cwd(),
+            all,
+            slugs,
+          }),
+        );
       },
     }),
   },

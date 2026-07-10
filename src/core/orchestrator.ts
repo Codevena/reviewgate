@@ -2618,7 +2618,7 @@ export class Orchestrator {
           loreFindingsBuilt.push(
             buildLoreFinding(loreFindingsBuilt.length + 1, "reminder", picked.id, {
               message: `Lore entry \`${picked.id}\` is stale — update it or reject with a reason.${claimedNote}`,
-              details: `Lore entry \`${picked.id}\` is stale: files it anchors changed since verified_tree. Update it — confirm it states only the WHY (not what the code says), narrow the anchors if broad, then refresh verified_at + verified_tree. Or reject (≥20-char reason) if it's still accurate.${claimedNote}`,
+              details: `Lore entry \`${picked.id}\` is stale: files it anchors changed since verified_tree. Update it — confirm it states only the WHY (not what the code says), narrow the anchors if broad, then refresh verified_at + verified_tree — run \`reviewgate lore verify ${picked.id}\`. Or reject (≥20-char reason) if it's still accurate.${claimedNote}`,
             }),
           );
         }

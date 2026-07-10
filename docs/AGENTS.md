@@ -64,11 +64,13 @@ Address each in `decisions/<iter>.jsonl` the same way (fix, or reject with a
 - **`lore: "reminder"`** — a `status: canon` lore entry is stale: files it anchors
   changed since its recorded `verified_tree`. Either **fix** it (update the entry so
   it still states only the *why* — never what the code says — narrow the anchors if
-  broad, then refresh `verified_at` + `verified_tree`) and record `action: "fixed"`,
-  or **reject** with a real reason if the entry is still accurate (this cools the
-  reminder down so it will not recur daily). A claimed-fixed entry that is still
-  stale on the next run re-fires and bypasses the daily cap — a self-reported fix
-  that never touched the file buys no free day.
+  broad, then refresh `verified_at` + `verified_tree` — run
+  `reviewgate lore verify <id>` to recompute and write both back instead of
+  hand-computing the hash) and record `action: "fixed"`, or **reject** with a real
+  reason if the entry is still accurate (this cools the reminder down so it will
+  not recur daily). A claimed-fixed entry that is still stale on the next run
+  re-fires and bypasses the daily cap — a self-reported fix that never touched the
+  file buys no free day.
 - **`lore: "canon-promotion"`** — a lore entry was promoted draft→canon (or born as
   canon). This is a TRUST checkpoint: did the human maintainer approve making this
   knowledge reviewer-visible? If yes, record `action: "fixed"` — that appends the
