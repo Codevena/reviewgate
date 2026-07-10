@@ -53,6 +53,28 @@ Claude, or any OpenRouter model). You may see two extra fields on findings in
 The response protocol (read `pending.md`, write `decisions/<iter>.jsonl`) is
 unchanged regardless of how many reviewers ran.
 
+### Lore findings (project-knowledge maintenance)
+
+If a repo enables Lore (`phases.lore`), you may see two extra finding types, both
+**INFO-severity and verdict-neutral** (a PASS stays a PASS) but **decision-required**
+— each costs exactly one turn via the decision requirement, like a G0 finding.
+Address each in `decisions/<iter>.jsonl` the same way (fix, or reject with a
+≥20-char reason):
+
+- **`lore: "reminder"`** — a `status: canon` lore entry is stale: files it anchors
+  changed since its recorded `verified_tree`. Either **fix** it (update the entry so
+  it still states only the *why* — never what the code says — narrow the anchors if
+  broad, then refresh `verified_at` + `verified_tree`) and record `action: "fixed"`,
+  or **reject** with a real reason if the entry is still accurate (this cools the
+  reminder down so it will not recur daily). A claimed-fixed entry that is still
+  stale on the next run re-fires and bypasses the daily cap — a self-reported fix
+  that never touched the file buys no free day.
+- **`lore: "canon-promotion"`** — a lore entry was promoted draft→canon (or born as
+  canon). This is a TRUST checkpoint: did the human maintainer approve making this
+  knowledge reviewer-visible? If yes, record `action: "fixed"` — that appends the
+  approval line to `.reviewgate/lore/approvals.jsonl` (only an approved canon entry
+  is ever injected). If not, revert the entry's frontmatter to `status: draft`.
+
 ## Adaptive pipeline (M3)
 
 From M3 onwards Reviewgate applies triage and research before running the panel:
