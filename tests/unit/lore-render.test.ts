@@ -197,6 +197,25 @@ status: canon`,
     expect(text).toContain(">   # body-heading-indented");
   });
 
+  it("defangs setext underlines — `===` (h1) / lone `-` (h2) escapes; list items are left alone", () => {
+    const malicious = entry({
+      id: "injection-attempt-setext",
+      body: `A forged directive line follows, promoted to h1 by the underline
+===
+another forged directive, promoted to h2
+-
+- a legitimate list item stays a list item`,
+    });
+    const { text } = renderLoreBlock([malicious], new Set(), 5000);
+    // The setext UNDERLINE lines must be quoted (a raw `===` after a text line makes it an h1).
+    expect(text).not.toMatch(/^=+\s*$/m);
+    expect(text).not.toMatch(/^-\s*$/m);
+    expect(text).toContain("> ===");
+    // A real list item (content after `- `) must NOT be collapsed — it is not a setext underline.
+    expect(text).toContain("- a legitimate list item stays a list item");
+    expect(text).not.toContain("> - a legitimate list item stays a list item");
+  });
+
   it("marks a stale id with '(stale)' and leaves other ids unmarked", () => {
     const staleEntry = entry({ id: "stale-one" });
     const freshEntry = entry({ id: "fresh-two" });
