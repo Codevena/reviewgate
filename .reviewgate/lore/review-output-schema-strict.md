@@ -1,7 +1,7 @@
 ---
 schema: reviewgate.lore.v1
 id: review-output-schema-strict
-status: draft
+status: canon
 anchors:
   - "src/providers/review-output.ts"
 verified_at: 2026-07-10
