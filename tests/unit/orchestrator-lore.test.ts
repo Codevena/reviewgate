@@ -20,7 +20,7 @@ import { computeVerifiedTree } from "../../src/core/lore/staleness.ts";
 import { Orchestrator } from "../../src/core/orchestrator.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
-import { pendingJsonPath, pendingMdPath } from "../../src/utils/paths.ts";
+import { pendingJsonPath, pendingMdPath, planReviewJsonPath } from "../../src/utils/paths.ts";
 
 const GIT_ENV = {
   ...process.env,
@@ -149,6 +149,43 @@ function criticalFindingStub(state: { calls: number }): ProviderAdapter {
   };
 }
 
+function warnFindingStub(state: { calls: number }): ProviderAdapter {
+  return {
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "x", authMode: "oauth", error: null };
+    },
+    async review(inp) {
+      state.calls++;
+      const finding: Finding = {
+        id: "F-1",
+        signature: "sig-warn-1",
+        severity: "WARN",
+        category: "correctness",
+        rule_id: "test-warn-rule",
+        file: "foo.ts",
+        line_start: 1,
+        line_end: 1,
+        message: "a real warn finding",
+        details: "details for the warn finding",
+        reviewer: { provider: "codex", model: "m", persona: "security" },
+        confidence: 1,
+        consensus: "singleton",
+      };
+      return {
+        reviewerId: inp.reviewerId,
+        verdict: "FAIL",
+        findings: [finding],
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 1,
+        rawEventsPath: "",
+        status: "ok",
+      } satisfies ReviewResult;
+    },
+  };
+}
+
 function orch(
   repo: string,
   adapter: ProviderAdapter,
@@ -168,6 +205,31 @@ function orch(
     hostTier: "opus",
     diff,
     reasonOnFailEnabled: true,
+  });
+}
+
+// M-1: same shape as orch() but reportMode:"one-shot" (review-plan path) — lore
+// must skip entirely (see the loreCfg gating in orchestrator.ts).
+function orchOneShot(
+  repo: string,
+  adapter: ProviderAdapter,
+  loreConfig: Record<string, unknown> = { enabled: true },
+) {
+  return new Orchestrator({
+    repoRoot: repo,
+    config: defineConfig({
+      phases: {
+        review: { reviewers: [{ provider: "codex", persona: "security" }] },
+        triage: null,
+        lore: loreConfig as never,
+      },
+    }),
+    adapters: { codex: adapter },
+    sandboxMode: "off",
+    hostTier: "opus",
+    diff,
+    reasonOnFailEnabled: true,
+    reportMode: "one-shot",
   });
 }
 
@@ -499,5 +561,119 @@ describe("orchestrator lore integration", () => {
     expect(state.prompts[0] ?? "").not.toContain("Project lore");
     const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
     expect(loreFindingsFrom(pending)).toHaveLength(0);
+  });
+
+  it("(I-1) a born-canon promotion appearing AFTER the cache was populated invalidates the byte cache and re-fires the panel + finding", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "original content");
+    commitAll(repo); // baseline WITHOUT any lore dir/entry
+
+    const state = { calls: 0, prompts: [] as string[] };
+
+    // Iteration 1: clean run, no lore entries at all — populates the byte cache
+    // AND (since this PASS is earned at full scope with zero lore findings)
+    // the pass ledger.
+    const r1 = await orch(repo, zeroFindingsStub(state)).runIteration({ runId: "R", iter: 1 });
+    expect(r1.verdict).toBe("PASS");
+    expect(state.calls).toBe(1);
+
+    // Introduce a born-canon lore entry AFTER the cache was populated, WITHOUT
+    // touching the reviewed CODE diff at all — the `diff` fed to runIteration is
+    // the exact same 40-line fixture both times (.reviewgate/ is excluded from
+    // the real diff anyway, so this mirrors production: a lore-only change never
+    // appears in the reviewed diff bytes). Left deliberately UNCOMMITTED and
+    // UNAPPROVED — a canon-promotion is BY DEFINITION unapproved (test (f)/(g)
+    // confirm the guard fires on this exact shape in isolation).
+    writeLoreEntry(repo, {
+      id: "surprise-canon",
+      status: "canon",
+      anchors: ["nonexistent-file.ts"], // zero-match: isolates this test to the guard only
+      verifiedTree: "irrelevant",
+      body: "This entry is born directly as canon without approval — the promotion guard must catch it.",
+    });
+
+    const r2 = await orch(repo, zeroFindingsStub(state)).runIteration({ runId: "R", iter: 2 });
+    expect(r2.verdict).toBe("PASS");
+    // The load-bearing assertion: the panel actually re-ran. Without the
+    // `lorePromotions` cache-key fold, `loreText` stays "" (an unapproved
+    // canon entry is never injected) and the byte/content-cache short-circuit
+    // returns findings:[] BEFORE the lore-findings-emission block ever runs —
+    // the promotion would be silently swallowed for as long as the code diff
+    // keeps hitting cache.
+    expect(state.calls).toBe(2);
+    const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+    const promos = loreFindingsFrom(pending).filter((f) => f.lore === "canon-promotion");
+    expect(promos).toHaveLength(1);
+    expect(promos[0].file).toBe(".reviewgate/lore/surprise-canon.md");
+  });
+
+  it("(M-1) reportMode:'one-shot' skips lore entirely — no prompt injection, no findings, no loreOutcomes", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content v1");
+    writeLoreEntry(repo, {
+      id: "stale-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "0".repeat(64), // deliberately wrong → stale, would normally remind
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    appendApproval(repo, "stale-entry", "test", new Date());
+    commitAll(repo);
+
+    const state = { calls: 0, prompts: [] as string[] };
+    const res = await orchOneShot(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      // Budget explicitly allowed — if lore ran, this WOULD produce a reminder.
+      loreReminderBudget: { allowed: true, cooldownIds: [] },
+    });
+
+    expect(res.verdict).toBe("PASS");
+    expect(state.prompts[0] ?? "").not.toContain("Project lore");
+    // loreOutcomes must be entirely absent — lore processing never ran this
+    // iteration (same contract as phases.lore off/null).
+    expect(res.loreOutcomes).toBeUndefined();
+    const pending = JSON.parse(readFileSync(planReviewJsonPath(repo), "utf8"));
+    expect(loreFindingsFrom(pending)).toHaveLength(0);
+  });
+
+  it("(M-2) a lore INFO finding never changes the aggregated verdict or CRITICAL/WARN counts", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content v1");
+    writeLoreEntry(repo, {
+      id: "stale-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "0".repeat(64), // deliberately wrong → stale + touched by the diff
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    appendApproval(repo, "stale-entry", "test", new Date());
+    commitAll(repo);
+
+    const state = { calls: 0 };
+    const res = await orch(repo, warnFindingStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      loreReminderBudget: { allowed: true, cooldownIds: [] },
+    });
+
+    // A singleton WARN alone yields SOFT-PASS with counts {critical:0, warn:1,
+    // info:0} (verified against the panel-only baseline). Adding the lore
+    // reminder must reproduce the IDENTICAL verdict and IDENTICAL
+    // critical/warn counts — only `info` may move, by exactly the lore
+    // finding count.
+    expect(res.verdict).toBe("SOFT-PASS");
+    const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+    expect(pending.counts.critical).toBe(0);
+    expect(pending.counts.warn).toBe(1);
+    expect(pending.counts.info).toBe(1);
+    const loreFindings = loreFindingsFrom(pending);
+    expect(loreFindings).toHaveLength(1);
+    expect(loreFindings[0].lore).toBe("reminder");
+    expect(loreFindings[0].severity).toBe("INFO");
+    // The non-lore (panel) finding is untouched — still exactly the one WARN.
+    const nonLore = pending.findings.filter((f: { lore?: string }) => f.lore === undefined);
+    expect(nonLore).toHaveLength(1);
+    expect(nonLore[0].severity).toBe("WARN");
   });
 });

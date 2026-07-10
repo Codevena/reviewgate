@@ -1072,7 +1072,16 @@ export class Orchestrator {
     // explicitly allows this — the approval-gated injection stays fail-closed
     // regardless: an unapproved canon entry is never injected no matter when the
     // guard finding fires).
-    const loreCfg = this.input.config.phases.lore;
+    // M-1 (task 6 review): lore is a gate-only feature (mirrors deltaScope above).
+    // report-writer only renders the lore section when mode !== "one-shot", so
+    // running lore under one-shot (review-plan) would compute + emit a
+    // canon-promotion into plan-review.json that is INVISIBLE in the .md
+    // (json/md inconsistency) plus needless loadLore/detectPromotions work.
+    // Forcing loreCfg to undefined here short-circuits every downstream
+    // `loreCfg?.enabled` check (load/inject, findings emission, banner,
+    // loreOutcomes) — lore never runs in one-shot mode.
+    const loreCfg =
+      this.input.reportMode !== "one-shot" ? this.input.config.phases.lore : undefined;
     let loreText = "";
     let loreInvalid: { file: string; error: string }[] = [];
     let loreBroad: string[] = [];
@@ -1176,6 +1185,19 @@ export class Orchestrator {
       // truncation) must invalidate a cached verdict — .reviewgate/ is excluded
       // from the diff hash, so this is the only cache-key coverage it gets.
       lore: loreText ? createHash("sha256").update(loreText).digest("hex") : undefined,
+      // Lore v1 fix (2026-07-10, task 6 review I-1): a pending (unapproved) canon
+      // promotion is BY DEFINITION not injected (detectPromotions/selectForDiff
+      // filter approved ids out), so it never reaches `lore` above. Without this
+      // segment, a code-diff-identical run hits the byte/content cache and the
+      // canon-promotion decision-required finding (emitted only on a real panel
+      // run, below) is swallowed indefinitely. Sorted for determinism; empty →
+      // omitted (continuity rule — a repo with lore off/no pending promotion gets
+      // the byte-identical key it had before this fix).
+      lorePromotions: lorePromotions.length
+        ? createHash("sha256")
+            .update(JSON.stringify(lorePromotions.map((p) => `${p.id}:${p.kind}`).sort()))
+            .digest("hex")
+        : undefined,
     });
 
     // --- Cache short-circuit (only for previously-passing verdicts) ---
@@ -2709,13 +2731,17 @@ export class Orchestrator {
         (opts.cycleRejectedSignatures ?? []).length === 0 &&
         activeRegions === null &&
         agg.regionSuppressedCount === 0 &&
-        // Lore v1: a decision-required lore finding (reminder/canon-promotion) is
-        // state the byte-cache key does NOT fully cover — canon-promotion in
-        // particular is a git-history diff, not injected/hashed context. Seeding
-        // the ledger here would let a later content-identical run's content-cache
-        // PASS (findings: []) silently absorb a still-pending decision. Excluding
-        // it costs nothing but ONE extra full review on the rare iteration a lore
-        // finding actually fired.
+        // Lore v1 (belt, not the buckle — corrected task 6 review I-1): stops
+        // THIS iteration's PASS — the one that just fired a lore finding — from
+        // seeding a ledger entry a later run could serve back as findings:[].
+        // It does NOT, by itself, guarantee the finding re-fires on a later,
+        // code-diff-identical run — an already-cached PASS from an EARLIER
+        // iteration (before the promotion/staleness appeared) would still be
+        // served by the byte/content cache. That guarantee comes from the
+        // `lorePromotions` behaviorHash segment above (→ providerVersions → both
+        // cacheKey and ledgerEnvHash): an appearing/vanishing unapproved-canon
+        // promotion changes the key, so ANY cache built before it existed misses
+        // and the panel re-runs. This check remains as defense-in-depth.
         loreFindingsBuilt.length === 0,
       passLedgerEnvHash: ledgerEnvHash,
       costUsd: settled.reduce((sum, s) => sum + s.res.usage.costUsd, 0),

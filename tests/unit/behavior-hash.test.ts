@@ -144,4 +144,25 @@ describe("computeBehaviorHash", () => {
     expect(a).not.toBe(none);
     expect(a).not.toBe(b);
   });
+
+  it("lorePromotions segment: absent → byte-identical; a pending promotion changes the hash (task 6 I-1 fix)", () => {
+    const base = { brain: [{ id: "B-1", status: "active" }], fp: [] };
+    const none = computeBehaviorHash(base);
+    expect(computeBehaviorHash({ ...base, lorePromotions: undefined })).toBe(none);
+    const a = computeBehaviorHash({ ...base, lorePromotions: "promoHashA" });
+    const b = computeBehaviorHash({ ...base, lorePromotions: "promoHashB" });
+    expect(a).toBe(`${none}|lorePromotions:promoHashA`);
+    expect(a).not.toBe(none);
+    expect(a).not.toBe(b);
+  });
+
+  it("lorePromotions is a trailing segment after lore (order matters for byte-identity)", () => {
+    const base = { brain: [], fp: [] };
+    const both = computeBehaviorHash({
+      ...base,
+      lore: "loreHash",
+      lorePromotions: "promoHash",
+    });
+    expect(both).toBe("|lore:loreHash|lorePromotions:promoHash");
+  });
 });

@@ -57,6 +57,15 @@ export function computeBehaviorHash(input: {
   // .reviewgate/, which is excluded from the reviewed diff) — fold it in so an
   // entry edit invalidates a cached verdict. Empty/absent → omitted (continuity rule).
   lore?: string | undefined;
+  // Lore v1 fix (2026-07-10, task 6 review I-1): sha256 hex over the sorted
+  // `<id>:<kind>` set of PENDING (unapproved) canon promotions detected this
+  // iteration. A canon-promotion is BY DEFINITION unapproved, so it is never
+  // injected and never reaches `lore` above — without this segment, a
+  // code-diff-identical run could serve a cached/content-cache PASS and
+  // swallow the canon-promotion decision-required finding indefinitely.
+  // Empty/absent → omitted (continuity rule, byte-identical to before when no
+  // promotion is pending).
+  lorePromotions?: string | undefined;
 }): string {
   const brainPart = input.brain
     .map((e) => `${e.id}:${e.status}`)
@@ -97,6 +106,9 @@ export function computeBehaviorHash(input: {
   }
   if (input.lore) {
     out += `|lore:${input.lore}`;
+  }
+  if (input.lorePromotions) {
+    out += `|lorePromotions:${input.lorePromotions}`;
   }
   return out;
 }
