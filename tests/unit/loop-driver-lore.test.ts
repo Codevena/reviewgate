@@ -20,6 +20,7 @@ import { computeVerifiedTree } from "../../src/core/lore/staleness.ts";
 import type { IterationResult, IterationRunner } from "../../src/core/orchestrator.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import type { RunSummary } from "../../src/schemas/audit-event.ts";
+import type { ReviewgateState } from "../../src/schemas/state.ts";
 import { auditDir, decisionsPath, dirtyFlagPath, pendingJsonPath } from "../../src/utils/paths.ts";
 
 function fakeRepo(): string {
@@ -438,5 +439,154 @@ describe("LoopDriver lore enforcement (Task 7)", () => {
 
     const approvalsPath = join(repo, ".reviewgate", "lore", "approvals.jsonl");
     expect(existsSync(approvalsPath)).toBe(false);
+  });
+
+  // --- (f) CLEAN-PASS DECISION FORCING ---------------------------------------------
+  // The CRITICAL fix: a lore finding emitted on an otherwise-clean diff yields
+  // verdict PASS (lore findings are INFO). Without the loreDecisionRequired gate term
+  // the round RE-ARMS (iteration→0, dirty flag + decisions cleared, allow_stop): the
+  // reminder is shown and the daily cap consumed, but the agent is NEVER forced to
+  // decide. These drive a REAL run from iteration 0 (the case the original suite
+  // missed by pre-seeding iteration:1) and assert it blocks + advances instead.
+
+  it("(f1) a clean PASS that emitted a lore reminder BLOCKS and advances (does NOT re-arm)", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREF1"); // iteration 0 = fresh batch, no prior decisions-gate
+    writeDirty(repo);
+    const captured: CapturedBudget[] = [];
+    const decision = await driver(
+      repo,
+      state,
+      budgetCaptureStub(captured, {
+        verdict: "PASS",
+        loreOutcomes: { reminderEmittedId: "stale-entry", promotions: [] },
+      }),
+    ).run();
+
+    // Blocks instead of re-arming — same mechanics as G0's softPassBlocks.
+    expect(decision.kind).toBe("block");
+    const st = await state.load();
+    // Iteration ADVANCED (not reset to 0) so the next stop lands at iteration>0 and
+    // the decisions-gate forces a decision for the lore finding.
+    expect(st.iteration).toBe(1);
+    // Dirty flag PRESERVED so the next stop actually re-reviews + gates (the re-arm
+    // path would have deleted it).
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    // The daily cap was still consumed (the reminder is verdict-neutral).
+    expect(st.lore_reminder_last_date).toBe(todayLocal());
+    // Honest block reason: points at pending.md and names the lore finding (not a
+    // misleading "CRITICAL/WARN" line over a 0/0 summary).
+    expect(decision.reason).toContain(".reviewgate/pending.md");
+    expect(decision.reason.toLowerCase()).toContain("lore");
+  });
+
+  it("(f2) a clean PASS that produced a canon-promotion BLOCKS and advances", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREF2");
+    writeDirty(repo);
+    const captured: CapturedBudget[] = [];
+    const decision = await driver(
+      repo,
+      state,
+      budgetCaptureStub(captured, {
+        verdict: "PASS",
+        loreOutcomes: { promotions: ["promo-entry"] },
+      }),
+    ).run();
+
+    expect(decision.kind).toBe("block");
+    const st = await state.load();
+    expect(st.iteration).toBe(1);
+    expect(existsSync(dirtyFlagPath(repo))).toBe(true);
+    expect(decision.reason.toLowerCase()).toContain("lore");
+  });
+
+  it("(f3) a clean PASS with NO lore outcomes still re-arms (allow_stop) — happy path intact", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREF3");
+    writeDirty(repo);
+    const captured: CapturedBudget[] = [];
+    const decision = await driver(repo, state, budgetCaptureStub(captured)).run();
+
+    // No loreOutcomes → loreDecisionRequired is false → the round re-arms as before.
+    expect(decision.kind).toBe("allow_stop");
+    const st = await state.load();
+    expect(st.iteration).toBe(0);
+    expect(existsSync(dirtyFlagPath(repo))).toBe(false);
+  });
+
+  // --- (g) IDEMPOTENT DECISION ABSORPTION ------------------------------------------
+  // The IMPORTANT fix: on a timeout / all-quota / all-infra DEFER the iteration stays
+  // fixed and decisions/<iter>.jsonl is intact, so the next attempt RE-ABSORBS the same
+  // decisions. Without idempotency guards that appends a DUPLICATE approvals.jsonl line
+  // and RE-EXTENDS a rejected reminder's cooldown. This calls the absorb path twice over
+  // the same iteration and asserts each side effect fires exactly once.
+
+  it("(g1) re-absorbing the same iteration writes exactly ONE approval line and never re-extends a cooldown", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREG1");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writePending(repo, [
+      loreFinding("canon-promotion", "promo-entry", 1),
+      loreFinding("reminder", "stale-entry", 2),
+    ]);
+    // decisions/1.jsonl with BOTH a fixed canon-promotion and a rejected reminder.
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        {
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-L01",
+          verdict: "accepted",
+          action: "fixed",
+        },
+        {
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-L02",
+          verdict: "rejected",
+          reason: "still accurate, no change needed right now",
+        },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n")}\n`,
+    );
+
+    const d = driver(repo, state, budgetCaptureStub([]));
+    // absorbLoreDecisions is private; invoke it directly (the "call the absorb path
+    // twice" option the brief sanctions) — deterministic, no defer machinery needed.
+    const absorb = (s: ReviewgateState) =>
+      (
+        d as unknown as { absorbLoreDecisions(s: ReviewgateState): Promise<void> }
+      ).absorbLoreDecisions(s);
+
+    await absorb(await state.load());
+    const afterFirst = await state.load();
+    const cooldownAfterFirst = afterFirst.lore_rejection_cooldowns["stale-entry"];
+    expect(typeof cooldownAfterFirst).toBe("string");
+
+    // A measurable gap so a NON-idempotent cooldown write would produce a strictly
+    // later ISO `until` on the second pass (mutation observability); the guard keeps
+    // it byte-identical regardless.
+    await new Promise((r) => setTimeout(r, 12));
+
+    // Second absorb over the SAME iteration (mirrors a deferred re-run reloading state).
+    await absorb(await state.load());
+    const afterSecond = await state.load();
+
+    // Approval: exactly ONE line (not two).
+    const approvalsPath = join(repo, ".reviewgate", "lore", "approvals.jsonl");
+    const lines = readFileSync(approvalsPath, "utf8")
+      .split("\n")
+      .filter((l) => l.trim());
+    expect(lines).toHaveLength(1);
+
+    // Cooldown: `until` is IDENTICAL after the second absorb (not pushed later).
+    expect(afterSecond.lore_rejection_cooldowns["stale-entry"]).toBe(cooldownAfterFirst);
   });
 });

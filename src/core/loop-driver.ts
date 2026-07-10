@@ -35,7 +35,7 @@ import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
 import { locationKey, recurringBlockingLocations } from "./location-recurrence.ts";
-import { appendApproval } from "./lore/approvals.ts";
+import { appendApproval, readApprovals } from "./lore/approvals.ts";
 import { classifyEntry } from "./lore/staleness.ts";
 import { loadLore } from "./lore/store.ts";
 import type { IterationResult, IterationRunner } from "./orchestrator.ts";
@@ -1897,7 +1897,25 @@ export class LoopDriver {
     const fromCriticalDemoted = result.summary.from_critical_demoted ?? 1;
     const softPassBlocks =
       result.verdict === "SOFT-PASS" && (softPolicy === "block" || fromCriticalDemoted > 0);
-    const passed = (result.verdict === "PASS" || result.verdict === "SOFT-PASS") && !softPassBlocks;
+    // Lore v1 (Task 7): a panel round that emitted a lore reminder or a canon-promotion
+    // guard finding is decision-required, EXACTLY like G0's softPassBlocks — even when the
+    // diff was otherwise clean. Lore findings are INFO, so such a round's verdict is PASS
+    // (or SOFT-PASS); without this term it would RE-ARM (iteration→0, dirty flag + decisions
+    // cleared, allow_stop): the reminder gets shown and the daily cap consumed, but the agent
+    // is never forced to decide — defeating the spec's promise that a stale-lore reminder
+    // "costs exactly one turn via the decision requirement, same mechanics as G0". Mirror
+    // softPassBlocks EXACTLY: advance the counter, KEEP the dirty flag + decisions so the next
+    // stop lands at iteration>0 and the decisions-gate (previousFindingIds includes
+    // `lore !== undefined`) demands a decision per lore finding. Rides the existing block path
+    // + iteration-cap escalation ladder — no new termination path.
+    const loreDecisionRequired =
+      !!result.loreOutcomes &&
+      (result.loreOutcomes.reminderEmittedId !== undefined ||
+        result.loreOutcomes.promotions.length > 0);
+    const passed =
+      (result.verdict === "PASS" || result.verdict === "SOFT-PASS") &&
+      !softPassBlocks &&
+      !loreDecisionRequired;
     // S4a recovery: clear the quota-exhausted-persistent latch ONLY when the panel
     // actually produced a review of the flagged batch — i.e. reaching this point
     // (the normal post-iteration update, not one of the early-return defer/escalate
@@ -2138,9 +2156,26 @@ export class LoopDriver {
         reason: `🔴 Reviewgate · GATE CLOSED — reviewer error (iteration ${nextIter}): ${formatErrorBreakdown(result.summary)}. See .reviewgate/pending.md for per-reviewer status detail.${this.quotaDegradationNote(new Date()) ?? " Run `reviewgate doctor` if this persists."}`,
       };
     } else {
+      // The action line must name what the agent actually has to decide on. A normal
+      // FAIL / blocking SOFT-PASS needs a decision per CRITICAL/WARN finding; a clean
+      // round that blocks ONLY because it emitted a lore finding (loreDecisionRequired,
+      // verdict PASS/SOFT-PASS, 0 CRITICAL/0 WARN) would otherwise print "record a
+      // decision per CRITICAL/WARN finding" over a 0/0 summary — MISLEADING. Cover
+      // whichever reason(s) actually apply (a WARN round can also carry a lore finding).
+      const hasCriticalWarn = result.summary.counts.critical > 0 || result.summary.counts.warn > 0;
+      const actions: string[] = [];
+      if (hasCriticalWarn) actions.push("record a decision per CRITICAL/WARN finding");
+      if (loreDecisionRequired)
+        actions.push(
+          "record a decision for the lore reminder / canon-promotion finding(s) (the `lore:` finding(s))",
+        );
+      // Fail-safe: this branch is only reached when at least one flag is set, but if
+      // neither is (unforeseen), keep the firm CRITICAL/WARN wording rather than an empty line.
+      const actionLine =
+        actions.length > 0 ? actions.join(" and ") : "record a decision per CRITICAL/WARN finding";
       decision = {
         kind: "block",
-        reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations}\n   ${formatPanelSummary(result.summary)}\n   → record a decision per CRITICAL/WARN finding in .reviewgate/decisions/${nextIter}.jsonl  (details: .reviewgate/pending.md)`,
+        reason: `🔴 Reviewgate · GATE CLOSED — iteration ${nextIter}/${this.i.config.loop.maxIterations}\n   ${formatPanelSummary(result.summary)}\n   → ${actionLine} in .reviewgate/decisions/${nextIter}.jsonl  (details: .reviewgate/pending.md)`,
       };
     }
 
@@ -2252,6 +2287,14 @@ export class LoopDriver {
       }
       if (meta.size === 0) return;
       const now = new Date();
+      // IDEMPOTENCE (spec: "exactly ONE line"; "an id already approved while
+      // continuously canon does not re-fire"): on a timeout / all-quota / all-infra
+      // DEFER the iteration stays fixed and pending.json/decisions are intact, so the
+      // NEXT attempt re-enters this absorb over the SAME decisions/<iter>.jsonl. Each
+      // side effect below must therefore be add-if-absent — otherwise a re-absorb writes
+      // a DUPLICATE approvals.jsonl line and RE-EXTENDS a rejected reminder's cooldown
+      // (pushing `until` later every pass). The sibling absorbers (FP-ledger/reputation/
+      // agent-lessons) are guarded; this one was not.
       const claimedFixedAdds = new Set<string>();
       const cooldownAdds: Record<string, string> = {};
       for (const [findingId, d] of decisions) {
@@ -2259,18 +2302,31 @@ export class LoopDriver {
         if (!m) continue;
         if (m.lore === "reminder") {
           if (d.verdict === "accepted" && d.action === "fixed") {
+            // claimed-fixed is already add-if-absent (the state.update below folds via a
+            // Set), so a re-absorb of the same id is a no-op.
             claimedFixedAdds.add(m.entryId);
           } else if (d.verdict === "rejected") {
-            cooldownAdds[m.entryId] = new Date(
-              now.getTime() + loreCfg.rejectedReminderCooldownDays * 86_400_000,
-            ).toISOString();
+            // Only set a cooldown when none is already present. computeLoreReminderBudget
+            // prunes EXPIRED cooldowns before a legitimately-new rejection, so an entry
+            // still in the map here is an active cooldown from a prior absorb of this same
+            // decision — do NOT re-extend it (that pushed `until` later every deferred pass).
+            if (!state.lore_rejection_cooldowns[m.entryId]) {
+              cooldownAdds[m.entryId] = new Date(
+                now.getTime() + loreCfg.rejectedReminderCooldownDays * 86_400_000,
+              ).toISOString();
+            }
           }
         } else if (m.lore === "canon-promotion") {
           // Only a `fixed` decision writes the approval line (spec, "Canon
           // guard": "the guard finding's fixed decision writes the line"); a
           // rejected canon-promotion is a revert-to-draft the human/agent makes
-          // in the FILE, not a gate-side write.
-          if (d.verdict === "accepted" && d.action === "fixed") {
+          // in the FILE, not a gate-side write. Guard against a duplicate line on a
+          // re-absorb: skip if this id is already in the committed approvals ledger.
+          if (
+            d.verdict === "accepted" &&
+            d.action === "fixed" &&
+            !readApprovals(this.i.repoRoot).has(m.entryId)
+          ) {
             appendApproval(this.i.repoRoot, m.entryId, findingId, now);
           }
         }
