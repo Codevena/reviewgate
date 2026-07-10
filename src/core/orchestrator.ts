@@ -1158,6 +1158,32 @@ export class Orchestrator {
       }
     }
 
+    // WARN fix (Codex review, 2026-07-10): the stale-reminder's TIME eligibility —
+    // the once-per-day cap (via lore_reminder_last_date), rejection-cooldown expiry,
+    // and the LoopDriver forcing budget.allowed=true for a still-stale claimed-fixed
+    // entry — is NOT in the review cache key. The key folds loreText (which carries
+    // the `(stale)` marker) and lorePromotions, but not the reminder budget/date. So a
+    // day-1 PASS cached while the reminder was SUPPRESSED (that day's cap consumed, or
+    // the entry in rejection cooldown) would, on day 2 (cap reset) or once the cooldown
+    // expires, replay from the byte/content cache for the SAME diff and return BEFORE
+    // the reminder-emission block at the bottom of runIteration — so the now-DUE,
+    // decision-required reminder silently never fires. Its eligibility is knowable HERE
+    // (loreSelected/loreStaleIds and opts.loreReminderBudget are all set), so compute it
+    // and force a fresh panel run when a reminder is due (see the `!loreReminderDue`
+    // guards on both cache short-circuits below). This mirrors the emission condition at
+    // the bottom of runIteration; the `agg.counts.critical === 0` term there is moot on
+    // the cache path (only PASS verdicts are ever cached ⇒ critical === 0). Fires at
+    // most once/day per stale entry, so the extra panel run is rare and bounded. This
+    // also covers the claimed-fixed bypass — the LoopDriver sets budget.allowed=true
+    // when a claimed-fixed entry is still stale.
+    const loreReminderDue =
+      Boolean(loreCfg?.enabled) &&
+      (opts.loreReminderBudget?.allowed ?? false) &&
+      loreSelected.some(
+        (e) =>
+          loreStaleIds.has(e.id) && !(opts.loreReminderBudget?.cooldownIds ?? []).includes(e.id),
+      );
+
     // T4/R2: the delta GATING scope (null → pass inert / full scope). Active only in
     // gate mode with the flag on, a prior snapshot present (iteration >= 2 by
     // construction) and a COMPLETE diff.
@@ -1344,6 +1370,10 @@ export class Orchestrator {
       this.input.reportMode !== "one-shot" &&
       !this.input.diffIncomplete &&
       cacheEnabled &&
+      // A due stale-reminder is time-eligible on inputs absent from ledgerEnvHash — a
+      // content-identical replay must run the panel so the reminder fires (see
+      // loreReminderDue above).
+      !loreReminderDue &&
       ledger.env_hash === ledgerEnvHash
     ) {
       const entries = Object.entries(reviewedSnapshotFiles);
@@ -1386,7 +1416,10 @@ export class Orchestrator {
       }
     }
 
-    if (cacheEnabled) {
+    // `!loreReminderDue`: a due stale-reminder is time-eligible on inputs absent from
+    // cacheKey — serving a cached PASS here would return before the reminder fires (see
+    // loreReminderDue above); force a fresh panel run instead.
+    if (cacheEnabled && !loreReminderDue) {
       const cached = await getCachedReview(
         repo,
         cacheKey,
@@ -2723,9 +2756,21 @@ export class Orchestrator {
     // authoritative over the hidden portion. Caching it would let a later identical
     // (still-partial) key serve that partial pass as a full one. Never persist a
     // pass earned on a partial diff — the next turn must re-review from scratch.
+    // Lore v1 (WARN fix, Codex review 2026-07-10): symmetric with the pass-ledger
+    // seeding guard (`loreFindingsBuilt.length === 0` below) — a PASS that carried a
+    // decision-required lore finding (a stale reminder OR a canon-promotion) must NOT be
+    // cached. putCachedReview stores only {verdict, counts}, so a later identical-key
+    // replay serves the PASS findings-empty and drops the finding. The read-side
+    // `!loreReminderDue` bypass covers the stale-reminder case, but a canon-promotion
+    // that PERSISTS across two runs (both runs see the same pending promotion ⇒ same
+    // cacheKey) is not covered by it: run 1 would cache the PASS and run 2 would replay
+    // it, swallowing the still-unresolved promotion. Skipping the write makes the guard
+    // re-fire every review until the promotion is committed/approved (spec: "trust guard
+    // is not capped").
     if (
       cacheEnabled &&
       !this.input.diffIncomplete &&
+      loreFindingsBuilt.length === 0 &&
       (agg.verdict === "PASS" || agg.verdict === "SOFT-PASS")
     ) {
       await putCachedReview(repo, cacheKey, { verdict: agg.verdict, counts: agg.counts }).catch(

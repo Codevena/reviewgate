@@ -744,4 +744,104 @@ describe("orchestrator lore integration", () => {
     expect(nonLore).toHaveLength(1);
     expect(nonLore[0].severity).toBe("WARN");
   });
+
+  it("(WARN-cache read bypass) a reminder that becomes DUE bypasses the byte-cache PASS cached while it was suppressed", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content v1");
+    writeLoreEntry(repo, {
+      id: "stale-entry",
+      status: "canon",
+      anchors: ["foo.ts"],
+      verifiedTree: "0".repeat(64), // deliberately wrong → stale + diff-touched
+      body: "This entry documents an invariant that is now stale relative to foo.ts's content.",
+    });
+    appendApproval(repo, "stale-entry", "test", new Date());
+    commitAll(repo);
+
+    const state = { calls: 0, prompts: [] as string[] };
+
+    // Run 1 (day 1): the reminder is SUPPRESSED (allowed:false — daily cap consumed
+    // or entry in cooldown), so this is a clean PASS with zero lore findings that
+    // POPULATES the byte cache under a key folding loreText (the injected `(stale)`
+    // block) but NOT the reminder budget/date.
+    const r1 = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      loreReminderBudget: { allowed: false, cooldownIds: [] },
+    });
+    expect(r1.verdict).toBe("PASS");
+    expect(state.calls).toBe(1);
+    const pending1 = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+    expect(loreFindingsFrom(pending1).filter((f) => f.lore === "reminder")).toHaveLength(0);
+
+    // Run 2 (day 2): SAME diff + SAME stale entry ⇒ identical cacheKey (the budget is
+    // not in the key), but the reminder is now DUE (allowed:true). The panel MUST
+    // re-run so the reminder fires. MUTATION: without `&& !loreReminderDue` on the
+    // byte-cache short-circuit, run 2 serves the cached PASS (state.calls stays 1) and
+    // emits ZERO reminders — the freshness enforcement is silently cache-suppressed.
+    const r2 = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 2,
+      loreReminderBudget: { allowed: true, cooldownIds: [], claimedFixedStaleIds: [] },
+    });
+    expect(r2.verdict).toBe("PASS");
+    expect(state.calls).toBe(2); // cache bypassed → panel actually ran
+    const reminders = loreFindingsFrom(
+      JSON.parse(readFileSync(pendingJsonPath(repo), "utf8")),
+    ).filter((f) => f.lore === "reminder");
+    expect(reminders).toHaveLength(1);
+    expect(reminders[0].file).toBe(".reviewgate/lore/stale-entry.md");
+  });
+
+  it("(WARN-cache write guard) a PASS carrying a canon-promotion is NOT byte-cached, so a persistent promotion re-fires next review", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content");
+    commitAll(repo); // baseline WITHOUT the lore entry
+
+    // Unapproved born-canon entry with zero-match anchors → isolates the test to the
+    // canon-promotion guard: not injected, not stale-selected, so loreReminderDue is
+    // false and the read-side bypass is inert here — only the write guard is exercised.
+    writeLoreEntry(repo, {
+      id: "persist-canon",
+      status: "canon",
+      anchors: ["nonexistent-file.ts"],
+      verifiedTree: "irrelevant",
+      body: "This entry is born directly as canon without approval — the promotion guard must catch it.",
+    });
+
+    const state = { calls: 0, prompts: [] as string[] };
+
+    // Run 1: emits the canon-promotion finding (PASS). With the write guard, this PASS
+    // is NOT written to the byte cache.
+    const r1 = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 1,
+      loreReminderBudget: { allowed: false, cooldownIds: [] },
+    });
+    expect(r1.verdict).toBe("PASS");
+    expect(state.calls).toBe(1);
+    expect(
+      loreFindingsFrom(JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"))).filter(
+        (f) => f.lore === "canon-promotion",
+      ),
+    ).toHaveLength(1);
+
+    // Run 2: SAME still-pending promotion ⇒ identical cacheKey (loreText:"" both runs,
+    // same lorePromotions segment). The panel MUST re-run so the promotion re-fires.
+    // MUTATION: without the `loreFindingsBuilt.length === 0` guard on putCachedReview,
+    // run 1 caches the PASS and run 2 serves it (state.calls stays 1), DROPPING the
+    // decision-required canon-promotion finding.
+    const r2 = await orch(repo, zeroFindingsStub(state)).runIteration({
+      runId: "R",
+      iter: 2,
+      loreReminderBudget: { allowed: false, cooldownIds: [] },
+    });
+    expect(r2.verdict).toBe("PASS");
+    expect(state.calls).toBe(2); // run 1's PASS was not cached → panel ran again
+    const promos = loreFindingsFrom(JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"))).filter(
+      (f) => f.lore === "canon-promotion",
+    );
+    expect(promos).toHaveLength(1);
+    expect(promos[0].file).toBe(".reviewgate/lore/persist-canon.md");
+  });
 });
