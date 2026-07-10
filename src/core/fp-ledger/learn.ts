@@ -43,6 +43,13 @@ export async function learnFromDecisions(input: {
     if (d.verdict !== "rejected" || d.reviewer_was_wrong !== true) continue;
     const f = byId.get(d.finding_id);
     if (!f) continue;
+    // Lore v1 WARN-1 fix (2026-07-10): the two synthetic lore findings
+    // (`f.lore` set) are deterministic — reviewer.provider:"lore", no real
+    // reviewer/model behind them. A rejected lore reminder ("still accurate")
+    // is a documented normal flow, not a confirmed reviewer false positive;
+    // recording it here would create a bogus "lore" provider FP signature in
+    // the ledger. Excluded before the member/provider fan-out below.
+    if (f.lore !== undefined) continue;
 
     // Record per member-signature, crediting only that member's base provider.
     // Fall back to the finding's own signature/provider if members is absent.

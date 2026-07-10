@@ -383,6 +383,61 @@ describe("learnFromDecisions", () => {
     expect((await store.snapshot()).entries).toHaveLength(0);
   });
 
+  it("WARN-1 fix (2026-07-10): does NOT learn from a rejected lore finding (synthetic, no real reviewer)", async () => {
+    // Lore v1's two synthetic findings (`lore` set) carry reviewer.provider:"lore"
+    // — a deterministic gate check, not a real reviewer. Rejecting a stale
+    // reminder as "still accurate" (with reviewer_was_wrong:true, a normal
+    // spec-documented disposition) must not create a bogus "lore" provider FP
+    // signature in the ledger.
+    const repo = mkdtempSync(join(tmpdir(), "rg-fpl-lore-"));
+    mkdirSync(dirname(pendingJsonPath(repo)), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-L01",
+            signature: "lore:reminder:stale-entry",
+            severity: "INFO",
+            category: "quality",
+            rule_id: "lore.reminder",
+            file: ".reviewgate/lore/stale-entry.md",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            reviewer: { provider: "lore", model: "deterministic", persona: "lore" },
+            confidence: 1,
+            consensus: "singleton",
+            lore: "reminder",
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${JSON.stringify({
+        schema: "reviewgate.decision.v1",
+        finding_id: "F-L01",
+        verdict: "rejected",
+        reason: "still accurate, no change needed right now",
+        reviewer_was_wrong: true,
+      })}\n`,
+    );
+    const store = new FpLedgerStore(repo);
+    await learnFromDecisions({
+      repoRoot: repo,
+      prevIter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: "2026-07-10T00:00:00Z",
+    });
+    expect((await store.snapshot()).entries).toHaveLength(0);
+  });
+
   it("dedups members by (signature, provider) so one decision cannot inflate the quorum", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-fpl4-"));
     mkdirSync(dirname(pendingJsonPath(repo)), { recursive: true });

@@ -69,6 +69,13 @@ export async function detectPromotions(
       }
     }
 
+    // Approval is ID-PERMANENT in v1 (spec amended 2026-07-09, "Canon guard"):
+    // once an id is approved, EVERY subsequent promotion of that id — including a
+    // committed canon → draft → canon ROUND-TRIP — is filtered here too, reusing
+    // the original approval line. This is a deliberate, accepted v1 limitation
+    // (per-epoch / per-transition re-approval, so a round-trip would re-guard, is
+    // a v2 follow-up); do not read the filter below as "still canon since
+    // approval" — it has no such continuity check.
     const approved = readApprovals(repoRoot);
     return promotions.filter((p) => !approved.has(p.id));
   } catch {

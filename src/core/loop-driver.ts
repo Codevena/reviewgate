@@ -193,6 +193,38 @@ function previousFindingIds(repoRoot: string): string[] {
   }
 }
 
+// Lore v1 WARN-1 fix (2026-07-10): a lore-EXCLUDED sibling of previousFindingIds,
+// for the REVIEWER-QUALITY circuit breakers ONLY (computeRejectRate, which feeds
+// the reject-rate-high / reviewer-fp-streak escalations). Those breakers attribute
+// contested/wrong counts to a REVIEWER's track record — but the two synthetic lore
+// findings have `reviewer.provider: "lore"` (deterministic, no real reviewer/model
+// behind them). The spec's own documented normal flows — rejecting a stale
+// reminder with a >=20-char reason ("still accurate"), or reverting an unapproved
+// canon-promotion — must never count as "the panel is noisy" evidence against a
+// real reviewer. The DECISIONS GATE (evaluateDecisions) must keep using the
+// lore-INCLUSIVE previousFindingIds above — forcing a decision on a lore finding
+// is correct and orthogonal to reviewer quality. Same severity filter as the
+// pre-Task-7 previousFindingIds (CRITICAL/WARN only); `f.lore === undefined` is
+// belt-and-braces (lore findings are always INFO today, so the severity filter
+// alone already excludes them — this makes the exclusion self-documenting and
+// future-proof against a lore finding ever gaining a blocking severity).
+function previousReviewerFindingIds(repoRoot: string): string[] {
+  const p = pendingJsonPath(repoRoot);
+  if (!existsSync(p)) return [];
+  try {
+    const report = JSON.parse(readFileSync(p, "utf8")) as {
+      findings?: Array<{ id?: string; severity?: string; lore?: string }>;
+    };
+    if (!Array.isArray(report.findings)) return [];
+    return report.findings
+      .filter((f) => (f.severity === "CRITICAL" || f.severity === "WARN") && f.lore === undefined)
+      .map((f) => f.id)
+      .filter((id): id is string => typeof id === "string");
+  } catch {
+    return [];
+  }
+}
+
 // P3: a loose map of finding id → foreign_to_session (Slice A's ownership snapshot) from
 // pending.json. Read loosely (NOT via the strict FindingSchema) for the SAME reason
 // previousFindingIds is loose: the two must agree on the same finding set, so a finding that
@@ -1144,10 +1176,16 @@ export class LoopDriver {
       // runs after this check), so compute them fresh from the current pending +
       // decisions. Absolute indices (n-1, n-2) — never relative .at() across two
       // arrays of possibly different length.
+      // WARN-1 fix: previousReviewerFindingIds (lore-EXCLUDED) — a lore-finding
+      // rejection must not masquerade as a "confirmed reviewer FP" in the
+      // convergence signal below (see the function's doc comment).
       const latestWrong =
         n > 0
-          ? computeRejectRate(this.i.repoRoot, state.iteration, previousFindingIds(this.i.repoRoot))
-              .wrongRejects
+          ? computeRejectRate(
+              this.i.repoRoot,
+              state.iteration,
+              previousReviewerFindingIds(this.i.repoRoot),
+            ).wrongRejects
           : 0;
       const realAt = (k: number, wrongOverride?: number) =>
         Math.max(0, (hist[k]?.length ?? 0) - (wrongOverride ?? fpHist[k] ?? 0));
@@ -1372,6 +1410,12 @@ export class LoopDriver {
     // pending.json ONCE and share it.
     if (state.iteration > 0) {
       const requiredIds = previousFindingIds(this.i.repoRoot);
+      // WARN-1 fix: the decisions gate below MUST keep the lore-inclusive
+      // `requiredIds` (forcing a decision on a lore finding is correct); the
+      // reject-rate circuit-breaker further down uses this lore-EXCLUDED sibling
+      // instead, so a legitimate lore-finding rejection never counts as
+      // reviewer-quality evidence (see previousReviewerFindingIds' doc comment).
+      const requiredReviewerIds = previousReviewerFindingIds(this.i.repoRoot);
 
       // (absorbPriorDecisions was hoisted ABOVE the cost-cap / max-iterations /
       // stuck-signatures preconditions — see the call before them in run(). It
@@ -1608,10 +1652,14 @@ export class LoopDriver {
       // of run(), so it covered the decisions-unaddressed early-return too.)
 
       // Confirmed-FP signal for the PRIOR iteration. computeRejectRate dedups by
-      // finding_id + restricts to the real `requiredIds`, so the agent (which authors
-      // the decisions files) cannot pad duplicate/fabricated lines to manufacture an
-      // escape-hatch — it can only move the numbers by rejecting REAL findings.
-      const rr = computeRejectRate(this.i.repoRoot, state.iteration, requiredIds);
+      // finding_id + restricts to the real `requiredReviewerIds`, so the agent (which
+      // authors the decisions files) cannot pad duplicate/fabricated lines to
+      // manufacture an escape-hatch — it can only move the numbers by rejecting REAL
+      // (reviewer-authored) findings. WARN-1 fix: NOT `requiredIds` — that set also
+      // carries the two synthetic lore finding ids, which have no real reviewer
+      // behind them (see previousReviewerFindingIds' doc comment) and must not feed
+      // the reject-rate-high / reviewer-fp-streak reviewer-quality breakers below.
+      const rr = computeRejectRate(this.i.repoRoot, state.iteration, requiredReviewerIds);
 
       // (a) Single-iteration burst: a high confirmed-FP RATE within ONE iteration →
       // stop nagging and surface to the human. Runs AFTER the decisions-gate so an

@@ -510,4 +510,84 @@ describe("learnReputationFromDecisions", () => {
     expect(entry?.wrong ?? []).toHaveLength(0); // retracted rejection never debits
     expect(entry?.correct).toHaveLength(1); // only the final (accepted) disposition books
   });
+
+  it("WARN-1 fix (2026-07-10): does NOT record a reputation event for a lore finding (synthetic, no real reviewer)", async () => {
+    // Lore v1's two synthetic findings (`lore` set) carry reviewer.provider:"lore"
+    // / persona:"lore" — a deterministic gate check, not a real reviewer/persona.
+    // A "fixed" canon-promotion approval or a "still accurate" reminder rejection
+    // must not credit/debit a bogus "lore:lore" reputation key.
+    const repo = mkdtempSync(join(tmpdir(), "rg-replearn-lore-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(
+      pendingJsonPath(repo),
+      JSON.stringify({
+        findings: [
+          {
+            id: "F-L01",
+            severity: "INFO",
+            category: "quality",
+            rule_id: "lore.reminder",
+            file: ".reviewgate/lore/stale-entry.md",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            signature: "lore:reminder:stale-entry",
+            reviewer: { provider: "lore", model: "deterministic", persona: "lore" },
+            confidence: 1,
+            consensus: "singleton",
+            lore: "reminder",
+          },
+          {
+            id: "F-L02",
+            severity: "INFO",
+            category: "quality",
+            rule_id: "lore.canon-guard",
+            file: ".reviewgate/lore/promo-entry.md",
+            line_start: 1,
+            line_end: 1,
+            message: "m",
+            details: "d",
+            signature: "lore:canon-promotion:promo-entry",
+            reviewer: { provider: "lore", model: "deterministic", persona: "lore" },
+            confidence: 1,
+            consensus: "singleton",
+            lore: "canon-promotion",
+          },
+        ],
+      }),
+    );
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    writeFileSync(
+      dp,
+      `${[
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-L01",
+          verdict: "rejected",
+          reason: "still accurate, no change needed right now",
+          reviewer_was_wrong: true,
+        }),
+        JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-L02",
+          verdict: "accepted",
+          action: "fixed",
+        }),
+      ].join("\n")}\n`,
+    );
+    const store = new ReputationStore(repo);
+    await learnReputationFromDecisions({
+      repoRoot: repo,
+      iter: 1,
+      sessionId: "S",
+      cycleSeq: 0,
+      store,
+      nowIso: new Date().toISOString(),
+    });
+    const snap = await store.snapshot();
+    expect(snap.reviewers["lore:lore"]).toBeUndefined();
+    expect(Object.keys(snap.reviewers)).toHaveLength(0);
+  });
 });

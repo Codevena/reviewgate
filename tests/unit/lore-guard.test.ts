@@ -99,6 +99,29 @@ describe("detectPromotions", () => {
     expect(result).toEqual([]);
   });
 
+  it("(g) WARN-2 spec amendment: approval is id-permanent — a fresh draft→canon transition after a committed canon→draft→canon round-trip is still suppressed", async () => {
+    const repo = initRepo();
+    // The id was approved once, in the past (a decision's `fixed` action wrote
+    // this line for the ORIGINAL promotion).
+    appendApproval(repo, "widget-invariant", "decision-ref-1", new Date("2026-07-01T00:00:00Z"));
+    writeLore(repo, "widget-invariant", loreEntry("canon"));
+    commitAll(repo, "base0: entry approved canon");
+
+    // Round-trip: canon -> draft (committed) -> canon again (uncommitted). Without
+    // the id-permanent approval this is a completely FRESH draft→canon transition
+    // against `base` and detectPromotions would (correctly, on its own) flag it.
+    writeLore(repo, "widget-invariant", loreEntry("draft"));
+    const base = commitAll(repo, "revert to draft");
+    writeLore(repo, "widget-invariant", loreEntry("canon"));
+
+    const result = await detectPromotions(repo, base);
+    // Amended spec (2026-07-09/10, "Canon guard"): approval is id-permanent in
+    // v1 — once approved, subsequent promotions of that id (including this
+    // round-trip) reuse the original approval and are NOT re-guarded. Per-epoch
+    // re-approval is a documented v2 follow-up, not a v1 regression to fix.
+    expect(result).toEqual([]);
+  });
+
   it("(e) baseSha: null compares against HEAD (proves the HEAD fallback path is taken)", async () => {
     const repo = initRepo();
     writeLore(repo, "widget-invariant", loreEntry("draft"));

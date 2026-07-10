@@ -589,4 +589,175 @@ describe("LoopDriver lore enforcement (Task 7)", () => {
     // Cooldown: `until` is IDENTICAL after the second absorb (not pushed later).
     expect(afterSecond.lore_rejection_cooldowns["stale-entry"]).toBe(cooldownAfterFirst);
   });
+
+  // --- (h) WARN-1 FIX: lore findings excluded from reviewer-quality breakers ------
+  // Task 7 widened previousFindingIds so lore INFO findings force a decision
+  // (correct — kept). But that same lore-inclusive id set also fed
+  // computeRejectRate, which drives reject-rate-high / reviewer-fp-streak — REVIEWER
+  // quality circuit-breakers. Lore findings are synthetic (reviewer.provider:
+  // "lore", no real reviewer), so normal spec-documented flows — rejecting a stale
+  // reminder, reverting an unapproved canon-promotion — must never count as "the
+  // panel is noisy" evidence. These tests prove the reviewer-quality breakers stay
+  // silent while the decisions gate still forces the lore decisions.
+
+  it("(h1) 4 rejected lore-finding decisions in ONE iteration do not trip reject-rate-high, but the decisions gate still required them", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREH1");
+    await state.update((cur) => ({ ...cur, iteration: 1 }));
+    writeDirty(repo);
+    writePending(repo, [
+      loreFinding("reminder", "stale-1", 1),
+      loreFinding("reminder", "stale-2", 2),
+      loreFinding("canon-promotion", "promo-1", 3),
+      loreFinding("canon-promotion", "promo-2", 4),
+    ]);
+
+    // Forcing intact: with NO decisions filed, the gate still blocks and names
+    // all four lore finding ids — the reviewer-quality exclusion below must not
+    // weaken the (unrelated) decision-forcing requirement.
+    const blockedFirst = await driver(repo, state, {
+      runIteration: async () => {
+        throw new Error("must not run — the decisions gate should block first");
+      },
+    }).run();
+    expect(blockedFirst.kind).toBe("block");
+    for (const id of ["F-L01", "F-L02", "F-L03", "F-L04"]) {
+      expect(blockedFirst.reason).toContain(id);
+    }
+
+    // The agent now records 4 REJECTED decisions on the lore findings — the two
+    // documented normal flows: rejecting stale reminders as still-accurate
+    // (reviewer_was_wrong claims "the lore reminder was wrong to fire"), and
+    // reverting unapproved canon-promotions (no reviewer_was_wrong claim, just a
+    // legitimate "not approved" disposition — this alone is enough to inflate the
+    // T6/R6 contested-rate breaker, which counts ALL rejections).
+    const dp = decisionsPath(repo, 1);
+    mkdirSync(dirname(dp), { recursive: true });
+    const lines = [
+      {
+        finding_id: "F-L01",
+        verdict: "rejected",
+        reason: "still accurate, no change needed right now",
+        reviewer_was_wrong: true,
+      },
+      {
+        finding_id: "F-L02",
+        verdict: "rejected",
+        reason: "still accurate, verified against the code xx",
+        reviewer_was_wrong: true,
+      },
+      {
+        finding_id: "F-L03",
+        verdict: "rejected",
+        reason: "reverting to draft status manually, not approved",
+      },
+      {
+        finding_id: "F-L04",
+        verdict: "rejected",
+        reason: "reverting to draft status manually, not approved",
+      },
+    ];
+    writeFileSync(
+      dp,
+      `${lines.map((l) => JSON.stringify({ schema: "reviewgate.decision.v1", ...l })).join("\n")}\n`,
+    );
+
+    const captured: CapturedBudget[] = [];
+    const decision = await driver(repo, state, budgetCaptureStub(captured)).run();
+
+    // No reviewer-quality escalation: the decisions gate is satisfied and the
+    // round proceeds all the way to the panel run instead of escalating.
+    expect(decision.reason).not.toContain("reject-rate-high");
+    expect((await state.load()).escalation_reason).not.toBe("reject-rate-high");
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+    expect(captured.length).toBe(1); // reached the panel run — proves no early escalate-return
+  });
+
+  it("(h2) cross-iteration lore-reminder rejections (reviewer_was_wrong) do not accumulate toward reviewer-fp-streak, and the decisions gate still requires each round's finding", async () => {
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01LOREH2");
+    writeDirty(repo);
+    const config = {
+      ...loreConfig(),
+      loop: { ...defaultConfig.loop, maxIterations: 10, fpStreakThreshold: 3 },
+    };
+    // Each iteration emits a FRESH lore reminder (distinct entryId/signature per
+    // round — mirrors the existing reviewer-fp-streak test's distinct
+    // per-iteration signature so only the breaker under test can fire, not the
+    // unrelated signature/location-recurrence guards) on an otherwise clean PASS.
+    const stub: IterationRunner = {
+      runIteration: async (opts) => {
+        const entryId = `stale-${opts.iter}`;
+        writeFileSync(
+          pendingJsonPath(repo),
+          JSON.stringify({ findings: [loreFinding("reminder", entryId, 1)] }),
+        );
+        const summary: RunSummary = {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 1 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [`lore:reminder:${entryId}`],
+          providers: [],
+        };
+        return {
+          verdict: "PASS" as const,
+          costUsd: 0,
+          durationMs: 1,
+          signaturesThisIter: [`lore:reminder:${entryId}`],
+          summary,
+          loreOutcomes: { reminderEmittedId: entryId, promotions: [] },
+        };
+      },
+    };
+    const mkDriver = () =>
+      new LoopDriver({
+        repoRoot: repo,
+        config,
+        state,
+        audit: new AuditLogger(auditDir(repo)),
+        orchestrator: stub,
+        stopHookActive: false,
+        freshHeadSha: async () => null,
+      });
+
+    let decision = await mkDriver().run();
+    // Drive 5 rounds: block-for-lore-decision -> agent rejects with
+    // reviewer_was_wrong:true (the "still accurate" flow) -> next round. 5 >=
+    // fpStreakThreshold(3), so WITHOUT the fix this would escalate by round 3.
+    for (let i = 1; i <= 5; i++) {
+      // Never escalates early (would flip kind to "allow_stop" per
+      // ALLOW_STOP_ESCALATIONS — ordinary lore-forcing always stays "block").
+      expect(decision.kind).toBe("block");
+      const dp = decisionsPath(repo, i);
+      mkdirSync(dirname(dp), { recursive: true });
+      writeFileSync(
+        dp,
+        `${JSON.stringify({
+          schema: "reviewgate.decision.v1",
+          finding_id: "F-L01",
+          verdict: "rejected",
+          reason: "still accurate, no change needed right now",
+          reviewer_was_wrong: true,
+        })}\n`,
+      );
+      decision = await mkDriver().run();
+    }
+
+    expect(decision.reason).not.toContain("reviewer-fp-streak");
+    const st = await state.load();
+    expect(st.escalation_reason).not.toBe("reviewer-fp-streak");
+    expect(st.cumulative_fp_rejects).toBe(0);
+    expect(existsSync(join(repo, ".reviewgate", "ESCALATION.md"))).toBe(false);
+
+    // Forcing intact: the latest round's lore finding is still decision-required —
+    // skip its decision and confirm the gate blocks citing it.
+    const finalDecision = await mkDriver().run();
+    expect(finalDecision.kind).toBe("block");
+    expect(finalDecision.reason).toContain("F-L01");
+  });
 });

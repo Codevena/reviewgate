@@ -1,9 +1,12 @@
 // src/core/lore/approvals.ts — committed, append-only canon-promotion
 // approvals ledger (`.reviewgate/lore/approvals.jsonl`). See "Canon guard" in
 // docs/superpowers/specs/2026-07-09-lore-design.md. One JSON line per human
-// approval; an id present here (while continuously canon) does not re-fire
-// the guard finding. Fail-safe contract: readApprovals NEVER throws —
-// malformed/invalid lines are skipped, a missing file yields an empty set.
+// approval; an id present here does not re-fire the guard finding — approval
+// is ID-PERMANENT in v1 (amended spec): this holds for EVERY later promotion
+// of that id, including a canon → draft → canon round-trip, not merely while
+// the entry stays continuously canon. Fail-safe contract: readApprovals NEVER
+// throws — malformed/invalid lines are skipped, a missing file yields an
+// empty set.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { LORE_APPROVAL_SCHEMA_VERSION, LoreApprovalSchema } from "../../schemas/lore.ts";
