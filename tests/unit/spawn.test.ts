@@ -1,6 +1,6 @@
 // tests/unit/spawn.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSafely } from "../../src/utils/spawn.ts";
@@ -141,6 +141,44 @@ describe("spawnSafely", () => {
     expect(res.killedByTimeout).toBe(false);
     // Returned because of the abort, NOT the 30s sleep/timeout.
     expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it("survives a child that exits before draining a LARGE stdin payload (EPIPE must not crash the gate)", async () => {
+    // A reviewer CLI that dies instantly (quota banner + exit, auth error, crash)
+    // while a multi-MB prompt is still streaming into its stdin makes the pending
+    // write fail with EPIPE. pipe() surfaces that error on the DESTINATION stream
+    // (child.stdin) — unhandled, it kills the whole gate process mid-Stop-hook and
+    // the turn ends un-reviewed (fail-open). Run the scenario in a nested bun so a
+    // regression crashes only the inner process, never this suite.
+    const dir = mkdtempSync(join(tmpdir(), "rg-spawn-epipe-"));
+    const stdinFile = join(dir, "big-prompt");
+    // Far beyond the ~64 KiB pipe buffer so writes are still in flight at exit.
+    writeFileSync(stdinFile, Buffer.alloc(5 * 1024 * 1024, 120));
+    const spawnPath = join(process.cwd(), "src/utils/spawn.ts");
+    const inner = [
+      `import { spawnSafely } from ${JSON.stringify(spawnPath)};`,
+      `const res = await spawnSafely({ command: "true", args: [],`,
+      ` stdinFile: ${JSON.stringify(stdinFile)},`,
+      ` stdoutFile: ${JSON.stringify(join(dir, "io"))}, stderrFile: ${JSON.stringify(join(dir, "ie"))},`,
+      " timeoutMs: 30_000 });",
+      // A late EPIPE can fire AFTER the child's exit already resolved the promise —
+      // hold the inner process open briefly so that path is exercised too.
+      "await new Promise((r) => setTimeout(r, 500));",
+      `process.stdout.write("INNER_DONE:" + res.exitCode);`,
+    ].join("");
+    const res = await spawnSafely({
+      command: process.execPath,
+      args: ["-e", inner],
+      stdoutFile: join(dir, "oo"),
+      stderrFile: join(dir, "oe"),
+      timeoutMs: 15_000,
+    });
+    // Without the child.stdin error swallow the inner bun dies on the unhandled
+    // EPIPE (exit 1, EPIPE trace on stderr) — stdout may still flush INNER_DONE
+    // on the way down, so the exit code and stderr are the load-bearing checks.
+    expect(readFileSync(join(dir, "oo"), "utf8")).toContain("INNER_DONE:0");
+    expect(readFileSync(join(dir, "oe"), "utf8")).not.toContain("EPIPE");
+    expect(res.exitCode).toBe(0);
   });
 
   it("caps the captured stdout at maxOutputBytes and flags truncation (F-4, no OOM)", async () => {

@@ -199,11 +199,16 @@ export async function spawnSafely(input: SpawnInput): Promise<SpawnResult> {
     }
     const out = createWriteStream(input.stdoutFile);
     const err = createWriteStream(input.stderrFile);
-    // Swallow stream errors (e.g. EPIPE when piping stdin to a SIGKILLed child,
-    // or a write failure on the capture files). Without these listeners an
-    // 'error' event would be unhandled and crash the whole gate process; the
-    // child 'exit'/'error' handlers below own the actual result/rejection.
+    // Swallow stream errors (a read failure on the stdin payload, a write failure
+    // on the capture files). Without these listeners an 'error' event would be
+    // unhandled and crash the whole gate process; the child 'exit'/'error'
+    // handlers below own the actual result/rejection. EPIPE from a child that
+    // exits before draining a large piped prompt (quota banner + exit, auth
+    // error, watchdog SIGKILL) surfaces on the DESTINATION stream — child.stdin,
+    // NOT stdinStream — so it needs its own swallow or the Stop hook dies
+    // mid-review and the turn ends un-reviewed (fail-open).
     stdinStream?.on("error", () => {});
+    child.stdin.on("error", () => {});
     out.on("error", () => {});
     err.on("error", () => {});
     let lastOutputAt = Date.now();
