@@ -21,6 +21,15 @@ jobs:
       - name: Install Linux sandbox runtime
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
+      # Ubuntu 24.04's AppArmor policy blocks unprivileged user namespaces even
+      # on GitHub's disposable runner. Open only that runner-local switch so the
+      # following probe and bwrap-real integration test exercise real isolation.
+      - name: Allow bubblewrap user namespaces on the CI runner
+        run: |
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Prove bubblewrap namespaces work
         run: bwrap --unshare-user --unshare-pid --ro-bind / / --dev /dev --proc /proc -- true
 
