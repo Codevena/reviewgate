@@ -1,8 +1,9 @@
 {
   "name": "reviewgate",
   "version": "0.1.0-alpha.10",
-  "description": "Multi-agent code review gate for Claude Code's agent loop — blocks the agent from ending its turn until an independent LLM reviewer panel signs off.",
+  "description": "Independent code-review control loop for Claude Code and Codex — verifies diffs, requires explicit finding outcomes, and records honest defer/escalation states.",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "license": "MIT",
   "author": "Markus Wiesecke (https://github.com/Codevena)",
   "homepage": "https://github.com/Codevena/reviewgate#readme",

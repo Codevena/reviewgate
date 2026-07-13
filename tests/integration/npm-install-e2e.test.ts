@@ -51,6 +51,11 @@ describe.if(process.env.RG_E2E === "1" && hasNpm && supported)("npm install end-
         overrides: { [HOST_PKG]: `file:${join(stage, platTgz)}` },
       }),
     );
+    // A real consumer does not review installed dependencies or Reviewgate's
+    // generated runtime directory. Keeping those out of Git also makes the final
+    // shim assertion exercise the unchanged-tree fast path instead of launching
+    // real reviewer CLIs against node_modules.
+    writeFileSync(join(proj, ".gitignore"), "node_modules/\n.reviewgate/\n");
     execFileSync("npm", ["install", "--no-audit", "--no-fund", "--loglevel=error"], {
       cwd: proj,
       stdio: "inherit",
@@ -66,15 +71,45 @@ describe.if(process.env.RG_E2E === "1" && hasNpm && supported)("npm install end-
 
     // 4. `reviewgate init` in a git repo bakes the node_modules platform-binary path.
     execFileSync("git", ["init", "-q"], { cwd: proj });
-    execFileSync(join(proj, "node_modules", ".bin", "reviewgate"), ["init"], {
-      cwd: proj,
-      stdio: "inherit",
-    });
+    execFileSync(
+      join(proj, "node_modules", ".bin", "reviewgate"),
+      ["init", "--quick", "--host", "both", "--skip-doctor"],
+      {
+        cwd: proj,
+        stdio: "inherit",
+      },
+    );
     const gateShim = readFileSync(join(proj, ".reviewgate", "bin", "gate"), "utf8");
     // init bakes process.execPath which the OS may canonicalise (e.g. macOS /var/folders →
     // /private/var/folders via the Seatbelt symlink). Use realpathSync so the assertion
     // works on both macOS (symlinked tmpdir) and Linux (no symlink, no-op).
     expect(gateShim).toContain(`RG_BIN='${realpathSync(platBin)}'`);
+    const policyStatus = execFileSync(
+      join(proj, "node_modules", ".bin", "reviewgate"),
+      ["config", "status"],
+      { cwd: proj, encoding: "utf8" },
+    );
+    expect(policyStatus).toContain("Gate policy: APPROVED");
+    const codexHooks = JSON.parse(readFileSync(join(proj, ".codex", "hooks.json"), "utf8")) as {
+      hooks?: Record<string, unknown>;
+    };
+    expect(codexHooks.hooks?.Stop).toBeDefined();
+    expect(existsSync(join(proj, ".claude", "settings.json"))).toBe(true);
+
+    // Establish the normal post-install baseline. Without this, the smoke would
+    // ask live reviewer providers to inspect package.json and the generated
+    // config, which tests provider availability rather than package wiring.
+    execFileSync("git", ["add", "--all"], { cwd: proj });
+    execFileSync("git", ["commit", "-q", "-m", "test baseline"], {
+      cwd: proj,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Reviewgate Test",
+        GIT_AUTHOR_EMAIL: "reviewgate@example.invalid",
+        GIT_COMMITTER_NAME: "Reviewgate Test",
+        GIT_COMMITTER_EMAIL: "reviewgate@example.invalid",
+      },
+    });
 
     // 5. The baked gate shim execs the binary (no 127, no fail-closed "not on PATH" message).
     const gate = spawnSync(join(proj, ".reviewgate", "bin", "gate"), [], {
