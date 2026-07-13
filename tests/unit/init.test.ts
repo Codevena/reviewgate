@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hooksInstalled, runInit } from "../../src/cli/commands/init.ts";
 import { loadConfig } from "../../src/config/loader.ts";
+import { controlPlaneStatePath } from "../../src/utils/paths.ts";
 
 function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-init-"));
@@ -140,6 +141,15 @@ describe("runInit", () => {
     const s = JSON.parse(readFileSync(join(repo, ".claude", "settings.json"), "utf8"));
     expect(s.hooks.Stop.length).toBe(1);
     expect(s.hooks.PostToolUse.length).toBe(1);
+  });
+
+  it("an already-installed gate never re-baselines a deleted control-plane state through init", async () => {
+    const repo = tmp();
+    await runInit({ repoRoot: repo, mode: "agent-loop" });
+    rmSync(controlPlaneStatePath(repo), { force: true });
+    await expect(runInit({ repoRoot: repo, mode: "agent-loop" })).rejects.toThrow(
+      /config approve.*interactive terminal/i,
+    );
   });
 
   it("rejects an invalid --mode with a clean, user-facing message (no internal 'M1' jargon)", async () => {

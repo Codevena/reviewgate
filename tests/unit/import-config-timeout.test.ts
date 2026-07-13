@@ -1,9 +1,8 @@
 // tests/unit/import-config-timeout.test.ts
-// F-008: importConfigDefault runs on the gate hot path (Stop hook). A config module
-// that THROWS must reject (caller falls back to defaults); a config with a hanging
-// top-level await must be bounded by a timeout (never hang the gate forever).
+// Config is data-only: executable TypeScript is rejected by the literal parser
+// before any top-level code can run or wedge the Stop hook.
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { importConfigDefault } from "../../src/config/import-config.ts";
@@ -23,10 +22,11 @@ describe("importConfigDefault hardening", () => {
     expect(def.providers).toBeDefined();
   });
 
-  it("rejects (does not hang) on a config whose top-level code throws", async () => {
+  it("rejects executable top-level code without running it", async () => {
+    const marker = join(mkdtempSync(join(tmpdir(), "rg-cfg-marker-")), "executed");
     const p = tmpFile(
       "throws.config.ts",
-      "throw new Error('boom from user config'); export default {};",
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "owned"); export default {};`,
     );
     let err: Error | undefined;
     try {
@@ -35,9 +35,10 @@ describe("importConfigDefault hardening", () => {
       err = e as Error;
     }
     expect(err).toBeInstanceOf(Error);
+    expect(existsSync(marker)).toBe(false);
   });
 
-  it("enforces a timeout on a config with a never-resolving top-level await", async () => {
+  it("rejects a never-resolving top-level await immediately instead of executing it", async () => {
     const p = tmpFile("hang.config.ts", "await new Promise(() => {}); export default {};");
     const start = Date.now();
     let err: Error | undefined;
@@ -47,8 +48,12 @@ describe("importConfigDefault hardening", () => {
       err = e as Error;
     }
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message ?? "").toMatch(/timeout/i);
-    // Must have returned via the timeout, not hung.
-    expect(Date.now() - start).toBeLessThan(5_000);
+    expect(err?.message ?? "").toMatch(/expected `export`|executable expression/i);
+    expect(Date.now() - start).toBeLessThan(1_000);
+  });
+
+  it("rejects expressions inside an otherwise valid object", async () => {
+    const p = tmpFile("env.config.ts", "export default { model: process.env.SECRET }; ");
+    await expect(importConfigDefault(p)).rejects.toThrow(/executable expression/i);
   });
 });

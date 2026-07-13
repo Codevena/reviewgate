@@ -1,10 +1,13 @@
 // src/cli/index.ts
 import { defineCommand, runMain } from "citty";
+import { controlPlaneStatus } from "../config/control-plane.ts";
+import type { AgentHostSelection } from "../hosts/hooks.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
 import { runBenchMatrix, runBenchReport, runBenchRun } from "./commands/bench.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
+import { formatControlPlaneStatus, runConfigApprove, runConfigStatus } from "./commands/config.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import {
   runFpAudit,
@@ -22,7 +25,7 @@ import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
-import { runSetup, setupTip } from "./commands/setup.ts";
+import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
 import { readHookStdin } from "./hook-stdin.ts";
@@ -35,33 +38,67 @@ function failArg(message: string): never {
 }
 
 const init = defineCommand({
-  meta: { name: "init", description: "Install Reviewgate hooks into .claude/settings.json" },
-  args: { mode: { type: "string", default: "agent-loop" } },
+  meta: {
+    name: "init",
+    description: "Complete first-run setup: policy, agent hosts, hooks, LKG and health check",
+  },
+  args: {
+    mode: { type: "string", default: "agent-loop" },
+    host: {
+      type: "string",
+      description: "Agent host: claude, codex, or both (interactive default: prompt)",
+    },
+    quick: {
+      type: "boolean",
+      description: "Use the recommended policy preset without interactive policy questions",
+    },
+    "hooks-only": {
+      type: "boolean",
+      description: "Repair/reinstall host hooks without changing configuration",
+    },
+    "skip-doctor": {
+      type: "boolean",
+      description: "Skip the final health check",
+    },
+  },
   async run({ args }) {
-    const { bakedBin, prePushHook } = await runInit({
-      repoRoot: process.cwd(),
-      mode: args.mode as "agent-loop",
-    });
-    process.stdout.write("Reviewgate installed.\n");
-    process.stdout.write(`${prePushHook.installed ? "✔" : "ℹ"} pre-push: ${prePushHook.note}\n`);
-    // The #1 first-run failure is the gate hook not finding the `reviewgate`
-    // binary (silent no-op gate). Surface exactly what was wired + next steps.
-    if (bakedBin) {
-      process.stdout.write(`Hooks pinned to: ${bakedBin}\n`);
-    } else {
-      process.stdout.write(
-        "⚠ Could not pin an absolute binary path — the hooks rely on `reviewgate` being on PATH.\n" +
-          "  Ensure it is (e.g. symlink dist/reviewgate into ~/.local/bin), or re-run `init` via the installed binary.\n",
-      );
+    const rawHost = typeof args.host === "string" ? args.host : undefined;
+    if (rawHost && rawHost !== "claude" && rawHost !== "codex" && rawHost !== "both") {
+      failArg(`invalid --host "${rawHost}": expected claude, codex, or both`);
     }
-    process.stdout.write(
-      "\nNext steps:\n" +
-        "  1. Log into a reviewer CLI (e.g. `codex login`) — reviewers are $0 within your subscription.\n" +
-        "  2. Run `reviewgate doctor` to verify the binary, hooks, and providers.\n" +
-        "  3. Edit a file in Claude Code and end your turn — the gate reviews the diff.\n",
+    const host = rawHost as AgentHostSelection | undefined;
+    if (args["hooks-only"] === true) {
+      const result = await runInit({
+        repoRoot: process.cwd(),
+        mode: args.mode as "agent-loop",
+        host: host ?? "both",
+      });
+      process.stdout.write(
+        `Reviewgate hooks installed for ${result.installedHosts.join(" + ")}.\n` +
+          `${result.prePushHook.installed ? "✔" : "ℹ"} pre-push: ${result.prePushHook.note}\n`,
+      );
+      for (const warning of result.warnings) process.stdout.write(`⚠ ${warning}\n`);
+      if (result.installedHosts.includes("codex")) {
+        process.stdout.write(
+          "Codex activation: start or restart Codex in this repo, open `/hooks`, inspect SessionStart/PostToolUse/Stop, and trust their exact current hash. Installation alone does not activate new project hooks.\n",
+        );
+      }
+      return;
+    }
+
+    const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    process.exit(
+      await runSetup({
+        repoRoot: process.cwd(),
+        install: true,
+        projectOnly: true,
+        commandName: "reviewgate init",
+        quick: args.quick === true || !interactive,
+        keepExistingOnQuick: !interactive,
+        skipDoctor: args["skip-doctor"] === true,
+        ...(host ? { host } : {}),
+      }),
     );
-    const tip = setupTip(Boolean(process.stdout.isTTY));
-    if (tip) process.stdout.write(`${tip}\n`);
   },
 });
 
@@ -131,6 +168,61 @@ const doctor = defineCommand({
   async run() {
     const exitCode = await runDoctor({ repoRoot: process.cwd() });
     process.exit(exitCode);
+  },
+});
+
+const config = defineCommand({
+  meta: { name: "config", description: "Inspect and approve the gate policy control plane" },
+  subCommands: {
+    status: defineCommand({
+      meta: {
+        name: "status",
+        description: "Show approved and pending gate-policy fingerprints",
+      },
+      async run() {
+        const result = await runConfigStatus(process.cwd());
+        process.stdout.write(result.stdout);
+        process.exit(result.exitCode);
+      },
+    }),
+    approve: defineCommand({
+      meta: {
+        name: "approve",
+        description: "Explicitly approve a policy candidate after its last-known-good review",
+      },
+      async run() {
+        // No --yes escape hatch: this forces an interactive checkpoint on the
+        // normal Claude Code Bash path. It is intentionally procedural, not a
+        // cryptographic identity boundary against same-user shell/state access;
+        // SECURITY.md documents that limit explicitly.
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          process.stderr.write(
+            "Error: policy approval requires a real interactive terminal (TTY); no non-interactive override exists.\n",
+          );
+          process.exit(1);
+        }
+        const status = await controlPlaneStatus(process.cwd());
+        process.stdout.write(`${formatControlPlaneStatus(status)}\n`);
+        if (!status.challenge) {
+          process.stdout.write(
+            status.state?.pending
+              ? "This candidate is not eligible for human approval yet; follow the Next step above.\n"
+              : "No policy change requires approval.\n",
+          );
+          process.exit(0);
+        }
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          const answer = await rl.question(`Type exactly \"${status.challenge}\" to approve: `);
+          const result = await runConfigApprove(process.cwd(), answer.trim());
+          process.stdout.write(result.stdout);
+          process.exit(result.exitCode);
+        } finally {
+          rl.close();
+        }
+      },
+    }),
   },
 });
 
@@ -407,14 +499,33 @@ const report = defineCommand({
 });
 
 const setup = defineCommand({
-  meta: { name: "setup", description: "Interactive configuration wizard" },
-  args: { global: { type: "boolean" }, print: { type: "boolean" } },
+  meta: {
+    name: "setup",
+    description: "Alias for the interactive init wizard; --global remains config-only",
+  },
+  args: {
+    global: { type: "boolean" },
+    print: { type: "boolean" },
+    host: { type: "string", description: "Agent host: claude, codex, or both" },
+    quick: { type: "boolean" },
+    "skip-doctor": { type: "boolean" },
+  },
   async run({ args }) {
+    const rawHost = typeof args.host === "string" ? args.host : undefined;
+    if (rawHost && rawHost !== "claude" && rawHost !== "codex" && rawHost !== "both") {
+      failArg(`invalid --host "${rawHost}": expected claude, codex, or both`);
+    }
     process.exit(
       await runSetup({
         repoRoot: process.cwd(),
         global: args.global === true,
         print: args.print === true,
+        install: args.global !== true && args.print !== true,
+        projectOnly: args.global !== true,
+        commandName: "reviewgate setup",
+        quick: args.quick === true,
+        skipDoctor: args["skip-doctor"] === true,
+        ...(rawHost ? { host: rawHost as AgentHostSelection } : {}),
       }),
     );
   },
@@ -643,7 +754,7 @@ const main = defineCommand({
   meta: {
     name: "reviewgate",
     version: RG_VERSION,
-    description: "Heterogeneous LLM code-review gate that runs inside Claude Code's agent loop",
+    description: "Heterogeneous LLM code-review gate for Claude Code and Codex agent loops",
   },
   subCommands: {
     init,
@@ -652,6 +763,7 @@ const main = defineCommand({
     "review-plan": reviewPlan,
     doctor,
     reset,
+    config,
     audit,
     brain,
     lore,

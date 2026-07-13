@@ -10,28 +10,24 @@ npm-dist
 *.tsbuildinfo
 
 # Reviewgate runtime artifacts (we are reviewgate but still want these gitignored in our own repo)
-.reviewgate/audit/
-.reviewgate/cassettes/
-!.reviewgate/cassettes/golden/
-.reviewgate/reports/
-.reviewgate/pending.*
 .reviewgate/plan-review.*
-.reviewgate/decisions/
-.reviewgate/state.json
-.reviewgate/research.md
-.reviewgate/dirty.flag
-.reviewgate/ESCALATION.md
-.reviewgate/.lock
-.reviewgate/cache/
 
-# Claude Code local runtime state (session/pid locks, scheduler) — never commit
+# Agent-host local runtime state (session/pid locks, scheduler) — never commit
 .claude/scheduled_tasks.lock
 .claude/*.lock
-# Reviewgate's OWN hook installation here is kept LOCAL (not committed) — so the
-# untracked .claude/settings.json must not enter the reviewed diff as a "new file"
-# and re-trigger the self-machinery "repo-local hooks = RCE" wolf-cry every cycle.
+# Reviewgate's OWN hook installation here is checkout-local (not committed).
+# Codex hooks contain an init-time fallback root and are hash-trusted per checkout;
+# every clone/worktree runs `reviewgate init` and receives its own definition.
+# Keeping both host files local also prevents the self-review machinery from
+# repeatedly treating its own generated hook commands as a new RCE surface.
 .claude/settings.json
 .claude/settings.local.json
+/.codex/hooks.json
+
+# Dogfood shims and Brain state are generated local state in Reviewgate's own
+# checkout. Product source/templates and committed Lore remain tracked normally.
+/.reviewgate/bin/
+/.reviewgate/brain/
 
 # Spike artifacts
 /tmp/reviewgate-spike-*
@@ -45,11 +41,33 @@ npm-dist
 
 # Local secrets (never commit)
 .env
-# Reviewgate (auto-added; edit reviewgate.config.ts to override)
-.reviewgate/brain/proposals/
-.reviewgate/brain/snapshots/
-# Antigravity CLI (agy) working-tree artifact
-.antigravitycli
 
 # Machine-local cache (absolute paths + UUIDs; not portable project state) — never commit
 cache/
+# Reviewgate (auto-added; edit reviewgate.config.ts to override)
+# Un-anchored (**/) so nested .reviewgate/ dirs (e.g. backend/.reviewgate/) are covered too.
+**/.reviewgate/audit/
+**/.reviewgate/cassettes/*
+!**/.reviewgate/cassettes/golden/
+**/.reviewgate/reports/
+**/.reviewgate/pending.*
+**/.reviewgate/plan-review.*
+**/.reviewgate/decisions/
+**/.reviewgate/state.json
+**/.reviewgate/control-plane.json
+**/.reviewgate/control-plane.flag
+**/.reviewgate/POLICY_CHANGE.md
+**/.reviewgate/.control-plane.lock
+**/.reviewgate/research.md
+**/.reviewgate/dirty.flag
+**/.reviewgate/sessions/
+**/.reviewgate/ESCALATION.md
+**/.reviewgate/.lock
+**/.reviewgate/cache/
+**/.reviewgate/learnings/
+**/.reviewgate/reputation.json
+**/.reviewgate/quota-cooldowns.json
+**/.reviewgate/brain/proposals/
+**/.reviewgate/brain/snapshots/
+# Antigravity CLI (agy) working-tree artifact
+.antigravitycli

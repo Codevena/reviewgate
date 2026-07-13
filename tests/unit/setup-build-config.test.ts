@@ -167,6 +167,31 @@ describe("buildCustomConfig", () => {
     expect(cfg.phases.contextDocs).toBeNull();
   });
 
+  it("maps first-run safety and completion choices", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [{ provider: "codex", persona: "security", model: "" }],
+        critic: null,
+        brain: null,
+        fpLedger: true,
+        contextDocs: false,
+        reputation: true,
+        agentLessons: true,
+        lore: false,
+        sandboxMode: "strict",
+        softPassPolicy: "block",
+        acknowledgePass: true,
+        desktopNotifications: true,
+        prePushWarn: false,
+      }) as Parameters<typeof defineConfig>[0],
+    );
+    expect(cfg.sandbox.mode).toBe("strict");
+    expect(cfg.loop.softPassPolicy).toBe("block");
+    expect(cfg.loop.acknowledgePass).toBe(true);
+    expect(cfg.notify.desktop).toBe(true);
+    expect(cfg.loop.prePushWarn).toBe(false);
+  });
+
   it("emits the curator model in phases.brain.curator.model", () => {
     const partial = buildCustomConfig({
       reviewers: [{ provider: "codex", persona: "security", model: "gpt-5.5" }],

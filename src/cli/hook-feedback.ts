@@ -1,6 +1,6 @@
 // src/cli/hook-feedback.ts
 // A small, human-facing confirmation for `reviewgate gate` hooks that a person may
-// run by hand. When Claude Code invokes a hook the output is piped (non-TTY) and
+// run by hand. When Claude Code or Codex invokes a hook the output is piped (non-TTY) and
 // must stay silent so it never pollutes the hook protocol — so a message is only
 // produced when stdout is an interactive terminal. Currently only `reset` (which
 // otherwise exits silently) gets a confirmation; `stop`/`trigger` have their own

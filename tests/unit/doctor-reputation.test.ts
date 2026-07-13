@@ -38,6 +38,8 @@ describe("reputationCheck", () => {
     expect(c?.status).toBe("warn");
     expect(c?.detail).toContain("gemini:security");
     expect(c?.detail).toContain("demoting");
+    expect(c?.hint).toContain("not a provider outage or login failure");
+    expect(c?.hint).toContain("reviewgate learn status");
   });
 
   it("flags a quarantined reviewer with ⛔ when quarantine is enabled", async () => {

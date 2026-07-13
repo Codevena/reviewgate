@@ -1,15 +1,19 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bootstrapControlPlane } from "../../config/control-plane.ts";
+import {
+  type AgentHostSelection,
+  anyHooksInstalled,
+  installedHosts as detectInstalledHosts,
+  hooksInstalled,
+  hostsForSelection,
+  installHostHookDocument,
+  readHookDocument,
+} from "../../hosts/hooks.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
+import { controlPlaneStatePath } from "../../utils/paths.ts";
 
 // POSIX single-quote escaping for the binary path interpolated into the shim's
 // `RG_BIN='<here>'`. The path comes from process.execPath, which can sit at an
@@ -66,53 +70,6 @@ export function writeShims(binDir: string, tplDir: string, bakedBin: string): vo
   }
 }
 
-const HOOKS_TEMPLATE = {
-  PostToolUse: [
-    {
-      matcher: "Edit|Write|MultiEdit|NotebookEdit",
-      hooks: [
-        {
-          type: "command",
-          // Quote the path: CLAUDE_PROJECT_DIR may contain spaces, and an unquoted
-          // ${CLAUDE_PROJECT_DIR}/... word-splits in the shell and fails the hook.
-          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger"',
-          timeout: 5,
-          async: true,
-          statusMessage: "Reviewgate: analyzing…",
-        },
-      ],
-    },
-  ],
-  Stop: [
-    {
-      matcher: "*",
-      hooks: [
-        {
-          type: "command",
-          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
-          // 120s setup + 1800s runTimeoutMs + 30s settle = 1950s < 2400s
-          // (fail-open invariant, config/budgets.ts). Raise/lower together
-          // with loop.runTimeoutMs.
-          timeout: 2400,
-        },
-      ],
-    },
-  ],
-  SessionStart: [
-    {
-      hooks: [
-        {
-          type: "command",
-          command: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset"',
-          // Bounded: `reset` is fast + local, but a missing timeout lets a wedged
-          // reset stall session start indefinitely. 30s is generous headroom.
-          timeout: 30,
-        },
-      ],
-    },
-  ],
-};
-
 // Patterns are UN-ANCHORED (leading `**/`) so they also cover NESTED .reviewgate/
 // dirs (e.g. backend/.reviewgate/) — a root-anchored `.reviewgate/...` would only match
 // the repo-root copy and leak nested runtime state into commits (field report 2026-06-21).
@@ -133,6 +90,10 @@ const GITIGNORE_LINES = [
   "**/.reviewgate/plan-review.*",
   "**/.reviewgate/decisions/",
   "**/.reviewgate/state.json",
+  "**/.reviewgate/control-plane.json",
+  "**/.reviewgate/control-plane.flag",
+  "**/.reviewgate/POLICY_CHANGE.md",
+  "**/.reviewgate/.control-plane.lock",
   "**/.reviewgate/research.md",
   "**/.reviewgate/dirty.flag",
   "**/.reviewgate/sessions/",
@@ -162,6 +123,10 @@ const OLD_GITIGNORE_LINES = [
   ".reviewgate/pending.*",
   ".reviewgate/decisions/",
   ".reviewgate/state.json",
+  ".reviewgate/control-plane.json",
+  ".reviewgate/control-plane.flag",
+  ".reviewgate/POLICY_CHANGE.md",
+  ".reviewgate/.control-plane.lock",
   ".reviewgate/research.md",
   ".reviewgate/dirty.flag",
   ".reviewgate/ESCALATION.md",
@@ -174,6 +139,10 @@ const OLD_GITIGNORE_LINES = [
 export interface InitInput {
   repoRoot: string;
   mode: "agent-loop";
+  /** Agent host(s) whose repository-local lifecycle hooks should be installed.
+   * Defaults to Claude for backwards compatibility of the programmatic API;
+   * the user-facing `reviewgate init` wizard recommends both. */
+  host?: AgentHostSelection;
 }
 
 const GIT_HOOK_MARKER = "Reviewgate-managed git pre-push hook";
@@ -230,36 +199,47 @@ export function installGitPrePushHook(
   return { installed: true, note: `installed warn-only git pre-push hook → ${hookPath}` };
 }
 
-// True when the Reviewgate hooks are actually wired into .claude/settings.json
-// (detected by a hook command pointing at .reviewgate/bin/). `setup` writes only
-// the config; the gate is not armed until `init` installs these hooks — so setup
-// uses this to offer arming the gate at the end.
-export function hooksInstalled(repoRoot: string): boolean {
-  const settingsPath = join(repoRoot, ".claude", "settings.json");
-  if (!existsSync(settingsPath)) return false;
-  try {
-    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
-    };
-    const groups = settings.hooks ? Object.values(settings.hooks) : [];
-    return groups.some((entries) =>
-      (entries ?? []).some((e) =>
-        (e.hooks ?? []).some(
-          (c) => typeof c.command === "string" && c.command.includes(".reviewgate/bin/"),
-        ),
-      ),
-    );
-  } catch {
-    return false;
-  }
-}
+// Compatibility re-export for existing callers/tests. New code can query a
+// specific host through the second parameter or use anyHooksInstalled.
+export { anyHooksInstalled, hooksInstalled };
 
-export async function runInit(
-  input: InitInput,
-): Promise<{ bakedBin: string; prePushHook: { installed: boolean; note: string } }> {
+export async function runInit(input: InitInput): Promise<{
+  bakedBin: string;
+  prePushHook: { installed: boolean; note: string };
+  installedHosts: Array<"claude" | "codex">;
+  hookPaths: string[];
+  warnings: string[];
+}> {
   if (input.mode !== "agent-loop") {
     throw new Error(`invalid --mode "${input.mode}": the only supported value is "agent-loop"`);
   }
+  const selectedHosts = hostsForSelection(input.host ?? "claude");
+  const gateWasAlreadyInstalled = anyHooksInstalled(input.repoRoot);
+  const warnings: string[] = [];
+  if (selectedHosts.includes("codex")) {
+    const codexToml = join(input.repoRoot, ".codex", "config.toml");
+    if (existsSync(codexToml)) {
+      try {
+        if (/^\s*\[+hooks(?:[.\]])/m.test(readFileSync(codexToml, "utf8"))) {
+          warnings.push(
+            "Codex also has inline [hooks] in .codex/config.toml. Codex merges those with .codex/hooks.json and warns at startup; Reviewgate preserved them. Prefer one hook representation per project after reviewing the existing TOML hooks.",
+          );
+        }
+      } catch {
+        warnings.push(
+          "Could not inspect .codex/config.toml for inline hooks; .codex/hooks.json was installed without changing the TOML file.",
+        );
+      }
+    }
+  }
+
+  // Validate every selected host document before mutating any host document.
+  // A malformed Codex file during `--host both` therefore cannot leave Claude
+  // updated while Codex aborts (or vice versa).
+  const hookDocuments = selectedHosts.map((host) => ({
+    host,
+    document: readHookDocument(input.repoRoot, host),
+  }));
 
   // 1. Create .reviewgate/bin/ and copy templates
   const binDir = join(input.repoRoot, ".reviewgate", "bin");
@@ -280,9 +260,9 @@ export async function runInit(
   if (!tplDir) throw new Error(`bin-templates not found in: ${candidates.join(", ")}`);
 
   // Bake the absolute path of the binary that ran `init` into each shim, so the
-  // hooks work even when `reviewgate` is NOT on the (non-login) PATH the Claude
-  // Code hook process inherits — the previous bare `exec reviewgate …` exited 127
-  // with empty stdout, which Claude Code reads as "allow stop" (a silent no-op
+  // hooks work even when `reviewgate` is NOT on the (non-login) PATH the agent
+  // hook process inherits — the previous bare `exec reviewgate …` exited 127
+  // with empty stdout, which a host can treat as successful (a silent no-op
   // gate). Only bake a real reviewgate binary: under `bun run dev` execPath is the
   // bun runtime, not a usable `reviewgate`, so leave it empty and let the shim
   // fall back to PATH (and, for the gate, FAIL CLOSED if nothing resolves).
@@ -290,50 +270,11 @@ export async function runInit(
   if (bakedWarning) console.error(`reviewgate init: WARNING — ${bakedWarning}`);
   writeShims(binDir, tplDir, bakedBin);
 
-  // 2. Merge hooks into .claude/settings.json
-  const settingsDir = join(input.repoRoot, ".claude");
-  if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
-  const settingsPath = join(settingsDir, "settings.json");
-  let settings: { hooks?: Record<string, unknown[]> } = {};
-  if (existsSync(settingsPath)) {
-    try {
-      settings = JSON.parse(readFileSync(settingsPath, "utf8")) as typeof settings;
-    } catch (err) {
-      // The file exists but is not valid JSON (a JSONC comment, a trailing comma,
-      // a half-saved file). Re-using `settings = {}` here and then writing it back
-      // would SILENTLY DESTROY the user's permissions/env/model/foreign hooks — we
-      // only know the 3 Reviewgate hooks, not the rest. Never overwrite: back the
-      // unparseable file up so it isn't lost, then ABORT with an actionable message
-      // telling the user to fix or remove settings.json and re-run init.
-      const backupPath = `${settingsPath}.bak`;
-      try {
-        renameSync(settingsPath, backupPath);
-      } catch {
-        /* best-effort: even if the backup move fails we still must not overwrite */
-      }
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Reviewgate init aborted: ${settingsPath} exists but is not valid JSON (${msg}). It has been backed up to ${backupPath} so nothing is lost. Fix or remove ${settingsPath} (restore from the .bak after correcting it), then re-run \`reviewgate init\`. Reviewgate refuses to overwrite it because doing so would destroy your other hooks/permissions/env.`,
-      );
-    }
-  }
-  settings.hooks = settings.hooks ?? {};
-  for (const event of ["PostToolUse", "Stop", "SessionStart"] as const) {
-    const desired = HOOKS_TEMPLATE[event];
-    const existing = (settings.hooks[event] ?? []) as Array<{
-      hooks?: Array<{ command?: string }>;
-    }>;
-    const filtered = existing.filter((entry) => {
-      const cmds = entry.hooks ?? [];
-      return !cmds.some(
-        (c) => typeof c.command === "string" && c.command.includes(".reviewgate/bin/"),
-      );
-    });
-    settings.hooks[event] = [...filtered, ...desired];
-  }
-  // Atomic (tmp+rename): an interrupted write can't truncate/corrupt settings.json
-  // (which would silently disarm every hook in the project, including foreign ones).
-  writeFileAtomic(settingsPath, JSON.stringify(settings, null, 2));
+  // 2. Merge the shared lifecycle semantics into every selected host's native
+  // repository-local hook document. Foreign hooks and non-hook settings survive.
+  const hookPaths = hookDocuments.map(({ host, document }) =>
+    installHostHookDocument(input.repoRoot, host, document),
+  );
 
   // 3. Reconcile .gitignore (idempotent migration, not blind append). The prior writer only
   // APPENDED, so a repo init'd before P9 keeps stale root-anchored lines — and the stale
@@ -351,15 +292,14 @@ export async function runInit(
     writeFileAtomic(giPath, out);
   }
 
-  // 4. Write a starter reviewgate.config.ts if none exists.
-  // A PLAIN default-export object (NOT `defineConfig` from a bare "reviewgate"
-  // import — that package isn't installed in your project and would fail to
-  // resolve, causing Reviewgate to silently fall back to defaults). Reviewgate
-  // deep-merges this object over its defaults and validates it.
+  // 4. Write a starter reviewgate.config.ts if none exists. Despite the historic
+  // extension this is a DATA-ONLY literal document: imports/expressions are not
+  // executed. Reviewgate deep-merges the object over defaults and validates it.
   const cfgPath = join(input.repoRoot, "reviewgate.config.ts");
   if (!existsSync(cfgPath)) {
     const starter = [
-      "// Reviewgate config. A plain object, deep-merged over defaults + validated.",
+      "// Reviewgate config. Data-only object, deep-merged over defaults + validated.",
+      "// Imports, function calls, spreads and environment expressions are rejected.",
       "// Uncomment / edit to enable more reviewers. Models & OAuth-vs-OpenRouter",
       "// are entirely your choice. Slugs: https://openrouter.ai/models",
       "export default {",
@@ -436,9 +376,31 @@ export async function runInit(
     writeFileSync(cfgPath, starter);
   }
 
+  // `init` is an explicit maintainer action and the starter above is generated
+  // by Reviewgate itself, so this safely establishes the first last-known-good
+  // snapshot. Re-running init never overwrites an existing baseline and never
+  // approves a pending policy change.
+  if (gateWasAlreadyInstalled && !existsSync(controlPlaneStatePath(input.repoRoot))) {
+    throw new Error(
+      "Reviewgate hooks were already installed but the last-known-good policy state is missing. Refusing to re-baseline through init; run `reviewgate config approve` from an interactive terminal.",
+    );
+  }
+  await bootstrapControlPlane({
+    cwd: input.repoRoot,
+    env: process.env as Record<string, string | undefined>,
+    home: homedir(),
+    approvedVia: "init",
+  });
+
   // 5. Install the warn-only git pre-push hook (Rec #3 deep half), delegating to the
   // .reviewgate/bin/pre-push shim written in step 1. Conservative + no-clobber; never blocks.
   const prePushHook = installGitPrePushHook(input.repoRoot, join(binDir, "pre-push"));
 
-  return { bakedBin, prePushHook };
+  return {
+    bakedBin,
+    prePushHook,
+    installedHosts: detectInstalledHosts(input.repoRoot),
+    hookPaths,
+    warnings,
+  };
 }

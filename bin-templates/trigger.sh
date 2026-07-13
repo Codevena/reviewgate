@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reviewgate PostToolUse hook driver — keep this script tiny.
+# Reviewgate PostToolUse hook driver for Claude Code and Codex — keep this script tiny.
 # Reviewgate-managed; do not edit by hand.
 set -u
 

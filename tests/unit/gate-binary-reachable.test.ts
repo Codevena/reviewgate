@@ -111,6 +111,13 @@ describe("gateBinaryReachableCheck (doctor)", () => {
     expect(c?.status).toBe("ok");
   });
 
+  it("checks the shared shim for a Codex-only installation", async () => {
+    const repo = tmpRepo();
+    await runInit({ repoRoot: repo, mode: "agent-loop", host: "codex" });
+    const c = gateBinaryReachableCheck(repo, (bin) => bin === "reviewgate");
+    expect(c?.status).toBe("ok");
+  });
+
   it("FAILS when neither a baked path nor PATH resolves (broken install)", async () => {
     const repo = tmpRepo();
     await runInit({ repoRoot: repo, mode: "agent-loop" });

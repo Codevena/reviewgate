@@ -5,8 +5,8 @@ set -u
 
 # Resolve the reviewgate binary: the absolute path `init` baked in (the binary
 # that ran init), else PATH. If NEITHER resolves, FAIL CLOSED — emit a block
-# decision rather than exiting 127 with empty stdout, which Claude Code reads as
-# "allow stop", silently turning the Stop gate into a no-op on every turn.
+# decision rather than exiting 127 with empty stdout, which an agent host can
+# treat as a successful hook, silently turning the Stop gate into a no-op.
 RG_BIN='__REVIEWGATE_BIN__'
 if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
@@ -17,8 +17,8 @@ if [ -z "$RG_BIN" ]; then
 fi
 # Run the gate (NOT `exec`): if RG_BIN resolves to a file that can't actually run on
 # this host (wrong arch → ENOEXEC → exit 126, bad interpreter, or vanished → 127),
-# `exec` would replace bash and die with EMPTY stdout — which Claude Code reads as
-# "allow stop", a silent fail-OPEN. Running it as a child lets us catch 126/127 and
+# `exec` would replace bash and die with EMPTY stdout — which an agent host may
+# treat as successful, a silent fail-OPEN. Running it as a child lets us catch 126/127 and
 # emit a fail-CLOSED block instead. Normal runs pass the gate's stdout + exit code through.
 "$RG_BIN" gate --hook stop
 rc=$?

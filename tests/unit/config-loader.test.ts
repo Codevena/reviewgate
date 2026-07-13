@@ -22,10 +22,9 @@ describe("loadConfig", () => {
 
   it("merges user-defined values on top of defaults", async () => {
     const file = writeConfig(`
-      import { defineConfig } from '${process.cwd()}/src/config/define-config.ts';
-      export default defineConfig({
+      export default {
         loop: { maxIterations: 5 },
-      });
+      };
     `);
     const cfg = await loadConfig(file);
     expect(cfg.loop.maxIterations).toBe(5);
@@ -35,12 +34,25 @@ describe("loadConfig", () => {
 
   it("rejects invalid config (schema violation)", async () => {
     const file = writeConfig(`
-      import { defineConfig } from '${process.cwd()}/src/config/define-config.ts';
-      export default defineConfig({
+      export default {
         loop: { maxIterations: -1 },
-      });
+      };
     `);
     await expect(loadConfig(file)).rejects.toThrow();
+  });
+
+  it("rejects unknown keys instead of silently stripping config typos", async () => {
+    const file = writeConfig(`
+      export default {
+        sandbox: { writablePath: ["tmp/"] },
+      };
+    `);
+    await expect(loadConfig(file)).rejects.toThrow(/unknown reviewgate config key.*writablePath/i);
+  });
+
+  it("rejects a non-object root literal", async () => {
+    const file = writeConfig("export default [];\n");
+    await expect(loadConfig(file)).rejects.toThrow(/default config object/i);
   });
 
   it("accepts a multi-reviewer panel with gemini + claude + openrouter", () => {

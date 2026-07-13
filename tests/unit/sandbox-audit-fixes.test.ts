@@ -11,6 +11,23 @@ import { buildMacosSbpl, globToSbplRegex } from "../../src/sandbox/sbpl.ts";
 
 // ── Finding 1: own-cred-under-deny overlap is dead-on-arrival ───────────────
 describe("buildSandboxProfile — own-cred / readDeny overlap (F: dead-on-arrival)", () => {
+  it("stock defaults never grant broad write access to .reviewgate control-plane state", () => {
+    expect(defaultConfig.sandbox.writablePaths).toEqual([]);
+    const p = buildSandboxProfile({
+      providerId: "codex",
+      mode: "strict",
+      workingDir: "/repo",
+      findingsPath: "/repo/.reviewgate/findings/codex.md",
+      tmpDir: "/tmp/rg-run-1",
+      writablePaths: defaultConfig.sandbox.writablePaths,
+      deniedReads: defaultConfig.sandbox.deniedReads,
+    });
+    expect(p.fs.writeAllow).not.toContain("/repo/.reviewgate/");
+    expect(p.fs.writeAllow).not.toContain("/repo/.reviewgate/state.json");
+    expect(p.fs.writeAllow).not.toContain("/repo/.reviewgate/control-plane.json");
+    expect(p.fs.writeAllow).toContain("/repo/.reviewgate/findings/codex.md");
+  });
+
   it("does NOT throw building an SBPL with the STOCK default config (no ~/.config deny over own-cred)", () => {
     // Reproduce the real call shape: feed the shipped default sandbox config in.
     // Pre-fix this threw `SBPL conflict … nested` because a "~/.config" deny nested

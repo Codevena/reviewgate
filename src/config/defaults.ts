@@ -312,7 +312,10 @@ export const defaultConfig = {
     // 'off' because network egress is NOT isolated on either platform and isolation
     // is opt-in — but strict is never silently unisolated.
     mode: "off" as const,
-    writablePaths: [".reviewgate/"],
+    // Findings/run-temp/own-credential targets are granted separately. Broad
+    // writes into Reviewgate's state, decisions, audit and memory are never a
+    // safe default for a reviewer subprocess.
+    writablePaths: [],
     // NOTE: `~/.config` is deliberately NOT denied here — each provider's own
     // credential dir lives under it (e.g. ~/.config/codex) and is added to
     // writeAllow for OAuth-token refresh; a `~/.config` read-deny would nest

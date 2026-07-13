@@ -124,7 +124,7 @@ export function buildSandboxProfile(input: BuildInput): SandboxProfile {
   const cfgGlobs = cfgDenies.filter(isGlobPattern);
   const cfgPaths = cfgDenies.filter((d) => !isGlobPattern(d));
 
-  // Relative writablePaths (default ".reviewgate/") are repo-relative — resolve them
+  // Relative writablePaths (explicit opt-in; default []) are repo-relative — resolve them
   // against the repo root (input.workingDir), NOT $HOME. Leaving them relative made
   // resolveForSandbox() in spawn.ts join them onto $HOME → a wrong write-allow target
   // plus a stray ~/.reviewgate dir. Absolute/~-prefixed entries pass through untouched

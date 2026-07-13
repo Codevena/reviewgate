@@ -483,24 +483,78 @@ export type ReviewgateConfig = z.infer<typeof ConfigSchema>;
 
 export type DeepPartial<T> = { [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K] };
 
+function defineOwn(target: object, key: PropertyKey, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 export function deepMerge<T>(base: T, override: DeepPartial<T>): T {
   const out = Array.isArray(base) ? [...(base as unknown[])] : { ...(base as object) };
   for (const k of Object.keys(override) as Array<keyof T>) {
     const v = override[k];
     if (v && typeof v === "object" && !Array.isArray(v)) {
-      const baseVal = (base as Record<string, unknown>)[k as string];
-      (out as Record<string, unknown>)[k as string] =
+      const baseVal = Object.prototype.hasOwnProperty.call(base, k)
+        ? (base as Record<string, unknown>)[k as string]
+        : undefined;
+      defineOwn(
+        out as object,
+        k,
         baseVal != null && typeof baseVal === "object"
           ? deepMerge(baseVal, v as DeepPartial<unknown>)
-          : v;
+          : v,
+      );
     } else if (v !== undefined) {
-      (out as Record<string, unknown>)[k as string] = v as unknown;
+      // Assignment to `__proto__` invokes Object.prototype's setter. Defining an
+      // own data property keeps even hostile literal keys inert until validation.
+      defineOwn(out as object, k, v);
     }
   }
   return out as T;
 }
 
+function collectStrippedKeys(
+  input: unknown,
+  parsed: unknown,
+  path = "",
+  out: string[] = [],
+): string[] {
+  if (Array.isArray(input)) {
+    if (!Array.isArray(parsed)) return out;
+    for (let i = 0; i < input.length; i++) {
+      collectStrippedKeys(input[i], parsed[i], `${path}[${i}]`, out);
+    }
+    return out;
+  }
+  if (!input || typeof input !== "object") return out;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+  const parsedRecord = parsed as Record<string, unknown>;
+  for (const key of Object.keys(input as Record<string, unknown>)) {
+    const value = (input as Record<string, unknown>)[key];
+    // Runtime callers can explicitly pass undefined for an optional field; the
+    // data-only config grammar cannot, so this does not hide config-file typos.
+    if (value === undefined) continue;
+    const childPath = path ? `${path}.${key}` : key;
+    if (!Object.prototype.hasOwnProperty.call(parsedRecord, key)) {
+      out.push(childPath);
+      continue;
+    }
+    collectStrippedKeys(value, parsedRecord[key], childPath, out);
+  }
+  return out;
+}
+
 export function defineConfig(user: DeepPartial<ReviewgateConfig>): ReviewgateConfig {
   const merged = deepMerge(defaultConfig as ReviewgateConfig, user);
-  return ConfigSchema.parse(merged);
+  const parsed = ConfigSchema.parse(merged);
+  const stripped = collectStrippedKeys(user, parsed);
+  if (stripped.length > 0) {
+    throw new Error(
+      `Unknown Reviewgate config key${stripped.length === 1 ? "" : "s"}: ${stripped.join(", ")}`,
+    );
+  }
+  return parsed;
 }

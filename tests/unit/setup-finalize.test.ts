@@ -8,7 +8,7 @@ import type { defineConfig } from "../../src/config/define-config.ts";
 
 describe("setupTip", () => {
   it("returns the tip only in a TTY", () => {
-    expect(setupTip(true)).toContain("reviewgate setup");
+    expect(setupTip(true)).toContain("reviewgate init");
     expect(setupTip(false)).toBeNull();
   });
 });

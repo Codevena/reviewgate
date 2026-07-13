@@ -14,6 +14,7 @@ describe("detectHostModel", () => {
       hookStdin: { session: { model: "claude-sonnet-4-6" } },
     });
     expect(got.tier).toBe("opus");
+    expect(got.agentHost).toBe("claude");
     expect(got.source).toBe("env:REVIEWGATE_HOST_MODEL");
   });
 
@@ -38,6 +39,15 @@ describe("detectHostModel", () => {
   it("falls back to assume-opus when nothing is known", () => {
     const got = detectHostModel({ env: {}, hookStdin: null });
     expect(got.tier).toBe("opus");
+    expect(got.source).toBe("fallback:assume-opus");
+  });
+
+  it("marks a native Codex hook without treating Codex's model as a Claude tier", () => {
+    const got = detectHostModel({
+      env: { REVIEWGATE_AGENT_HOST: "codex" },
+      hookStdin: null,
+    });
+    expect(got.agentHost).toBe("codex");
     expect(got.source).toBe("fallback:assume-opus");
   });
 

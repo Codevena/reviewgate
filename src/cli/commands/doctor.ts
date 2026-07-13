@@ -9,6 +9,7 @@ import {
   POST_ABORT_SETTLE_MS_DEFAULT,
   SETUP_BUDGET_MS_DEFAULT,
 } from "../../config/budgets.ts";
+import { controlPlaneStatus } from "../../config/control-plane.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
@@ -16,6 +17,7 @@ import { classifyEntry } from "../../core/lore/staleness.ts";
 import { loadLore } from "../../core/lore/store.ts";
 import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
 import { ReputationStore } from "../../core/reputation/store.ts";
+import { installedHosts } from "../../hosts/hooks.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
@@ -23,7 +25,7 @@ import { sandboxRuntimeAvailable } from "../../sandbox/availability.ts";
 import { checkSandboxHealth } from "../../sandbox/doctor-check.ts";
 import { worktreeInfo } from "../../utils/git.ts";
 import { detectHostModel } from "../../utils/host-model.ts";
-import { hooksInstalled } from "./init.ts";
+import { anyHooksInstalled } from "./init.ts";
 
 export interface Check {
   name: string;
@@ -40,6 +42,31 @@ export interface Check {
  */
 export function doctorExitCode(checks: Check[]): number {
   return checks.some((c) => c.status === "fail") ? 2 : 0;
+}
+
+export function agentHostHooksCheck(repoRoot: string): Check {
+  const hosts = installedHosts(repoRoot);
+  if (hosts.length === 0) {
+    return {
+      name: "agent host hooks",
+      status: "warn",
+      detail: "no Claude Code or Codex Reviewgate hooks found in this checkout",
+      hint: "Run `reviewgate init` (or `reviewgate init --hooks-only --host both`).",
+    };
+  }
+  if (hosts.includes("codex")) {
+    return {
+      name: "agent host hooks",
+      status: "warn",
+      detail: `${hosts.join(" + ")} installed; Codex activation is user-controlled and its per-hash trust state is not visible to Reviewgate`,
+      hint: "Start or restart Codex in this repo, open `/hooks`, inspect SessionStart/PostToolUse/Stop, and trust their exact current hash. Repeat only after the definitions change.",
+    };
+  }
+  return {
+    name: "agent host hooks",
+    status: "ok",
+    detail: "claude hooks installed",
+  };
 }
 
 // Resolves whether a provider can actually run. For CLI providers this probes the
@@ -298,7 +325,16 @@ export async function reputationCheck(
         `${r.reviewer} ${r.correct}✓/${r.wrong}✗ (trust ${r.trust.toFixed(2)})${r.demoting ? " ⚠ demoting" : ""}${r.quarantined ? " ⛔ quarantined" : ""}`,
     )
     .join(" · ");
-  return { name, status: demoting.length > 0 ? "warn" : "ok", detail };
+  return {
+    name,
+    status: demoting.length > 0 ? "warn" : "ok",
+    detail,
+    ...(demoting.length > 0
+      ? {
+          hint: "This is learned finding calibration, not a provider outage or login failure. Run `reviewgate learn status` to inspect the history.",
+        }
+      : {}),
+  };
 }
 
 // contextDocs works keyless (lower rate limit), so this is informational (always ok) — it just
@@ -354,29 +390,42 @@ export function fallbackChainCheck(
 }
 
 // The Stop-hook timeout MUST stay ABOVE the gate's own self-deadline
-// (loop.runTimeoutMs): if Claude Code kills the hook before the gate aborts
+// (loop.runTimeoutMs): if an agent host kills the hook before the gate aborts
 // itself, the turn ends NON-BLOCKING = un-reviewed (fail-open). So a too-LOW
 // Stop-hook timeout is the dangerous misconfig (the opposite of intuition — the
 // naive "lower it to shorten hangs" breaks the invariant). Also flags a
 // SessionStart hook with no timeout (a wedged reset stalls session start).
 // Returns null when the reviewgate Stop hook isn't installed (nothing to check).
 export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check | null {
-  const settingsPath = join(repoRoot, ".claude", "settings.json");
-  if (!existsSync(settingsPath)) return null;
-  let settings: {
-    hooks?: Record<string, Array<{ hooks?: Array<{ command?: string; timeout?: number }> }>>;
-  };
-  try {
-    settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  } catch {
-    return null;
+  const installed: Array<{
+    host: "claude" | "codex";
+    path: string;
+    stop: { timeout?: number };
+    reset?: { timeout?: number };
+  }> = [];
+  for (const file of [
+    { host: "claude" as const, path: join(repoRoot, ".claude", "settings.json") },
+    { host: "codex" as const, path: join(repoRoot, ".codex", "hooks.json") },
+  ]) {
+    if (!existsSync(file.path)) continue;
+    try {
+      const settings = JSON.parse(readFileSync(file.path, "utf8")) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string; timeout?: number }> }>>;
+      };
+      const groups = settings.hooks ?? {};
+      const findHook = (event: string, binSuffix: string) =>
+        (groups[event] ?? [])
+          .flatMap((g) => g.hooks ?? [])
+          .find((h) => h.command?.includes(binSuffix));
+      const stop = findHook("Stop", ".reviewgate/bin/gate");
+      const reset = findHook("SessionStart", ".reviewgate/bin/reset");
+      if (stop)
+        installed.push({ host: file.host, path: file.path, stop, ...(reset ? { reset } : {}) });
+    } catch {
+      /* malformed hook documents are handled by init; don't invent timeout data */
+    }
   }
-  const groups = settings.hooks ?? {};
-  const findHook = (event: string, binSuffix: string) =>
-    (groups[event] ?? []).flatMap((g) => g.hooks ?? []).find((h) => h.command?.includes(binSuffix));
-  const stop = findHook("Stop", ".reviewgate/bin/gate");
-  if (!stop) return null; // reviewgate Stop hook not installed → nothing to check
-  const reset = findHook("SessionStart", ".reviewgate/bin/reset");
+  if (installed.length === 0) return null;
 
   const runTimeoutS = Math.round(cfg.loop.runTimeoutMs / 1000);
   // The Stop-hook timeout must exceed runTimeoutMs by enough to cover everything
@@ -396,30 +445,40 @@ export function hookTimeoutCheck(repoRoot: string, cfg: ReviewgateConfig): Check
   const TEARDOWN_SLACK_S = 30;
   const recommendedStopS = runTimeoutS + MIN_SETUP_MARGIN_S + TEARDOWN_SLACK_S;
   const issues: string[] = [];
-  if (stop.timeout !== undefined && stop.timeout * 1000 <= cfg.loop.runTimeoutMs) {
-    issues.push(
-      `Stop-hook timeout (${stop.timeout}s) ≤ gate self-deadline loop.runTimeoutMs (${runTimeoutS}s) → the hook is killed mid-review (non-blocking) and a turn can end UN-reviewed (fail-open)`,
-    );
-  } else if (stop.timeout !== undefined && stop.timeout - runTimeoutS <= MIN_SETUP_MARGIN_S) {
-    issues.push(
-      `Stop-hook timeout (${stop.timeout}s) leaves only ${stop.timeout - runTimeoutS}s margin over loop.runTimeoutMs (${runTimeoutS}s) — at or under the ${MIN_SETUP_MARGIN_S}s needed for pre-deadline setup (git/state load) + post-abort settle. The gate can be OS-killed mid-run (fail-open)`,
-    );
-  }
-  if (reset && reset.timeout === undefined) {
-    issues.push("SessionStart hook has no timeout → a wedged reset can stall session start");
+  for (const hook of installed) {
+    const prefix = installed.length > 1 ? `${hook.host}: ` : "";
+    if (hook.stop.timeout === undefined) {
+      issues.push(`${prefix}Stop hook has no timeout`);
+    } else if (hook.stop.timeout * 1000 <= cfg.loop.runTimeoutMs) {
+      issues.push(
+        `${prefix}Stop-hook timeout (${hook.stop.timeout}s) ≤ gate self-deadline loop.runTimeoutMs (${runTimeoutS}s) → the hook is killed mid-review (non-blocking) and a turn can end UN-reviewed (fail-open)`,
+      );
+    } else if (
+      hook.stop.timeout !== undefined &&
+      hook.stop.timeout - runTimeoutS <= MIN_SETUP_MARGIN_S
+    ) {
+      issues.push(
+        `${prefix}Stop-hook timeout (${hook.stop.timeout}s) leaves only ${hook.stop.timeout - runTimeoutS}s margin over loop.runTimeoutMs (${runTimeoutS}s) — at or under the ${MIN_SETUP_MARGIN_S}s needed for pre-deadline setup (git/state load) + post-abort settle. The gate can be OS-killed mid-run (fail-open)`,
+      );
+    }
+    if (hook.reset && hook.reset.timeout === undefined) {
+      issues.push(
+        `${prefix}SessionStart hook has no timeout → a wedged reset can stall session start`,
+      );
+    }
   }
   if (issues.length === 0) {
     return {
       name: "hook timeouts",
       status: "ok",
-      detail: `Stop-hook timeout > loop.runTimeoutMs (${runTimeoutS}s); SessionStart bounded`,
+      detail: `${installed.map((hook) => hook.host).join(" + ")}: Stop-hook timeout > loop.runTimeoutMs (${runTimeoutS}s); SessionStart bounded`,
     };
   }
   return {
     name: "hook timeouts",
     status: "warn",
     detail: issues.join(" · "),
-    hint: `Set the Stop-hook timeout to ≥ ${recommendedStopS}s (loop.runTimeoutMs ${runTimeoutS}s + ${MIN_SETUP_MARGIN_S}s setup margin) in .claude/settings.json. To shorten hangs, lower BOTH together (e.g. runTimeoutMs 420s + Stop-hook timeout 540s), and give SessionStart a timeout (e.g. 30).`,
+    hint: `Set the Stop-hook timeout to ≥ ${recommendedStopS}s (loop.runTimeoutMs ${runTimeoutS}s + ${MIN_SETUP_MARGIN_S}s setup margin) in ${installed.map((hook) => hook.path.replace(`${repoRoot}/`, "")).join(" and ")}. To shorten hangs, lower BOTH together (e.g. runTimeoutMs 420s + Stop-hook timeout 540s), and give SessionStart a timeout (e.g. 30).`,
   };
 }
 
@@ -465,14 +524,14 @@ export function panelBudgetCheck(cfg: ReviewgateConfig): Check {
 
 // The single dependency the hooks rely on but that nothing else checked: can the
 // gate shim actually RESOLVE a runnable `reviewgate` binary? The shim runs under
-// the (often non-login) PATH the Claude Code hook process inherits; a bare
+// the (often non-login) PATH the agent-host hook process inherits; a bare
 // `exec reviewgate` that isn't on that PATH exits 127 with empty stdout, which
-// Claude Code reads as "allow stop" — a SILENT no-op gate. `init` now bakes an
+// the host may read as successful — a SILENT no-op gate. `init` now bakes an
 // absolute path into the shim and the shim fails closed; this verifies what the
 // installed shim will actually invoke. Returns null when the Stop hook isn't
 // wired. `runs` is injected for testability (prod probes the real binary).
 // Worktree blindness (P8, field report 2026-06-21): Reviewgate arms per-checkout, but a
-// git worktree shares only .git — it has NO .reviewgate/ and NO .claude/settings.json hooks,
+// git worktree shares only .git — it has NO .reviewgate/ or repo-local host hooks,
 // so the Stop gate never fires there and worktree work ends UN-reviewed (fail-open). The
 // main checkout's hooks do NOT propagate into a linked worktree. When `doctor` is run INSIDE
 // a linked worktree that lacks the reviewgate hooks, FAIL loudly — a silent-OK doctor here
@@ -480,7 +539,7 @@ export function panelBudgetCheck(cfg: ReviewgateConfig): Check {
 export async function worktreeGatedCheck(repoRoot: string): Promise<Check | null> {
   const info = await worktreeInfo(repoRoot);
   if (!info.isLinkedWorktree) return null;
-  if (hooksInstalled(repoRoot)) {
+  if (anyHooksInstalled(repoRoot)) {
     return {
       name: "worktree gating",
       status: "ok",
@@ -507,22 +566,7 @@ export function gateBinaryReachableCheck(
   },
 ): Check | null {
   const name = "gate binary reachable";
-  const settingsPath = join(repoRoot, ".claude", "settings.json");
-  if (!existsSync(settingsPath)) return null;
-  let installed = false;
-  try {
-    const s = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
-    };
-    installed = Object.values(s.hooks ?? {}).some((g) =>
-      (g ?? []).some((e) =>
-        (e.hooks ?? []).some((h) => h.command?.includes(".reviewgate/bin/gate")),
-      ),
-    );
-  } catch {
-    return null;
-  }
-  if (!installed) return null;
+  if (!anyHooksInstalled(repoRoot)) return null;
 
   const shimPath = join(repoRoot, ".reviewgate", "bin", "gate");
   const shimSrc = existsSync(shimPath) ? readFileSync(shimPath, "utf8") : "";
@@ -554,7 +598,7 @@ export function gateBinaryReachableCheck(
       name,
       status: "warn",
       detail:
-        "an OLD hook shim is installed (bare `exec reviewgate`): if `reviewgate` ever leaves the hook's PATH it exits 127 with empty stdout, which Claude Code reads as allow-stop (silent no-op gate)",
+        "an OLD hook shim is installed (bare `exec reviewgate`): if `reviewgate` ever leaves the hook's PATH it exits 127 with empty stdout, which the agent host may treat as successful (silent no-op gate)",
       hint: "Re-run `reviewgate init` to install the PATH-resilient, fail-closed shim (baked binary path + block-on-unresolved).",
     };
   }
@@ -631,6 +675,7 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
 
   checks.push(checkBinary("codex", "codex CLI"));
   checks.push(checkBinary("git", "git"));
+  checks.push(agentHostHooksCheck(input.repoRoot));
 
   const sb = await checkSandboxHealth();
   checks.push({
@@ -640,11 +685,55 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     ...(sb.remediation ? { hint: sb.remediation } : {}),
   });
 
+  try {
+    const policy = await controlPlaneStatus(input.repoRoot);
+    const pending = policy.state?.pending;
+    const missingBaselineIsFatal = !policy.state && anyHooksInstalled(input.repoRoot);
+    checks.push({
+      name: "gate policy control plane",
+      status: !policy.state
+        ? missingBaselineIsFatal
+          ? "fail"
+          : "warn"
+        : pending?.classification === "invalid" || pending?.classification === "approval-required"
+          ? "fail"
+          : pending
+            ? "warn"
+            : "ok",
+      detail: !policy.state
+        ? "no last-known-good baseline"
+        : pending
+          ? `${pending.classification}; approved=${policy.state.approved_effective_fingerprint.slice(0, 12)} candidate=${pending.effective_fingerprint?.slice(0, 12) ?? "invalid"}`
+          : `approved ${policy.state.approved_effective_fingerprint.slice(0, 12)}`,
+      ...(!policy.state
+        ? {
+            hint: missingBaselineIsFatal
+              ? "Hooks are installed but the LKG is missing. Run `reviewgate config approve` from a TTY."
+              : "Run `reviewgate init` to install hooks and record the initial approved policy.",
+          }
+        : pending?.classification === "approval-required"
+          ? {
+              hint: "Complete a gate pass under the LKG, then run `reviewgate config approve` from a TTY.",
+            }
+          : pending?.classification === "invalid"
+            ? {
+                hint: "Fix reviewgate.config.ts; invalid present config never falls back to defaults.",
+              }
+            : {}),
+    });
+  } catch (err) {
+    checks.push({
+      name: "gate policy control plane",
+      status: "fail",
+      detail: (err as Error).message,
+    });
+  }
+
   const host = detectHostModel({ env: process.env as Record<string, string>, hookStdin: null });
   checks.push({
     name: "host-model detection",
     status: host.source === "fallback:assume-opus" ? "warn" : "ok",
-    detail: `tier=${host.tier} source=${host.source}${host.modelId ? ` model=${host.modelId}` : ""}`,
+    detail: `agent-host=${host.agentHost} tier=${host.tier} source=${host.source}${host.modelId ? ` model=${host.modelId}` : ""}`,
     ...(host.source === "fallback:assume-opus"
       ? {
           hint: "Set REVIEWGATE_HOST_MODEL or CLAUDE_MODEL to your active Claude model for accurate downgrade.",
@@ -662,7 +751,7 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
 
   // Inspect the effective config: warn if a configured reviewer is not enabled in
   // providers (else the panel runs 0 reviewers → the gate ERRORs with no obvious
-  // cause). A config that fails to load is surfaced as a warn rather than crashing.
+  // cause). A present config that fails to load is a control-plane failure.
   try {
     const cfg = await loadEffectiveConfig({
       cwd: input.repoRoot,
@@ -724,8 +813,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
   } catch (e) {
     checks.push({
       name: "reviewgate.config.ts load",
-      status: "warn",
-      detail: `failed to load — defaults will apply: ${(e as Error).message}`,
+      status: "fail",
+      detail: `failed to load — the gate will keep using its LKG and block adoption: ${(e as Error).message}`,
     });
   }
 

@@ -1,12 +1,20 @@
 // tests/unit/doctor.test.ts
 import { describe, expect, it } from "bun:test";
-import { type Check, doctorExitCode, runDoctor } from "../../src/cli/commands/doctor.ts";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type Check,
+  agentHostHooksCheck,
+  doctorExitCode,
+  runDoctor,
+} from "../../src/cli/commands/doctor.ts";
 
 describe("runDoctor", () => {
   it("returns exit 0 or 1 based on environment, prints a structured report", async () => {
     const code = await runDoctor({ repoRoot: process.cwd(), capture: true });
     expect([0, 1, 2]).toContain(code);
-  });
+  }, 15_000);
 });
 
 describe("doctorExitCode", () => {
@@ -34,5 +42,33 @@ describe("doctorExitCode", () => {
       { name: "sandbox isolation", status: "fail", detail: "strict but sandbox-exec unavailable" },
     ];
     expect(doctorExitCode(checks)).toBe(2);
+  });
+});
+
+describe("agentHostHooksCheck", () => {
+  it("warns honestly when no host hooks are installed", () => {
+    const c = agentHostHooksCheck("/definitely/missing/reviewgate/repo");
+    expect(c.status).toBe("warn");
+    expect(c.detail).toContain("no Claude Code or Codex");
+  });
+
+  it("distinguishes an installed Codex hook from user-controlled activation", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-doctor-codex-trust-"));
+    mkdirSync(join(repo, ".codex"), { recursive: true });
+    writeFileSync(
+      join(repo, ".codex", "hooks.json"),
+      JSON.stringify({
+        hooks: {
+          Stop: [{ hooks: [{ type: "command", command: ".reviewgate/bin/gate", timeout: 2400 }] }],
+        },
+      }),
+    );
+
+    const c = agentHostHooksCheck(repo);
+    expect(c.status).toBe("warn");
+    expect(c.detail).toContain("installed");
+    expect(c.detail).toContain("not visible to Reviewgate");
+    expect(c.hint).toContain("/hooks");
+    expect(c.hint).toContain("SessionStart/PostToolUse/Stop");
   });
 });

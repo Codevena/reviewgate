@@ -161,6 +161,9 @@ export interface OrchestratorInput {
   adapters: Partial<Record<ProviderId, ProviderAdapter>>;
   sandboxMode: "strict" | "permissive" | "off";
   hostTier: HostTier;
+  /** The coding-agent host running the lifecycle hook. Claude reviewer model
+   * downgrading applies only when Claude itself is the authoring host. */
+  agentHost?: "claude" | "codex";
   diff: string;
   // Real git metadata for the report. Optional so tests can omit it (falls back
   // to env vars / placeholders). The gate always supplies it.
@@ -1250,7 +1253,7 @@ export class Orchestrator {
     // "disabled") changes which reviewer/model actually runs, so it MUST invalidate
     // the cache; fold the tier in here. Plain segment append (continuity preserved
     // when neither this nor the conventions changes).
-    const hostTierSegment = `|host:${this.input.hostTier}`;
+    const hostTierSegment = `|host:${this.input.agentHost ?? "claude"}:${this.input.hostTier}`;
     // Project conventions content (CLAUDE.md/README.md/package.json scripts) is
     // injected as reviewer context but not in the diff hash — fold its sha256 in so
     // an edit to those files re-runs the panel instead of serving a stale verdict.
@@ -1533,7 +1536,7 @@ export class Orchestrator {
     // for claude-code (returns null when that tier is disabled → the slot/fallback
     // candidate is skipped). Other providers use the configured model as-is.
     const resolveReviewerModel = (provider: ProviderId, baseModel: string): string | null => {
-      if (provider === "claude-code") {
+      if (provider === "claude-code" && (this.input.agentHost ?? "claude") === "claude") {
         const tier = reviewerTierFor(this.input.hostTier);
         if (tier === "disabled") return null;
         return modelIdForTier(tier) ?? baseModel;

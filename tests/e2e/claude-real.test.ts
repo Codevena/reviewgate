@@ -34,7 +34,7 @@ const E2E_TIMEOUT_MS = 300_000;
       );
       writeFileSync(
         join(repo, "reviewgate.config.ts"),
-        `import { defineConfig } from "${process.cwd()}/src/config/define-config.ts";\nexport default defineConfig({ providers: { "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300000 } }, phases: { review: { reviewers: [{ provider: "claude-code", persona: "adversarial" }] } } });\n`,
+        'export default { providers: { "claude-code": { enabled: true, auth: "oauth", model: "claude-sonnet-4-6", timeoutMs: 300000 } }, phases: { review: { reviewers: [{ provider: "claude-code", persona: "adversarial" }] } } };\n',
       );
       await runInit({ repoRoot: repo, mode: "agent-loop" });
       await runGate({

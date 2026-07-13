@@ -25,6 +25,26 @@ export function dirtyFlagPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "dirty.flag");
 }
 
+// Control-plane state is deliberately separate from the normal working-tree
+// fingerprint and review diff. It stores the last-known-good effective policy;
+// config-only changes use the dedicated flag/report instead of masquerading as
+// ordinary source changes.
+export function controlPlaneStatePath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "control-plane.json");
+}
+
+export function controlPlaneLockPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), ".control-plane.lock");
+}
+
+export function controlPlaneFlagPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "control-plane.flag");
+}
+
+export function policyChangeReportPath(repoRoot: string): string {
+  return join(reviewgateDir(repoRoot), "POLICY_CHANGE.md");
+}
+
 // Slice A (P1, field report 2026-06-22): per-session ownership manifests live here, one
 // file per Claude Code session_id, so a parallel agent's session can't clobber this one's.
 export function sessionsDir(repoRoot: string): string {

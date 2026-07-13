@@ -38,6 +38,16 @@ export interface CustomAnswers {
    *  injected into reviews as trusted context. true → phases.lore = { enabled: true };
    *  false → null (schema off). Opt-in. */
   lore: boolean;
+  /** Reviewer subprocess isolation policy selected during first-run setup. */
+  sandboxMode?: "strict" | "permissive" | "off";
+  /** Whether a non-blocking SOFT-PASS opens, closes, or asks once. */
+  softPassPolicy?: "allow" | "block" | "ask-once";
+  /** Block once on a clean pass so the host agent sees an explicit pass message. */
+  acknowledgePass?: boolean;
+  /** Native desktop completion notification. */
+  desktopNotifications?: boolean;
+  /** Install/use the warn-only pre-push review reminder. */
+  prePushWarn?: boolean;
   /** OpenRouter upstream-provider slug to pin (e.g. "deepseek" for deepseek/*
    *  models). Empty/absent → auto-route. Written as providers.openrouter
    *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
@@ -173,5 +183,12 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
   return {
     providers: providersFor(providerIds, a.openrouterProvider, a.ollamaBaseUrl),
     phases: phases as DeepPartial<ReviewgateConfig>["phases"],
+    sandbox: { mode: a.sandboxMode ?? "off" },
+    notify: { desktop: a.desktopNotifications ?? false },
+    loop: {
+      softPassPolicy: a.softPassPolicy ?? "allow",
+      acknowledgePass: a.acknowledgePass ?? false,
+      prePushWarn: a.prePushWarn ?? true,
+    },
   } as DeepPartial<ReviewgateConfig>;
 }

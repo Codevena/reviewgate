@@ -25,7 +25,7 @@ function withCurator(provider: ProviderId) {
 
 function withGrounding(provider: ProviderId) {
   return defineConfig({
-    phases: { grounding: { provider, persona: "grounding" } },
+    phases: { grounding: { provider } },
   } as Parameters<typeof defineConfig>[0]);
 }
 

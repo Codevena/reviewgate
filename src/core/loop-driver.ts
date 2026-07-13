@@ -144,7 +144,7 @@ export interface LoopInput {
 }
 
 export type LoopDecision =
-  | { kind: "allow_stop"; reason: string }
+  | { kind: "allow_stop"; reason: string; policyReviewPassed?: true }
   | { kind: "block"; reason: string };
 
 interface DirtyFlag {
@@ -954,6 +954,9 @@ export class LoopDriver {
       return {
         kind: "allow_stop",
         reason: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
+        // A config-only candidate has no ordinary diff by design. Reaching this
+        // clean LKG outcome is the successful old-policy checkpoint for it.
+        policyReviewPassed: true,
       };
     }
 
@@ -2189,6 +2192,7 @@ export class LoopDriver {
               reason: isSoft
                 ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}${preliminarySuffix}. Non-blocking — see .reviewgate/pending.md.`
                 : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}${preliminarySuffix}. Clear to finish.`,
+              policyReviewPassed: true,
             };
     } else if (result.verdict === "ERROR") {
       // The reviewer could not run (error/timeout/quota, or sandbox unavailable).
@@ -2658,7 +2662,7 @@ export class LoopDriver {
     }
     return {
       kind: "block",
-      reason: `🔴 Reviewgate · GATE CLOSED — the review did not complete within ${dur} and was aborted (it would otherwise be killed by the Stop-hook timeout, ending your turn UN-reviewed). End your turn again to re-run the review. If it keeps timing out, raise the Stop-hook \`timeout\` in .claude/settings.json AND \`loop.runTimeoutMs\`, or check \`reviewgate doctor\` for a slow/hanging provider.`,
+      reason: `🔴 Reviewgate · GATE CLOSED — the review did not complete within ${dur} and was aborted (it would otherwise be killed by the Stop-hook timeout, ending your turn UN-reviewed). End your turn again to re-run the review. If it keeps timing out, raise the Stop-hook \`timeout\` in the installed host config (.claude/settings.json and/or .codex/hooks.json) AND \`loop.runTimeoutMs\`, or check \`reviewgate doctor\` for a slow/hanging provider.`,
     };
   }
 

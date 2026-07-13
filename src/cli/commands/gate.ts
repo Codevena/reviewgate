@@ -4,7 +4,13 @@ import { homedir } from "node:os";
 import { ulid } from "ulid";
 import { AuditLogger } from "../../audit/logger.ts";
 import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
-import { loadEffectiveConfig } from "../../config/global.ts";
+import {
+  type ControlPlaneResolution,
+  finalizeControlPlaneReview,
+  resolveControlPlaneConfig,
+} from "../../config/control-plane.ts";
+import type { ReviewgateConfig } from "../../config/define-config.ts";
+import type { loadEffectiveConfig } from "../../config/global.ts";
 import { buildSessionStartInjection } from "../../core/agent-lessons/inject.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
@@ -45,6 +51,7 @@ import {
   dirtyFlagPath,
   escalationMdPath,
   gateLockPath,
+  policyChangeReportPath,
   stateJsonPath,
 } from "../../utils/paths.ts";
 import { withTimeout } from "../../utils/with-timeout.ts";
@@ -283,6 +290,14 @@ export async function stopProbe(
 }
 
 export async function runGate(input: GateInput): Promise<GateOutput> {
+  // Triggering must never depend on a valid config. In particular, the edit that
+  // MAKES reviewgate.config.ts invalid must still arm the dedicated control-plane
+  // flag; loading first would throw and lose that signal.
+  if (input.hook === "trigger") {
+    await handleTrigger({ repoRoot: input.repoRoot, hookStdinRaw: input.hookStdinRaw });
+    return { exitCode: 0, stdout: "", stderr: "" };
+  }
+
   // ONE setup deadline shared across config-load + lock + git setup (M-A0.2 /
   // codex CRITICAL): the per-phase budgets must not each be the full budget, or
   // their SUM (config + lock + git + loop + settle) could exceed the OS Stop-hook
@@ -291,18 +306,30 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   // Config load runs BEFORE the lock, so a hanging config import (stuck top-level
   // await / wedged fs read) is bounded too; on timeout withTimeout REJECTS →
   // runGateSafe converts it into a fail-closed block (for the stop hook).
-  const loadConfig = input.loadConfigFn ?? loadEffectiveConfig;
   const setupBudgetMs = input.setupBudgetMs ?? SETUP_BUDGET_MS_DEFAULT;
   const setupDeadlineAt = setupBudgetMs > 0 ? Date.now() + setupBudgetMs : null;
-  const loadConfigP = loadConfig({
-    cwd: input.repoRoot,
-    env: process.env as Record<string, string | undefined>,
-    home: homedir(),
-  });
-  const cfg =
+  // Tests that inject a config keep their existing seam and intentionally bypass
+  // persistent control-plane state. Production always resolves to the approved
+  // last-known-good snapshot and reports any candidate separately.
+  const policyP: Promise<{ cfg: ReviewgateConfig; policy: ControlPlaneResolution | null }> =
+    input.loadConfigFn
+      ? input
+          .loadConfigFn({
+            cwd: input.repoRoot,
+            env: process.env as Record<string, string | undefined>,
+            home: homedir(),
+          })
+          .then((cfg) => ({ cfg, policy: null }))
+      : resolveControlPlaneConfig({
+          cwd: input.repoRoot,
+          env: process.env as Record<string, string | undefined>,
+          home: homedir(),
+        }).then((policy) => ({ cfg: policy.config, policy }));
+  const loaded =
     setupDeadlineAt !== null
-      ? await withTimeout(loadConfigP, Math.max(1, setupDeadlineAt - Date.now()), "config-load")
-      : await loadConfigP;
+      ? await withTimeout(policyP, Math.max(1, setupDeadlineAt - Date.now()), "config-load")
+      : await policyP;
+  const { cfg, policy } = loaded;
   // Enforce config's audit.retentionDays (previously never applied → unbounded
   // growth): the logger prunes day-partitions older than the cutoff on its first
   // append.
@@ -353,17 +380,15 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     return { exitCode: 0, stdout, stderr };
   }
 
-  if (input.hook === "trigger") {
-    await handleTrigger({ repoRoot: input.repoRoot, hookStdinRaw: input.hookStdinRaw });
-    return { exitCode: 0, stdout: "", stderr: "" };
-  }
-
   // hook === 'stop'. M-A1: before taking the (contended, multi-minute) gate lock,
   // skip entirely when there's nothing to review — a pure read/analysis turn with
   // no dirty.flag, an unchanged HEAD, and (S1) an unchanged working-tree fingerprint.
   // This is the common case in a busy multi-session checkout and must not pay lock
   // contention or git/pipeline cost.
-  const probe = await stopProbe(input.repoRoot);
+  // A config candidate is outside the normal working-tree fingerprint by design,
+  // so it explicitly forces the lock path. This covers Edit and Bash mutations,
+  // committed and uncommitted, without feeding config source to reviewers.
+  const probe = policy?.change ? "review" : await stopProbe(input.repoRoot);
   if (probe === "skip-clean") {
     return {
       exitCode: 0,
@@ -411,7 +436,7 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
     // dirty.flag was already cleared by whichever session won the lock last time,
     // synthesize one so the deferred change still gets a (working-tree) review.
     consumeDeferredFlag(input.repoRoot);
-    return await runStopGate(input, cfg, audit, setupDeadlineAt);
+    return await runStopGate(input, cfg, audit, setupDeadlineAt, policy);
   } finally {
     await lock.release();
   }
@@ -474,7 +499,7 @@ export function consumeDeferredFlag(repoRoot: string): void {
 // Fail-CLOSED wrapper around runGate (M-A0.1). Any uncaught error from the gate
 // pipeline (zod parse, fs error, adapter-build crash, a sync throw from
 // writeFileAtomic, …) MUST NOT escape to citty — citty prints the stack to
-// stderr and exits 1 with EMPTY stdout, which Claude Code's Stop-hook protocol
+// stderr and exits 1 with EMPTY stdout, which the host Stop-hook protocol can
 // reads as "allow" → the turn ends UN-reviewed = fail-OPEN, the exact failure
 // this gate exists to prevent (field report: "stop hook 2/3 then disappears").
 // On a STOP error we emit a block (fail closed); a trigger/reset is NOT the
@@ -717,12 +742,13 @@ export async function gatherReviewContext(
 // the lock acquire/release wraps the entire body without re-indenting it.
 async function runStopGate(
   input: GateInput,
-  cfg: Awaited<ReturnType<typeof loadEffectiveConfig>>,
+  cfg: ReviewgateConfig,
   audit: AuditLogger,
   // Shared setup deadline (epoch ms) started in runGate before config-load; null
   // when the budget is disabled. The git setup uses the time REMAINING until it,
   // so config + lock + git together never exceed setupBudgetMs (codex CRITICAL).
   setupDeadlineAt: number | null,
+  policy: ControlPlaneResolution | null,
 ): Promise<GateOutput> {
   const parsedStdin = parseHookStdin(input.hookStdinRaw);
   const state = new StateStore(input.repoRoot);
@@ -866,6 +892,7 @@ async function runStopGate(
     audit,
     sandboxMode: input.sandboxModeOverride ?? cfg.sandbox.mode,
     hostTier: host.tier,
+    agentHost: host.agentHost,
     diff,
     gitInfo,
     reasonOnFailEnabled: true,
@@ -903,23 +930,61 @@ async function runStopGate(
   });
   const decision = await driver.run();
 
-  // Completion signal — so a passing review is no longer SILENT (the agent
-  // can't be pinged on allow_stop by the hook architecture, but the human can):
-  //  - always write the gate status to stderr (surfaced in the hook output),
-  //  - optionally fire a desktop notification when notify.desktop is enabled.
-  // The reason is already self-branded ("🟢 Reviewgate · GATE OPEN — …").
-  const signal = decision.reason;
-  if (cfg.notify.desktop) {
-    notifyDesktop("Reviewgate", decision.reason);
-  }
-
   if (decision.kind === "block") {
+    const policyNotice = policy?.change
+      ? `\n\n🔐 Gate policy candidate remains pending. Code is still being reviewed under approved policy ${policy.approvedEffectiveFingerprint.slice(0, 12)}; details: ${policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "")}.`
+      : "";
+    const reason = `${decision.reason}${policyNotice}`;
+    if (cfg.notify.desktop) notifyDesktop("Reviewgate", reason);
     return {
       exitCode: 0,
-      stdout: JSON.stringify({ decision: "block", reason: decision.reason }),
-      stderr: signal,
+      stdout: JSON.stringify({ decision: "block", reason }),
+      stderr: reason,
     };
   }
-  // allow_stop: exit 0. The summary still goes to stderr so "green" is visible.
+
+  let signal = decision.reason;
+  if (policy) {
+    // DEFER/ESCALATION can intentionally be allow_stop without being PASS. Such
+    // an outcome must never mark a policy candidate reviewed or auto-adopt it.
+    // Invalid candidates are still rendered by finalize below so their precise
+    // fail-closed message wins.
+    if (
+      policy.change &&
+      policy.change.classification !== "invalid" &&
+      decision.policyReviewPassed !== true
+    ) {
+      const report = policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "");
+      const message = `🔐 Reviewgate · GATE POLICY PENDING — the candidate was NOT adopted because the gate did not complete with PASS/SOFT-PASS under the last-known-good policy. ${decision.reason} Details: ${report}`;
+      if (cfg.notify.desktop) notifyDesktop("Reviewgate", message);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ decision: "block", reason: message }),
+        stderr: message,
+      };
+    }
+    const finalized = await finalizeControlPlaneReview(input.repoRoot, policy, {
+      env: process.env as Record<string, string | undefined>,
+      home: homedir(),
+    });
+    if (
+      finalized.kind === "approval-required" ||
+      finalized.kind === "invalid" ||
+      finalized.kind === "changed-during-review"
+    ) {
+      if (cfg.notify.desktop) notifyDesktop("Reviewgate", finalized.message);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ decision: "block", reason: finalized.message }),
+        stderr: finalized.message,
+      };
+    }
+    if (finalized.kind === "auto-approved") {
+      signal = `${decision.reason}\n🔐 Gate policy ${finalized.classification === "strengthening" ? "strengthening" : "source-equivalent change"} adopted after this pass under the prior approved policy.`;
+    }
+  }
+
+  // allow_stop: the summary still goes to stderr so "green" is visible.
+  if (cfg.notify.desktop) notifyDesktop("Reviewgate", signal);
   return { exitCode: 0, stdout: "", stderr: signal };
 }

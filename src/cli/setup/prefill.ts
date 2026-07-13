@@ -24,6 +24,11 @@ export interface WizardDefaults {
   agentLessons: boolean;
   /** Lore — opt-in; a fresh setup and an existing config without phases.lore both prefill false. */
   lore: boolean;
+  sandboxMode: "strict" | "permissive" | "off";
+  softPassPolicy: "allow" | "block" | "ask-once";
+  acknowledgePass: boolean;
+  desktopNotifications: boolean;
+  prePushWarn: boolean;
   /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
    *  re-run prompt. Empty string = none. */
   openrouterProvider: string;
@@ -46,6 +51,11 @@ export const RECOMMENDED_DEFAULTS: WizardDefaults = {
   agentLessons: true,
   // Opt-in — the recommended preset never enables it (must be turned on explicitly).
   lore: false,
+  sandboxMode: "off",
+  softPassPolicy: "allow",
+  acknowledgePass: false,
+  desktopNotifications: false,
+  prePushWarn: true,
   openrouterProvider: "",
   ollamaEndpoint: "cloud",
 };
@@ -92,6 +102,11 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     fpLedger: Boolean(cfg.phases.fpLedger?.enabled),
     agentLessons: Boolean(cfg.phases.agentLessons?.enabled),
     lore: Boolean(cfg.phases.lore?.enabled),
+    sandboxMode: cfg.sandbox.mode,
+    softPassPolicy: cfg.loop.softPassPolicy,
+    acknowledgePass: cfg.loop.acknowledgePass,
+    desktopNotifications: cfg.notify.desktop,
+    prePushWarn: cfg.loop.prePushWarn,
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
     openrouterProvider,

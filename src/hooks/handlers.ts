@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { ulid } from "ulid";
+import { markControlPlaneDirty } from "../config/control-plane.ts";
 import { clearAllProposalPools } from "../core/brain/proposal-store.ts";
 import {
   captureSessionBaseline,
@@ -35,7 +36,7 @@ export interface TriggerInput {
   hookStdinRaw: string;
 }
 
-// Slice A (P1): the Claude Code session_id carried in every hook's stdin payload, or "" when
+// Slice A (P1): the Claude Code/Codex session_id carried in every hook's stdin payload, or "" when
 // absent (older CLI / unparseable) — in which case the gate fail-closes to a full review.
 function sessionIdOf(parsed: unknown): string {
   const o = parsed as { session_id?: unknown } | null;
@@ -114,10 +115,15 @@ export async function handleTrigger(input: TriggerInput): Promise<void> {
     const files = [...new Set(editedPathsOf(parsed))];
     const shapeFullyUnderstood =
       toolName !== null && KNOWN_SINGLE_PATH_TOOLS.has(toolName) && files.length === 1;
-    if (
-      shapeFullyUnderstood &&
-      files.every((f) => isExcludedFromReview(normalizeRepoPath(f, input.repoRoot)))
-    ) {
+    const normalized = files.map((f) => normalizeRepoPath(f, input.repoRoot));
+    // The project config is excluded from the normal source diff, but never
+    // invisible. It gets a dedicated control-plane trigger so its contents stay
+    // out of reviewer prompts while policy changes still force the Stop path.
+    if (shapeFullyUnderstood && normalized.every((f) => f === "reviewgate.config.ts")) {
+      markControlPlaneDirty(input.repoRoot, "edit");
+      return;
+    }
+    if (shapeFullyUnderstood && normalized.every((f) => isExcludedFromReview(f))) {
       return;
     }
   } catch {

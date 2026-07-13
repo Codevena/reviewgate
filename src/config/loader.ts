@@ -12,18 +12,15 @@ export async function loadConfig(path: string | null): Promise<ReviewgateConfig>
   if (!existsSync(abs)) {
     throw new Error(`Config file not found: ${abs}`);
   }
-  // Imported FRESH (importConfigDefault) so a same-process overwrite isn't served
-  // a stale cached module (Bun caches dynamic import() by path).
+  // Read + data-parsed fresh on every call; config source is never executed.
   const def = await importConfigDefault(abs);
-  if (!def || typeof def !== "object") {
+  if (!def || typeof def !== "object" || Array.isArray(def)) {
     throw new Error(`Config file ${abs} must export a default config object.`);
   }
   // The default export is treated as a PARTIAL config and deep-merged over the
   // defaults, then validated. This means a user's reviewgate.config.ts can be a
-  // plain object (no `import { defineConfig } from "reviewgate"` — that bare
-  // package isn't installed in the target project and would fail to resolve,
-  // silently dropping the user's config). Calling defineConfig again on a value
-  // that already went through it is idempotent.
+  // plain literal object. Executable TypeScript constructs are rejected by the
+  // parser before this merge; defineConfig performs the schema validation.
   return defineConfig(def as PartialConfig);
 }
 

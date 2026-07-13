@@ -22,6 +22,9 @@ describe("RECOMMENDED_DEFAULTS", () => {
     expect(RECOMMENDED_DEFAULTS.reputation).toBe(true);
     // Lore is opt-in — the recommended preset must NOT enable it.
     expect(RECOMMENDED_DEFAULTS.lore).toBe(false);
+    expect(RECOMMENDED_DEFAULTS.sandboxMode).toBe("off");
+    expect(RECOMMENDED_DEFAULTS.softPassPolicy).toBe("allow");
+    expect(RECOMMENDED_DEFAULTS.prePushWarn).toBe(true);
   });
 });
 
@@ -68,6 +71,11 @@ describe("answersFromConfig", () => {
     expect(d.lore).toBe(true);
     expect(d.contextDocs).toBe(true);
     expect(d.reputation).toBe(true);
+    expect(d.sandboxMode).toBe(cfg.sandbox.mode);
+    expect(d.softPassPolicy).toBe(cfg.loop.softPassPolicy);
+    expect(d.acknowledgePass).toBe(cfg.loop.acknowledgePass);
+    expect(d.desktopNotifications).toBe(cfg.notify.desktop);
+    expect(d.prePushWarn).toBe(cfg.loop.prePushWarn);
   });
 
   it("defaults/empty config => codex-only, no critic/brain, fpLedger off (schema default)", () => {

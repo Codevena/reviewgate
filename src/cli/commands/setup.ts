@@ -21,8 +21,16 @@ import {
 import { diffFromDefaults } from "../../config/diff-defaults.ts";
 import { loadEffectiveConfig, resolveGlobalConfigPath } from "../../config/global.ts";
 import { serializeConfig } from "../../config/serialize.ts";
+import {
+  type AgentHostSelection,
+  anyHooksInstalled,
+  hooksInstalled,
+  hostsForSelection,
+  readHookDocument,
+} from "../../hosts/hooks.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
+import { controlPlaneStatePath } from "../../utils/paths.ts";
 import { type CustomAnswers, buildCustomConfig, buildQuickPreset } from "../setup/build-config.ts";
 import {
   MODEL_DEFAULT,
@@ -32,11 +40,11 @@ import {
 } from "../setup/prefill.ts";
 import { probeModel } from "../setup/probe.ts";
 import { runDoctor } from "./doctor.ts";
-import { hooksInstalled, runInit } from "./init.ts";
+import { runInit } from "./init.ts";
 
 export function setupTip(isTty: boolean): string | null {
   return isTty
-    ? "Tip: run `reviewgate setup` to configure reviewers, brain & critic interactively."
+    ? "Tip: `reviewgate init` configures policy, agent hosts, hooks and health checks in one flow."
     : null;
 }
 
@@ -73,6 +81,19 @@ export interface SetupInput {
   print?: boolean;
   env?: Record<string, string | undefined>;
   home?: string;
+  /** Install native agent-host hooks after writing the project config. */
+  install?: boolean;
+  /** Preselected host for scripted init; omitted means prompt (or both in quick mode). */
+  host?: AgentHostSelection;
+  /** Use the recommended preset without asking policy questions. */
+  quick?: boolean;
+  /** Keep an existing project config during a scripted quick init. */
+  keepExistingOnQuick?: boolean;
+  /** `init` always owns a project; global config remains a setup-only operation. */
+  projectOnly?: boolean;
+  /** Skip the final health check (primarily for packaging/installer automation). */
+  skipDoctor?: boolean;
+  commandName?: "reviewgate init" | "reviewgate setup";
 }
 
 const PERSONAS = ["security", "architecture", "adversarial"] as const;
@@ -136,8 +157,8 @@ export function ollamaNotes(input: {
   return notes;
 }
 
-function cancelOut(): number {
-  cancel("setup cancelled, no changes written");
+function cancelOut(commandName: string): number {
+  cancel(`${commandName.replace("reviewgate ", "")} cancelled, no changes written`);
   return 1;
 }
 
@@ -145,7 +166,49 @@ export async function runSetup(input: SetupInput): Promise<number> {
   const env = input.env ?? (process.env as Record<string, string | undefined>);
   const home = input.home ?? homedir();
   const orKey = Boolean(env.OPENROUTER_API_KEY);
-  intro("reviewgate setup");
+  const commandName = input.commandName ?? "reviewgate setup";
+  const cancelled = () => cancelOut(commandName);
+  intro(commandName);
+
+  let selectedHost: AgentHostSelection | undefined = input.host;
+  if (input.install && !selectedHost) {
+    if (input.quick) {
+      selectedHost = "both";
+    } else {
+      const host = await select({
+        message: "Which coding-agent host should Reviewgate protect?",
+        options: [
+          {
+            value: "both",
+            label: "Claude Code + Codex (recommended)",
+            hint: "installs both native hook protocols",
+          },
+          { value: "claude", label: "Claude Code only" },
+          { value: "codex", label: "Codex only" },
+        ],
+        initialValue:
+          hooksInstalled(input.repoRoot, "codex") && !hooksInstalled(input.repoRoot, "claude")
+            ? "codex"
+            : hooksInstalled(input.repoRoot, "claude") && !hooksInstalled(input.repoRoot, "codex")
+              ? "claude"
+              : "both",
+      });
+      if (isCancel(host)) return cancelled();
+      selectedHost = host as AgentHostSelection;
+    }
+  }
+  if (input.install) {
+    const selection = selectedHost ?? "both";
+    // Preflight before the wizard can overwrite a project config: malformed
+    // foreign hook documents and a deleted LKG on an already-armed checkout
+    // must abort without leaving a half-reconfigured installation.
+    for (const host of hostsForSelection(selection)) readHookDocument(input.repoRoot, host);
+    if (anyHooksInstalled(input.repoRoot) && !existsSync(controlPlaneStatePath(input.repoRoot))) {
+      throw new Error(
+        "Reviewgate hooks are already installed but the last-known-good policy state is missing. Refusing to reconfigure or re-baseline through init; run `reviewgate config approve` from an interactive terminal.",
+      );
+    }
+  }
 
   // 1. Target
   const globalPath = resolveGlobalConfigPath(env, home);
@@ -160,7 +223,7 @@ export async function runSetup(input: SetupInput): Promise<number> {
       return 1;
     }
     targetPath = globalPath;
-  } else if (globalPath) {
+  } else if (globalPath && !input.projectOnly) {
     const target = await select({
       message: "Where should this config be saved?",
       options: [
@@ -168,71 +231,79 @@ export async function runSetup(input: SetupInput): Promise<number> {
         { value: "global", label: `My global default (${globalPath})` },
       ],
     });
-    if (isCancel(target)) return cancelOut();
+    if (isCancel(target)) return cancelled();
     if (target === "global") targetPath = globalPath;
   }
   // else: no resolvable global path → default to the project path (no prompt)
 
   // 2. Mode
-  const mode = await select({
-    message: "Setup mode",
-    options: [
-      { value: "quick", label: "Quick (recommended preset)" },
-      { value: "custom", label: "Custom (configure everything)" },
-    ],
-  });
-  if (isCancel(mode)) return cancelOut();
+  const mode = input.quick
+    ? "quick"
+    : await select({
+        message: "Setup mode",
+        options: [
+          { value: "quick", label: "Quick (recommended preset)" },
+          { value: "custom", label: "Custom (configure every first-run decision)" },
+        ],
+      });
+  if (isCancel(mode)) return cancelled();
 
   let partial: DeepPartial<ReviewgateConfig>;
   if (mode === "quick") {
     if (!orKey) {
-      note("brain needs OPENROUTER_API_KEY — leaving it off (set the key and re-run setup).");
+      note("brain needs OPENROUTER_API_KEY — leaving it off (set the key and re-run the wizard).");
     }
     partial = buildQuickPreset({ openrouterKeyPresent: orKey });
   } else {
     const custom = await runCustom(env, orKey, defaults);
-    if (!custom) return cancelOut();
+    if (!custom) return cancelled();
     partial = custom;
   }
 
   // 3. Finalize
-  const result = finalizeSetup({ partial, targetPath, print: Boolean(input.print) });
+  const keepExisting =
+    mode === "quick" && Boolean(input.keepExistingOnQuick) && existsSync(targetPath);
+  const result = keepExisting
+    ? { text: "", wrotePath: null }
+    : finalizeSetup({ partial, targetPath, print: Boolean(input.print) });
   if (input.print) {
     process.stdout.write(`${result.text}\n`);
     outro("(--print) nothing written");
     return 0;
   }
 
-  note(`wrote ${result.wrotePath}`);
+  note(keepExisting ? `kept existing ${targetPath}` : `wrote ${result.wrotePath}`);
 
-  // 4. Arm the gate. `setup` only writes config — the Stop/PostToolUse/SessionStart
-  // hooks that actually RUN the gate are installed by `init`. Without this step a
-  // fresh user has a configured-but-inert gate (nothing fires on Stop). Offer to
-  // wire the hooks now (repo-local only — a --global config can't arm a single repo).
-  if (!input.global && targetPath !== globalPath) {
-    if (hooksInstalled(input.repoRoot)) {
-      note("gate already armed (hooks present in .claude/settings.json)");
-    } else {
-      const arm = await confirm({
-        message: "Arm the gate now? Installs the Stop/PostToolUse hooks into .claude/settings.json",
-        initialValue: true,
-      });
-      if (isCancel(arm)) return cancelOut();
-      if (arm) {
-        await runInit({ repoRoot: input.repoRoot, mode: "agent-loop" });
-        note("gate armed — hooks installed in .claude/settings.json");
-      } else {
-        note("gate NOT armed — run `reviewgate init` to install the hooks when ready");
-      }
+  // 4. `reviewgate init` is the complete first-run path: config first, then the
+  // selected native host hooks, then the initial LKG snapshot. `setup --global`
+  // intentionally remains config-only because it cannot arm a specific repo.
+  if (input.install && !input.global) {
+    const initResult = await runInit({
+      repoRoot: input.repoRoot,
+      mode: "agent-loop",
+      host: selectedHost ?? "both",
+    });
+    note(
+      `gate armed for ${initResult.installedHosts.join(" + ")}\n${initResult.hookPaths.join("\n")}`,
+    );
+    for (const warning of initResult.warnings) note(`Warning: ${warning}`);
+    if (initResult.installedHosts.includes("codex")) {
+      note(
+        "Codex requires explicit trust for new or changed project hooks. Open Codex in this repository and use `/hooks` to review and trust the exact Reviewgate hook definitions.",
+      );
     }
   }
 
   // 5. Doctor — let it print its own lines directly; then summarize.
+  if (input.skipDoctor) {
+    outro(`${commandName.replace("reviewgate ", "")} complete — health check skipped`);
+    return 0;
+  }
   const code = await runDoctor({ repoRoot: input.repoRoot });
   outro(
     code === 0
-      ? "setup complete — doctor: all green"
-      : "setup complete — doctor reported failures (see above)",
+      ? `${commandName.replace("reviewgate ", "")} complete — doctor finished; inspect any advisory warnings above`
+      : `${commandName.replace("reviewgate ", "")} complete — doctor reported failures (see above)`,
   );
   // Propagate doctor's exit code so a scripted/non-interactive caller (or CI)
   // checking $? after `reviewgate setup` sees the real pass/fail, instead of a
@@ -406,6 +477,58 @@ async function runCustom(
   if (isCancel(ctx)) return null;
   if (ctx) note("contextDocs works keyless; set CONTEXT7_API_KEY for higher rate limits.");
 
+  const sandboxMode = await select({
+    message: "Reviewer subprocess sandbox",
+    options: [
+      {
+        value: "off",
+        label: "Off (default)",
+        hint: "no false sense of a host read allowlist",
+      },
+      {
+        value: "strict",
+        label: "Strict",
+        hint: "fail closed if Seatbelt/bubblewrap is unavailable",
+      },
+      {
+        value: "permissive",
+        label: "Permissive",
+        hint: "warn and continue if OS isolation is unavailable",
+      },
+    ],
+    initialValue: defaults.sandboxMode,
+  });
+  if (isCancel(sandboxMode)) return null;
+
+  const softPassPolicy = await select({
+    message: "How should non-blocking SOFT-PASS findings behave?",
+    options: [
+      { value: "allow", label: "Allow completion" },
+      { value: "ask-once", label: "Show once, then allow" },
+      { value: "block", label: "Keep the gate closed" },
+    ],
+    initialValue: defaults.softPassPolicy,
+  });
+  if (isCancel(softPassPolicy)) return null;
+
+  const acknowledgePass = await confirm({
+    message: "Show the agent one explicit clean-pass acknowledgement before completion?",
+    initialValue: defaults.acknowledgePass,
+  });
+  if (isCancel(acknowledgePass)) return null;
+
+  const desktopNotifications = await confirm({
+    message: "Enable desktop notifications when a review finishes?",
+    initialValue: defaults.desktopNotifications,
+  });
+  if (isCancel(desktopNotifications)) return null;
+
+  const prePushWarn = await confirm({
+    message: "Enable the warn-only git pre-push review reminder?",
+    initialValue: defaults.prePushWarn,
+  });
+  if (isCancel(prePushWarn)) return null;
+
   const rolesWithOllama = [
     ...reviewers.map((r) => r.provider),
     critic?.provider,
@@ -458,6 +581,11 @@ async function runCustom(
     reputation: Boolean(rep),
     agentLessons: Boolean(lessons),
     lore: Boolean(lore),
+    sandboxMode: sandboxMode as "strict" | "permissive" | "off",
+    softPassPolicy: softPassPolicy as "allow" | "block" | "ask-once",
+    acknowledgePass: Boolean(acknowledgePass),
+    desktopNotifications: Boolean(desktopNotifications),
+    prePushWarn: Boolean(prePushWarn),
     ...(openrouterProvider ? { openrouterProvider } : {}),
     ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
   });

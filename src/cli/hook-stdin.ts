@@ -1,7 +1,7 @@
 // src/cli/hook-stdin.ts
 import { withTimeout } from "../utils/with-timeout.ts";
 
-// Read the Claude Code hook payload from stdin for `reviewgate gate`. The real
+// Read the Claude Code/Codex hook payload from stdin for `reviewgate gate`. The real
 // hooks (Stop/PostToolUse/SessionStart) ALWAYS pipe a JSON payload, so stdin is a
 // pipe (non-TTY) with a definite EOF. But when a human runs `reviewgate gate
 // --hook reset` (or any hook) directly in a terminal, stdin is an interactive TTY

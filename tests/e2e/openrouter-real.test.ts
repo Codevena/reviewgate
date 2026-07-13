@@ -35,7 +35,7 @@ const E2E_TIMEOUT_MS = 300_000;
       );
       writeFileSync(
         join(repo, "reviewgate.config.ts"),
-        `import { defineConfig } from "${process.cwd()}/src/config/define-config.ts";\nexport default defineConfig({ providers: { openrouter: { enabled: true, auth: "openrouter", apiKeyEnv: "OPENROUTER_API_KEY", model: "google/gemini-2.0-flash-001", timeoutMs: 120000 } }, phases: { review: { reviewers: [{ provider: "openrouter", persona: "security" }] } } });\n`,
+        'export default { providers: { openrouter: { enabled: true, auth: "openrouter", apiKeyEnv: "OPENROUTER_API_KEY", model: "google/gemini-2.0-flash-001", timeoutMs: 120000 } }, phases: { review: { reviewers: [{ provider: "openrouter", persona: "security" }] } } };\n',
       );
       await runInit({ repoRoot: repo, mode: "agent-loop" });
       await runGate({

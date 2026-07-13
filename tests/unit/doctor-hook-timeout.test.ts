@@ -13,6 +13,13 @@ function repoWithSettings(settings: unknown): string {
   return repo;
 }
 
+function repoWithCodexHooks(settings: unknown): string {
+  const repo = mkdtempSync(join(tmpdir(), "rg-hooktimeout-codex-"));
+  mkdirSync(join(repo, ".codex"), { recursive: true });
+  writeFileSync(join(repo, ".codex", "hooks.json"), JSON.stringify(settings));
+  return repo;
+}
+
 const stopHook = (timeout?: number) => ({
   matcher: "*",
   hooks: [
@@ -90,5 +97,14 @@ describe("hookTimeoutCheck", () => {
   it("returns null when reviewgate hooks are not installed (nothing to check)", () => {
     const repo = repoWithSettings({ hooks: {} });
     expect(hookTimeoutCheck(repo, defaultConfig)).toBeNull();
+  });
+
+  it("checks a Codex-only hook installation", () => {
+    const repo = repoWithCodexHooks({
+      hooks: { Stop: [stopHook(2400)], SessionStart: [sessionStartHook(30)] },
+    });
+    const c = hookTimeoutCheck(repo, defaultConfig);
+    expect(c?.status).toBe("ok");
+    expect(c?.detail).toContain("codex");
   });
 });

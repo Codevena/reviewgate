@@ -66,11 +66,10 @@ describe("loadEffectiveConfig", () => {
     expect(cfg.phases.review.reviewers).toEqual([{ provider: "codex", persona: "adversarial" }]); // project replaces
   });
 
-  it("a malformed project config degrades to the lower layers (no throw)", async () => {
+  it("a malformed present project config fails closed", async () => {
     const cwd = tmp();
     writeFileSync(join(cwd, "reviewgate.config.ts"), "this is not valid typescript $$$");
-    const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
-    expect(cfg).toEqual(defineConfig({}));
+    await expect(loadEffectiveConfig({ cwd, env: {}, home: tmp() })).rejects.toThrow();
   });
 
   it("reflects an OVERWRITTEN config on a same-process reload (no ESM-cache staleness)", async () => {
@@ -87,65 +86,31 @@ describe("loadEffectiveConfig", () => {
     expect(second.notify.desktop).toBe(true); // fresh read, not the cached first load
   });
 
-  it("warns (not silently) when a present config FAILS TO IMPORT (syntax error)", async () => {
+  it("blocks when a present config has invalid syntax", async () => {
     const cwd = tmp();
     writeFileSync(join(cwd, "reviewgate.config.ts"), "export default { oops:: }};; not valid");
-    const warnings: string[] = [];
-    const orig = console.warn;
-    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(" "));
-    try {
-      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
-      expect(cfg).toEqual(defineConfig({})); // still degrades to defaults
-    } finally {
-      console.warn = orig;
-    }
-    const joined = warnings.join("\n").toLowerCase();
-    expect(joined).toContain("reviewgate");
-    expect(joined).toContain("config"); // the broken config was surfaced, not silently dropped
+    await expect(loadEffectiveConfig({ cwd, env: {}, home: tmp() })).rejects.toThrow(
+      /reviewgate\.config\.ts/i,
+    );
   });
 
-  it("a schema-INVALID config warns (with the offending field) before degrading", async () => {
-    // Imports fine (valid TS object) but violates the schema → defineConfig throws.
-    // The silent fallback this tool exists to prevent must NOT happen quietly:
-    // we degrade to defaults AND surface a console.warn naming the bad path.
+  it("a schema-invalid present config blocks and names the offending field", async () => {
     const cwd = tmp();
     writeFileSync(
       join(cwd, "reviewgate.config.ts"),
       'export default { providers: { codex: { timeoutMs: "not-a-number" } } };',
     );
-    const warnings: string[] = [];
-    const orig = console.warn;
-    console.warn = (...a: unknown[]) => warnings.push(a.map(String).join(" "));
-    try {
-      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
-      expect(cfg).toEqual(defineConfig({}));
-    } finally {
-      console.warn = orig;
-    }
-    const joined = warnings.join("\n");
-    expect(joined.toLowerCase()).toContain("reviewgate");
-    // The zod error must point at the actual offending field, not be opaque.
-    expect(joined).toContain("timeoutMs");
+    await expect(loadEffectiveConfig({ cwd, env: {}, home: tmp() })).rejects.toThrow(/timeoutMs/);
   });
 
-  it("preserves a deliberately fail-closed sandbox.mode when an UNRELATED field is invalid (F-047)", async () => {
-    // One unrelated typo must NOT silently revert sandbox.mode:"strict" (fail-closed)
-    // to the unisolated "off" default — that would weaken the security posture with
-    // only a warning. The bad field still degrades to defaults; the fail-closed
-    // sandbox intent is salvaged.
+  it("never partially salvages an invalid config; the whole present policy blocks", async () => {
     const cwd = tmp();
     writeFileSync(
       join(cwd, "reviewgate.config.ts"),
       'export default { sandbox: { mode: "strict" }, loop: { maxIterations: "3" } };',
     );
-    const orig = console.warn;
-    console.warn = () => {};
-    try {
-      const cfg = await loadEffectiveConfig({ cwd, env: {}, home: tmp() });
-      expect(cfg.sandbox.mode).toBe("strict"); // NOT silently reverted to "off"
-      expect(cfg.loop.maxIterations).toBe(defineConfig({}).loop.maxIterations); // bad field → default
-    } finally {
-      console.warn = orig;
-    }
+    await expect(loadEffectiveConfig({ cwd, env: {}, home: tmp() })).rejects.toThrow(
+      /loop\.maxIterations/,
+    );
   });
 });

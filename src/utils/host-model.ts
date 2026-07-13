@@ -28,6 +28,7 @@ export interface DetectInput {
 }
 
 export interface DetectResult {
+  agentHost: "claude" | "codex";
   tier: HostTier;
   modelId: string | null;
   source:
@@ -38,16 +39,19 @@ export interface DetectResult {
 }
 
 export function detectHostModel(input: DetectInput): DetectResult {
+  const agentHost = input.env.REVIEWGATE_AGENT_HOST === "codex" ? "codex" : "claude";
   const r = input.env.REVIEWGATE_HOST_MODEL;
-  if (r) return { tier: parseModelId(r), modelId: r, source: "env:REVIEWGATE_HOST_MODEL" };
+  if (r)
+    return { agentHost, tier: parseModelId(r), modelId: r, source: "env:REVIEWGATE_HOST_MODEL" };
 
   const c = input.env.CLAUDE_MODEL;
-  if (c) return { tier: parseModelId(c), modelId: c, source: "env:CLAUDE_MODEL" };
+  if (c) return { agentHost, tier: parseModelId(c), modelId: c, source: "env:CLAUDE_MODEL" };
 
   const s = input.hookStdin?.session?.model;
-  if (s) return { tier: parseModelId(s), modelId: s, source: "hook-stdin:session.model" };
+  if (s)
+    return { agentHost, tier: parseModelId(s), modelId: s, source: "hook-stdin:session.model" };
 
-  return { tier: "opus", modelId: null, source: "fallback:assume-opus" };
+  return { agentHost, tier: "opus", modelId: null, source: "fallback:assume-opus" };
 }
 
 export function reviewerTierFor(host: HostTier): ReviewerTier {
