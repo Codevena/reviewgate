@@ -3,210 +3,301 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Reviewgate gates Claude Code and Codex turn completion until an independent LLM panel has reviewed the actual diff.">
-  <meta name="theme-color" content="#07100a">
+  <meta name="description" content="Reviewgate is the native Claude Code and Codex verification loop that reviews the actual diff before an AI coding agent can finish.">
+  <meta name="theme-color" content="#060807">
   <link rel="canonical" href="https://codevena.github.io/reviewgate/">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Reviewgate">
-  <meta property="og:title" content="Reviewgate — The verification loop for AI coding agents">
-  <meta property="og:description" content="A native Claude Code and Codex control loop that reviews the actual diff before the agent can finish.">
+  <meta property="og:title" content="Reviewgate — Nothing passes unseen">
+  <meta property="og:description" content="Native Claude Code and Codex hooks intercept turn completion, review the actual diff and keep every non-PASS outcome visible.">
   <meta property="og:url" content="https://codevena.github.io/reviewgate/">
   <meta property="og:image" content="https://codevena.github.io/reviewgate/screenshots/desktop.png">
+  <meta property="og:image:width" content="1440">
+  <meta property="og:image:height" content="1000">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Reviewgate — The verification loop for AI coding agents">
-  <meta name="twitter:description" content="A native Claude Code and Codex control loop that reviews the actual diff before the agent can finish.">
+  <meta name="twitter:title" content="Reviewgate — Nothing passes unseen">
+  <meta name="twitter:description" content="The native verification loop for Claude Code and Codex agents.">
   <meta name="twitter:image" content="https://codevena.github.io/reviewgate/screenshots/desktop.png">
-  <title>Reviewgate — The verification loop for AI coding agents</title>
+  <title>Reviewgate — Nothing passes unseen</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Unbounded:wght@500;600;700&family=VT323&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:ital,wght@0,300;0,400;0,500;1,400&amp;family=Teko:wght@400;500;600&amp;display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script src="script.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
-  <div class="noise"></div><div class="scanline"></div>
-  <header class="nav shell">
-    <a class="logo" href="#top" aria-label="Reviewgate home">REVIEWGATE</a>
-    <nav aria-label="Primary navigation">
-      <a href="#how">How it works</a><a href="#memory">Memory</a><a href="#capabilities">Features</a><a href="#setup">Setup</a><a href="#docs">CLI</a><a href="#faq">FAQ</a>
+
+  <header class="topbar shell" data-header>
+    <a class="wordmark" href="#top" aria-label="Reviewgate home">REVIEW<span>GATE</span> / RG-01</a>
+    <nav class="desktop-nav" aria-label="Primary navigation">
+      <a href="#protocol">Protocol</a>
+      <a href="#panel">Panel</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#system">System</a>
+      <a href="#setup">Setup</a>
     </nav>
-    <a class="nav-cta" href="https://github.com/Codevena/reviewgate">GitHub <span>↗</span></a>
-    <button class="menu" aria-label="Open menu" aria-expanded="false">MENU</button>
+    <div class="top-actions">
+      <span class="live"><i></i>Enforcement online</span>
+      <a class="github-link" href="https://github.com/Codevena/reviewgate" aria-label="Reviewgate on GitHub">GitHub ↗</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="mobile-menu">Menu</button>
+    </div>
+    <nav class="mobile-nav" id="mobile-menu" aria-label="Mobile navigation">
+      <a href="#protocol">Protocol</a>
+      <a href="#panel">Panel</a>
+      <a href="#evidence">Evidence</a>
+      <a href="#system">System</a>
+      <a href="#setup">Setup</a>
+      <a href="#security">Security</a>
+      <a href="https://github.com/Codevena/reviewgate">GitHub ↗</a>
+    </nav>
   </header>
 
   <main id="main">
-    <section class="hero shell" id="top">
-      <div class="hero-copy reveal">
-        <p class="system-label">SYS.04 / <strong>AGENT SAFETY LAYER</strong></p>
-        <h1>TRUST<br><span>REQUIRES</span><br>FRICTION.</h1>
-        <p class="lead">Reviewgate is the native Claude Code and Codex control loop between <strong>“code written”</strong> and <strong>“turn complete.”</strong> An independent LLM panel checks the actual diff, forces explicit decisions, and only releases the agent when the result is defensible.</p>
-        <div class="command" data-copy="npm i -g reviewgate"><i>›</i><code>npm i -g reviewgate</code><button>Copy command</button></div>
-        <div class="hero-actions"><a class="button primary" href="#setup">Arm your repo</a><a class="button ghost" href="https://github.com/Codevena/reviewgate">Read the source ↗</a></div>
-        <div class="hero-stats"><div><b>$0<sup>*</sup></b><span>OAuth-first</span></div><div><b>8/8</b><span>Seeded bugs found</span></div><div><b>MIT</b><span>Open source</span></div></div>
+    <section class="hero" id="top">
+      <div class="tunnel" aria-hidden="true"></div>
+      <span class="hero-code" id="cursor-readout">POINTER 0000:0000 / SIGNAL LOCKED</span>
+      <div class="hero-meta shell">
+        <p class="eyebrow">Blacksite protocol / Independent code verification</p>
+        <p class="coordinates">Claude Code + Codex / <b>Native stop enforcement</b></p>
       </div>
-      <div class="terminal-wrap reveal delay-1" aria-label="Simulated Reviewgate session">
-        <div class="terminal">
-          <div class="term-head"><span>LIVE / SESSION 7F3A</span><b><i></i> ENFORCING</b></div>
-          <div class="term-body" id="terminal-log">
-            <p><time>14:02:11</time> diff captured / 8 files / 312 lines</p>
-            <p><time>14:02:12</time> spawning panel: codex, gemini, claude</p>
-            <p><time>14:03:46</time> <span class="ok">codex complete</span> / 0 findings</p>
-            <p><time>14:04:03</time> <span class="bad">gemini critical</span> / evidence verified</p>
-            <div class="finding"><b>[CRITICAL] AUTHORIZATION BYPASS</b><p>Fallback path skips the ownership check when the cached record is present.</p><strong>src/api/delete.ts:117 · confidence 0.96</strong></div>
-            <p><time>14:04:04</time> turn intercepted → agent context injected</p>
-            <p class="muted"><time>14:06:18</time> agent patched delete.ts</p>
-            <div class="pass">✓ RE-REVIEW PASS — turn released with audit trail</div>
-          </div>
-          <div class="term-foot"><div>INSTALL<b>One command</b></div><div>CONFIGURE<b>Guided wizard</b></div><div>VERIFY<b>reviewgate doctor</b></div></div>
+      <h1 class="shell"><span>Nothing</span><span>passes</span><span>unseen.</span></h1>
+      <article class="intercept" aria-label="Example blocked Reviewgate finding">
+        <header><span>Signal 01</span><span>Critical</span></header>
+        <strong>Gate closed</strong>
+        <p>Turn intercepted. One blocking finding returned to the coding agent.</p>
+      </article>
+      <div class="hero-bottom shell">
+        <p>Reviewgate sits between <strong>“code written”</strong> and <strong>“turn complete.”</strong> It captures the actual change, runs independent reviewers and keeps non-PASS outcomes visible.</p>
+        <div class="command" data-copy="npm i -g reviewgate">
+          <span>›</span><code>npm i -g reviewgate</code><button type="button">Copy</button>
+        </div>
+        <a class="primary-cta" href="#setup">Arm the repo <span>↘</span></a>
+      </div>
+    </section>
+
+    <div class="transmission" aria-label="Reviewgate system properties">
+      <div>Fail closed <b>●</b> Native hooks <b>●</b> Six provider paths <b>●</b> Local state <b>●</b> Hash-chained audit <b>●</b> Fail closed <b>●</b> Native hooks <b>●</b> Six provider paths <b>●</b> Local state <b>●</b> Hash-chained audit <b>●</b></div>
+    </div>
+
+    <section class="section incident" id="incident">
+      <div class="incident-grid shell">
+        <div class="incident-copy reveal">
+          <p class="section-label">Case file / Incident 012</p>
+          <h2>Built to distrust<br>the <em>happy path.</em></h2>
+          <p>The easy product is “send a diff to a model.” Reviewgate is the hard part around it: <strong>catch the final tree, distinguish outage from PASS, demand decisions and preserve the evidence.</strong> Its strongest guards are scars from reviewing its own code.</p>
+          <a class="inline-link" href="https://github.com/Codevena/reviewgate">Inspect the source ↗</a>
+        </div>
+        <div class="filmstrip reveal">
+          <div class="sprockets" aria-hidden="true"></div>
+          <article class="frame">
+            <div class="frame-head"><span>Reviewer / Independent panel</span><span>Frame 0118</span></div>
+            <div class="finding">
+              <span>[Critical] authorization bypass</span>
+              <h3>Cached ownership<br>check is skipped.</h3>
+              <p>Fallback path trusts the record before validating that the current actor owns the resource.</p>
+            </div>
+            <div class="frame-foot">src/api/delete.ts:117 / Evidence verified / Confidence .96</div>
+          </article>
+          <div class="sprockets" aria-hidden="true"></div>
         </div>
       </div>
-      <div class="scroll-cue">SCROLL TO INSPECT <span>↓</span></div>
     </section>
 
-    <section class="marquee" aria-label="Supported providers"><div>CODEX <i>✦</i> GEMINI <i>✦</i> CLAUDE <i>✦</i> OPENCODE <i>✦</i> OPENROUTER <i>✦</i> OLLAMA <i>✦</i> CODEX <i>✦</i> GEMINI <i>✦</i> CLAUDE <i>✦</i></div></section>
-
-    <section class="section shell thesis" id="why">
-      <div class="section-index">01 / THE PROBLEM</div>
-      <div><p class="eyebrow">The writer cannot be the checker</p><h2>Your agent saying<br>“done” is not evidence.</h2></div>
-      <div class="thesis-copy"><p>AI coding agents are excellent generators. They are not independent verifiers of their own work. A green test suite can miss a broken provider schema. A confident reviewer can hallucinate a line that does not exist. A quota outage can look exactly like “zero findings.”</p><p>Reviewgate turns completion from a claim into a protocol.</p></div>
-    </section>
-
-    <section class="section shell" id="how">
-      <div class="section-head"><div class="section-index">02 / CONTROL FLOW</div><div><p class="eyebrow">Inside the agent loop</p><h2>Four stages.<br>One hard stop.</h2></div></div>
-      <div class="flow">
-        <article><span>01</span><i>EDIT</i><h3>Agent writes</h3><p>Claude Code or Codex edits as usual. Native PostToolUse hooks plus final tree fingerprints capture the change.</p></article>
-        <article><span>02</span><i>INTERCEPT</i><h3>Gate captures</h3><p>When the agent tries to stop, Reviewgate collects the full batch diff.</p></article>
-        <article class="active"><span>03</span><i>CHALLENGE</i><h3>Panel reviews</h3><p>Independent models inspect the diff with research context, critic and consensus.</p></article>
-        <article><span>04</span><i>RESOLVE</i><h3>Decision required</h3><p>Fix or reject-with-reason. Blocking findings trigger another review before release.</p></article>
+    <section class="section protocol" id="protocol">
+      <div class="protocol-grid shell">
+        <div class="protocol-copy reveal">
+          <p class="section-label">Turn 07F3A / Lifecycle trace</p>
+          <h2>The stop<br><em>becomes a loop.</em></h2>
+          <p>Blocking findings send the coding agent back into the same turn. Bounded deferral and escalation prevent both silent failure and infinite churn.</p>
+        </div>
+        <div class="timeline reveal">
+          <article class="event">
+            <span>14:02:11</span><div><h3>Change captured</h3><p>PostToolUse hooks plus final HEAD and working-tree fingerprints capture committed and uncommitted work.</p></div><i>Edit</i>
+          </article>
+          <article class="event">
+            <span>14:02:12</span><div><h3>Risk classified</h3><p>Deterministic checks, diff facts and sensitivity tags choose the necessary review depth.</p></div><i>Triage</i>
+          </article>
+          <article class="event">
+            <span>14:02:13</span><div><h3>Panel deployed</h3><p>Independent providers inspect the diff with project research, evidence checks and optional critic.</p></div><i>Review</i>
+          </article>
+          <article class="event alert">
+            <span>14:04:03</span><div><h3>Critical signal verified</h3><p>The turn is blocked. Findings and source evidence return through plain local files.</p></div><i>Gate closed</i>
+          </article>
+          <article class="event">
+            <span>14:06:18</span><div><h3>Agent patches</h3><p>The authoring agent fixes the path and records an explicit disposition for the finding.</p></div><i>Continue</i>
+          </article>
+          <article class="event pass">
+            <span>14:07:41</span><div><h3>Re-review pass</h3><p>The content-true tree fingerprint is recorded and the turn may finish with an audit trail.</p></div><i>Gate open</i>
+          </article>
+        </div>
       </div>
     </section>
 
-    <section class="section proof" id="proof">
-      <div class="shell proof-grid">
-        <div><div class="section-index">03 / EVIDENCE</div><p class="eyebrow">Measured, not asserted</p><h2>Built from<br>failure modes.</h2><p class="large-copy">The easy demo is “send a diff to an LLM.” The product is everything that stops an unreviewed change from quietly becoming green.</p><a class="text-link" href="https://github.com/Codevena/reviewgate/tree/master/bench">Inspect the benchmark →</a></div>
+    <section class="section witnesses" id="panel">
+      <div class="shell">
+        <div class="witness-head reveal">
+          <div><p class="section-label">Witness roster / Heterogeneous by design</p><h2>One author.<br><em>Six perspectives.</em></h2></div>
+          <p>Start with one working reviewer. Add different providers because their blind spots do not overlap perfectly. OAuth-first CLIs can use existing eligible subscription quota.</p>
+        </div>
+        <div class="provider-wall reveal">
+          <article class="provider"><div class="provider-meta"><span>01 / Primary</span><span>OAuth</span></div><h3>Codex</h3><p>Recommended default reviewer</p></article>
+          <article class="provider"><div class="provider-meta"><span>02 / Panel</span><span>OAuth</span></div><h3>Gemini</h3><p>Independent CLI perspective</p></article>
+          <article class="provider"><div class="provider-meta"><span>03 / Panel</span><span>OAuth</span></div><h3>Claude</h3><p>Additional reasoning path</p></article>
+          <article class="provider"><div class="provider-meta"><span>04 / Flexible</span><span>CLI auth</span></div><h3>OpenCode</h3><p>Configurable local CLI models</p></article>
+          <article class="provider"><div class="provider-meta"><span>05 / Hosted</span><span>API key</span></div><h3>OpenRouter</h3><p>Hosted models by provider slug</p></article>
+          <article class="provider"><div class="provider-meta"><span>06 / Local</span><span>Endpoint</span></div><h3>Ollama</h3><p>Local or cloud OpenAI-compatible API</p></article>
+        </div>
+        <p class="provider-caveat">“$0” means no additional per-review Reviewgate charge when an official OAuth CLI uses an existing eligible subscription quota. Provider limits still apply. OpenRouter and some Ollama configurations use API billing.</p>
+      </div>
+    </section>
+
+    <section class="section proof" id="evidence">
+      <div class="proof-layout shell reveal">
+        <div>
+          <p class="section-label">Ground truth / Current alpha evidence</p>
+          <h2>8 / 8<br><em>bugs found.</em></h2>
+          <a class="proof-link" href="https://github.com/Codevena/reviewgate/tree/master/bench">Inspect the benchmark ↗</a>
+        </div>
         <div class="metrics">
-          <article><b>8<span>/8</span></b><h3>Seeded security bugs caught</h3><p>Full recall on the labelled ground-truth smoke corpus.</p></article>
-          <article><b>0.90<span>→</span>0.40</b><h3>Clean-code false-positive rate</h3><p>The demote-only critic cut noise with zero recall cost.</p></article>
-          <article><b>FAIL<span>—</span>CLOSED</b><h3>Errors never impersonate passes</h3><p>Crash, timeout, quota exhaustion or missing reviewer blocks instead of waving through.</p></article>
+          <div class="metric"><b>.90 → .40</b><span>Clean-code false-positive rate after critic</span></div>
+          <div class="metric"><b>0 recall lost</b><span>On the 18-case labelled smoke corpus</span></div>
+          <div class="metric"><b>MIT / LOCAL</b><span>Open source, plain-file control plane</span></div>
+          <small>Small-N benchmark, published with its real limits: 18 hand-labelled smoke cases. Inspect every case and matcher in the repository.</small>
         </div>
       </div>
-      <div class="incident shell"><div class="incident-no">INCIDENT<br>012</div><blockquote>“Eleven reviews said merge. The twelfth found the fail-open.”</blockquote><p>Reviewgate dogfoods itself. Its strongest guards are scars from real failures found while reviewing its own code.</p></div>
     </section>
 
-    <section class="section shell benefits">
-      <div class="section-head"><div class="section-index">04 / WHY REVIEWGATE</div><div><p class="eyebrow">A review is only useful if it changes the loop</p><h2>Not another<br>PR comment bot.</h2></div></div>
-      <div class="benefit-grid">
-        <article><i>⌁</i><h3>In-loop enforcement</h3><p>The Stop hook prevents the agent from ending its turn while real findings remain.</p></article>
-        <article><i>≠</i><h3>Heterogeneous panel</h3><p>Codex, Gemini, Claude, OpenRouter or Ollama bring independent failure patterns.</p></article>
-        <article><i>◇</i><h3>Less reviewer noise</h3><p>Fact checks, critic demotion, consensus, diff scope and learned FP history calibrate findings.</p></article>
-        <article><i>▱</i><h3>Inspectable by design</h3><p>Findings, decisions, state and tamper-evident audit events live in plain files.</p></article>
-        <article><i>↻</i><h3>Bounded loops</h3><p>Stuck signatures, iteration limits and cost caps escalate honestly to a human.</p></article>
-        <article><i>$</i><h3>OAuth-first</h3><p>Use existing provider CLI subscriptions within their quotas, or bring an API model.</p></article>
+    <section class="section system" id="system">
+      <div class="shell">
+        <div class="system-head reveal">
+          <div><p class="section-label">System map / More than an LLM call</p><h2>Every quiet failure<br><em>gets a sensor.</em></h2></div>
+          <p>Reviewgate combines deterministic evidence, model disagreement and persistent local state. A model is one component—not the control plane.</p>
+        </div>
+        <div class="system-grid reveal">
+          <article><span>PRE / 01</span><h3>Deterministic checks</h3><p>Run typecheck, lint, build or tests before inference. A non-zero exit becomes a non-rejectable CRITICAL.</p><b>phases.checks</b></article>
+          <article><span>CTX / 02</span><h3>Research context</h3><p>Diff facts, conventions, symbol relationships and referenced documents ground the review.</p><b>tree-sitter + rg</b></article>
+          <article><span>RUN / 03</span><h3>Critic & consensus</h3><p>A demote-only critic, evidence checks, severity vetoes and consensus reduce noise without inventing a pass.</p><b>precision layer</b></article>
+          <article><span>OPS / 04</span><h3>Quota & deadline control</h3><p>Budget-aware fallbacks, cooldowns and bounded deferral keep outages visible and loops finite.</p><b>fail-closed</b></article>
+          <article><span>CTL / 05</span><h3>Decision protocol</h3><p>Every blocking finding needs a fixed, verified-not-applicable or reasoned human disposition.</p><b>JSONL ledger</b></article>
+          <article><span>AUD / 06</span><h3>Tamper-evident audit</h3><p>Every run appends SHA-256 hash-chained JSONL events that can be verified locally later.</p><b>audit verify</b></article>
+          <article><span>CFG / 07</span><h3>Policy control plane</h3><p>Config changes run under the last-known-good policy. Weakening or non-monotonic changes require human approval.</p><b>separate fingerprint</b></article>
+          <article><span>LAB / 08</span><h3>Benchmark harness</h3><p>Measure precision, recall, repeated runs, provider rosters and suppression-layer ablations.</p><b>bench run · matrix</b></article>
+        </div>
       </div>
     </section>
 
     <section class="section memory" id="memory">
-      <div class="shell"><div class="section-head"><div class="section-index">05 / MEMORY SYSTEM</div><div><p class="eyebrow">Four feedback loops, four different jobs</p><h2>The gate gets<br>better with context.</h2><p class="large-copy">Reviewgate does not hide every kind of knowledge inside one opaque memory. Project intent, validated facts, agent mistakes and reviewer noise each have a separate trust boundary.</p></div></div>
-        <div class="memory-map">
-          <article class="memory-card lore"><header><span>01</span><i>HUMAN → REVIEWER</i></header><h3>Lore</h3><p>Maintainer-authored <strong>why-knowledge</strong>: invariants, decisions and gotchas anchored to real files.</p><ul><li>Draft → canon with explicit approval</li><li>Relevant-only context injection</li><li>Content-hash freshness checks</li><li>Verdict-neutral stale reminders</li></ul><code>reviewgate lore status</code><code>reviewgate lore verify --all</code><footer>OPT-IN · COMMITTED · TRUSTED</footer></article>
-          <article class="memory-card brain"><header><span>02</span><i>REPO → REVIEWER</i></header><h3>Brain & Curator</h3><p>A committed repository memory whose proposed facts must pass a non-blocking validator before recall.</p><ul><li>Relevant semantic retrieval</li><li>Source authority and quorum rules</li><li>Embedding-based deduplication</li><li>Revocable and inspectable entries</li></ul><code>reviewgate brain list</code><code>reviewgate brain revoke --id &lt;id&gt;</code><footer>OPT-IN · CURATED · REVOCABLE</footer></article>
-          <article class="memory-card lessons"><header><span>03</span><i>FINDING → AGENT</i></header><h3>Agent Lessons</h3><p>Accepted-and-fixed findings become durable guidance for the coding agent, not merely another reviewer statistic.</p><ul><li>Learns from verified real mistakes</li><li>Detects recurring rule patterns</li><li>Injects top lessons at SessionStart</li><li>Shows recurrence in pending reports</li></ul><code>reviewgate learn status</code><footer>AGENT-FACING · FAIL-SAFE</footer></article>
-          <article class="memory-card fp"><header><span>04</span><i>DECISION → CALIBRATION</i></header><h3>FP Ledger & Reputation</h3><p>Substantive human rejections teach the gate which reviewer patterns repeatedly produce noise.</p><ul><li>Candidate → active → sticky lifecycle</li><li>Per-reviewer track records</li><li>Pin, unpin, cluster and audit</li><li>Demotion only — never invents a pass</li></ul><code>reviewgate fp list</code><code>reviewgate fp audit</code><footer>REVIEWER-FACING · EXPLAINABLE</footer></article>
-          <div class="memory-core"><span>REVIEW</span><b>TRUST<br>ROUTER</b><small>Only the right knowledge reaches the right actor.</small></div>
+      <div class="memory-grid shell reveal">
+        <div class="memory-copy">
+          <p class="section-label">Cold storage / Four trust boundaries</p>
+          <h2>Memory with<br><em>named owners.</em></h2>
+          <p>Reviewgate does not hide every kind of knowledge in one opaque blob. Project intent, validated facts, agent mistakes and reviewer noise each have a separate author and consumer.</p>
+          <a class="inline-link" href="https://github.com/Codevena/reviewgate#memory--learning">Read the memory model ↗</a>
         </div>
-        <div class="lore-deep"><div><p class="eyebrow">Lore lifecycle</p><h3>Why-knowledge that cannot quietly rot.</h3></div><div class="lore-flow"><span><b>01</b>DRAFT<small>Never injected</small></span><i>→</i><span><b>02</b>CANON<small>Human approval required</small></span><i>→</i><span><b>03</b>RELEVANT<small>Anchors overlap the diff</small></span><i>→</i><span><b>04</b>STALE?<small>Hash changed → reminder</small></span></div><aside><b>TRUST RULE</b> Only approved canon is injected. A malformed Lore entry never blocks code review, and Lore never changes the review verdict.</aside></div>
-      </div>
-    </section>
-
-    <section class="section shell capabilities" id="capabilities">
-      <div class="section-head"><div class="section-index">06 / FULL CAPABILITY MAP</div><div><p class="eyebrow">The complete system</p><h2>More than an<br>LLM panel.</h2></div></div>
-      <div class="cap-grid">
-        <article><span>PRE-01</span><h3>Deterministic checks</h3><p>Run typecheck, lint, build and tests before inference. The first non-zero exit becomes a non-rejectable CRITICAL.</p><b>phases.checks</b></article>
-        <article><span>PRE-02</span><h3>Adaptive triage</h3><p>Doc-only changes pass at $0. Auth, crypto, payment and admin paths receive expanded review budgets.</p><b>risk-aware</b></article>
-        <article><span>CTX-01</span><h3>Research context</h3><p>Changed-file facts, project conventions, plan references and relevant documentation ground every reviewer.</p><b>research.md</b></article>
-        <article><span>CTX-02</span><h3>Symbol graph</h3><p>Tree-sitter maps changed TS, JS, TSX, JSX and Python symbols plus callers for stable, contextual findings.</p><b>tree-sitter + rg</b></article>
-        <article><span>RUN-01</span><h3>Parallel review panel</h3><p>Independent providers and personas run concurrently with cross-reviewer consensus tracking.</p><b>6 provider paths</b></article>
-        <article><span>RUN-02</span><h3>Critic & aggregation</h3><p>A demote-only adversarial critic, severity vetoes and evidence checks reduce noise without silently forgiving risk.</p><b>precision layer</b></article>
-        <article><span>RUN-03</span><h3>Quota failover</h3><p>Provider exhaustion triggers bounded cooldowns and configured fallbacks; primaries resume automatically.</p><b>deadline-aware</b></article>
-        <article><span>RUN-04</span><h3>Content cache</h3><p>A byte-identical reviewed tree returns its prior verdict without spending reviewer time or quota.</p><b>content-addressed</b></article>
-        <article><span>CTL-01</span><h3>Decision protocol</h3><p>Every blocking ID needs a fixed, verified-not-applicable, deferred or reasoned-rejection disposition.</p><b>JSONL ledger</b></article>
-        <article><span>CTL-02</span><h3>Bounded escalation</h3><p>Iteration caps, stuck signatures, cost limits and contested-review thresholds hand control to a human.</p><b>ESCALATION.md</b></article>
-        <article><span>OPS-01</span><h3>Pre-push warning</h3><p>The installed Git hook warns when a pushed commit has no recorded clean Reviewgate PASS, without blocking Git.</p><b>commit evidence</b></article>
-        <article><span>OPS-02</span><h3>Completion signals</h3><p>Explicit GATE OPEN/GATE CLOSED stderr output, optional desktop notifications and acknowledge-pass mode distinguish silence from success.</p><b>notify.desktop</b></article>
-        <article><span>LAB-01</span><h3>Plan & spec review</h3><p>Run the same adversarial reviewer system against one or more Markdown plans before writing code.</p><b>review-plan</b></article>
-        <article><span>LAB-02</span><h3>Benchmark harness</h3><p>Measure precision, recall, repeats, provider rosters and suppression-layer ablations on labelled cases.</p><b>bench run · matrix</b></article>
-        <article><span>OBS-01</span><h3>Stats & reports</h3><p>Inspect gate outcomes, learning state and weekly trends without needing a hosted dashboard.</p><b>stats · report</b></article>
-        <article><span>DEV-01</span><h3>Cassette replay</h3><p>Record and replay provider interactions for deterministic integration testing and adapter debugging.</p><b>developer tooling</b></article>
+        <div class="memory-ledger">
+          <article><span>01 / Human → Reviewer</span><h3>Lore</h3><p>Maintainer-approved why-knowledge, anchored to files and checked for staleness.</p><b>draft → canon</b></article>
+          <article><span>02 / Repo → Reviewer</span><h3>Brain & Curator</h3><p>Curated repository facts proposed, validated, recalled and explicitly revocable.</p><b>opt-in</b></article>
+          <article><span>03 / Finding → Agent</span><h3>Agent Lessons</h3><p>Accepted-and-fixed mistakes become bounded guidance at the next session start.</p><b>agent-facing</b></article>
+          <article><span>04 / Decision → Calibration</span><h3>FP Ledger</h3><p>Substantive human rejections calibrate reviewer patterns and reputation over time.</p><b>demote only</b></article>
+        </div>
       </div>
     </section>
 
     <section class="section setup" id="setup">
-      <div class="shell"><div class="section-head"><div class="section-index">07 / QUICKSTART</div><div><p class="eyebrow">Zero to an armed repo</p><h2>Five minutes.<br>No service to deploy.</h2></div></div>
-        <div class="setup-grid"><div class="steps" role="tablist" aria-label="Setup steps">
-          <button class="step active" role="tab" aria-selected="true" aria-controls="setup-code" data-step="1"><span>01</span><div><b>Install the binary</b><small>Prebuilt for macOS and Linux</small></div></button>
-          <button class="step" role="tab" aria-selected="false" aria-controls="setup-code" data-step="2"><span>02</span><div><b>Run one init</b><small>Complete first-run flow</small></div></button>
-          <button class="step" role="tab" aria-selected="false" aria-controls="setup-code" data-step="3"><span>03</span><div><b>Choose hosts & policy</b><small>Claude, Codex, reviewers, safety</small></div></button>
-          <button class="step" role="tab" aria-selected="false" aria-controls="setup-code" data-step="4"><span>04</span><div><b>Trust & verify</b><small>Codex hooks and doctor</small></div></button>
-        </div><div class="code-panel"><div class="code-top"><span id="setup-title">TERMINAL / 01 INSTALL</span><button data-copy-target="#setup-code">COPY COMMAND</button></div><pre id="setup-code" role="tabpanel" aria-live="polite"><code><span class="comment"># Install your platform's prebuilt binary</span>
-<span class="prompt">$</span> npm i -g reviewgate
+      <div class="shell">
+        <div class="setup-head reveal">
+          <div><p class="section-label">Deployment order / Complete first run</p><h2>One init.<br><em>The whole setup.</em></h2></div>
+          <p>No hosted service. The guided flow configures policy, reviewers, hosts, hooks, last-known-good state and health checks inside the repository.</p>
+        </div>
 
-<span class="ok">✓ reviewgate installed globally</span></code></pre><p class="step-note" id="setup-note">The npm package installs only the prebuilt binary for your operating system and CPU architecture.</p></div></div>
-        <div class="requirements"><b>REQUIREMENTS</b><span>macOS or Linux</span><span>git</span><span>At least one reviewer CLI or API provider</span><span>Windows via WSL2</span></div>
-        <div class="trust-explainer">
-          <div class="trust-copy"><span class="system-label">CODEX ACTIVATION / USER CONTROLLED</span><h3>Installed is not active yet.</h3><p><code>reviewgate init</code> writes the project hooks. Codex then asks <em>you</em> to inspect and trust their exact current hash through <code>/hooks</code>. Until that happens, Codex skips the new commands.</p><p class="trust-answer"><b>Can Reviewgate approve itself?</b> No—and that is the security feature. A repository installer or coding agent silently approving its own shell commands would make the trust review meaningless.</p><a class="text-link" href="https://github.com/Codevena/reviewgate/blob/master/docs/codex-host.md">Read the Codex activation guide →</a></div>
-          <ol aria-label="Codex activation states"><li><span>01</span><div><b>Installed</b><small>hooks.json + shims exist</small></div></li><li><span>02</span><div><b>Reviewed</b><small>Open <code>/hooks</code> in Codex</small></div></li><li><span>03</span><div><b>Trusted</b><small>Exact hash can execute</small></div></li></ol>
+        <div class="setup-console reveal">
+          <div class="setup-steps" role="tablist" aria-label="Reviewgate setup steps">
+            <button class="setup-step active" type="button" role="tab" aria-selected="true" aria-controls="setup-code" tabindex="0" data-step="1"><span>01</span><div><b>Install binary</b><small>macOS + Linux, arm64 + x64</small></div></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="2"><span>02</span><div><b>Run init</b><small>One canonical first-run flow</small></div></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="3"><span>03</span><div><b>Choose policy</b><small>Hosts, panel, safety, memory</small></div></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="4"><span>04</span><div><b>Trust & verify</b><small>Codex user checkpoint + Doctor</small></div></button>
+          </div>
+          <div class="setup-output">
+            <header><span id="setup-title">Terminal / 01 install</span><button type="button" data-copy-target="#setup-code">Copy command</button></header>
+            <pre id="setup-code" role="tabpanel" aria-live="polite"><code><span class="code-comment"># Install the prebuilt binary for this machine</span>
+<span class="code-prompt">$</span> npm i -g reviewgate
+
+<span class="code-ok">✓ reviewgate installed</span></code></pre>
+            <p id="setup-note">The npm package selects the matching native binary for your operating system and CPU architecture.</p>
+          </div>
+        </div>
+
+        <div class="requirements reveal"><b>Requirements</b><span>macOS or Linux</span><span>git</span><span>One reviewer CLI or API provider</span><span>Windows via WSL2</span></div>
+
+        <div class="trust-panel reveal">
+          <div class="trust-copy">
+            <p class="section-label">Codex activation / User controlled</p>
+            <h3>Installed is not active yet.</h3>
+            <p><code>reviewgate init</code> writes the project hooks. Codex then asks <em>you</em> to inspect and trust their exact current hash through <code>/hooks</code>. Until that happens, Codex skips the new commands.</p>
+            <p class="trust-answer"><b>Can Reviewgate approve itself?</b> No—and that is the security feature. A repository installer or coding agent silently approving its own commands would make the checkpoint meaningless.</p>
+            <a class="inline-link" href="https://github.com/Codevena/reviewgate/blob/master/docs/codex-host.md">Read the Codex activation guide ↗</a>
+          </div>
+          <ol aria-label="Codex activation states">
+            <li><span>01</span><div><b>Installed</b><small>hooks.json + shims exist</small></div></li>
+            <li><span>02</span><div><b>Reviewed</b><small>Open <code>/hooks</code> in Codex</small></div></li>
+            <li><span>03</span><div><b>Trusted</b><small>The exact hash may execute</small></div></li>
+          </ol>
         </div>
       </div>
     </section>
 
-    <section class="section shell providers"><div class="section-head"><div class="section-index">08 / PROVIDERS</div><div><p class="eyebrow">Start with one. Add disagreement later.</p><h2>Your models.<br>Your quotas.</h2></div></div>
-      <div class="provider-table"><div class="table-head"><span>PROVIDER</span><span>AUTH</span><span>BEST FOR</span><span>STATUS</span></div>
-        <div><b>Codex CLI</b><span>OAuth</span><span>Recommended default</span><i>READY</i></div><div><b>Gemini CLI</b><span>OAuth</span><span>Panel diversity</span><i>READY</i></div><div><b>Claude Code</b><span>OAuth</span><span>Additional perspective</span><i>READY</i></div><div><b>OpenCode</b><span>CLI auth</span><span>Configurable CLI models</span><i>READY</i></div><div><b>OpenRouter</b><span>API key</span><span>Any hosted model by slug</span><i>READY</i></div><div><b>Ollama</b><span>API key / local</span><span>Cloud or local endpoint</span><i>READY</i></div>
-      </div><p class="fineprint">* “$0” means no additional per-review charge when using official OAuth CLIs within an existing eligible subscription quota. Provider limits still apply.</p>
-    </section>
-
-    <section class="section security" id="security"><div class="shell security-grid"><div><div class="section-index">09 / SECURITY MODEL</div><p class="eyebrow">Trust boundaries, stated plainly</p><h2>Strong defaults<br>start with honesty.</h2></div><div class="security-list">
-      <article><span>01</span><div><h3>Diff sanitisation</h3><p>Unicode normalisation, injection-marker neutralisation, fenced wrapping, secret redaction and persona reaffirmation.</p></div></article>
-      <article><span>02</span><div><h3>Tamper-evident audit</h3><p>Every run appends a SHA-256 hash-chained JSONL event that can be verified later.</p></div></article>
-      <article><span>03</span><div><h3>Opt-in denylist sandbox</h3><p>Seatbelt and bubblewrap restrict writes and mask known secret paths. This is not a host read allowlist.</p></div></article>
-      <aside><b>ALPHA CAVEAT</b><p>Sandboxing is opt-in, other non-denied host files may remain readable, and network egress is not isolated. Gemini/agy and OpenCode are agentic CLIs with permission-bypass mode. Prefer your own code and trusted repositories.</p><a href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Read the full threat model →</a></aside>
-    </div></div></section>
-
-    <section class="section shell docs" id="docs"><div class="section-head"><div class="section-index">10 / CLI & OPERATIONS</div><div><p class="eyebrow">No hidden control plane</p><h2>Everything is<br>inspectable.</h2></div></div>
-      <div class="docs-layout"><aside class="docs-nav"><b>COMMAND GROUPS</b><a href="#cli-core">Core loop</a><a href="#cli-knowledge">Knowledge</a><a href="#cli-evidence">Evidence</a><a href="#operations">Operations</a></aside><div class="command-groups">
-        <section id="cli-core"><h3>Core loop</h3><div class="cmd-row"><code>reviewgate init [--host claude|codex|both]</code><p>Configure every first-run decision, install native hooks, record LKG and run doctor.</p></div><div class="cmd-row"><code>reviewgate init --hooks-only --host both</code><p>Repair or re-bake hooks without changing configuration.</p></div><div class="cmd-row"><code>/hooks <span>(inside Codex)</span></code><p>Review and trust the exact project-hook hash. This user action activates newly installed or changed Codex hooks.</p></div><div class="cmd-row"><code>reviewgate setup</code><p>Compatibility alias for the guided init wizard; <code>--global</code> remains config-only.</p></div><div class="cmd-row"><code>reviewgate config status | approve</code><p>Inspect policy fingerprints or approve a reviewed candidate from a TTY.</p></div><div class="cmd-row"><code>reviewgate doctor</code><p>Health-check hook files, providers, sandbox and budgets. Codex keeps its per-hash trust state private, so Doctor cannot certify activation.</p></div><div class="cmd-row"><code>reviewgate gate</code><p>Review the current diff manually.</p></div><div class="cmd-row"><code>reviewgate reset</code><p>Re-arm session state while preserving learned memory.</p></div><div class="cmd-row"><code>reviewgate review-plan &lt;file…&gt;</code><p>One-shot review for plans and specifications.</p></div></section>
-        <section id="cli-knowledge"><h3>Knowledge & learning</h3><div class="cmd-row"><code>reviewgate lore status</code><p>Inspect Lore status, freshness and anchors.</p></div><div class="cmd-row"><code>reviewgate lore verify &lt;slug&gt; | --all</code><p>Refresh Lore hashes and verification dates.</p></div><div class="cmd-row"><code>reviewgate brain list | show --id | revoke --id</code><p>Inspect and govern committed repo memory.</p></div><div class="cmd-row"><code>reviewgate fp list | show | pin | unpin</code><p>Manage known false-positive patterns.</p></div><div class="cmd-row"><code>reviewgate fp clusters | audit</code><p>Inspect grouping and ledger health.</p></div><div class="cmd-row"><code>reviewgate learn status</code><p>View learning subsystem state.</p></div></section>
-        <section id="cli-evidence"><h3>Evidence & measurement</h3><div class="cmd-row"><code>reviewgate audit verify --file &lt;jsonl&gt;</code><p>Verify the tamper-evident audit hash chain.</p></div><div class="cmd-row"><code>reviewgate bench run</code><p>Run labelled benchmark cases.</p></div><div class="cmd-row"><code>reviewgate bench report</code><p>Render benchmark results.</p></div><div class="cmd-row"><code>reviewgate bench matrix</code><p>Ablate suppression layers and compare deltas.</p></div><div class="cmd-row"><code>reviewgate stats</code><p>Inspect review activity and outcomes.</p></div><div class="cmd-row"><code>reviewgate report</code><p>Generate a weekly operational report.</p></div></section>
-      </div></div>
-      <div class="ops-grid" id="operations"><article><b>WORKTREES</b><h3>Initialize each checkout.</h3><p>Git worktrees do not inherit the main checkout’s hooks or `.reviewgate/` state. Run <code>reviewgate init</code> inside every worktree you want gated.</p></article><article><b>SHARED CHECKOUTS</b><h3>Foreign work stays visible.</h3><p>Baseline-delta ownership distinguishes session work. Committed foreign security/correctness changes escalate rather than being silently disowned.</p></article><article><b>STATE FILES</b><h3>Plain files, not a SaaS database.</h3><p><code>pending.md</code>, decisions, state, audit logs and escalations live under `.reviewgate/` for humans and agents to inspect.</p></article><article><b>CONFIGURATION</b><h3>Data-only control plane.</h3><p><code>reviewgate.config.ts</code> is parsed, never executed. Changes run under the last-known-good policy; weakenings require TTY approval.</p></article></div>
-    </section>
-
-    <section class="section shell faq" id="faq"><div class="section-head"><div class="section-index">11 / FAQ</div><div><p class="eyebrow">The short answers</p><h2>Before you<br>arm the gate.</h2></div></div>
-      <div class="faq-list">
-        <details><summary>What exactly does Reviewgate do?<i>+</i></summary><p>It installs native repository hooks into Claude Code, Codex, or both. When files change and the agent tries to stop, Reviewgate sends the collected diff to an independent reviewer panel, aggregates findings and blocks unresolved findings; bounded outage and non-convergence exits are labelled as defer or human escalation, never PASS.</p></details>
-        <details><summary>Does Codex require an extra activation step?<i>+</i></summary><p>Yes. Installation and activation are separate: init writes <code>.codex/hooks.json</code>, then the user opens Codex <code>/hooks</code>, inspects SessionStart/PostToolUse/Stop and trusts their exact current hash. Codex skips a new or changed hash until it is trusted again.</p></details>
-        <details><summary>Can Reviewgate or the coding agent approve Codex hooks for me?<i>+</i></summary><p>No. The repository installer and authoring agent are exactly what this checkpoint constrains. Reviewgate can inspect the file and verify its own shims, timeouts and binary, but Codex keeps the user’s hash-trust decision private. Reviewgate never invokes the documented danger bypass.</p></details>
-        <details><summary>Why can Doctor show two warnings after a healthy install?<i>+</i></summary><p>The Codex warning means hook files are installed but their user-controlled activation cannot be observed by Reviewgate. A separate “reviewer reputation … demoting” warning means local adjudication history placed one reviewer below the configured trust floor; it is calibration, not a hook, login or provider-outage error.</p></details>
-        <details><summary>Does it write or commit code?<i>+</i></summary><p>No. Reviewgate reports and enforces. The coding agent makes fixes; you still inspect the final diff and commit manually.</p></details>
-        <details><summary>Do I need every supported provider?<i>+</i></summary><p>No. One working reviewer is enough to start. A heterogeneous panel improves independence and consensus.</p></details>
-        <details><summary>Is it really free to run?<i>+</i></summary><p>The official Codex, Gemini and Claude CLIs can use your existing subscription quota through OAuth, so there is no separate per-review Reviewgate charge. OpenRouter and some Ollama configurations use API billing.</p></details>
-        <details><summary>What happens when a provider times out or hits quota?<i>+</i></summary><p>An unsuccessful review is never interpreted as a clean pass. Reviewgate can fail over, track cooldowns, block, or use a bounded and explicitly labelled defer/escalation path.</p></details>
-        <details><summary>How does Reviewgate handle false positives?<i>+</i></summary><p>It combines deterministic evidence checks, diff scoping, a demote-only critic, reviewer consensus, reputation and a false-positive ledger. A demoted CRITICAL still requires an explicit decision.</p></details>
-        <details><summary>Can the agent get stuck forever?<i>+</i></summary><p>No. Iterations, cost and repeated signatures are bounded. When Reviewgate cannot converge, it writes ESCALATION.md and hands control to a human instead of looping indefinitely.</p></details>
-        <details><summary>What platforms are supported?<i>+</i></summary><p>Prebuilt binaries support macOS and Linux on arm64 and x64. Windows users should run it through WSL2.</p></details>
-        <details><summary>Is Reviewgate production-ready?<i>+</i></summary><p>It is actively dogfooded but still alpha software. Review the security model, start on trusted code, run reviewgate doctor and perform the documented smoke test before relying on it.</p></details>
-        <details><summary>Where are findings and decisions stored?<i>+</i></summary><p>Under .reviewgate/ as plain Markdown and JSON/JSONL files, including pending.md, decisions, state, audit events and ESCALATION.md.</p></details>
-        <details><summary>What is the difference between Lore, Brain, Agent Lessons and the FP Ledger?<i>+</i></summary><p>Lore is maintainer-approved project intent injected into reviewers. Brain is curated repository knowledge proposed and validated over time. Agent Lessons teach the coding agent from accepted-and-fixed mistakes. The FP Ledger calibrates reviewers from substantive human rejections. They are separate because each has a different author, consumer and trust boundary.</p></details>
-        <details><summary>Can Reviewgate run tests and typechecks before using an LLM?<i>+</i></summary><p>Yes. Configure phases.checks with ordered commands. They run fail-fast before the panel; a failure becomes a non-rejectable CRITICAL, while a timeout fails closed.</p></details>
-        <details><summary>Does Reviewgate work in Git worktrees?<i>+</i></summary><p>Yes, but each worktree is a separate checkout and must be initialized independently. Run reviewgate init inside it. Doctor reports an ungated linked worktree as a failure.</p></details>
-        <details><summary>Can I review a plan before implementation?<i>+</i></summary><p>Yes. Use reviewgate review-plan with one or more Markdown files for a one-shot adversarial review without entering the code Stop-hook loop.</p></details>
-        <details><summary>How do I know a clean pass really happened?<i>+</i></summary><p>The gate emits an explicit GATE OPEN or GATE CLOSED completion signal; defer and escalation have their own non-PASS labels. Optional desktop notifications and acknowledgePass make completion visible as well.</p></details>
+    <section class="section security" id="security">
+      <div class="security-layout shell">
+        <div class="security-copy reveal">
+          <p class="section-label">Threat model / Stated plainly</p>
+          <h2>Strong controls.<br><em>Honest limits.</em></h2>
+          <p>Reviewgate is a local enforcement layer inside the agent loop—not a cryptographic boundary against a malicious machine owner.</p>
+          <a class="inline-link" href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Read the full threat model ↗</a>
+        </div>
+        <div class="security-list reveal">
+          <article><span>01</span><div><h3>Denylist read model</h3><p>Strict and permissive sandboxes mask known secret paths and isolate writes. Other non-denied host files may remain readable.</p></div></article>
+          <article><span>02</span><div><h3>Network remains open</h3><p>Reviewer subprocess network egress is not isolated. Gemini and OpenCode are agentic CLIs, so strict sandboxing matters especially for them.</p></div></article>
+          <article><span>03</span><div><h3>Worktrees are separate</h3><p>Every git worktree needs its own <code>reviewgate init</code>. Hooks and state do not propagate from the main checkout.</p></div></article>
+          <article><span>04</span><div><h3>Pre-push is a warning</h3><p>The installed Git hook warns when a commit lacks clean PASS evidence. It deliberately does not provide a CI hard gate.</p></div></article>
+          <aside><b>Alpha caveat</b><p>Sandboxing is opt-in. Windows is supported through WSL2, not as a native binary. Start with trusted repositories, inspect generated hooks and run <code>reviewgate doctor</code>.</p></aside>
+        </div>
       </div>
     </section>
 
-    <section class="cta shell"><p class="system-label">END OF LINE / <strong>BEGIN VERIFICATION</strong></p><h2>Make “done”<br><span>mean something.</span></h2><div class="command big" data-copy="npm i -g reviewgate"><i>›</i><code>npm i -g reviewgate</code><button>Copy command</button></div><div><a class="button primary" href="https://github.com/Codevena/reviewgate">View on GitHub ↗</a><a class="button ghost" href="#setup">Read setup</a></div></section>
+    <section class="section faq" id="faq">
+      <div class="faq-layout shell">
+        <div class="faq-head reveal"><p class="section-label">Debrief / Short answers</p><h2>Before you<br><em>arm the gate.</em></h2></div>
+        <div class="faq-list reveal">
+          <details><summary>What exactly does Reviewgate enforce?<i>+</i></summary><p>It installs native repository hooks for Claude Code, Codex or both. When the agent tries to stop after a change, Reviewgate captures the batch, runs the configured review pipeline and blocks unresolved blocking findings. Defer and escalation remain explicitly non-PASS.</p></details>
+          <details><summary>Do I need all six providers?<i>+</i></summary><p>No. One working reviewer is enough to start. A heterogeneous panel adds independence because provider blind spots differ.</p></details>
+          <details><summary>Does Codex need an extra activation step?<i>+</i></summary><p>Yes. After init, open <code>/hooks</code> inside Codex, inspect SessionStart, PostToolUse and Stop, then trust their exact current hash. Reviewgate cannot perform that human checkpoint for you.</p></details>
+          <details><summary>What happens during quota or infrastructure failure?<i>+</i></summary><p>An unsuccessful reviewer never becomes a clean pass. Reviewgate can use configured fallbacks, bounded deferral, cooldowns or a visible human escalation.</p></details>
+          <details><summary>Does Reviewgate write or commit my code?<i>+</i></summary><p>No. Reviewgate reports and enforces. The authoring agent makes fixes; you still inspect and commit the final change.</p></details>
+          <details><summary>Can it review plans before implementation?<i>+</i></summary><p>Yes. <code>reviewgate review-plan &lt;file…&gt;</code> runs the adversarial reviewer system against Markdown plans or specifications without entering the code Stop-hook loop.</p></details>
+          <details><summary>Where does the state live?<i>+</i></summary><p>Findings, decisions, state, audit events, memory and escalations are plain files under <code>.reviewgate/</code>. There is no Reviewgate SaaS database.</p></details>
+          <details><summary>Is it production-ready?<i>+</i></summary><p>Reviewgate is actively dogfooded and released as alpha software. Read the threat model, initialize each checkout, run Doctor and perform the documented smoke test before relying on it.</p></details>
+        </div>
+      </div>
+    </section>
+
+    <section class="section deploy" id="deploy">
+      <div class="deploy-inner shell reveal">
+        <p class="section-label">Deployment order / One command</p>
+        <h2>Arm the<br><em>blacksite.</em></h2>
+        <div class="command" data-copy="npm i -g reviewgate">
+          <span>›</span><code>npm i -g reviewgate</code><button type="button">Copy command</button>
+        </div>
+        <div class="deploy-actions"><a class="primary-cta" href="https://github.com/Codevena/reviewgate">Open GitHub <span>↗</span></a><a class="secondary-cta" href="https://github.com/Codevena/reviewgate#quick-start">Read quickstart</a></div>
+      </div>
+    </section>
   </main>
-  <footer class="shell"><a class="logo" href="#top">REVIEWGATE</a><p>The verification loop for AI coding agents.<br>Open source under the MIT License.</p><div><a href="https://github.com/Codevena/reviewgate">GitHub</a><a href="https://github.com/Codevena/reviewgate/blob/master/README.md">Documentation</a><a href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Security</a><a href="https://github.com/Codevena/reviewgate/blob/master/CONTRIBUTING.md">Contributing</a></div><span>© 2026 Markus Wiesecke</span></footer>
-</body></html>
+
+  <footer class="footer shell">
+    <a class="wordmark" href="#top">REVIEW<span>GATE</span> / RG-01</a>
+    <p>The verification loop for AI coding agents.<br>Open source · MIT · Alpha</p>
+    <nav aria-label="Footer navigation"><a href="https://github.com/Codevena/reviewgate">GitHub</a><a href="https://github.com/Codevena/reviewgate/blob/master/README.md">Docs</a><a href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Security</a><a href="#faq">FAQ</a></nav>
+  </footer>
+</body>
+</html>
