@@ -1,25 +1,38 @@
 # Reviewgate — Guide for AI Coding Agents
 
-This document tells an AI coding agent (e.g. Claude Code) **exactly** how to behave
+This document tells an AI coding agent (Claude Code or Codex) **exactly** how to behave
 when working in a repository that has Reviewgate installed. Read it once at the
 start of a session in such a repo.
 
 ## What Reviewgate does to you
 
-Reviewgate is wired into two Claude Code hooks:
+Reviewgate is wired into native Claude Code and/or Codex lifecycle hooks:
 
-- **`PostToolUse`** — after every `Edit`/`Write`/`MultiEdit`/`NotebookEdit`, a
-  background hook marks the repo "dirty". You do not need to do anything.
+- **`PostToolUse`** — after captured edit/Bash tools, a hook marks the repo
+  "dirty". Claude uses its Edit/Write family; Codex uses Bash/apply_patch aliases.
+  Final HEAD/tree/config fingerprints also catch mutations a host hook misses.
 - **`Stop`** — when you try to end your turn, Reviewgate reviews your changes
   since the batch started — both committed (commit-per-task) and uncommitted —
   by diffing against the pre-batch HEAD captured when the repo first went dirty
   (NOT just `git diff HEAD`). If it finds blocking issues, **your turn is
-  blocked**: you receive a `Stop`-hook message with `decision: "block"` and a
-  `reason`, and you must keep working.
+  blocked**: you receive a `Stop` continuation with `decision: "block"` and a
+  `reason`, and you must keep working. In Codex this creates a new continuation
+  prompt; it does not reject or discard the thread.
+
+For Codex, the human user must first review and trust the exact project-hook hash
+through `/hooks`. An installed `.codex/hooks.json` alone does not prove the hooks
+are active. Never invoke a hook-trust bypass, claim that Doctor verified Codex's
+private trust state, or attempt to approve repository hooks on the user's behalf.
 
 You cannot finish your turn while there are unaddressed blocking findings. Do not
 try to disable the hook, delete `.reviewgate/`, or otherwise bypass the gate —
 fix the underlying issues instead.
+
+`reviewgate.config.ts` is a separate control plane, not an ordinary reviewed file.
+If you change it, Reviewgate keeps reviewing code under the last-known-good policy
+and may block with `.reviewgate/POLICY_CHANGE.md`. Never run or automate
+`reviewgate config approve`: approval deliberately requires the human maintainer's
+interactive TTY after the candidate has passed under the prior policy.
 
 ## The block message
 
@@ -285,7 +298,7 @@ iteration-cap escalation. This is deliberate: it stays blocking and is never aut
 ## Worktrees (coverage limitation)
 
 Reviewgate is armed **per checkout**. A `git worktree` shares only `.git` — it has no
-`.reviewgate/` and no `.claude/settings.json` hooks, so the Stop gate **does not fire
+`.reviewgate/`, `.claude/settings.json`, or `.codex/hooks.json`, so the Stop gate **does not fire
 inside a worktree** and that work ends un-reviewed. If you do implementation in a worktree
 (the subagent/isolation workflows often do), either run `reviewgate init` **inside the
 worktree** to gate it, or do the work in / merge it back to the gated main checkout so it

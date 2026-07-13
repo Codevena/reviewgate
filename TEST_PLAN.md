@@ -2,7 +2,7 @@
 
 How to use: **Layer 1+2** run in this repo (`/Users/markus/Developer/reviewgate`).
 **Layer 3** runs in the consumer project **flashbuddy** (`/Users/markus/Developer/flashbuddy`)
-through a real Claude Code session. Always `export PATH="$HOME/.bun/bin:$PATH"` first.
+through real Claude Code and Codex sessions. Always `export PATH="$HOME/.bun/bin:$PATH"` first.
 
 Per Layer-3 test: the human tells the flashbuddy agent the **Prompt**; the agent makes the
 change, ends its turn, and **on the gate block runs the `cp` snapshot command FIRST**, then
@@ -33,6 +33,32 @@ REVIEWGATE_E2E=1 bun test tests/e2e/
 ```
 Real codex/gemini/claude/openrouter reviewers, real OpenRouter embeddings
 (`baai/bge-base-en-v1.5`, expect near-dup ≥0.85 / unrelated <0.85), real SSRF-safe web-fetch.
+
+### Native Codex host smoke
+
+```bash
+reviewgate init --hooks-only --host codex
+codex
+# human action inside Codex: /hooks → inspect + trust the exact project hook hash
+```
+
+Installation alone is not activation. Before trust, confirm Codex lists the new
+or changed project commands as requiring review and skips them. After the human
+trusts the current hash, confirm they run. `reviewgate doctor` may verify the
+installed file and binary but must not claim it can observe Codex's trust store.
+
+1. Start Codex from a repository subdirectory; confirm `SessionStart` resets the
+   root checkout state rather than creating nested `.reviewgate/` state.
+2. Mutate one file with `apply_patch`, then one with a simple Bash command. Each
+   Stop must invoke Reviewgate. Repeat with a committed mutation and an
+   uncommitted mutation.
+3. Change only `reviewgate.config.ts`, then change code + config together. Confirm
+   the dedicated policy path appears and code is reviewed under the LKG.
+4. On a blocking finding, confirm Codex receives the reason as an automatic
+   continuation prompt. The repeated Stop has `stop_hook_active:true`, consumes
+   decisions, and converges without an unbounded loop.
+5. Temporarily rename `.reviewgate/bin/gate`; the Codex Stop hook must emit a
+   valid `{"decision":"block"}` fail-closed response.
 
 ---
 
@@ -81,8 +107,8 @@ Covered partly by T3. **Verify in `/tmp/t3.json`:** the same line flagged by dif
 ```
 cd /Users/markus/Developer/flashbuddy
 reviewgate brain list
-reviewgate brain show <id>
-reviewgate brain revoke <id>   # entry gone immediately
+reviewgate brain show --id <id>
+reviewgate brain revoke --id <id>   # entry gone immediately
 ```
 
 ### T12 — loop: escalation

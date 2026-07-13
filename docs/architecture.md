@@ -5,18 +5,18 @@ This document explains how Reviewgate is put together. For usage see the
 
 ## The big picture
 
-Reviewgate is not a server and not a daemon. It is a CLI binary that Claude
-Code's **hooks** invoke at specific points in the agent loop. All state is plain
+Reviewgate is not a server and not a daemon. It is a CLI binary that Claude Code
+or Codex **hooks** invoke at specific points in the agent loop. All state is plain
 JSON/Markdown files under `.reviewgate/` — no database, no SQLite, no Redis.
 
 ```
-┌──────────────────────────── Claude Code (host) ────────────────────────────┐
+┌──────────────────── Claude Code or Codex (host) ──────────────────────────┐
 │  Edit / Write / MultiEdit                                                   │
 │        │                                                                    │
 │        ▼  PostToolUse hook                                                  │
 │  reviewgate gate --hook trigger  ──►  marks .reviewgate/dirty.flag          │
 │                                                                             │
-│  …Claude finishes its turn…                                                 │
+│  …agent finishes its turn…                                                  │
 │        │                                                                    │
 │        ▼  Stop hook                                                         │
 │  reviewgate gate --hook stop  ──►  LoopDriver.run() → Orchestrator          │
@@ -66,13 +66,14 @@ triage → cache check → research → reviewer panel → critic → aggregate 
 
 | Area | Responsibility |
 |---|---|
-| **`src/diff/`** + `src/utils/git.ts` | `collectDiff` returns the diff since the **review base** (`git diff <base>` + untracked via `--no-index`), where `base` is the pre-batch HEAD captured in `dirty.flag` — so it covers BOTH committed (commit-per-task) and uncommitted changes since the batch started; with no base it falls back to `git diff HEAD`. `reviewgate.config.ts` and everything under `.reviewgate/` are excluded. `sanitizer.ts` fences the untrusted diff and appends a persona reaffirmation; `signature.ts` computes per-finding signatures for dedup / stuck-detection. |
+| **`src/diff/`** + `src/utils/git.ts` | `collectDiff` returns the diff since the **review base** (`git diff <base>` + untracked via `--no-index`), covering committed and uncommitted work since the batch started. `reviewgate.config.ts` is excluded from this normal reviewer diff but monitored by the separate config control plane; `.reviewgate/` runtime files are excluded. `sanitizer.ts` fences the untrusted diff and appends a persona reaffirmation. |
 | **`src/triage/`** | `diff-facts.ts` classifies changed files (code/docs/tests/config/lockfile) and sensitivity tags; `matrix.ts` (`triageFromFacts`) maps facts → `RiskClass` + `runReview`. Doc-only / empty diffs are skipped unless `docReview` opts them back in. |
 | **`src/providers/`** | One adapter per reviewer CLI (`codex.ts`, `gemini.ts`, `claude.ts`, `openrouter.ts`, `opencode.ts`, `ollama.ts`), all implementing `adapter-base.ts`. Most spawn the real CLIs via `src/utils/spawn.ts` (`spawnSafely`, which closes stdin — codex hangs otherwise); `openrouter.ts` and `ollama.ts` are subprocess-free HTTP adapters instead (`SUBPROCESSLESS_PROVIDERS` in `registry.ts`). `review-output.ts` holds the shared `REVIEW_OUTPUT_SCHEMA` and parses reviewer JSON into `Finding`s. |
+| **`src/hosts/`** | Generates and merges native Claude Code and Codex lifecycle hooks. Codex commands resolve the Git root, preserve hook stdin, identify `REVIEWGATE_AGENT_HOST=codex`, and fail closed when the Stop shim is unavailable. Hook installation and Codex hash trust are intentionally separate states. |
 | **`src/core/`** | `aggregator.ts` (severity-weighted verdict + dedup + consensus), `critic.ts` (demote-only adversarial pass), `report-writer.ts` (renders `pending.md`/`pending.json`), `state-store.ts` (locked, atomic `state.json`). |
 | **`src/research/`** | `symbol-graph.ts` (tree-sitter, TS/Python `.wasm` grammars), `conventions.ts`, `research-writer.ts` produce `research.md`, injected as trusted context before the diff fence. |
 | **`src/core/brain/`** | Per-repo memory ("Brain") + Curator. Default OFF. `fetcher.ts` is an SSRF-hardened `safeFetch`; the curator phase is non-blocking, timeout-bounded, and never changes the verdict. |
-| **`src/config/`** | `defineConfig`/`ConfigSchema` (zod). Effective config = `defaults.ts` deep-merged with the repo's `reviewgate.config.ts`. The full config is hashed into the review cache key, so config changes invalidate the cache. |
+| **`src/config/`** | `reviewgate.config.ts` is parsed as data, never executed. `control-plane.ts` fingerprints source/effective policy separately, retains the last-known-good config, forces candidates through a special path, and requires a prior-policy pass plus TTY approval for weakening/non-monotonic changes. Invalid present configs block. The approved full config also participates in the review cache key. |
 | **`src/schemas/`** | zod schemas are the source of truth for every persisted artifact (finding, triage, decision, pending-report, state, audit-event, research, brain). |
 
 ## The adaptive pipeline (stages before the panel)
@@ -130,7 +131,23 @@ Everything lives under `.reviewgate/` as plain files:
 See [`SECURITY.md`](../SECURITY.md) for the full threat model. In short: diffs
 are sanitised against prompt-injection before reaching reviewers, the host
 session never reviews its own work, every run is recorded in a tamper-evident
-audit log, and the gate fails closed. Reviewer **filesystem isolation ships**
-(macOS Seatbelt / Linux bubblewrap, opt-in via `sandbox.mode`, default `off`); the
-remaining gaps are **network egress** (not isolated on either platform) and Linux
-glob secret-denies — so prefer trusted repos.
+audit log, and the gate does not label reviewer failure as PASS. The optional
+Seatbelt/bubblewrap sandbox is a **denylist read model plus write isolation**, not
+a read allowlist: known secrets are masked and writes are narrowed, but other host
+files may remain readable. Network egress is not isolated and Linux cannot enforce
+glob secret-denies, so prefer trusted repos. Provider execution risk differs: agy
+and OpenCode are permission-bypassed coding-agent CLIs; see `SECURITY.md`.
+
+### Codex activation boundary
+
+`reviewgate init` owns installation, not Codex's trust decision. A generated
+`.codex/hooks.json` is inert until Codex trusts the project layer and the user
+reviews the exact current command-hook hash through `/hooks`. Codex skips a new
+or changed hash until it is trusted again. Reviewgate Doctor can validate the
+file, shims, timeouts and binary but cannot query the private per-hash trust state.
+
+This is deliberate separation of duties: the repository installer and authoring
+agent cannot be the authority that silently approves their own shell commands.
+The generated hooks and the final fingerprint checks remain guardrails inside the
+same user account, not a substitute for protected CI or another external boundary.
+See [Codex host setup and hook trust](codex-host.md).

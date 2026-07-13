@@ -1,14 +1,17 @@
 # Reviewgate
 
-**Reviewgate stops your AI coding agent from ending its turn until an independent
-panel of LLM reviewers has checked the diff — and blocks it until every real
-finding is fixed or rejected-with-reason.** It's the *checker* half of the agent
-loop, packaged so the writer can't grade its own homework.
+**Reviewgate intercepts your Claude Code or Codex agent's turn-end, runs an independent LLM
+review over the actual change, and requires an explicit outcome for every blocking
+finding.** It is the *checker* half of the agent loop, packaged so the writer can't
+grade its own homework. A clean PASS releases the turn; WARN-only policy,
+infrastructure deferral and bounded human escalation remain visibly distinct from PASS.
 
 - 🐛 **Catches real bugs before the agent says "done"** — a heterogeneous panel
-  (Codex · Gemini · Claude · OpenRouter) reviews the actual diff, in-loop, every turn.
-- 🚦 **Never silently passes** — it fails *closed*: no reviewers, a crash, a timeout
-  or a quota-out **blocks** the turn instead of waving it through.
+  (Codex · Gemini · Claude · OpenCode · OpenRouter · Ollama) reviews the actual diff,
+  in-loop, every turn.
+- 🚦 **Never turns failure into green** — a crash, timeout or quota outage is never
+  reported as PASS. Reviewgate blocks, explicitly defers for a bounded window, or
+  escalates to a human according to the configured policy.
 - 📋 **Leaves an audit trail** — every finding and every fix/reject decision is
   written to files (`.reviewgate/pending.md`) a human (or CI) can inspect later — no
   chat-stream parsing, no flaky stdout scraping.
@@ -20,9 +23,10 @@ hosted model by name.
 
 > [!WARNING]
 > **Alpha.** Reviewgate runs provider CLIs on your working-tree diff. Reviewer
-> **filesystem isolation ships** (macOS Seatbelt, Linux bubblewrap) but is
-> **opt-in** (`sandbox.mode`, default `off`), and **network egress is not
-> isolated** on either platform. Prefer your own code / trusted repos. See
+> **filesystem write isolation plus secret-path masking ships** (macOS Seatbelt,
+> Linux bubblewrap) but is **opt-in** (`sandbox.mode`, default `off`). It is a
+> denylist model, not a read allowlist: other host files may remain readable, and
+> **network egress is not isolated**. Prefer your own code / trusted repos. See
 > [Security](#security).
 
 <p align="center">
@@ -34,13 +38,45 @@ hosted model by name.
 ```bash
 npm i -g reviewgate     # your platform's prebuilt binary
 cd your-repo
-reviewgate init         # bakes the Stop/PostToolUse hooks into .claude/settings.json
-reviewgate setup        # interactive wizard — pick reviewers (or skip for defaults)
-reviewgate doctor       # verify the reviewer CLIs are reachable
+reviewgate init         # configure policy + hosts, install hooks, record LKG, run doctor
 ```
 
-Done. Next time Claude Code edits a file in this repo and tries to finish,
-Reviewgate reviews the diff and blocks the turn if it finds a real problem.
+Claude Code is armed as soon as init completes. For Codex, init installs the hook
+definitions, but Codex intentionally keeps new project commands disabled until you
+approve their exact hash once through `/hooks`. After activation, either host runs
+Reviewgate when it tries to finish a changed turn.
+
+`init` recommends both hosts and can also target one explicitly:
+
+```bash
+reviewgate init --host both          # Claude Code + Codex
+reviewgate init --host codex         # Codex only
+reviewgate init --quick --host both  # scripted recommended preset
+```
+
+Host selection installs or refreshes the selected host definitions; it never
+silently removes an already-installed other host or any foreign hook.
+
+Host hooks and shims are installed per checkout. Do not copy the generated Codex
+hook between clones or worktrees; run `reviewgate init` in each checkout so its
+fallback root and hash trust match that checkout.
+
+Codex project hooks are hash-trusted by Codex itself. After installation, start or
+restart Codex inside the trusted project, open `/hooks`, inspect the three
+Reviewgate responsibilities (`SessionStart` reset, `PostToolUse` trigger and
+`Stop` gate), then trust their exact current definitions. This is normally a
+one-time action and repeats only when those definitions change.
+If the project already defines inline hooks in `.codex/config.toml`, init preserves
+them and warns that Codex will merge both sources; it never rewrites TOML hooks.
+
+> [!IMPORTANT]
+> **Installed does not yet mean active in Codex.** `reviewgate doctor` can verify
+> the generated file, shims, timeouts and binary, but Codex does not expose its
+> per-hash trust decision to Reviewgate. That is why Doctor shows a manual warning
+> even when installation is healthy. Reviewgate will not use Codex's dangerous
+> trust-bypass option: allowing the installer or coding agent to approve its own
+> shell commands would defeat the checkpoint. See the dedicated
+> [Codex host and hook-trust guide](docs/codex-host.md).
 
 > **Want the _why_?** How this fits "write loops, not code", the failure modes it
 > survives, the security model → [Why](#why-reviewgate-is-the-verification-loop) ·
@@ -48,10 +84,10 @@ Reviewgate reviews the diff and blocks the turn if it finds a real problem.
 
 <details><summary><b>Full feature list</b> (<code>0.1.0-alpha</code>)</summary>
 
-Multi-reviewer panel (Codex · Gemini · Claude · OpenRouter) · parallel execution ·
+Multi-reviewer panel (Codex · Gemini · Claude · OpenCode · OpenRouter · Ollama) · parallel execution ·
 adversarial critic · adaptive triage · tree-sitter symbol graph · research context ·
 review cache · quota auto-failover · per-repo learning brain + curator ·
-false-positive ledger · stats & weekly reports · interactive `setup` wizard ·
+false-positive ledger · stats & weekly reports · complete interactive `init` wizard ·
 opt-in reviewer filesystem isolation (macOS Seatbelt / Linux bubblewrap). Remaining
 caveat: network egress is not isolated. See [Scope & limitations](#scope--limitations).
 </details>
@@ -61,27 +97,31 @@ caveat: network egress is not isolated. See [Scope & limitations](#scope--limita
 ## How it works
 
 ```
-┌──────────────────────────── Claude Code (host) ────────────────────────────┐
-│  Edit / Write / MultiEdit                                                   │
+┌──────────────────── Claude Code or Codex (host) ──────────────────────────┐
+│  Edit / Write / apply_patch / Bash                                          │
 │        │                                                                    │
 │        ▼  PostToolUse hook                                                  │
 │  .reviewgate/bin/trigger  ──►  marks .reviewgate/dirty.flag                 │
 │                                                                             │
-│  …Claude finishes its turn…                                                 │
+│  …agent finishes its turn…                                                  │
 │        │                                                                    │
 │        ▼  Stop hook                                                         │
 │  .reviewgate/bin/gate  ──►  reviewgate gate --hook stop                     │
 │        │                                                                    │
 │        ├─ no changes since last pass ───────────────────────► allow stop   │
 │        │                                                                    │
-│        ▼  spawn Codex (sandboxed*) on `git diff HEAD`                       │
+│        ▼  run configured panel on diff since the captured review base       │
 │  aggregate findings → verdict                                               │
 │        │                                                                    │
-│        ├─ PASS / SOFT-PASS ─────────────────────────────────► allow stop   │
-│        ├─ FAIL ──► write pending.md/json, BLOCK Claude's turn               │
-│        │           Claude reads pending.md, fixes or rejects each finding,  │
+│        ├─ PASS / policy-allowed SOFT-PASS ──────────────────► allow stop   │
+│        ├─ FAIL / blocking SOFT-PASS ──► pending.md/json, BLOCK turn         │
+│        │           Agent reads pending.md, fixes or rejects each finding,   │
 │        │           appends decisions/<iter>.jsonl, stops again → re-review  │
 │        └─ max iterations / stuck / cost cap ──► ESCALATION.md, allow stop   │
+│                                                                             │
+│  reviewgate.config.ts changed?                                               │
+│        └─ separate policy fingerprint → review under last-known-good policy │
+│           → weakening/non-monotonic change requires human TTY approval      │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -120,8 +160,8 @@ so it can't merge unreviewed work "while you sleep":
 
 | Loop-engineering principle | Reviewgate |
 | --- | --- |
-| Writer ≠ checker (no self-grading) | A **heterogeneous reviewer panel** (Codex · Gemini · Claude · OpenRouter) — independent models inspect the diff |
-| "Are you done?" check each turn | A **`Stop` hook** blocks the turn's end until every finding is fixed or rejected-with-reason |
+| Writer ≠ checker (no self-grading) | A **heterogeneous reviewer panel** (Codex · Gemini · Claude · OpenCode · OpenRouter · Ollama) — independent models inspect the diff |
+| "Are you done?" check each turn | A **`Stop` hook** blocks on unresolved blocking findings; explicit SOFT-PASS/defer/escalation outcomes are never mislabeled PASS |
 | Testable termination condition | `decisions/<iter>.jsonl` must address every finding id in `pending.json` before the gate allows the stop |
 | Adversarial verification | A demote-only **critic** + severity-weighted veto + cross-reviewer consensus |
 | Explicit failure exits (no infinite loop) | `LoopDriver` caps iterations and emits `ESCALATION.md` on max-iter / stuck-signatures / cost-cap / high-reject-rate |
@@ -227,11 +267,18 @@ scar from one of the failures above.
   - [Codex CLI](https://github.com/openai/codex) ≥ 0.130 (`codex login`) — recommended default
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (OAuth)
   - [Claude Code](https://claude.com/claude-code) (OAuth)
+  - [OpenCode](https://opencode.ai) (OAuth/provider credentials)
   - …or an [OpenRouter](https://openrouter.ai) API key for any hosted model
   - …or an [Ollama](https://ollama.com) API key (Ollama Cloud, or point `baseUrl`
     at a local `ollama serve`)
 - macOS or Linux (Windows: use WSL2)
 - git
+
+Using Codex as the **authoring host** (not merely as a reviewer) requires a Codex
+release with project lifecycle hooks; the implementation is verified against
+Codex CLI `0.144.1`. Codex must trust the generated project hook hash through
+`/hooks` before those hooks execute. See [Codex host setup](docs/codex-host.md)
+for the exact installed → trusted → active states.
 
 You don't need all of them — one is enough to start. Check exactly which
 reviewers are ready on your machine at any time:
@@ -285,27 +332,30 @@ bun run build          # produces ./dist/reviewgate (+ sibling grammars/)
 Then, in the repo you want reviewed:
 
 ```bash
-reviewgate init        # installs hooks into .claude/settings.json,
+reviewgate init        # complete guided first-run setup:
+                       # policy + Claude/Codex hosts + hooks + LKG + doctor,
                        # copies .reviewgate/bin/{trigger,gate,reset},
-                       # appends .gitignore, writes a starter reviewgate.config.ts
+                       # writes config + approved policy fingerprint
 ```
 
-`init` is idempotent and merges into existing `.claude/settings.json` without
-clobbering your other hooks.
+`init` is idempotent and merges into existing `.claude/settings.json` and/or
+`.codex/hooks.json` without clobbering foreign hooks or other settings. Use
+`reviewgate init --hooks-only --host both` to repair/re-bake hooks without
+changing an existing configuration.
 
-Prefer to be walked through provider/model/quota choices? Run the interactive
-wizard instead of hand-writing the config:
+`reviewgate setup` remains an alias for the same guided project wizard; its
+`--global` mode remains config-only.
 
 ```bash
-reviewgate setup       # interactive configuration wizard
+reviewgate setup       # compatibility alias for the init wizard
 ```
 
 ### Option C — npm (`npm i -g reviewgate`)
 
 ```bash
 npm i -g reviewgate     # installs only your platform's prebuilt binary
-reviewgate init         # arm the gate in the current repo
-reviewgate doctor       # health-check
+reviewgate init         # configure + arm Claude Code/Codex + health-check
+reviewgate doctor       # repeat the health-check whenever needed
 ```
 
 A global install is recommended for the persistent Stop gate, because `reviewgate init`
@@ -320,10 +370,13 @@ platforms use Option A or B.
 
 Zero to your first blocked review in ~5 minutes.
 
-1. **Arm the repo.** `reviewgate init` in your project (installs the hooks +
-   writes a starter `reviewgate.config.ts`).
-2. **Get one reviewer working.** You need exactly one to start. Either run the
-   wizard — `reviewgate setup` — or do it by hand:
+1. **Run `reviewgate init`.** In one guided flow it asks which coding-agent hosts
+   to protect, chooses quick/custom policy setup, configures reviewers/models,
+   critic and memory features, then asks the first-run safety/completion choices:
+   sandbox mode, SOFT-PASS policy, clean-pass acknowledgement, desktop
+   notifications and the warn-only pre-push reminder. It then installs the native
+   hooks, records the validated initial LKG and runs `doctor`.
+2. **Get one reviewer working.** You need exactly one to start:
    - **Lowest friction (no CLI):** set `OPENROUTER_API_KEY` and add an
      `openrouter` reviewer to `phases.review.reviewers` (paid per call).
    - **$0 within your subscription:** install + log in to one OAuth CLI — `codex
@@ -334,29 +387,40 @@ Zero to your first blocked review in ~5 minutes.
 
    Then confirm what's actually ready: **`reviewgate doctor`** tells you exactly
    which reviewers it can reach and what to fix.
-3. **See it work (60-second smoke test) — *before* you trust it in a loop.** Make
+3. **If Codex is selected, activate the installed project hooks.** Start or
+   restart Codex in the trusted repository, run `/hooks`, inspect the exact
+   `.codex/hooks.json` commands and trust their current hash. Codex skips new or
+   changed hooks until this happens. Reviewgate cannot perform or verify that
+   user-owned action and never bypasses it. Full explanation:
+   [Codex host setup and hook trust](docs/codex-host.md).
+4. **See it work (60-second smoke test) — *before* you trust it in a loop.** Make
    a deliberately broken change and run the gate by hand:
 
    ```bash
    echo 'export const refund = (amt, by) => amt / by;  // div-by-zero, no guard' >> smoke.ts
    git add smoke.ts
-   reviewgate gate            # reviews `git diff HEAD`
+   reviewgate gate            # reviews the current Reviewgate change scope
    cat .reviewgate/pending.md # the findings the panel raised
    git rm -f smoke.ts
    ```
-4. **Use Claude Code as normal.** After it edits files and tries to finish a turn,
-   the `Stop` hook runs the review. If a reviewer raises a blocking finding, Claude
-   is told to read `.reviewgate/pending.md` and address each one — it **cannot end
-   the turn** until every finding is fixed or rejected-with-reason.
-5. **You review the final diff and commit manually.** Reviewgate never commits or
+5. **Use Claude Code or Codex as normal.** After it edits files and tries to finish a turn,
+   the `Stop` hook runs the review. If a reviewer raises a blocking finding, the agent
+   is told to read `.reviewgate/pending.md` and address each one. The current turn
+   stays blocked while those findings remain unresolved; bounded non-convergence
+   instead produces an explicit human escalation rather than an endless loop.
+6. **You review the final diff and commit manually.** Reviewgate never commits or
    edits code itself; it only reports.
 
 Useful commands outside the loop:
 
 ```bash
 reviewgate doctor                    # which reviewers are ready + what to fix
-reviewgate setup                     # interactive configuration wizard
-reviewgate gate                      # review current `git diff HEAD` on demand
+reviewgate init                      # complete interactive first-run/reconfigure flow
+reviewgate init --hooks-only --host both # repair hooks, preserve config
+reviewgate setup                     # compatibility alias (`--global` is config-only)
+reviewgate config status             # approved/pending policy fingerprints
+reviewgate config approve            # TTY-only human approval after an LKG pass
+reviewgate gate                      # review the current change scope on demand
 reviewgate reset                     # re-arm the gate (clear this session's review state)
 reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 ```
@@ -365,10 +429,18 @@ reviewgate audit verify --file <jsonl>   # verify an audit-log hash chain
 
 ## Configuration — `reviewgate.config.ts`
 
-`reviewgate.config.ts` is a **plain default-export object** (no import needed).
-Reviewgate deep-merges it over the defaults and validates it. Do **not** write
-`import { defineConfig } from "reviewgate"` — that package isn't installed in your
-project, so the import would fail and Reviewgate would silently use defaults.
+`reviewgate.config.ts` is a **data-only default-export object**. Reviewgate parses
+objects, arrays, strings, finite numbers, booleans, null and comments; it does not
+execute the file. Imports, function calls, spreads, template expressions and
+environment lookups are rejected. A present invalid config blocks instead of
+falling back to a weaker default policy.
+
+The effective config has a separate control-plane fingerprint. A changed candidate
+is first evaluated while code review continues under the last-known-good policy.
+Provable monotonic strengthenings are adopted only after that pass. Any weakening
+or non-monotonic change needs `reviewgate config approve` from an interactive TTY;
+there is deliberately no `--yes` bypass. Details are written to
+`.reviewgate/POLICY_CHANGE.md`, never injected into the normal reviewer diff.
 
 Minimal single-reviewer setup (Codex only, OAuth, $0):
 
@@ -493,7 +565,7 @@ committed Markdown, and have the gate inject the relevant ones into each review
 as **trusted context**. One maintainer-authored note can end a whole class of
 repeated false positives.
 
-Turn it on in `reviewgate setup` (it asks, and explains — **off by default**), or
+Turn it on in the custom `reviewgate init` flow (it asks and explains — **off by default**), or
 by hand:
 
 ```ts
@@ -547,8 +619,9 @@ How it behaves (all fail-safe — a broken lore file never blocks a review):
 
 A passing review used to be silent (the Stop hook just exits 0). Now the gate
 always writes a one-line summary to **stderr** on completion — e.g.
-`Reviewgate: DONE — Reviewgate PASS on iteration 1.` or `Reviewgate: BLOCK — …` —
-so "green" is distinguishable from "the gate didn't run". Set `notify.desktop: true`
+`🟢 Reviewgate · GATE OPEN — PASS (iteration 1)` or
+`🔴 Reviewgate · GATE CLOSED — …` — so "green" is distinguishable from "the gate
+didn't run". Set `notify.desktop: true`
 to also fire a macOS/Linux desktop notification when a review finishes:
 
 ```ts
@@ -701,22 +774,30 @@ repeated stop-hooks instantaneous after a trivially clean re-run.
 
 ## Security
 
-- **Author ≠ reviewer.** The host Claude session never reviews its own work; the
-  anti-sycophancy rule downgrades any Claude reviewer to a smaller tier.
+- **Author session ≠ reviewer process.** The host Claude Code or Codex session
+  never reviews inline; reviewers are fresh isolated subprocesses. When Claude
+  is the authoring host, any Claude reviewer is additionally downgraded to a
+  smaller tier. A Codex host does not incorrectly trigger that Claude-only rule.
 - **Diff sanitisation.** Diffs are run through a 6-layer pipeline (Unicode NFKC
   normalise → injection-marker neutralise → fenced wrap → high-entropy secret
   redaction → persona reaffirmation) before reaching the reviewer, to blunt
   prompt-injection planted in code.
 - **Tamper-evident audit log.** Every run appends a sha256 hash-chained JSONL
   event log; `reviewgate audit verify` detects any modification.
-- **Sandbox (filesystem isolation ships; opt-in).** With `sandbox.mode: "strict"`
-  or `"permissive"`, reviewer subprocesses run under OS filesystem isolation —
-  macOS Seatbelt (`sandbox-exec`) or Linux bubblewrap (`bwrap`): the reviewer reads
-  its working dir / tmp / own creds but **not** your secrets (`~/.ssh`, `~/.aws`,
-  `.env`, …). `"strict"` fails closed if the OS sandbox is unavailable; the default
-  is `"off"`. **Caveats:** network egress is **not** isolated on either platform
-  (API reviewers need it), and on Linux glob secret-denies (`*.pem`, `.env*`) aren't
-  enforced — prefer trusted repos until you've reviewed the threat model.
+- **Sandbox (denylist filesystem model; opt-in).** With `sandbox.mode: "strict"`
+  or `"permissive"`, macOS Seatbelt denies writes except the exact findings/run-temp/
+  own-credential targets; Linux bubblewrap exposes `/` read-only and binds only those
+  targets writable. Known secret paths are denied/masked, but this is **not a read
+  allowlist**: other host files may remain readable. `"strict"` fails closed if the
+  OS sandbox is unavailable; default is `"off"`. Network egress is not isolated,
+  and Linux cannot enforce glob denies such as `*.pem` or `.env*`.
+- **Provider risk is not uniform.** Codex is invoked read-only and Claude's reviewer
+  tools are restricted. Gemini/agy and OpenCode are coding-agent CLIs invoked with
+  their non-interactive permission-bypass flag and may explore/run tools; use
+  `sandbox.mode: "strict"`. OpenRouter/Ollama are HTTP adapters: they do not run local
+  tools, but the prompt/diff is sent over the network.
+- **Config control plane.** Config is data-parsed, invalid candidates block, and
+  policy changes are reviewed under a last-known-good snapshot before adoption.
 
 See [`SECURITY.md`](SECURITY.md) for the full threat model and how to report a
 vulnerability.
@@ -730,8 +811,10 @@ vulnerability.
 | `bin/{trigger,gate,reset}`   | yes        | tiny hook shims that call the binary      |
 | `personas/security.md`       | yes        | the reviewer's persona prompt             |
 | `pending.md` / `pending.json`| no         | current iteration's findings (human + machine) |
-| `decisions/<iter>.jsonl`     | no         | Claude's accept/reject ledger             |
+| `decisions/<iter>.jsonl`     | no         | Coding agent's accept/reject ledger        |
 | `state.json`                 | no         | loop FSM state                            |
+| `control-plane.json`         | no         | approved policy snapshot + pending candidate |
+| `POLICY_CHANGE.md`           | no         | human-readable policy checkpoint          |
 | `audit/…`                    | no         | hash-chained event log                    |
 | `ESCALATION.md`              | no         | written when a run escalates to the human |
 
@@ -777,10 +860,12 @@ Reviewgate blocks your turn (read `pending.md`, fix or reject each finding, writ
 
 **Tooling**
 
-- Commands: `init` · `gate` · `doctor` · `audit verify` · `stats` · `report` ·
-  `review-plan <file>` · `setup` (interactive wizard) · `brain` · `fp`.
-- Cost model: OAuth ($0) for Codex/Gemini/Claude; OpenRouter via API key, tracked
-  against `costCapUsd`.
+- Commands: `init` · `gate` · `doctor` · `config status|approve` · `audit verify` ·
+  `stats` · `report` · `review-plan <file>` · `setup` · `brain` · `lore` · `fp` ·
+  `learn status` · `bench`.
+- Cost model: subscription/OAuth paths for Codex, Gemini, Claude and OpenCode;
+  OpenRouter/Ollama use the configured HTTP endpoint/key and are tracked against
+  `costCapUsd` where pricing is configured.
 - Hash-chained audit log · cassette record/replay for deterministic provider testing.
 
 **Caveats:** reviewer filesystem isolation ships (macOS Seatbelt / Linux bubblewrap)
@@ -835,8 +920,8 @@ export default {
 
 ```bash
 reviewgate brain list          # list all committed brain entries
-reviewgate brain show <id>     # show a single entry with metadata
-reviewgate brain revoke <id>   # remove an entry (writes archive.md, re-commits)
+reviewgate brain show --id <id>     # show a single entry with metadata
+reviewgate brain revoke --id <id>   # archive + revoke an entry immediately
 ```
 
 ---
