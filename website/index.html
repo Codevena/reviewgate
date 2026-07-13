@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -20,9 +20,6 @@
   <meta name="twitter:image" content="https://reviewgate.codevena.dev/screenshots/desktop.png">
   <title>Reviewgate — Nothing passes unseen</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:ital,wght@0,300;0,400;0,500;1,400&amp;family=Teko:wght@400;500;600&amp;display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
   <script src="script.js" defer></script>
 </head>
@@ -77,7 +74,7 @@
       </div>
     </section>
 
-    <div class="transmission" aria-label="Reviewgate system properties">
+    <div class="transmission" aria-hidden="true">
       <div>Fail closed <b>●</b> Native hooks <b>●</b> Six provider paths <b>●</b> Local state <b>●</b> Hash-chained audit <b>●</b> Fail closed <b>●</b> Native hooks <b>●</b> Six provider paths <b>●</b> Local state <b>●</b> Hash-chained audit <b>●</b></div>
     </div>
 
@@ -156,15 +153,15 @@
     <section class="section proof" id="evidence">
       <div class="proof-layout shell reveal">
         <div>
-          <p class="section-label">Ground truth / Current alpha evidence</p>
-          <h2>8 / 8<br><em>bugs found.</em></h2>
-          <a class="proof-link" href="https://github.com/Codevena/reviewgate/tree/master/bench">Inspect the benchmark ↗</a>
+          <p class="section-label">Recorded Alpha.11 / Reproducible evidence</p>
+          <h2>Closed.<br><em>Fixed. Open.</em></h2>
+          <a class="proof-link" href="https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md">Inspect evidence + provenance ↗</a>
         </div>
         <div class="metrics">
-          <div class="metric"><b>.90 → .40</b><span>Clean-code false-positive rate after critic</span></div>
-          <div class="metric"><b>0 recall lost</b><span>On the 18-case labelled smoke corpus</span></div>
-          <div class="metric"><b>MIT / LOCAL</b><span>Open source, plain-file control plane</span></div>
-          <small>Small-N benchmark, published with its real limits: 18 hand-labelled smoke cases. Inspect every case and matcher in the repository.</small>
+          <div class="metric"><b>1 CRITICAL</b><span>Real SQL-injection finding · iteration 1</span></div>
+          <div class="metric"><b>PASS / 02</b><span>Accepted fix · parameterized query · re-review</span></div>
+          <div class="metric"><b>SHA-256</b><span>Cassette checksum + verified audit chains</span></div>
+          <small>The gate and verdict path execute live; only the two recorded OpenRouter responses replay. Historical bench: 8/8 seeded bugs in one 18-case single-pass smoke, not a leaderboard. Every limit is published.</small>
         </div>
       </div>
     </section>
@@ -178,8 +175,8 @@
         <div class="system-grid reveal">
           <article><span>PRE / 01</span><h3>Deterministic checks</h3><p>Run typecheck, lint, build or tests before inference. A non-zero exit becomes a non-rejectable CRITICAL.</p><b>phases.checks</b></article>
           <article><span>CTX / 02</span><h3>Research context</h3><p>Diff facts, conventions, symbol relationships and referenced documents ground the review.</p><b>tree-sitter + rg</b></article>
-          <article><span>RUN / 03</span><h3>Critic & consensus</h3><p>A demote-only critic, evidence checks, severity vetoes and consensus reduce noise without inventing a pass.</p><b>precision layer</b></article>
-          <article><span>OPS / 04</span><h3>Quota & deadline control</h3><p>Budget-aware fallbacks, cooldowns and bounded deferral keep outages visible and loops finite.</p><b>fail-closed</b></article>
+          <article><span>RUN / 03</span><h3>Critic &amp; consensus</h3><p>A demote-only critic, evidence checks, severity vetoes and consensus reduce noise without inventing a pass.</p><b>precision layer</b></article>
+          <article><span>OPS / 04</span><h3>Quota &amp; deadline control</h3><p>Budget-aware fallbacks, cooldowns and bounded deferral keep outages visible and loops finite.</p><b>fail-closed</b></article>
           <article><span>CTL / 05</span><h3>Decision protocol</h3><p>Every blocking finding needs a fixed, verified-not-applicable or reasoned human disposition.</p><b>JSONL ledger</b></article>
           <article><span>AUD / 06</span><h3>Tamper-evident audit</h3><p>Every run appends SHA-256 hash-chained JSONL events that can be verified locally later.</p><b>audit verify</b></article>
           <article><span>CFG / 07</span><h3>Policy control plane</h3><p>Config changes run under the last-known-good policy. Weakening or non-monotonic changes require human approval.</p><b>separate fingerprint</b></article>
@@ -198,7 +195,7 @@
         </div>
         <div class="memory-ledger">
           <article><span>01 / Human → Reviewer</span><h3>Lore</h3><p>Maintainer-approved why-knowledge, anchored to files and checked for staleness.</p><b>draft → canon</b></article>
-          <article><span>02 / Repo → Reviewer</span><h3>Brain & Curator</h3><p>Curated repository facts proposed, validated, recalled and explicitly revocable.</p><b>opt-in</b></article>
+          <article><span>02 / Repo → Reviewer</span><h3>Brain &amp; Curator</h3><p>Curated repository facts proposed, validated, recalled and explicitly revocable.</p><b>opt-in</b></article>
           <article><span>03 / Finding → Agent</span><h3>Agent Lessons</h3><p>Accepted-and-fixed mistakes become bounded guidance at the next session start.</p><b>agent-facing</b></article>
           <article><span>04 / Decision → Calibration</span><h3>FP Ledger</h3><p>Substantive human rejections calibrate reviewer patterns and reputation over time.</p><b>demote only</b></article>
         </div>
@@ -214,10 +211,10 @@
 
         <div class="setup-console reveal">
           <div class="setup-steps" role="tablist" aria-label="Reviewgate setup steps">
-            <button class="setup-step active" type="button" role="tab" aria-selected="true" aria-controls="setup-code" tabindex="0" data-step="1"><span>01</span><div><b>Install binary</b><small>macOS + Linux, arm64 + x64</small></div></button>
-            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="2"><span>02</span><div><b>Run init</b><small>One canonical first-run flow</small></div></button>
-            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="3"><span>03</span><div><b>Choose policy</b><small>Hosts, panel, safety, memory</small></div></button>
-            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="4"><span>04</span><div><b>Trust & verify</b><small>Codex user checkpoint + Doctor</small></div></button>
+            <button class="setup-step active" type="button" role="tab" aria-selected="true" aria-controls="setup-code" tabindex="0" data-step="1"><span>01</span><span><b>Install binary</b><small>macOS + Linux, arm64 + x64</small></span></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="2"><span>02</span><span><b>Run init</b><small>One canonical first-run flow</small></span></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="3"><span>03</span><span><b>Choose policy</b><small>Hosts, panel, safety, memory</small></span></button>
+            <button class="setup-step" type="button" role="tab" aria-selected="false" aria-controls="setup-code" tabindex="-1" data-step="4"><span>04</span><span><b>Trust &amp; verify</b><small>Codex user checkpoint + Doctor</small></span></button>
           </div>
           <div class="setup-output">
             <header><span id="setup-title">Terminal / 01 install</span><button type="button" data-copy-target="#setup-code">Copy command</button></header>
@@ -297,7 +294,7 @@
   <footer class="footer shell">
     <a class="wordmark" href="#top">REVIEW<span>GATE</span> / RG-01</a>
     <p>The verification loop for AI coding agents.<br>Open source · MIT · Alpha</p>
-    <nav aria-label="Footer navigation"><a href="https://github.com/Codevena/reviewgate">GitHub</a><a href="https://www.npmjs.com/package/reviewgate">npm</a><a href="https://github.com/Codevena/reviewgate/blob/master/README.md">Docs</a><a href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Security</a><a href="#faq">FAQ</a></nav>
+    <nav aria-label="Footer navigation"><a href="https://github.com/Codevena/reviewgate">GitHub</a><a href="https://www.npmjs.com/package/reviewgate">npm</a><a href="https://github.com/Codevena/reviewgate/blob/master/README.md">Docs</a><a href="https://github.com/Codevena/reviewgate/blob/master/SECURITY.md">Security</a><a href="#faq">FAQ</a><a href="https://codevena.dev/en/impressum">Imprint</a><a href="privacy.html">Privacy</a></nav>
   </footer>
 </body>
 </html>

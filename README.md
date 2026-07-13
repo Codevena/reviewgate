@@ -30,8 +30,14 @@ hosted model by name.
 > [Security](#security).
 
 <p align="center">
-  <img src="docs/assets/demo.gif" alt="Reviewgate in action: Claude edits code, tries to finish, Reviewgate blocks on a CRITICAL finding, Claude fixes it, re-review passes." width="820">
+  <img src="docs/assets/demo.gif" alt="Reviewgate Alpha.11 replay: a real gate blocks a CRITICAL SQL-injection finding, consumes an accepted/fixed decision, then passes the parameterized fix." width="820">
 </p>
+
+> **Demo disclosure:** this is a deterministic replay of two provider responses
+> recorded during a real `reviewgate@0.1.0-alpha.11` OpenRouter run. The production
+> init, control-plane, trigger, Stop-hook, decision, re-review and audit-verifier
+> paths execute live. The script checksum-verifies the cassette and aborts on
+> prompt drift. [Run it and inspect the provenance](assets/demo/README.md).
 
 ## 60-second quickstart
 
@@ -40,6 +46,10 @@ npm i -g reviewgate     # your platform's prebuilt binary
 cd your-repo
 reviewgate init         # configure policy + hosts, install hooks, record LKG, run doctor
 ```
+
+No reviewer CLI available? Use the tested
+[OpenRouter-only setup](docs/openrouter-quickstart.md). For claims, raw caveats and
+historical catches, see [Evidence](docs/evidence.md).
 
 Claude Code is armed as soon as init completes. For Codex, init installs the hook
 definitions, but Codex intentionally keeps new project commands disabled until you
@@ -170,12 +180,13 @@ so it can't merge unreviewed work "while you sleep":
 In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
 verifier that runs at the end of each turn.
 
-**And it's measured, not asserted.** On a labelled ground-truth corpus, the panel
-caught **every seeded security bug** (recall 8/8), and the demote-only critic
-**halved the panel's false-positive rate** on clean code (0.90 → 0.40) at **zero
-recall cost** — the empirical answer to "does the suppression stack earn its
-complexity?". Numbers + a copy-paste way to reproduce them:
-**[`bench/`](bench/README.md)** (`reviewgate bench run` / `bench matrix`).
+**And there is inspectable evidence—not just a product claim.** In one published
+single-pass smoke on an 18-case labelled corpus, the panel caught 8/8 seeded bugs,
+while the demote-only critic reduced clean-case false positives from 9/10 to 4/10
+at zero recall loss in that run. This is small-N, hand-authored and not a stable
+leaderboard. Numbers, Wilson intervals, limitations and a copy-paste reproduction
+path: **[`bench/`](bench/README.md)**. Real gate-run provenance and dogfood cases:
+**[`docs/evidence.md`](docs/evidence.md)**.
 
 ---
 

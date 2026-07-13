@@ -16,14 +16,17 @@ function shannon(s: string): number {
   return h;
 }
 
-const ROOTS = ["tests/fixtures/cassettes", ".reviewgate/cassettes/golden"];
+const ROOTS = ["tests/fixtures/cassettes", ".reviewgate/cassettes/golden", "assets/demo"];
+const PUBLIC_DEMO_CASSETTE = "assets/demo/alpha11-openrouter.jsonl";
 
 describe("committed cassette secret guard", () => {
   it("no committed cassette contains a high-entropy secret-like token", async () => {
     const offenders: string[] = [];
+    const scannedCassettes: string[] = [];
     for (const root of ROOTS) {
       if (!existsSync(root)) continue;
       for await (const f of new Glob("**/*.jsonl").scan(root)) {
+        scannedCassettes.push(join(root, f));
         const text = readFileSync(join(root, f), "utf8");
         for (const m of text.match(HIGH_ENTROPY) ?? []) {
           if (/^[0-9a-f]{64}$/.test(m)) continue; // sha256 hashes are expected
@@ -31,6 +34,7 @@ describe("committed cassette secret guard", () => {
         }
       }
     }
+    expect(scannedCassettes).toContain(PUBLIC_DEMO_CASSETTE);
     expect(offenders).toEqual([]);
   });
 });
