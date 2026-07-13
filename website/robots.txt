@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://codevena.github.io/reviewgate/sitemap.xml
+Sitemap: https://reviewgate.codevena.dev/sitemap.xml
