@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://codevena.github.io/reviewgate/sitemap.xml
