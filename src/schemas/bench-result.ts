@@ -71,6 +71,45 @@ export const PhasesSnapshotSchema = z
   })
   .strict();
 
+const OpenRouterRoutingSnapshotSchema = z
+  .object({
+    only: z.array(z.string()).optional(),
+    order: z.array(z.string()).optional(),
+    allowFallbacks: z.boolean().optional(),
+  })
+  .strict();
+
+const CriticProvenanceSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+    openrouter_provider: OpenRouterRoutingSnapshotSchema.nullable(),
+  })
+  .strict();
+
+const IntegrityProvenanceSchema = z
+  .object({
+    source_commit: z.string(),
+    repository_dirty: z.boolean(),
+    runner_sha256: z.string(),
+    runner_kind: z.enum(["compiled", "source-runtime", "test"]),
+    preregistration_sha256: z.string().nullable(),
+    authoritative_requested: z.boolean(),
+    max_provider_calls: z.number().int().positive().nullable(),
+    provider_calls_used: z.number().int().nonnegative(),
+    max_output_tokens: z.number().int().positive().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.max_provider_calls !== null && value.provider_calls_used > value.max_provider_calls) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "provider_calls_used must not exceed max_provider_calls",
+        path: ["provider_calls_used"],
+      });
+    }
+  });
+
 export const ProvenanceSchema = z
   .object({
     reviewgate_version: z.string(),
@@ -106,8 +145,39 @@ export const ProvenanceSchema = z
     case_count: z
       .object({ seeded: z.number().int().nonnegative(), clean: z.number().int().nonnegative() })
       .strict(),
+    // Alpha.12 additive provenance. Optional so published v1 artifacts from older
+    // releases continue to parse byte-for-byte.
+    case_run_count: z
+      .object({
+        seeded: z.number().int().nonnegative(),
+        clean: z.number().int().nonnegative(),
+        total: z.number().int().nonnegative(),
+      })
+      .strict()
+      .optional(),
+    critic: CriticProvenanceSchema.nullable().optional(),
+    integrity: IntegrityProvenanceSchema.optional(),
   })
   .strict();
+
+export const CaseCriticSchema = z
+  .object({
+    provider: z.string(),
+    eligible: z.boolean(),
+    status: z.enum(["not-eligible", "ran", "error", "empty", "misconfigured", "skipped-budget"]),
+    verdicts: z.number().int().nonnegative(),
+    demoted: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.eligible !== (value.status !== "not-eligible")) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "eligible must agree with critic status",
+        path: ["eligible"],
+      });
+    }
+  });
 
 export const CaseResultSchema = z
   .object({
@@ -135,6 +205,7 @@ export const CaseResultSchema = z
     repeat: z.number().int().positive().optional(),
     latency_ms: z.number().nonnegative().nullable(),
     error: z.string().nullable(),
+    critic: CaseCriticSchema.optional(),
   })
   .strict();
 
@@ -191,12 +262,37 @@ export const CostSchema = z
     provider: z.string(),
     calls: z.number().int().nonnegative(),
     cache_hits: z.number().int().nonnegative(),
-    tokens_in: z.number().int().nonnegative(),
-    tokens_out: z.number().int().nonnegative(),
-    billed_usd: z.number().nonnegative(),
+    // null means the provider/CLI did not expose trustworthy accounting. Never
+    // coerce unknown usage or billing to a misleading numeric zero.
+    tokens_in: z.number().int().nonnegative().nullable(),
+    tokens_out: z.number().int().nonnegative().nullable(),
+    billed_usd: z.number().nonnegative().nullable(),
     oauth_quota_calls: z.number().int().nonnegative(),
   })
   .strict();
+
+export const CriticResultSchema = z
+  .object({
+    provider: z.string(),
+    eligible: z.number().int().nonnegative(),
+    ran: z.number().int().nonnegative(),
+    coverage: MetricSchema,
+    authoritative: z.boolean(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.ran > value.eligible ||
+      value.coverage.num !== value.ran ||
+      value.coverage.den !== value.eligible
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "critic coverage must equal ran/eligible",
+        path: ["coverage"],
+      });
+    }
+  });
 
 export const BenchResultSchema = z
   .object({
@@ -207,6 +303,7 @@ export const BenchResultSchema = z
     // `aggregate`, which is the post-suppression panel.
     providers: z.array(ProviderResultSchema),
     cost: z.array(CostSchema),
+    critic: CriticResultSchema.nullable().optional(),
     aggregate: z
       .object({
         precision: MetricSchema,
@@ -241,14 +338,28 @@ export const MatrixVariantSchema = z
       })
       .strict()
       .nullable(),
+    authoritative: z.boolean().optional(),
+    result_ref: z.string().optional(),
+    result_sha256: z.string().optional(),
   })
   .strict();
+
+const MatrixArtifactRefSchema = z.object({ path: z.string(), sha256: z.string() }).strict();
 
 export const BenchMatrixSchema = z
   .object({
     schema: z.literal("reviewgate.bench.matrix.v1"),
     provenance: ProvenanceSchema,
     variants: z.array(MatrixVariantSchema),
+    authoritative: z.boolean().optional(),
+    artifacts: z
+      .object({
+        baseline: MatrixArtifactRefSchema,
+        variants: z.array(MatrixArtifactRefSchema),
+        reviewer_responses: MatrixArtifactRefSchema,
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

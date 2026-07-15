@@ -314,7 +314,7 @@ curl -sSL https://raw.githubusercontent.com/Codevena/reviewgate/master/install.s
 reviewgate --version
 ```
 
-Pin a version with `REVIEWGATE_VERSION=v0.1.0-alpha.11`, or change where it lands
+Pin a version with `REVIEWGATE_VERSION=v0.1.0-alpha.12`, or change where it lands
 with `REVIEWGATE_INSTALL_DIR` / `REVIEWGATE_BIN_DIR`. macOS + Linux (arm64/x64).
 
 <details><summary>…or download the tarball manually</summary>
@@ -324,8 +324,8 @@ folder intact — the binary loads its sibling `grammars/` (tree-sitter `.wasm`)
 runtime. Each release ships a `SHA256SUMS.txt` to verify against:
 
 ```bash
-tar xzf reviewgate-v0.1.0-alpha.11-darwin-arm64.tar.gz
-ln -sf "$PWD/reviewgate-v0.1.0-alpha.11-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
+tar xzf reviewgate-v0.1.0-alpha.12-darwin-arm64.tar.gz
+ln -sf "$PWD/reviewgate-v0.1.0-alpha.12-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
 reviewgate --version
 ```
 
@@ -398,6 +398,14 @@ Zero to your first blocked review in ~5 minutes.
 
    Then confirm what's actually ready: **`reviewgate doctor`** tells you exactly
    which reviewers it can reach and what to fix.
+
+   During custom OpenRouter setup, Reviewgate discloses and offers one bounded paid
+   capability check per distinct paid request tuple (purpose, model, auth, route and probe bounds), enabled by default. Reviewer and fallback
+   choices use the same strict structured `review()` request as production;
+   critic/curator choices use their real free-form completion shape. The check is
+   capped at 15 seconds and 256 output tokens and sends a constant repository-free
+   prompt. Success confirms that exact request completed and parsed at setup time;
+   it is not a permanent guarantee about a third-party route.
 3. **If Codex is selected, activate the installed project hooks.** Start or
    restart Codex in the trusted repository, run `/hooks`, inspect the exact
    `.codex/hooks.json` commands and trust their current hash. Codex skips new or

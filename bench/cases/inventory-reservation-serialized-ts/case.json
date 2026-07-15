@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "inventory-reservation-serialized-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "transactionForSku serializes the read/check/write callback for a SKU, so concurrent reservations cannot oversell."
+}

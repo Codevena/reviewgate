@@ -283,7 +283,10 @@ export class CodexAdapter implements ProviderAdapter {
     // case (belt-and-suspenders — spawnSafely sets killedByAbort there too, but the
     // explicit check documents intent and survives a spawnSafely refactor).
     const retriable =
-      first.result.status === "error" && !first.killedByAbort && !input.signal?.aborted;
+      input.disableRetries !== true &&
+      first.result.status === "error" &&
+      !first.killedByAbort &&
+      !input.signal?.aborted;
     if (!retriable) return first.result;
 
     // The retry prompt (base + directive) is also delivered via stdin: write it

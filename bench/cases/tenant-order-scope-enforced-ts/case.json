@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "tenant-order-scope-enforced-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "The service rejects an order whose persisted tenant id differs from the authenticated tenant."
+}

@@ -1,5 +1,6 @@
 import { defaultConfig } from "../../config/defaults.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
+import type { OpenRouterProviderRouting } from "../../providers/adapter-base.ts";
 import { isLoopbackUrl } from "../../providers/ollama.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 
@@ -32,6 +33,9 @@ export interface WizardDefaults {
   /** Existing OpenRouter upstream-provider routing (only[0]/order[0]), to seed the
    *  re-run prompt. Empty string = none. */
   openrouterProvider: string;
+  /** Full existing route, so an unchanged wizard answer does not collapse
+   * {order,allowFallbacks} into {only}. */
+  openrouterRouting?: OpenRouterProviderRouting;
   ollamaEndpoint: "cloud" | "local";
 }
 
@@ -68,7 +72,7 @@ function modelFor(cfg: ReviewgateConfig, provider: ProviderId, override?: string
 // every Custom prompt with the user's current setup.
 export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
   const reviewerProviders: ProviderId[] = [];
-  const perReviewer: Record<string, { persona: string; model: string }> = {};
+  const perReviewer: WizardDefaults["perReviewer"] = {};
   for (const r of cfg.phases.review.reviewers) {
     if (!reviewerProviders.includes(r.provider)) reviewerProviders.push(r.provider);
     if (!perReviewer[r.provider]) {
@@ -77,6 +81,18 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
         model: modelFor(cfg, r.provider, r.model),
         ...(r.fallback && r.fallback.length > 0 ? { fallback: r.fallback } : {}),
       };
+    }
+  }
+  // A fallback-only provider still owns a persisted providers.<id>.model. Keep
+  // that value in the wizard defaults or a no-op rerun silently resets it.
+  for (const reviewer of cfg.phases.review.reviewers) {
+    for (const fallback of reviewer.fallback ?? []) {
+      if (!perReviewer[fallback]) {
+        perReviewer[fallback] = {
+          persona: reviewer.persona,
+          model: modelFor(cfg, fallback),
+        };
+      }
     }
   }
   const c = cfg.phases.critic;
@@ -110,6 +126,7 @@ export function answersFromConfig(cfg: ReviewgateConfig): WizardDefaults {
     contextDocs: Boolean(cfg.phases.contextDocs?.enabled),
     reputation: Boolean(cfg.phases.reputation?.enabled),
     openrouterProvider,
+    ...(orRouting ? { openrouterRouting: structuredClone(orRouting) } : {}),
     ollamaEndpoint,
   };
 }

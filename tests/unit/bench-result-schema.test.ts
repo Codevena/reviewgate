@@ -76,6 +76,59 @@ describe("BenchResultSchema", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts Alpha.12 integrity, critic coverage and honest unknown costs additively", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      provenance: {
+        ...validResult.provenance,
+        case_run_count: { seeded: 3, clean: 3, total: 6 },
+        critic: {
+          provider: "openrouter",
+          model: "deepseek/deepseek-v4-flash",
+          openrouter_provider: { only: ["alibaba"] },
+        },
+        integrity: {
+          source_commit: "a".repeat(40),
+          repository_dirty: false,
+          runner_sha256: "b".repeat(64),
+          runner_kind: "compiled",
+          preregistration_sha256: "c".repeat(64),
+          authoritative_requested: true,
+          max_provider_calls: 100,
+          provider_calls_used: 9,
+          max_output_tokens: 256,
+        },
+      },
+      cases: [
+        {
+          ...validResult.cases[0],
+          critic: {
+            provider: "openrouter",
+            eligible: true,
+            status: "ran",
+            verdicts: 1,
+            demoted: 0,
+          },
+        },
+      ],
+      critic: {
+        provider: "openrouter",
+        eligible: 1,
+        ran: 1,
+        coverage: { num: 1, den: 1, value: 1, ci_lo: 0.21, ci_hi: 1 },
+        authoritative: true,
+      },
+      cost: validResult.cost.map((c) => ({
+        ...c,
+        tokens_in: null,
+        tokens_out: null,
+        billed_usd: null,
+      })),
+    });
+    if (!r.success) console.error(r.error);
+    expect(r.success).toBe(true);
+  });
+
   it("rejects an unknown schema tag", () => {
     const r = BenchResultSchema.safeParse({ ...validResult, schema: "reviewgate.bench.result.v2" });
     expect(r.success).toBe(false);

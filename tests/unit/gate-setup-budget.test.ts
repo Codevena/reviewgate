@@ -10,8 +10,10 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate, runGateSafe } from "../../src/cli/commands/gate.ts";
-import { loadEffectiveConfig } from "../../src/config/global.ts";
+import { defineConfig } from "../../src/config/define-config.ts";
 import { dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
+
+const resolvedConfig = defineConfig({});
 
 describe("gate setup budget", () => {
   it("fails CLOSED when review setup (git/diff) exceeds the setup budget", async () => {
@@ -26,6 +28,10 @@ describe("gate setup budget", () => {
       hook: "stop",
       hookStdinRaw: "{}",
       setupBudgetMs: 60, // tiny so the test is fast
+      // Keep this test scoped to the intended git/diff phase. A real control-plane
+      // load can consume the deliberately tiny budget on a saturated CI host and
+      // turn this into a config-load test instead.
+      loadConfigFn: async () => resolvedConfig,
       // collectGitInfo that never resolves → simulates a git op wedged on index.lock.
       collectGitInfoFn: () => new Promise<never>(() => {}),
     });
@@ -69,7 +75,8 @@ describe("gate setup budget", () => {
       setupBudgetMs: 300,
       loadConfigFn: async (o) => {
         await new Promise((r) => setTimeout(r, 200));
-        return loadEffectiveConfig(o);
+        void o;
+        return resolvedConfig;
       },
       collectGitInfoFn: () => new Promise<never>(() => {}), // git setup hangs
     });

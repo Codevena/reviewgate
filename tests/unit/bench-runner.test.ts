@@ -154,6 +154,78 @@ function twoReviewerConfig(): ReviewgateConfig {
 }
 
 describe("runBenchCase", () => {
+  it("pins critic model/route/cap without overwriting the provider's reviewer model", () => {
+    const config = buildBenchConfig({
+      suppressors: { critic: "openrouter" },
+      criticModel: "benchmark/critic-only-model",
+      criticOpenrouterProvider: { only: ["alibaba"], allowFallbacks: false },
+      maxOutputTokens: 256,
+    });
+    expect(config.phases.critic?.model).toBe("benchmark/critic-only-model");
+    expect(config.providers.openrouter?.model).toBe(defaultConfig.providers.openrouter.model);
+    expect(config.providers.openrouter?.openrouterProvider).toEqual({
+      only: ["alibaba"],
+      allowFallbacks: false,
+    });
+    expect(config.providers.openrouter?.maxTokens).toBe(256);
+  });
+
+  it("keeps a same-provider reviewer model independent from the critic override", () => {
+    const config = buildBenchConfig({
+      providers: ["codex"],
+      suppressors: { critic: "codex" },
+      criticModel: "critic-only-model",
+    });
+    expect(config.phases.critic?.model).toBe("critic-only-model");
+    expect(config.providers.codex?.model).toBe(defaultConfig.providers.codex.model);
+  });
+
+  it("surfaces an eligible critic's persisted run status per case", async () => {
+    const config = buildBenchConfig({
+      suppressors: { critic: "openrouter" },
+      criticModel: "deepseek/deepseek-v4-flash",
+      criticOpenrouterProvider: { only: ["alibaba"] },
+      maxOutputTokens: 128,
+    });
+    const receivedOptions: Array<Parameters<NonNullable<ProviderAdapter["complete"]>>[1]> = [];
+    const critic: ProviderAdapter = {
+      id: "openrouter",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "openrouter", error: null };
+      },
+      async review() {
+        throw new Error("critic must not use review()");
+      },
+      async complete(_prompt, options) {
+        receivedOptions.push(options);
+        return JSON.stringify({
+          verdicts: [{ signature: "sql-inj", verdict: "keep", reason: "real bug" }],
+        });
+      },
+    };
+    const out = await runBenchCase({
+      benchCase: seededCase,
+      diffPatch: DB_DIFF,
+      config,
+      window: 5,
+      includeAdvisory: false,
+      adapters: {
+        codex: stubReviewer("codex", [sqlInjectionFinding("codex", "security")]),
+        openrouter: critic,
+      },
+    });
+    expect(out.critic).toEqual({
+      provider: "openrouter",
+      eligible: true,
+      status: "ran",
+      verdicts: 1,
+      demoted: 0,
+    });
+    expect(receivedOptions[0]?.model).toBe("deepseek/deepseek-v4-flash");
+    expect(receivedOptions[0]?.openrouterProvider).toEqual({ only: ["alibaba"] });
+    expect(receivedOptions[0]?.maxTokens).toBe(128);
+  });
+
   it("scores a caught seeded bug as a TP on both the panel and every provider", async () => {
     const config = twoReviewerConfig();
     const out = await runBenchCase({

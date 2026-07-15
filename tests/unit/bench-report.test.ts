@@ -138,6 +138,42 @@ describe("isAuthoritative", () => {
     );
     expect(r.ok).toBe(false);
   });
+
+  it("fails an Alpha.12 authoritative request with source runtime or critic gaps", () => {
+    const base = baseResult();
+    const r = isAuthoritative({
+      ...base,
+      provenance: {
+        ...base.provenance,
+        critic: {
+          provider: "openrouter",
+          model: "deepseek/deepseek-v4-flash",
+          openrouter_provider: { only: ["alibaba"] },
+        },
+        integrity: {
+          source_commit: "a".repeat(40),
+          repository_dirty: false,
+          runner_sha256: "b".repeat(64),
+          runner_kind: "source-runtime",
+          preregistration_sha256: "c".repeat(64),
+          authoritative_requested: true,
+          max_provider_calls: 100,
+          provider_calls_used: 10,
+          max_output_tokens: 128,
+        },
+      },
+      critic: {
+        provider: "openrouter",
+        eligible: 2,
+        ran: 1,
+        coverage: makeMetric(1, 2),
+        authoritative: false,
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toContain("compiled");
+    expect(r.reasons.join(" ")).toContain("critic");
+  });
 });
 
 describe("renderBenchReport", () => {

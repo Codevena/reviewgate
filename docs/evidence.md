@@ -122,11 +122,25 @@ together with any number quoted from a new run.
 
 ## Known provider caveat from the Alpha.11 recording
 
-The interactive OpenRouter model probe uses a free-form completion. On
-2026-07-13, the wizard-suggested `deepseek` upstream passed that probe but rejected
-the real review's strict `response_format`. Pinning `alibaba` for the same model
-completed both review requests. Upstream capabilities can change; a successful
-probe is not proof that the production review shape works.
+Alpha.11's interactive OpenRouter model probe used a role-blind free-form
+completion. On 2026-07-13, the wizard-suggested `deepseek` upstream passed that
+probe but rejected the real review's strict `response_format`. Pinning `alibaba`
+for the same model completed both review requests.
+
+Alpha.12 changes the wizard: reviewer/fallback probes use the actual strict
+structured review path, while critic/curator probes use their production
+free-form shape. Calls are disclosed, repository-free, capped at 15 seconds and
+256 output tokens, and deduplicated per successful paid request tuple (purpose,
+model, auth, route and probe bounds).
+That closes the Alpha.11 shape mismatch; upstream capabilities can still change,
+so a successful probe remains a dated capability observation rather than a
+permanent provider guarantee.
+
+On 2026-07-14 the exact Alpha.12 reviewer probe for
+`deepseek/deepseek-v4-flash` via `alibaba` completed and parsed successfully with
+the 256-token ceiling. A preceding 64-token diagnostic returned HTTP 200 but
+spent the entire completion on reasoning and emitted no review JSON; the larger
+bounded ceiling is therefore regression-tested rather than an arbitrary increase.
 
 See the [OpenRouter-only quickstart](openrouter-quickstart.md) for the tested path
-and the exact limitation.
+and the exact route history.

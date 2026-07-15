@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "session-payload-pickle-execution-py",
+  "kind": "seeded-bug",
+  "language": "py",
+  "expected": [
+    {
+      "tag": [
+        "unsafe pickle deserialization",
+        "untrusted object deserialization",
+        "deserialization code execution",
+        "attacker controlled pickle"
+      ],
+      "file": "app/session/codec.py",
+      "line": 10,
+      "min_severity": "CRITICAL"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "pickle.loads executes attacker-selected reducers while decoding an untrusted session token."
+}

@@ -1,0 +1,29 @@
+diff --git a/src/inventory/store.ts b/src/inventory/store.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/inventory/store.ts
+@@ -0,0 +1,6 @@
++export interface InventoryStore {
++  getStock(sku: string): Promise<number>;
++  setStock(sku: string, stock: number): Promise<void>;
++  // The callback is serialized with every other transaction for this SKU.
++  transactionForSku<T>(sku: string, work: (tx: InventoryStore) => Promise<T>): Promise<T>;
++}
+diff --git a/src/inventory/reserve.ts b/src/inventory/reserve.ts
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/inventory/reserve.ts
+@@ -0,0 +1,11 @@
++import type { InventoryStore } from "./store.ts";
++
++export function reserve(store: InventoryStore, sku: string, quantity: number) {
++  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RangeError("invalid quantity");
++  return store.transactionForSku(sku, async (tx) => {
++    const stock = await tx.getStock(sku);
++    if (stock < quantity) return false;
++    await tx.setStock(sku, stock - quantity);
++    return true;
++  });
++}

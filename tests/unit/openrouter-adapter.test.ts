@@ -36,7 +36,11 @@ function fakeFetch(): typeof fetch {
 describe("OpenRouterAdapter.complete (raw judge completion)", () => {
   it("does a free-form chat call WITHOUT the review json_schema, returns the content", async () => {
     process.env.OR_JUDGE_KEY = "k";
-    let capturedBody: { response_format?: unknown; messages?: { content: string }[] } = {};
+    let capturedBody: {
+      response_format?: unknown;
+      messages?: { content: string }[];
+      max_tokens?: number;
+    } = {};
     const fetchImpl = (async (_url: string, init: { body: string }) => {
       capturedBody = JSON.parse(init.body);
       return new Response(
@@ -48,11 +52,16 @@ describe("OpenRouterAdapter.complete (raw judge completion)", () => {
       );
     }) as unknown as typeof fetch;
     const adapter = new OpenRouterAdapter({ fetchImpl });
-    const text = await adapter.complete("judge this", { model: "m", apiKeyEnv: "OR_JUDGE_KEY" });
+    const text = await adapter.complete("judge this", {
+      model: "m",
+      apiKeyEnv: "OR_JUDGE_KEY",
+      maxTokens: 64,
+    });
     expect(text).toBe('{"contradicts":true,"reason":"conflicts B-1"}');
     // THE point: a judge must NOT be forced into the review output schema.
     expect(capturedBody.response_format).toBeUndefined();
     expect(capturedBody.messages?.[0]?.content).toBe("judge this");
+    expect(capturedBody.max_tokens).toBe(64);
   });
 
   it("throws on a missing API key (caller falls back to its default verdict)", async () => {
@@ -256,6 +265,7 @@ describe("OpenRouterAdapter — upstream provider routing", () => {
         apiKeyEnv: "OPENROUTER_API_KEY",
         model: "deepseek/deepseek-v4-pro",
         timeoutMs: 60_000,
+        maxTokens: 64,
         openrouterProvider: { only: ["deepseek"] },
       },
       reviewerId: "openrouter-security",
@@ -266,6 +276,7 @@ describe("OpenRouterAdapter — upstream provider routing", () => {
       diffPath: join(dir, "d.patch"),
     });
     expect(cap.body().provider).toEqual({ only: ["deepseek"] });
+    expect(cap.body().max_tokens).toBe(64);
   });
 
   it("review() maps order + allowFallbacks to OpenRouter's snake_case allow_fallbacks", async () => {

@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "signed-return-target-same-origin-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "The target is normalized to a same-origin relative URL before it is signed, and signature comparison is length-checked and constant-time."
+}

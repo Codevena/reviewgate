@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "signed-return-target-open-redirect-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "signed open redirect",
+        "cross-origin return URL",
+        "unvalidated redirect target",
+        "external return location"
+      ],
+      "file": "src/auth/return-url.ts",
+      "line": 2,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "The login flow signs arbitrary user-supplied absolute targets, so a valid signature does not make the resulting external redirect safe."
+}

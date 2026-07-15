@@ -1,0 +1,38 @@
+diff --git a/src/auth/return-url.ts b/src/auth/return-url.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/auth/return-url.ts
+@@ -0,0 +1,3 @@
++export function normalizeReturnTarget(requestOrigin: string, returnTo: string): string {
++  return new URL(returnTo, requestOrigin).toString();
++}
+diff --git a/src/auth/ticket.ts b/src/auth/ticket.ts
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/auth/ticket.ts
+@@ -0,0 +1,23 @@
++import { createHmac, timingSafeEqual } from "node:crypto";
++import { normalizeReturnTarget } from "./return-url.ts";
++
++function signature(secret: string, target: string): string {
++  return createHmac("sha256", secret).update(target).digest("hex");
++}
++
++export function issueReturnTicket(secret: string, origin: string, returnTo: string) {
++  const target = normalizeReturnTarget(origin, returnTo);
++  return { target, signature: signature(secret, target) };
++}
++
++export function consumeReturnTicket(secret: string, ticket: { target: string; signature: string }) {
++  const expected = Buffer.from(signature(secret, ticket.target), "hex");
++  let actual: Buffer;
++  try {
++    actual = Buffer.from(ticket.signature, "hex");
++  } catch {
++    throw new Error("invalid return signature");
++  }
++  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error("invalid return signature");
++  return ticket.target;
++}

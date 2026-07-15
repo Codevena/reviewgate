@@ -23,11 +23,15 @@ import { buildAdapters } from "../cli/build-adapters.ts";
 import { defaultConfig } from "../config/defaults.ts";
 import { ConfigSchema, type ReviewgateConfig } from "../config/define-config.ts";
 import { Orchestrator } from "../core/orchestrator.ts";
-import type { ProviderAdapter, ReviewStatus } from "../providers/adapter-base.ts";
+import type {
+  OpenRouterProviderRouting,
+  ProviderAdapter,
+  ReviewStatus,
+} from "../providers/adapter-base.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import type { BenchCase } from "../schemas/bench-case.ts";
 import type { Finding } from "../schemas/finding.ts";
-import { PendingReportSchema } from "../schemas/pending-report.ts";
+import { type PendingReport, PendingReportSchema } from "../schemas/pending-report.ts";
 import type { GitInfo } from "../utils/git.ts";
 import { planReviewJsonPath, reviewgateDir } from "../utils/paths.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
@@ -90,6 +94,11 @@ export interface BenchConfigOptions {
   providers?: ProviderId[];
   /** suppressor toggles (spec §8 class A) — enable/disable the FP-suppression layers. */
   suppressors?: SuppressorConfig;
+  /** Exact critic model and upstream route recorded by benchmark provenance. */
+  criticModel?: string;
+  criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Hard provider-side output ceiling for OpenRouter review/critic requests. */
+  maxOutputTokens?: number;
 }
 
 /** The critic persona bench runs its adversarial FP-filter pass under. */
@@ -131,6 +140,25 @@ export function buildBenchConfig(opts: BenchConfigOptions = {}): ReviewgateConfi
     if (s.scopeToDiff !== undefined) base.phases.review.scopeToDiff = s.scopeToDiff;
     if (s.reputation !== undefined) base.phases.reputation.enabled = s.reputation;
   }
+  if (opts.maxOutputTokens !== undefined && base.providers.openrouter) {
+    base.providers.openrouter.maxTokens = opts.maxOutputTokens;
+  }
+  if (base.phases.critic) {
+    const criticProvider = base.phases.critic.provider;
+    const criticConfig = base.providers[criticProvider];
+    if (criticConfig) criticConfig.enabled = true;
+    if (opts.criticModel) {
+      // Role-local by design: one provider can be both reviewer and critic. The
+      // orchestrator resolves this phase override first for complete(), while
+      // reviewer calls retain providers.<id>.model (or their reviewer override).
+      base.phases.critic.model = opts.criticModel;
+    }
+    if (criticProvider === "openrouter" && criticConfig) {
+      if (opts.criticOpenrouterProvider) {
+        criticConfig.openrouterProvider = structuredClone(opts.criticOpenrouterProvider);
+      }
+    }
+  }
   return ConfigSchema.parse(base);
 }
 
@@ -161,6 +189,13 @@ export interface CaseRunOutcome {
   providerCosts: ProviderCaseCost[];
   /** aggregated-panel match; null on invalid / review-error. */
   aggregatedMatch: MatchResult | null;
+  critic?: {
+    provider: string;
+    eligible: boolean;
+    status: "not-eligible" | "ran" | "error" | "empty" | "misconfigured" | "skipped-budget";
+    verdicts: number;
+    demoted: number;
+  };
 }
 
 export interface RunBenchCaseInput {
@@ -334,8 +369,9 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
     }
 
     let aggregatedFindings: Finding[] = [];
+    let report: PendingReport;
     try {
-      const report = PendingReportSchema.parse(
+      report = PendingReportSchema.parse(
         JSON.parse(readFileSync(planReviewJsonPath(sandbox), "utf8")),
       );
       aggregatedFindings = report.findings;
@@ -358,6 +394,24 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       findings: toMatcherFindings(aggregatedFindings),
     });
 
+    const critic = config.phases.critic
+      ? report.critic
+        ? {
+            provider: report.critic.provider,
+            eligible: true,
+            status: report.critic.status,
+            verdicts: report.critic.verdicts,
+            demoted: report.critic.demoted,
+          }
+        : {
+            provider: config.phases.critic.provider,
+            eligible: false,
+            status: "not-eligible" as const,
+            verdicts: 0,
+            demoted: 0,
+          }
+      : undefined;
+
     return {
       status: "scored",
       error: null,
@@ -373,6 +427,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       perProvider,
       providerCosts,
       aggregatedMatch,
+      ...(critic ? { critic } : {}),
     };
   } finally {
     rmSync(work, { recursive: true, force: true });

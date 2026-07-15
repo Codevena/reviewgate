@@ -99,10 +99,11 @@ export class OpenRouterAdapter implements ProviderAdapter {
     });
     if (!key) return errorResult(`OpenRouter API key env '${input.cfg.apiKeyEnv}' is not set`);
 
-    const prompt = readFileSync(input.promptFile, "utf8");
+    const prompt = input.promptText ?? readFileSync(input.promptFile, "utf8");
     const body = {
       model: input.cfg.model,
       messages: [{ role: "user", content: prompt }],
+      ...(input.cfg.maxTokens !== undefined ? { max_tokens: input.cfg.maxTokens } : {}),
       response_format: {
         type: "json_schema",
         json_schema: { name: "review", strict: true, schema: REVIEW_OUTPUT_SCHEMA },
@@ -254,6 +255,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     const body = {
       model: opts.model,
       messages: [{ role: "user", content: prompt }],
+      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
       ...providerRoutingBody(opts.openrouterProvider),
     };
     const controller = new AbortController();

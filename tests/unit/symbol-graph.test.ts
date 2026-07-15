@@ -1,13 +1,16 @@
 // tests/unit/symbol-graph.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Query } from "web-tree-sitter";
+import * as symbolGraphModule from "../../src/research/symbol-graph.ts";
 import {
   buildSymbolGraph,
+  classifyRipgrepExit,
   enclosingSymbol,
   fileSymbols,
+  parseRipgrepJson,
   scanCallersFallback,
 } from "../../src/research/symbol-graph.ts";
 
@@ -24,7 +27,8 @@ describe("symbol-graph", () => {
     const g = await buildSymbolGraph({ files: [join(DIR, "a.ts")], repoRoot: DIR });
     const alpha = g.symbols.find((s) => s.name === "alpha");
     expect(alpha?.callees).toContain("beta");
-    expect(g.callers.alpha?.some((ref) => ref.file.endsWith("b.ts"))).toBe(true);
+    expect(g.callers.alpha?.some((ref) => ref.file === "b.ts")).toBe(true);
+    expect(JSON.stringify(g.callers)).not.toContain(DIR);
   });
 
   it("stops parsing immediately when the signal is already aborted (deadline)", async () => {
@@ -45,7 +49,133 @@ describe("symbol-graph", () => {
     // Exercises the no-ripgrep path directly so a runner lacking `rg` still gets
     // 1-hop callers (was: callers silently empty → CI failure at the rg assertion).
     const refs = scanCallersFallback("alpha", DIR);
-    expect(refs.some((r) => r.file.endsWith("b.ts"))).toBe(true);
+    expect(refs.some((r) => r.file === "b.ts")).toBe(true);
+    expect(JSON.stringify(refs)).not.toContain(DIR);
+  });
+
+  it("fallback refuses outside symlinks before reading caller content", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "rg-symgraph-outside-"));
+    const target = join(outside, "secret.ts");
+    writeFileSync(target, "outsideSecret();\n");
+    const link = join(repo, "leak.ts");
+    symlinkSync(target, link);
+    // Proves the injectable candidate list is honored: an implementation that
+    // ignores it and scans the whole repo would find this ordinary file.
+    writeFileSync(join(repo, "ordinary.ts"), "outsideSecret();\n");
+
+    expect(scanCallersFallback("outsideSecret", repo, [link])).toEqual([]);
+  });
+
+  it("fallback refuses oversized caller files instead of loading them", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-large-"));
+    writeFileSync(join(repo, "huge.ts"), `${"x".repeat(2 * 1024 * 1024)}\noversizedCall();\n`);
+
+    expect(scanCallersFallback("oversizedCall", repo)).toEqual([]);
+  });
+
+  it("bounds candidate attempts even when every fallback path is unreadable", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-cap-"));
+    let yielded = 0;
+    function* missingCandidates() {
+      while (yielded < 4000) {
+        yielded++;
+        yield join(repo, `missing-${yielded}.ts`);
+      }
+    }
+
+    expect(scanCallersFallback("neverFound", repo, missingCandidates())).toEqual([]);
+    // for-of fetches one final candidate before the body can observe the cap.
+    expect(yielded).toBeLessThanOrEqual(3001);
+  });
+
+  it("does not spend the fallback scan cap on excluded vendor paths", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-vendor-cap-"));
+    const sourceDir = join(repo, "src");
+    mkdirSync(sourceDir, { recursive: true });
+    const caller = join(sourceDir, "caller.ts");
+    writeFileSync(caller, "firstPartyCall();\n");
+
+    function* vendorHeavyCandidates() {
+      for (let i = 0; i < 3000; i++) {
+        yield join(repo, "node_modules", `dependency-${i}.ts`);
+      }
+      yield caller;
+    }
+
+    expect(scanCallersFallback("firstPartyCall", repo, vendorHeavyCandidates())).toEqual([
+      { file: "src/caller.ts", line: 1 },
+    ]);
+  });
+
+  it("parses rg --json paths without colon/newline/Unicode ambiguity", () => {
+    const names = ["dir:12:file.ts", "line\nbreak.py", "grüße.ts"];
+    const output = names
+      .map((file, i) =>
+        JSON.stringify({
+          type: "match",
+          data: {
+            path: { text: file },
+            lines: { text: "alpha();\n" },
+            line_number: i + 1,
+            absolute_offset: 0,
+            submatches: [],
+          },
+        }),
+      )
+      .join("\n");
+
+    expect(parseRipgrepJson(output)).toEqual(names.map((file, i) => ({ file, line: i + 1 })));
+    expect(parseRipgrepJson("{malformed")).toBeNull();
+  });
+
+  it("applies the same contained vendor exclusions to ripgrep caller refs", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-rg-normalize-"));
+    mkdirSync(join(repo, "src"), { recursive: true });
+    mkdirSync(join(repo, "node_modules", "dependency"), { recursive: true });
+    writeFileSync(join(repo, "src", "caller.ts"), "sharedSymbol();\n");
+    writeFileSync(join(repo, "node_modules", "dependency", "caller.ts"), "sharedSymbol();\n");
+
+    const normalize = (
+      symbolGraphModule as unknown as {
+        normalizeCallerRefs?: (
+          repoRoot: string,
+          symbol: string,
+          refs: Array<{ file: string; line: number }>,
+        ) => Array<{ file: string; line: number }>;
+      }
+    ).normalizeCallerRefs;
+
+    expect(normalize).toBeDefined();
+    expect(
+      normalize?.(repo, "sharedSymbol", [
+        { file: "node_modules/dependency/caller.ts", line: 1 },
+        { file: "src/caller.ts", line: 1 },
+        { file: "src/caller.ts", line: 2 },
+      ]),
+    ).toEqual([{ file: "src/caller.ts", line: 1 }]);
+  });
+
+  it("excludes fallback-ignored directories in the ripgrep scan itself", () => {
+    const buildArgs = (
+      symbolGraphModule as unknown as {
+        buildRipgrepCallerArgs?: (symbol: string) => string[];
+      }
+    ).buildRipgrepCallerArgs;
+
+    expect(buildArgs).toBeDefined();
+    const args = buildArgs?.("sharedSymbol") ?? [];
+    for (const dir of ["node_modules", ".git", ".reviewgate", ".antigravitycli", "dist"]) {
+      expect(args).toContain("--glob");
+      expect(args).toContain(`!**/${dir}/**`);
+    }
+  });
+
+  it("falls back on real ripgrep errors while treating exit 1 as no matches", () => {
+    expect(classifyRipgrepExit(0)).toBe("matches");
+    expect(classifyRipgrepExit(1)).toBe("no-match");
+    expect(classifyRipgrepExit(2)).toBe("fallback");
+    expect(classifyRipgrepExit(null)).toBe("fallback");
   });
 
   it("excludes .antigravitycli/ files from the no-ripgrep caller scan", () => {

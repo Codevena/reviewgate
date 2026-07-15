@@ -1,0 +1,27 @@
+diff --git a/src/profile/database.ts b/src/profile/database.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/profile/database.ts
+@@ -0,0 +1,6 @@
++export interface ProfileDatabase {
++  updateUser(userId: string, displayName: string): Promise<void>;
++  updateSettings(userId: string, locale: string): Promise<void>;
++  // Rolls back every write made by work when the callback rejects.
++  transaction<T>(work: (tx: ProfileDatabase) => Promise<T>): Promise<T>;
++}
+diff --git a/src/profile/update.ts b/src/profile/update.ts
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/profile/update.ts
+@@ -0,0 +1,9 @@
++import type { ProfileDatabase } from "./database.ts";
++
++export async function updateProfile(
++  db: ProfileDatabase,
++  input: { userId: string; displayName: string; locale: string },
++) {
++  await db.updateUser(input.userId, input.displayName);
++  await db.updateSettings(input.userId, input.locale);
++}

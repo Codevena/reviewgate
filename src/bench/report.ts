@@ -30,6 +30,41 @@ export function isAuthoritative(result: BenchResult): { ok: boolean; reasons: st
     reasons.push("zero clean cases (FP-rate unmeasured)");
   if (result.provenance.case_count.seeded === 0)
     reasons.push("zero seeded cases (recall unmeasured)");
+  const integrity = result.provenance.integrity;
+  if (integrity?.authoritative_requested) {
+    if (!/^[0-9a-f]{40}$/i.test(integrity.source_commit)) {
+      reasons.push("source commit is not a full Git commit");
+    }
+    if (integrity.repository_dirty) reasons.push("repository was dirty");
+    if (integrity.runner_kind !== "compiled" || !/^[0-9a-f]{64}$/i.test(integrity.runner_sha256)) {
+      reasons.push("runner was not a hashed compiled binary");
+    }
+    if (!integrity.preregistration_sha256) reasons.push("committed preregistration is missing");
+    if (integrity.max_provider_calls === null || integrity.max_output_tokens === null) {
+      reasons.push("provider-call/output bounds are missing");
+    }
+    if (
+      integrity.max_provider_calls !== null &&
+      integrity.provider_calls_used > integrity.max_provider_calls
+    ) {
+      reasons.push("provider-call ceiling was exceeded");
+    }
+    for (const provider of result.providers) {
+      if (provider.coverage.value !== 1 || !provider.authoritative) {
+        reasons.push(`reviewer ${provider.provider} did not reach 100% coverage`);
+      }
+    }
+    if (result.provenance.critic) {
+      if (
+        !result.critic ||
+        result.critic.eligible === 0 ||
+        result.critic.ran !== result.critic.eligible ||
+        !result.critic.authoritative
+      ) {
+        reasons.push("critic did not reach 100% eligible-call coverage");
+      }
+    }
+  }
   return { ok: reasons.length === 0, reasons };
 }
 
@@ -80,6 +115,16 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   L.push(
     `Cases: ${scoredCases.length} scored (${seededScored} seeded, ${cleanScored} clean) of ${result.cases.length} total`,
   );
+  if (p.case_run_count) {
+    L.push(
+      `Unique cases: ${p.case_count.seeded + p.case_count.clean} · correlated case-runs: ${p.case_run_count.total}`,
+    );
+  }
+  if (result.critic) {
+    L.push(
+      `Critic coverage: ${result.critic.ran}/${result.critic.eligible} eligible (${result.critic.authoritative ? "complete" : "incomplete"})`,
+    );
+  }
 
   if (result.stability) {
     const s = result.stability;
@@ -123,6 +168,11 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   L.push(
     `  phases: critic=${p.phases.critic} reputation=${p.phases.reputation} fp_ledger=${p.phases.fp_ledger} confidence_floor=${p.phases.confidence_floor} scope_to_diff=${p.phases.scope_to_diff}${p.phases.ablations.length ? ` ablations=[${p.phases.ablations.join(",")}]` : ""}`,
   );
+  if (p.integrity) {
+    L.push(
+      `  source=${p.integrity.source_commit} runner=${p.integrity.runner_sha256.slice(0, 12)} (${p.integrity.runner_kind}) calls=${p.integrity.provider_calls_used}/${p.integrity.max_provider_calls ?? "unbounded"}`,
+    );
+  }
 
   // --- markdown block ---
   const M: string[] = [];
@@ -158,6 +208,12 @@ export function renderBenchReport(result: BenchResult): { table: string; markdow
   M.push(
     `_${scoredCases.length} scored cases (${seededScored} seeded, ${cleanScored} clean) · reviewgate ${p.reviewgate_version} · corpus \`${p.corpus_commit}\`${p.corpus_dirty ? " (dirty)" : ""} · window ${p.window} · cache ${p.cache}._`,
   );
+  if (p.case_run_count) {
+    M.push("");
+    M.push(
+      `_${p.case_count.seeded + p.case_count.clean} unique cases; ${p.case_run_count.total} correlated case-runs across ${p.repeat} repeat(s)._`,
+    );
+  }
 
   return { table: L.join("\n"), markdown: M.join("\n") };
 }

@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "archive-entry-escape-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "archive path traversal",
+        "zip slip extraction",
+        "entry escapes destination",
+        "missing path containment"
+      ],
+      "file": "src/archive/extract.ts",
+      "line": 5,
+      "min_severity": "CRITICAL"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "A ../ entry resolves outside the trusted extraction root and is written without a containment check."
+}

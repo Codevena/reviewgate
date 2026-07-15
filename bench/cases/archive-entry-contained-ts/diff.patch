@@ -1,0 +1,34 @@
+diff --git a/src/archive/paths.ts b/src/archive/paths.ts
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/archive/paths.ts
+@@ -0,0 +1,12 @@
++import { isAbsolute, relative, resolve, sep } from "node:path";
++
++export function containedArchiveTarget(root: string, entryName: string): string {
++  if (entryName.includes("\\") || entryName.includes("\0")) throw new Error("invalid entry name");
++  const canonicalRoot = resolve(root);
++  const target = resolve(canonicalRoot, entryName);
++  const child = relative(canonicalRoot, target);
++  if (!child || isAbsolute(child) || child === ".." || child.startsWith(`..${sep}`)) {
++    throw new Error("archive entry escapes extraction root");
++  }
++  return target;
++}
+diff --git a/src/archive/extract.ts b/src/archive/extract.ts
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/archive/extract.ts
+@@ -0,0 +1,10 @@
++import { mkdir, writeFile } from "node:fs/promises";
++import { dirname } from "node:path";
++import { containedArchiveTarget } from "./paths.ts";
++
++// The caller supplies a newly-created trusted root and regular-file entry data.
++export async function writeRegularEntry(root: string, entryName: string, data: Uint8Array) {
++  const target = containedArchiveTarget(root, entryName);
++  await mkdir(dirname(target), { recursive: true });
++  await writeFile(target, data, { flag: "wx" });
++}

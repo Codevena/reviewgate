@@ -140,6 +140,152 @@ describe("buildCustomConfig", () => {
     expect(cfg.providers.openrouter?.openrouterProvider).toBeUndefined();
   });
 
+  it("preserves an existing structured OpenRouter route when the wizard leaves it unchanged", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [{ provider: "openrouter", persona: "security", model: "m" }],
+        critic: null,
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+        openrouterRouting: { order: ["alibaba", "deepseek"], allowFallbacks: false },
+      }),
+    );
+    expect(cfg.providers.openrouter?.openrouterProvider).toEqual({
+      order: ["alibaba", "deepseek"],
+      allowFallbacks: false,
+    });
+  });
+
+  it("enables an OpenRouter provider used only as a quota fallback", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [
+          { provider: "codex", persona: "security", model: "gpt", fallback: ["openrouter"] },
+        ],
+        critic: null,
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+        openrouterProvider: "alibaba",
+        providerModels: { openrouter: "deepseek/deepseek-v4-flash" },
+      }),
+    );
+    expect(cfg.providers.openrouter?.enabled).toBe(true);
+    expect(cfg.providers.openrouter?.model).toBe("deepseek/deepseek-v4-flash");
+    expect(cfg.providers.openrouter?.openrouterProvider).toEqual({ only: ["alibaba"] });
+  });
+
+  it("uses one provider model when OpenRouter is both a primary and a fallback", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [
+          { provider: "openrouter", persona: "security", model: "vendor/model-a" },
+          {
+            provider: "codex",
+            persona: "quality",
+            model: "gpt-5.5",
+            fallback: ["openrouter"],
+          },
+        ],
+        critic: null,
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+        providerModels: { openrouter: "vendor/model-b" },
+      }),
+    );
+    expect(cfg.providers.openrouter?.model).toBe("vendor/model-b");
+  });
+
+  it("keeps a fallback-only model when the same provider is also the critic", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [
+          { provider: "codex", persona: "security", model: "gpt", fallback: ["openrouter"] },
+        ],
+        critic: {
+          provider: "openrouter",
+          persona: "fp-filter",
+          model: "deepseek/deepseek-v4-pro",
+        },
+        brain: null,
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+        providerModels: { openrouter: "vendor/custom-fallback-model" },
+      }),
+    );
+    expect(cfg.providers.openrouter?.model).toBe("vendor/custom-fallback-model");
+    expect(cfg.phases.critic?.model).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("keeps a fallback-only model when the same provider is also the curator", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [
+          { provider: "codex", persona: "security", model: "gpt", fallback: ["openrouter"] },
+        ],
+        critic: null,
+        brain: {
+          curator: {
+            provider: "openrouter",
+            persona: "fp-filter",
+            model: "deepseek/deepseek-v4-pro",
+          },
+        },
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+        providerModels: { openrouter: "vendor/custom-fallback-model" },
+      }),
+    );
+    expect(cfg.providers.openrouter?.model).toBe("vendor/custom-fallback-model");
+    expect(cfg.phases.brain?.curator?.model).toBe("deepseek/deepseek-v4-pro");
+  });
+
+  it("keeps one primary provider model when that provider is also critic and curator", () => {
+    const cfg = defineConfig(
+      buildCustomConfig({
+        reviewers: [{ provider: "openrouter", persona: "security", model: "vendor/primary-model" }],
+        critic: {
+          provider: "openrouter",
+          persona: "fp-filter",
+          model: "vendor/critic-model",
+        },
+        brain: {
+          curator: {
+            provider: "openrouter",
+            persona: "fp-filter",
+            model: "vendor/curator-model",
+          },
+        },
+        fpLedger: false,
+        contextDocs: false,
+        reputation: false,
+        agentLessons: false,
+        lore: false,
+      }),
+    );
+
+    expect(cfg.providers.openrouter?.model).toBe("vendor/primary-model");
+    expect(cfg.phases.critic?.model).toBe("vendor/critic-model");
+    expect(cfg.phases.brain?.curator?.model).toBe("vendor/curator-model");
+  });
+
   it("maps reviewers + critic (with model) + fpLedger toggles", () => {
     const partial = buildCustomConfig({
       reviewers: [

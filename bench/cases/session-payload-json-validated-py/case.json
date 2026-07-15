@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "session-payload-json-validated-py",
+  "kind": "clean",
+  "language": "py",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "The size-bounded token is authenticated with HMAC before JSON decoding and validation into a narrow typed session payload."
+}

@@ -1,0 +1,140 @@
+{
+  "schema": "reviewgate.bench.preregistration.v1",
+  "registered_at": "2026-07-13T22:47:02Z",
+  "release": "v0.1.0-alpha.12",
+  "attempt": "attempt-01",
+  "source": {
+    "ref": "master",
+    "require_exact_clean_head_containing_this_file": true,
+    "runner": "dist/reviewgate",
+    "require_compiled_runner_sha256": true
+  },
+  "command": [
+    "./dist/reviewgate",
+    "bench",
+    "matrix",
+    "--corpus",
+    "bench/cases",
+    "--providers",
+    "codex,claude-code",
+    "--ablate",
+    "critic",
+    "--critic",
+    "openrouter",
+    "--critic-model",
+    "deepseek/deepseek-v4-flash",
+    "--critic-openrouter-provider",
+    "alibaba",
+    "--repeat",
+    "3",
+    "--min-clean",
+    "16",
+    "--min-seeded",
+    "14",
+    "--max-failed-frac",
+    "0",
+    "--max-provider-calls",
+    "270",
+    "--max-output-tokens",
+    "2048",
+    "--authoritative",
+    "--preregistration",
+    "bench/preregistrations/alpha12-v2.json",
+    "--out",
+    "bench/results/alpha12-v2/attempt-01/matrix.json"
+  ],
+  "roster": {
+    "reviewers": [
+      {
+        "provider": "codex",
+        "model": "gpt-5.5",
+        "persona": "security"
+      },
+      {
+        "provider": "claude-code",
+        "model": "claude-sonnet-4-6",
+        "persona": "security"
+      }
+    ],
+    "critic": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "persona": "fp-filter",
+      "openrouter_provider": {
+        "only": ["alibaba"],
+        "allowFallbacks": false
+      }
+    },
+    "substitution_allowed": false
+  },
+  "corpus": {
+    "path": "bench/cases",
+    "unique_cases": 30,
+    "clean": 16,
+    "seeded_bug": 14,
+    "repeats": 3,
+    "correlated_case_runs": 90,
+    "manifest_sha256": "b5afb47115ba526be8db36aae1af207895c31bae7b0c5f084eaf9de7cc39383f",
+    "content_sha256": {
+      "archive-entry-contained-ts": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "archive-entry-escape-ts": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "clean-average-py": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "clean-capitalize-ts": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "clean-clamp-ts": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "clean-dataclass-py": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "clean-debounce-ts": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "clean-namedtuple-py": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "clean-pick-ts": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "clean-slugify-py": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "clean-sum-ts": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "clean-titlecase-py": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "command-injection-py": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "hardcoded-secret-py": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "inventory-reservation-check-then-write-ts": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "inventory-reservation-serialized-ts": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "missing-await-ts": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "path-traversal-ts": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "profile-update-atomic-ts": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "profile-update-partial-write-ts": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "session-payload-json-validated-py": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "session-payload-pickle-execution-py": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "signed-return-target-open-redirect-ts": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "signed-return-target-same-origin-ts": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "sql-injection-ts": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "ssrf-ts": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "tenant-order-scope-enforced-ts": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "tenant-order-scope-omitted-ts": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "weak-hash-py": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "xss-ts": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0"
+    }
+  },
+  "estimands": {
+    "primary": [
+      "per-repeat aggregate precision",
+      "per-repeat aggregate recall",
+      "per-repeat clean-case false-positive rate",
+      "mean, population standard deviation and min-max across three repeats"
+    ],
+    "descriptive_only": [
+      "repeat-pooled Wilson 95% intervals",
+      "raw per-provider precision and recall"
+    ],
+    "critic_ablation": "baseline minus critic-off using identical captured reviewer ReviewResults"
+  },
+  "hard_gates": {
+    "maximum_provider_calls": 270,
+    "maximum_openrouter_output_tokens_per_call": 2048,
+    "maximum_failed_fraction": 0,
+    "reviewer_coverage": 1,
+    "eligible_critic_coverage": 1,
+    "clean_repository_and_corpus": true,
+    "immutable_artifacts": true
+  },
+  "rerun_policy": {
+    "failed_attempts_are_preserved": true,
+    "overwrite_allowed": false,
+    "next_attempt_after_failure": "attempt-02",
+    "favorable_repeat_selection_allowed": false,
+    "alternative_rosters_require_separate_preregistration": true
+  }
+}

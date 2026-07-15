@@ -1,0 +1,32 @@
+diff --git a/app/session/models.py b/app/session/models.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/app/session/models.py
+@@ -0,0 +1,7 @@
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class SessionPayload:
++    user_id: int
++    role: str
+diff --git a/app/session/codec.py b/app/session/codec.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/session/codec.py
+@@ -0,0 +1,13 @@
++import base64
++import pickle
++
++from .models import SessionPayload
++
++
++def decode_session(token: str) -> SessionPayload:
++    if len(token) > 4096:
++        raise ValueError("session token too large")
++    payload = pickle.loads(base64.b64decode(token, validate=True))
++    if not isinstance(payload, SessionPayload):
++        raise ValueError("invalid session payload")
++    return payload

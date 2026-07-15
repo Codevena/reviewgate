@@ -198,7 +198,7 @@ always corresponds to the thing it is evaluating:
   before* critic/consensus/confidence/reputation touch them. Measures the raw
   reviewer. Invariant **only to post-review suppressor ablations** (§8 class A); it
   is **NOT** invariant to input/prompt-stage ablations (§8 class B — e.g.
-  `scopeToDiff`, reviewer selection, file-context budget), which change what the
+  reviewer selection or file-context budget), which change what the
   reviewer is shown and therefore change the raw findings themselves. The report
   must never attribute a class-B change in a raw number to the suppression stack.
 - **AGGREGATED panel** — the final blocking set *after* the whole suppression
@@ -425,6 +425,11 @@ class-A delta is cleanly attributable to that suppressor.
 | `--no-reputation` | `phases.reputation.enabled = false` |
 | `--no-fp-ledger` | FP-ledger enable flag off |
 | `--no-confidence-floor` | `phases.review.confidenceFloor = 0` |
+| `--no-scope-to-diff` | `phases.review.scopeToDiff = false` |
+
+`scopeToDiff` is class A in the implemented pipeline: reviewers receive the same
+diff and file context, then the deterministic aggregator demotes findings outside
+changed hunks. Replaying identical raw reviewer responses isolates that effect.
 
 **Class B — input / prompt-stage.** Change *what the reviewer is shown* or *which
 reviewers run*, so they move the RAW findings too — **both layers change** and the
@@ -433,7 +438,6 @@ delta is NOT attributable to a post-review suppressor.
 | Ablation | Config override |
 | --- | --- |
 | Single reviewer vs. panel | `phases.review.reviewers` (1 vs. N) / `--providers` |
-| `--no-scope-to-diff` | `phases.review.scopeToDiff = false` |
 | file-context budget | `phases.review.fileContext*` |
 
 `bench matrix` (phase 2) prints *layer → Δprecision, Δrecall, ΔFP-rate* **tagged

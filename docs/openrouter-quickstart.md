@@ -6,7 +6,7 @@ This path needs no reviewer CLI. You still need git, a supported coding-agent ho
 ## Install and configure
 
 ```bash
-npm i -g reviewgate@0.1.0-alpha.11
+npm i -g reviewgate@0.1.0-alpha.12
 cd your-git-repository
 export OPENROUTER_API_KEY='…'
 reviewgate init --host both
@@ -19,6 +19,15 @@ In the guided flow:
 3. choose the model you want to use;
 4. configure upstream routing if that model needs a specific compatible host;
 5. finish the sandbox, soft-pass, memory, notification and pre-push questions.
+
+Before writing config or hooks, Alpha.12 discloses and offers a bounded paid
+capability check for every distinct paid OpenRouter request tuple (purpose, model, auth, route and probe bounds), enabled by default. A reviewer
+or quota fallback uses the real strict structured review request; a critic or
+curator uses its real free-form completion request. Each call uses a constant
+repository-free prompt, a 15-second timeout and a 256-token output cap. Successful
+identical request tuples are checked once per wizard run. You may re-enter the model or
+shared route, keep a failed tuple deliberately, or cancel; cancellation writes no
+config and installs no hooks.
 
 `reviewgate init` writes a data-only `reviewgate.config.ts`, installs the selected
 native host hooks, records the initial last-known-good policy and runs Doctor. The
@@ -41,7 +50,7 @@ least one enabled and available reviewer. A single-reviewer warning is honest an
 expected in this minimal setup: consensus, cross-provider FP promotion and
 reputation demotion need more than one effective reviewer.
 
-## Tested Alpha.11 model route
+## Tested model route
 
 The recorded 2026-07-13 smoke used:
 
@@ -63,15 +72,19 @@ export default {
 
 The effective default model was `deepseek/deepseek-v4-flash`. On that date,
 OpenRouter's `alibaba` upstream accepted Reviewgate's strict structured-response
-request. The wizard-suggested `deepseek` upstream accepted the lightweight model
-probe but rejected the real review with `This response_format type is unavailable
-now`.
+request. Alpha.11's wizard-suggested `deepseek` upstream accepted its old
+free-form probe but rejected the real review with `This response_format type is
+unavailable now`.
+
+The same model/upstream tuple passed Alpha.12's production-shaped reviewer probe
+again on 2026-07-14 with the bounded 256-token ceiling.
 
 This is a dated compatibility observation, not a permanent recommendation.
-OpenRouter routes and provider capabilities change. The setup probe currently
-proves basic completion only; your first real code review is the authoritative
-structured-output smoke. If it defers with a response-format error, select a
-schema-capable upstream or another model and repeat the review.
+OpenRouter routes and provider capabilities change. Alpha.12's setup probe proves
+that the exact selected role's request shape completed and Reviewgate parsed the
+response at setup time; it cannot guarantee future route availability. If a later
+review defers with a response-format error, select a schema-capable upstream or
+another model and repeat the review.
 
 Changing provider routing is a policy-control-plane change. Reviewgate continues
 checking code under the last-known-good policy and may require an explicit human

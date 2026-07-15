@@ -1,11 +1,12 @@
 // tests/unit/doctor.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type Check,
   agentHostHooksCheck,
+  checkBinary,
   doctorExitCode,
   runDoctor,
 } from "../../src/cli/commands/doctor.ts";
@@ -14,7 +15,20 @@ describe("runDoctor", () => {
   it("returns exit 0 or 1 based on environment, prints a structured report", async () => {
     const code = await runDoctor({ repoRoot: process.cwd(), capture: true });
     expect([0, 1, 2]).toContain(code);
-  }, 15_000);
+  }, 30_000);
+
+  it("bounds a wedged CLI version probe instead of hanging doctor", () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-doctor-hung-bin-"));
+    const bin = join(dir, "hung-provider");
+    writeFileSync(bin, "#!/bin/sh\nsleep 2\n");
+    chmodSync(bin, 0o755);
+
+    const started = Date.now();
+    const check = checkBinary(bin, "hung provider", 50);
+
+    expect(check.status).toBe("fail");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
 });
 
 describe("doctorExitCode", () => {

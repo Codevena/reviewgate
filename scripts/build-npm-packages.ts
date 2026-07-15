@@ -30,7 +30,7 @@ export function platformManifest(t: Target, version: string): Record<string, unk
     description: `Reviewgate prebuilt binary for ${t.os}-${t.cpu}.`,
     license: "MIT",
     author: "Markus Wiesecke (https://github.com/Codevena)",
-    homepage: "https://github.com/Codevena/reviewgate#readme",
+    homepage: "https://reviewgate.codevena.dev/",
     repository: { type: "git", url: REPO },
     os: [t.os],
     cpu: [t.cpu],
@@ -46,10 +46,10 @@ export function mainManifest(version: string): Record<string, unknown> {
     name: "reviewgate",
     version,
     description:
-      "Multi-agent code review gate for Claude Code's agent loop — blocks the agent from ending its turn until an independent LLM reviewer panel signs off.",
+      "Independent code-review control loop for Claude Code and Codex — verifies diffs, requires explicit finding outcomes, and records honest defer/escalation states.",
     license: "MIT",
     author: "Markus Wiesecke (https://github.com/Codevena)",
-    homepage: "https://github.com/Codevena/reviewgate#readme",
+    homepage: "https://reviewgate.codevena.dev/",
     repository: { type: "git", url: REPO },
     bugs: { url: "https://github.com/Codevena/reviewgate/issues" },
     keywords: [
@@ -75,10 +75,12 @@ export function mainManifest(version: string): Record<string, unknown> {
 if (import.meta.main) {
   const { $ } = await import("bun");
   const { rmSync, mkdirSync, copyFileSync, writeFileSync, readdirSync } = await import("node:fs");
-  const { join } = await import("node:path");
+  const { basename, join } = await import("node:path");
 
   const root = process.cwd();
-  const rootPkg = JSON.parse(await Bun.file(join(root, "package.json")).text()) as { version: string };
+  const rootPkg = JSON.parse(await Bun.file(join(root, "package.json")).text()) as {
+    version: string;
+  };
   const version = process.env.REVIEWGATE_VERSION ?? rootPkg.version;
   const onlyCurrent = process.env.REVIEWGATE_BUILD_ONLY_CURRENT === "1";
   const targets = onlyCurrent
@@ -116,18 +118,24 @@ if (import.meta.main) {
     await $`bun build src/cli/index.ts --compile --target=${t.bunTarget} --outfile ${join(dir, "reviewgate")}`
       .cwd(root)
       .env({ ...process.env, NODE_ENV: "production" });
-    for (const g of grammars) copyFileSync(g, join(dir, "grammars", g.split("/").pop()!));
+    for (const g of grammars) copyFileSync(g, join(dir, "grammars", basename(g)));
     for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
       copyFileSync(join(root, "bin-templates", sh), join(dir, "bin-templates", sh));
     }
-    writeFileSync(join(dir, "package.json"), `${JSON.stringify(platformManifest(t, version), null, 2)}\n`);
+    writeFileSync(
+      join(dir, "package.json"),
+      `${JSON.stringify(platformManifest(t, version), null, 2)}\n`,
+    );
   }
 
   // main package
   const mainDir = join(distRoot, "main");
   mkdirSync(join(mainDir, "bin"), { recursive: true });
   copyFileSync(join(root, "bin", "reviewgate.cjs"), join(mainDir, "bin", "reviewgate.cjs"));
-  writeFileSync(join(mainDir, "package.json"), `${JSON.stringify(mainManifest(version), null, 2)}\n`);
+  writeFileSync(
+    join(mainDir, "package.json"),
+    `${JSON.stringify(mainManifest(version), null, 2)}\n`,
+  );
 
   console.error(`npm-dist/ built @ ${version} (${targets.length} platform package(s) + main).`);
 }

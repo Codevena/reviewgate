@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "inventory-reservation-check-then-write-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "inventory reservation race",
+        "non-atomic stock decrement",
+        "check then act concurrency",
+        "lost update oversell"
+      ],
+      "file": "src/inventory/reserve.ts",
+      "line": 5,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "Concurrent reservations can both observe the same stock before either write because the supplied per-SKU transaction is bypassed."
+}

@@ -1,0 +1,50 @@
+diff --git a/app/session/models.py b/app/session/models.py
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/app/session/models.py
+@@ -0,0 +1,7 @@
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class SessionPayload:
++    user_id: int
++    role: str
+diff --git a/app/session/codec.py b/app/session/codec.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/session/codec.py
+@@ -0,0 +1,31 @@
++import base64
++import hashlib
++import hmac
++import json
++
++from .models import SessionPayload
++
++
++def decode_session(token: str, secret: bytes) -> SessionPayload:
++    if len(token) > 4096:
++        raise ValueError("session token too large")
++    try:
++        encoded, supplied_signature = token.rsplit(".", 1)
++        signed = encoded.encode("ascii")
++    except (ValueError, UnicodeEncodeError) as error:
++        raise ValueError("invalid session token") from error
++    expected_signature = hmac.new(secret, signed, hashlib.sha256).hexdigest()
++    if not hmac.compare_digest(supplied_signature, expected_signature):
++        raise ValueError("invalid session signature")
++    padding = "=" * (-len(encoded) % 4)
++    raw = base64.b64decode(encoded + padding, altchars=b"-_", validate=True)
++    data = json.loads(raw.decode("utf-8"))
++    if not isinstance(data, dict) or set(data) != {"user_id", "role"}:
++        raise ValueError("invalid session shape")
++    user_id = data["user_id"]
++    role = data["role"]
++    if type(user_id) is not int or user_id <= 0:
++        raise ValueError("invalid user id")
++    if role not in {"member", "admin"}:
++        raise ValueError("invalid role")
++    return SessionPayload(user_id=user_id, role=role)

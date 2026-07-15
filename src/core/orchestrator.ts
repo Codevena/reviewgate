@@ -2296,6 +2296,7 @@ export class Orchestrator {
             ...(cProviderCfg.apiKeyEnv ? { apiKeyEnv: cProviderCfg.apiKeyEnv } : {}),
             ...(cProviderCfg.auth ? { auth: cProviderCfg.auth } : {}),
             timeoutMs: Math.min(cProviderCfg.timeoutMs, criticBudgetMs),
+            ...(cProviderCfg.maxTokens !== undefined ? { maxTokens: cProviderCfg.maxTokens } : {}),
             ...(opts.signal ? { signal: opts.signal } : {}),
             ...(cProviderCfg.openrouterProvider
               ? { openrouterProvider: cProviderCfg.openrouterProvider }

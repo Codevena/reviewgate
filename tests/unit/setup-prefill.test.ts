@@ -107,6 +107,24 @@ describe("answersFromConfig", () => {
     expect(answersFromConfig(cfg).reputation).toBe(false);
   });
 
+  it("retains the full structured OpenRouter route for a lossless wizard re-run", () => {
+    const cfg = defineConfig({
+      providers: {
+        openrouter: {
+          enabled: true,
+          openrouterProvider: { order: ["alibaba", "deepseek"], allowFallbacks: false },
+        },
+      },
+      phases: { review: { reviewers: [{ provider: "openrouter", persona: "security" }] } },
+    } as Parameters<typeof defineConfig>[0]);
+    const defaults = answersFromConfig(cfg);
+    expect(defaults.openrouterProvider).toBe("alibaba");
+    expect(defaults.openrouterRouting).toEqual({
+      order: ["alibaba", "deepseek"],
+      allowFallbacks: false,
+    });
+  });
+
   it("round-trips a per-reviewer fallback chain from the config", () => {
     const cfg = defineConfig({
       phases: {
@@ -116,6 +134,20 @@ describe("answersFromConfig", () => {
       },
     } as Parameters<typeof defineConfig>[0]);
     expect(answersFromConfig(cfg).perReviewer.codex?.fallback).toEqual(["gemini"]);
+  });
+
+  it("round-trips a custom model for a provider used only as fallback", () => {
+    const cfg = defineConfig({
+      providers: {
+        openrouter: { enabled: true, model: "vendor/fallback-only-model" },
+      },
+      phases: {
+        review: {
+          reviewers: [{ provider: "codex", persona: "security", fallback: ["openrouter"] }],
+        },
+      },
+    } as Parameters<typeof defineConfig>[0]);
+    expect(answersFromConfig(cfg).perReviewer.openrouter?.model).toBe("vendor/fallback-only-model");
   });
 
   it("answersFromConfig derives ollamaEndpoint from providers.ollama.baseUrl", () => {

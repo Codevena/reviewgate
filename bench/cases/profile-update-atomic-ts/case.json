@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "profile-update-atomic-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "Both related writes execute in the database transaction whose contract rolls back the callback on any failure."
+}

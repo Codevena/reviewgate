@@ -11,7 +11,8 @@ function tmp() {
   return mkdtempSync(join(tmpdir(), "rg-audit-retain-"));
 }
 
-// Seed a day-partition (audit/YYYY/MM/DD/HHMMSS.jsonl) for an arbitrary UTC date.
+// Seed a day partition with an arbitrary legacy filename. Current writers use
+// HHMMSSmmm-p<PID>-<128-bit nonce>.jsonl; retention deliberately matches *.jsonl.
 function seedDay(auditDir: string, d: Date): string {
   const y = String(d.getUTCFullYear());
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");

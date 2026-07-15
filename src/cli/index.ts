@@ -611,6 +611,22 @@ const bench = defineCommand({
           type: "string",
           description: "Enable the post-review LLM critic with this provider (e.g. openrouter)",
         },
+        "critic-model": {
+          type: "string",
+          description: "Exact model used by the critic (recorded in provenance)",
+        },
+        "critic-openrouter-provider": {
+          type: "string",
+          description: "Pinned OpenRouter upstream slug for the critic (for example alibaba)",
+        },
+        "max-provider-calls": {
+          type: "string",
+          description: "Hard ceiling on paid/quota provider calls",
+        },
+        "max-output-tokens": {
+          type: "string",
+          description: "Hard OpenRouter output-token ceiling",
+        },
         "no-scope-to-diff": {
           type: "boolean",
           description: "Ablation: score the whole file, not just changed hunks",
@@ -639,6 +655,8 @@ const bench = defineCommand({
         const minSeeded = num(args["min-seeded"]);
         const maxFailedFrac = num(args["max-failed-frac"]);
         const repeat = num(args.repeat);
+        const maxProviderCalls = num(args["max-provider-calls"]);
+        const maxOutputTokens = num(args["max-output-tokens"]);
         const confidenceFloor = num(args["confidence-floor"]);
         const suppressors = {
           ...(typeof args.critic === "string" && args.critic.length > 0
@@ -659,6 +677,19 @@ const bench = defineCommand({
           ...(minSeeded !== undefined ? { minSeeded } : {}),
           ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
           ...(repeat !== undefined ? { repeat } : {}),
+          ...(typeof args["critic-model"] === "string"
+            ? { criticModel: args["critic-model"].trim() }
+            : {}),
+          ...(typeof args["critic-openrouter-provider"] === "string"
+            ? {
+                criticOpenrouterProvider: {
+                  only: [args["critic-openrouter-provider"].trim()],
+                  allowFallbacks: false,
+                },
+              }
+            : {}),
+          ...(maxProviderCalls !== undefined ? { maxProviderCalls } : {}),
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
           ...(Object.keys(suppressors).length > 0 ? { suppressors } : {}),
         });
         if (res.stdout) process.stdout.write(res.stdout);
@@ -709,6 +740,24 @@ const bench = defineCommand({
           type: "string",
           description: "Critic provider enabled in the baseline (required to ablate `critic`)",
         },
+        "critic-model": { type: "string", description: "Exact critic model" },
+        "critic-openrouter-provider": {
+          type: "string",
+          description: "Pinned OpenRouter upstream slug for the critic",
+        },
+        "max-provider-calls": { type: "string", description: "Shared hard call ceiling" },
+        "max-output-tokens": { type: "string", description: "OpenRouter output ceiling" },
+        authoritative: {
+          type: "boolean",
+          description: "Require the paired critic-only authoritative protocol",
+        },
+        preregistration: { type: "string", description: "Committed preregistration JSON" },
+        "min-clean": { type: "string", description: "Required distinct clean cases" },
+        "min-seeded": { type: "string", description: "Required distinct seeded cases" },
+        "max-failed-frac": {
+          type: "string",
+          description: "Maximum review-error fraction",
+        },
         repeat: { type: "string", description: "Run each variant K times (mean pooled)" },
         window: { type: "string", description: "Line-match window radius (default 5)" },
         "include-advisory": { type: "boolean" },
@@ -729,6 +778,11 @@ const bench = defineCommand({
         const providers = csv(args.providers) as ProviderId[];
         const window = num(args.window);
         const repeat = num(args.repeat);
+        const maxProviderCalls = num(args["max-provider-calls"]);
+        const maxOutputTokens = num(args["max-output-tokens"]);
+        const minClean = num(args["min-clean"]);
+        const minSeeded = num(args["min-seeded"]);
+        const maxFailedFrac = num(args["max-failed-frac"]);
         const res = await runBenchMatrix({
           repoRoot: process.cwd(),
           corpus: args.corpus as string,
@@ -737,6 +791,26 @@ const bench = defineCommand({
           ...(providers.length > 0 ? { providers } : {}),
           ...(typeof args.critic === "string" && args.critic.length > 0
             ? { criticProvider: args.critic.trim() as ProviderId }
+            : {}),
+          ...(typeof args["critic-model"] === "string"
+            ? { criticModel: args["critic-model"].trim() }
+            : {}),
+          ...(typeof args["critic-openrouter-provider"] === "string"
+            ? {
+                criticOpenrouterProvider: {
+                  only: [args["critic-openrouter-provider"].trim()],
+                  allowFallbacks: false,
+                },
+              }
+            : {}),
+          ...(maxProviderCalls !== undefined ? { maxProviderCalls } : {}),
+          ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+          ...(minClean !== undefined ? { minClean } : {}),
+          ...(minSeeded !== undefined ? { minSeeded } : {}),
+          ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),
+          authoritative: args.authoritative === true,
+          ...(typeof args.preregistration === "string"
+            ? { preregistration: args.preregistration }
             : {}),
           ...(repeat !== undefined ? { repeat } : {}),
           ...(window !== undefined ? { window } : {}),

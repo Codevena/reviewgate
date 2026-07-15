@@ -1,0 +1,11 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "archive-entry-contained-ts",
+  "kind": "clean",
+  "language": "ts",
+  "expected": [],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "Regular-file archive entries are resolved beneath a trusted fresh extraction root and parent/absolute escapes are rejected."
+}

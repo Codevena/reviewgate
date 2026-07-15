@@ -1,6 +1,6 @@
 // src/research/symbol-graph.ts
-import { readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { Language, Parser, Query } from "web-tree-sitter";
 import { safeReadContained } from "../utils/safe-read.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
@@ -15,6 +15,18 @@ import {
 // would otherwise load + build a parse tree of unbounded size (Emscripten heap that
 // never shrinks). 2MB covers real hand-written sources with headroom.
 const PARSE_FILE_CAP = 2 * 1024 * 1024;
+const CALLER_FILE_CAP = 2 * 1024 * 1024;
+const SCAN_FILE_CAP = 3000;
+const EXCLUDED_CALLER_DIR_NAMES = [
+  "node_modules",
+  ".git",
+  ".reviewgate",
+  ".antigravitycli",
+  "dist",
+] as const;
+const EXCLUDED_CALLER_DIR = new RegExp(
+  `(?:^|/)(?:${EXCLUDED_CALLER_DIR_NAMES.map(escapeRegExp).join("|")})/`,
+);
 
 export interface SymbolInfo {
   name: string;
@@ -190,29 +202,169 @@ export async function enclosingSymbol(
 // [] when rg ran but matched nothing (rg exits 1 on no matches), and the refs
 // otherwise. ripgrep is an OPTIONAL dependency — CI and minimal hosts may not have
 // it — so callers must not silently vanish when it is missing.
+export function classifyRipgrepExit(status: number | null): "matches" | "no-match" | "fallback" {
+  if (status === 0) return "matches";
+  if (status === 1) return "no-match";
+  return "fallback";
+}
+
+export function buildRipgrepCallerArgs(symbol: string): string[] {
+  const exclusions = EXCLUDED_CALLER_DIR_NAMES.flatMap((dir) => ["--glob", `!**/${dir}/**`]);
+  return ["--json", "--no-config", "-w", ...exclusions, "--", symbol, "."];
+}
+
 async function ripgrepCallers(
   symbol: string,
   repoRoot: string,
   signal?: AbortSignal,
 ): Promise<CallerRef[] | null> {
-  const r = await spawnCapture("rg", ["-n", "--no-heading", "-w", symbol, repoRoot], {
+  const r = await spawnCapture("rg", buildRipgrepCallerArgs(symbol), {
+    cwd: repoRoot,
     timeoutMs: 30_000,
     signal,
   });
   // null = rg untrustworthy → caller falls back to the bounded scan. ENOENT (not
   // installed), a timeout, AND an abort all qualify; rg exits 1 with no output on
   // no-match (→ [] = "definitively no callers"), 0 with output → parsed refs.
-  if (r.spawnError || r.timedOut || r.aborted) return null;
-  if (r.status !== 0 || !r.stdout) return [];
+  if (r.spawnError || r.timedOut || r.aborted || r.truncated) return null;
+  const exit = classifyRipgrepExit(r.status);
+  if (exit === "fallback") return null;
+  if (exit === "no-match") return [];
+  const parsed = parseRipgrepJson(r.stdout);
+  if (parsed === null) return null;
+  return normalizeCallerRefs(repoRoot, symbol, parsed);
+}
+
+/** Parse ripgrep's JSON-lines protocol without delimiter ambiguity. `null` means
+ * malformed/untrustworthy output and makes the caller use the safe fallback. */
+export function parseRipgrepJson(stdout: string): CallerRef[] | null {
   const refs: CallerRef[] = [];
-  for (const ln of r.stdout.split("\n")) {
-    const m = ln.match(/^(.+?):(\d+):/);
-    if (m?.[1] && m[2]) refs.push({ file: m[1], line: Number(m[2]) });
+  for (const line of stdout.split("\n")) {
+    if (!line.trim()) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return null;
+    }
+    if (!event || typeof event !== "object") return null;
+    const typed = event as {
+      type?: unknown;
+      data?: { path?: { text?: unknown; bytes?: unknown }; line_number?: unknown };
+    };
+    if (typed.type !== "match") continue;
+    const file = typed.data?.path?.text;
+    const lineNumber = typed.data?.line_number;
+    // Non-UTF8 paths arrive as `bytes`; Reviewgate cannot render those safely in
+    // trusted text context, so reject the rg batch and let the contained fallback
+    // decide whether the platform can represent them.
+    if (typeof file !== "string" || !Number.isInteger(lineNumber) || Number(lineNumber) < 1) {
+      return null;
+    }
+    refs.push({ file, line: Number(lineNumber) });
   }
   return refs;
 }
 
-const SCAN_FILE_CAP = 3000;
+function escapesRoot(rel: string): boolean {
+  return rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
+/** Resolve, no-follow-read and canonicalize one repository-controlled caller path.
+ * Conversion to `/` happens only after native containment and symlink checks. */
+function readContainedCaller(repoRoot: string, raw: string): { file: string; text: string } | null {
+  let repoReal: string;
+  try {
+    repoReal = realpathSync(repoRoot);
+  } catch {
+    return null;
+  }
+
+  const lexicalRoot = resolve(repoRoot);
+  const abs = isAbsolute(raw) ? resolve(raw) : resolve(lexicalRoot, raw);
+  let relLexical = relative(lexicalRoot, abs);
+  let walkRoot = lexicalRoot;
+  if (escapesRoot(relLexical)) {
+    // A symlinked repo root can legitimately receive paths expressed through its
+    // canonical spelling. Accept that spelling, but never a parent/sibling path.
+    relLexical = relative(repoReal, abs);
+    walkRoot = repoReal;
+    if (escapesRoot(relLexical)) return null;
+  }
+
+  // Reject every symlink component below the accepted root. safeReadContained
+  // already rejects final symlinks and outside-resolving intermediate symlinks;
+  // this stricter walk also refuses contained intermediate symlinks so the path
+  // rendered to trusted research has one stable repository spelling.
+  let cursor = walkRoot;
+  for (const part of relLexical.split(sep)) {
+    if (!part) continue;
+    cursor = resolve(cursor, part);
+    try {
+      if (lstatSync(cursor).isSymbolicLink()) return null;
+    } catch {
+      return null;
+    }
+  }
+
+  const text = safeReadContained(repoRoot, abs, CALLER_FILE_CAP, repoReal);
+  if (text === null) return null;
+  let candidateReal: string;
+  try {
+    candidateReal = realpathSync(abs);
+  } catch {
+    return null;
+  }
+  const relReal = relative(repoReal, candidateReal);
+  if (escapesRoot(relReal)) return null;
+  return { file: relReal.split(sep).join("/"), text };
+}
+
+function isExcludedCallerCandidate(repoRoot: string, raw: string): boolean {
+  const root = resolve(repoRoot);
+  const candidateAbsolute = isAbsolute(raw) ? raw : resolve(root, raw);
+  const candidateRelative = relative(root, candidateAbsolute).split(sep).join("/");
+  return EXCLUDED_CALLER_DIR.test(candidateRelative);
+}
+
+function readNormalizedCaller(
+  repoRoot: string,
+  raw: string,
+): { file: string; text: string } | null {
+  // Cheap lexical exclusion prevents obvious dependency/build paths from being
+  // read. The contained-path result is checked again so canonical paths cannot
+  // make the rg and fallback implementations disagree.
+  if (isExcludedCallerCandidate(repoRoot, raw)) return null;
+  const contained = readContainedCaller(repoRoot, raw);
+  if (!contained || EXCLUDED_CALLER_DIR.test(contained.file)) return null;
+  return contained;
+}
+
+/** Apply the same contained, repo-relative and vendor-exclusion contract to rg
+ * records that the built-in fallback applies to scanned candidates. */
+export function normalizeCallerRefs(
+  repoRoot: string,
+  symbol: string,
+  refs: CallerRef[],
+): CallerRef[] {
+  const normalizedRefs: CallerRef[] = [];
+  const containedByPath = new Map<string, ReturnType<typeof readNormalizedCaller>>();
+  const symbolRef = new RegExp(`\\b${escapeRegExp(symbol)}\\b`);
+  for (const ref of refs) {
+    let normalized = containedByPath.get(ref.file);
+    if (!containedByPath.has(ref.file)) {
+      normalized = readNormalizedCaller(repoRoot, ref.file);
+      containedByPath.set(ref.file, normalized);
+    }
+    if (!normalized) continue;
+    const matchedLine = normalized.text.split("\n")[ref.line - 1];
+    if (matchedLine !== undefined && symbolRef.test(matchedLine)) {
+      normalizedRefs.push({ file: normalized.file, line: ref.line });
+    }
+  }
+  return normalizedRefs;
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -221,26 +373,31 @@ function escapeRegExp(s: string): string {
 // references to `symbol` across the repo's source files (skipping vendored/build
 // dirs). Slower than rg, but keeps 1-hop caller detection working without the
 // optional binary. Exported for direct testing of the no-ripgrep path.
-export function scanCallersFallback(symbol: string, repoRoot: string): CallerRef[] {
+export function scanCallersFallback(
+  symbol: string,
+  repoRoot: string,
+  candidatePaths?: Iterable<string>,
+): CallerRef[] {
   const re = new RegExp(`\\b${escapeRegExp(symbol)}\\b`);
   const refs: CallerRef[] = [];
   let scanned = 0;
+  const repoAbsolute = resolve(repoRoot);
   try {
-    for (const abs of new Bun.Glob("**/*.{ts,tsx,js,py}").scanSync({
-      cwd: repoRoot,
-      absolute: true,
-    })) {
-      if (/(?:^|\/)(?:node_modules|\.git|\.reviewgate|\.antigravitycli|dist)\//.test(abs)) continue;
+    const candidates =
+      candidatePaths ??
+      new Bun.Glob("**/*.{ts,tsx,js,py}").scanSync({ cwd: repoRoot, absolute: true });
+    for (const raw of candidates) {
+      // Glob traversal can encounter thousands of dependency/build files before
+      // first-party source. Exclude obvious native paths before either charging
+      // the bounded scan budget or reading bytes. Keep the contained-path check
+      // below as a second line for symlinks/canonical paths.
+      if (isExcludedCallerCandidate(repoAbsolute, raw)) continue;
       if (++scanned > SCAN_FILE_CAP) break;
-      let text: string;
-      try {
-        text = readFileSync(abs, "utf8");
-      } catch {
-        continue;
-      }
-      const lines = text.split("\n");
+      const contained = readNormalizedCaller(repoRoot, raw);
+      if (!contained) continue;
+      const lines = contained.text.split("\n");
       for (let i = 0; i < lines.length; i++) {
-        if (re.test(lines[i] as string)) refs.push({ file: abs, line: i + 1 });
+        if (re.test(lines[i] as string)) refs.push({ file: contained.file, line: i + 1 });
       }
     }
   } catch {
@@ -257,7 +414,7 @@ async function findCallers(
   signal?: AbortSignal,
 ): Promise<CallerRef[]> {
   const rg = await ripgrepCallers(symbol, repoRoot, signal);
-  if (rg) return rg;
+  if (rg !== null) return rg;
   if (signal?.aborted) return [];
   return scanCallersFallback(symbol, repoRoot);
 }

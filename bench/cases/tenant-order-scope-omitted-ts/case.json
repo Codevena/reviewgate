@@ -1,0 +1,23 @@
+{
+  "schema": "reviewgate.bench.case.v1",
+  "id": "tenant-order-scope-omitted-ts",
+  "kind": "seeded-bug",
+  "language": "ts",
+  "expected": [
+    {
+      "tag": [
+        "tenant authorization bypass",
+        "cross-tenant object access",
+        "missing ownership check",
+        "insecure direct object reference"
+      ],
+      "file": "src/orders/service.ts",
+      "line": 5,
+      "min_severity": "WARN"
+    }
+  ],
+  "allowed": [],
+  "strict_region": true,
+  "source": "mutation",
+  "notes": "The lookup uses an attacker-controlled order id but never binds the returned order to the authenticated tenant."
+}

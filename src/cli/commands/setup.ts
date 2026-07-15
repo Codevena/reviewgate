@@ -28,6 +28,7 @@ import {
   hostsForSelection,
   readHookDocument,
 } from "../../hosts/hooks.ts";
+import type { OpenRouterProviderRouting } from "../../providers/adapter-base.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { controlPlaneStatePath } from "../../utils/paths.ts";
@@ -38,7 +39,12 @@ import {
   type WizardDefaults,
   answersFromConfig,
 } from "../setup/prefill.ts";
-import { probeModel } from "../setup/probe.ts";
+import {
+  OPENROUTER_PROBE_MAX_TOKENS,
+  type ProbeInput,
+  probeModel,
+  probeModelCacheKey,
+} from "../setup/probe.ts";
 import { runDoctor } from "./doctor.ts";
 import { runInit } from "./init.ts";
 
@@ -106,6 +112,82 @@ export const REVIEWER_PROVIDERS: ProviderId[] = [
   "opencode",
   "ollama",
 ];
+
+/** One provider config has one model. Return shared accessors so a provider used
+ * as both a primary reviewer and a fallback is probed and persisted consistently. */
+export function sharedProviderModel(
+  reviewers: CustomAnswers["reviewers"],
+  providerModels: Partial<Record<ProviderId, string>>,
+  provider: ProviderId,
+): { get: () => string; set: (model: string) => void } {
+  return {
+    get: () =>
+      reviewers.find((reviewer) => reviewer.provider === provider)?.model ??
+      providerModels[provider] ??
+      MODEL_DEFAULT[provider],
+    set: (model: string) => {
+      for (const reviewer of reviewers) {
+        if (reviewer.provider === provider) reviewer.model = model;
+      }
+      providerModels[provider] = model;
+    },
+  };
+}
+
+export interface OpenRouterProbeTuple {
+  label: string;
+  purpose: "reviewer" | "fallback" | "critic" | "curator";
+  getModel: () => string;
+  setModel: (model: string) => void;
+}
+
+/** Keep one wizard confirmation per exact purpose/model/route tuple. This is
+ * recomputed after model/route edits, so a changed route still revalidates every
+ * role while duplicate reviewer/fallback slots never show duplicate paid prompts. */
+export function distinctOpenrouterProbeTuples(
+  tuples: OpenRouterProbeTuple[],
+  openrouterProvider?: OpenRouterProviderRouting,
+): OpenRouterProbeTuple[] {
+  const seen = new Set<string>();
+  return tuples.filter((tuple) => {
+    const key = JSON.stringify({
+      purpose: tuple.purpose,
+      model: tuple.getModel(),
+      openrouterProvider: openrouterProvider ?? null,
+    });
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Build reviewer/fallback probes over the same provider-model selection. */
+export function openrouterReviewerProbeTuples(
+  reviewers: CustomAnswers["reviewers"],
+  providerModels: Partial<Record<ProviderId, string>>,
+): OpenRouterProbeTuple[] {
+  const shared = sharedProviderModel(reviewers, providerModels, "openrouter");
+  const tuples: OpenRouterProbeTuple[] = [];
+  for (const reviewer of reviewers) {
+    if (reviewer.provider === "openrouter") {
+      tuples.push({
+        label: "reviewer",
+        purpose: "reviewer",
+        getModel: shared.get,
+        setModel: shared.set,
+      });
+    }
+    if (reviewer.fallback?.includes("openrouter")) {
+      tuples.push({
+        label: `${reviewer.provider} quota fallback`,
+        purpose: "fallback",
+        getModel: shared.get,
+        setModel: shared.set,
+      });
+    }
+  }
+  return tuples;
+}
 
 export function authFor(p: ProviderId): "oauth" | "openrouter" | "apikey" {
   if (p === "openrouter") return "openrouter";
@@ -362,6 +444,7 @@ async function runCustom(
       p,
       authFor(p),
       seed?.model ?? MODEL_DEFAULT[p],
+      "reviewer",
       p === "ollama" ? ollamaBaseUrl : undefined,
     );
     if (model === null) return null;
@@ -402,6 +485,7 @@ async function runCustom(
       provider,
       authFor(provider),
       defaults.critic?.model ?? MODEL_DEFAULT[provider],
+      "critic",
       undefined,
     );
     if (cm === null) return null;
@@ -431,6 +515,7 @@ async function runCustom(
       provider,
       authFor(provider),
       defaults.brainCurator?.model ?? MODEL_DEFAULT[provider],
+      "curator",
       undefined,
     );
     if (cm === null) return null;
@@ -547,29 +632,146 @@ async function runCustom(
   }
 
   // OpenRouter upstream-provider routing — asked ONCE, only when openrouter is
-  // actually used (as reviewer/critic/curator). Pins which upstream serves the
+  // actually used (as reviewer/fallback/critic/curator). Pins which upstream serves the
   // model (OpenRouter otherwise auto-routes to ANY provider, which for a model
   // like deepseek/deepseek-v4 can be a worse/quantized alternative).
+  const providerModels: Partial<Record<ProviderId, string>> = {};
+  for (const fallback of new Set(reviewers.flatMap((r) => r.fallback ?? []))) {
+    const primary = reviewers.find((reviewer) => reviewer.provider === fallback);
+    providerModels[fallback] =
+      primary?.model ?? defaults.perReviewer[fallback]?.model ?? MODEL_DEFAULT[fallback];
+  }
+
+  const sharedOpenrouterModel = sharedProviderModel(reviewers, providerModels, "openrouter");
+
   let openrouterProvider: string | undefined;
+  let openrouterRouting = defaults.openrouterRouting;
   const orModels = [
     ...reviewers.filter((r) => r.provider === "openrouter").map((r) => r.model),
+    ...(reviewers.some((r) => r.fallback?.includes("openrouter"))
+      ? [sharedOpenrouterModel.get()]
+      : []),
     ...(critic?.provider === "openrouter" ? [critic.model] : []),
     ...(brain?.curator.provider === "openrouter" ? [brain.curator.model] : []),
   ];
   if (orModels.length > 0) {
-    // Smart default: a deepseek/* model is best served by the `deepseek` upstream.
+    // This exact model/upstream pair was exercised successfully for Alpha.11.
+    // Do not generalize the suggestion to unrelated DeepSeek models.
     const suggested =
       defaults.openrouterProvider ||
-      (orModels.some((m) => m.startsWith("deepseek/")) ? "deepseek" : "");
+      (orModels.some((m) => m === "deepseek/deepseek-v4-flash") ? "alibaba" : "");
     const op = await text({
-      message:
-        "OpenRouter upstream provider (e.g. `deepseek` for deepseek/* models; empty = auto-route)",
+      message: "OpenRouter upstream provider (empty = auto-route; Alpha.12 default: alibaba)",
       initialValue: suggested,
-      placeholder: "deepseek",
+      placeholder: "alibaba",
     });
     if (isCancel(op)) return null;
     const trimmed = String(op).trim();
-    if (trimmed) openrouterProvider = trimmed;
+    openrouterProvider = trimmed || undefined;
+    openrouterRouting =
+      trimmed && defaults.openrouterRouting && trimmed === defaults.openrouterProvider
+        ? structuredClone(defaults.openrouterRouting)
+        : trimmed
+          ? { only: [trimmed] }
+          : undefined;
+
+    const tuples = openrouterReviewerProbeTuples(reviewers, providerModels);
+    if (critic?.provider === "openrouter") {
+      tuples.push({
+        label: "critic",
+        purpose: "critic",
+        getModel: () => critic.model,
+        setModel: (model) => {
+          critic.model = model;
+        },
+      });
+    }
+    if (brain?.curator.provider === "openrouter") {
+      tuples.push({
+        label: "curator",
+        purpose: "curator",
+        getModel: () => brain.curator.model,
+        setModel: (model) => {
+          brain.curator.model = model;
+        },
+      });
+    }
+
+    note(
+      `OpenRouter verification sends a small paid API request for each distinct role/model/route tuple. Each request is capped at ${OPENROUTER_PROBE_MAX_TOKENS} output tokens and 15 seconds.`,
+    );
+    const probeCache = new Map<string, Awaited<ReturnType<typeof probeModel>>>();
+    let restart = true;
+    while (restart) {
+      restart = false;
+      for (const tuple of distinctOpenrouterProbeTuples(tuples, openrouterRouting)) {
+        const model = tuple.getModel();
+        const probeInput: ProbeInput = {
+          provider: "openrouter",
+          purpose: tuple.purpose,
+          model,
+          auth: "openrouter",
+          apiKeyEnv: "OPENROUTER_API_KEY",
+          timeoutMs: 15_000,
+          maxTokens: OPENROUTER_PROBE_MAX_TOKENS,
+          ...(openrouterRouting ? { openrouterProvider: openrouterRouting } : {}),
+        };
+        // A prior successful identical tuple (for example after a different
+        // model was edited and the loop restarted) needs neither another prompt
+        // nor another paid call. Changed model/route tuples have a different key.
+        if (probeCache.has(probeModelCacheKey(probeInput))) continue;
+        const verify = await confirm({
+          message: `Verify paid OpenRouter ${tuple.label} tuple ${model}${openrouterProvider ? ` via ${openrouterProvider}` : " via auto-route"}?`,
+          initialValue: true,
+        });
+        if (isCancel(verify)) return null;
+        if (!verify) continue;
+
+        const s = spinner();
+        s.start(`probing OpenRouter ${tuple.label}/${model} with its production request shape…`);
+        const r = await probeModel(probeInput, { cache: probeCache });
+        s.stop(r.ok ? "✓ production request shape responds" : `✗ ${r.detail}`);
+        if (r.ok) continue;
+
+        const next = await select({
+          message: `OpenRouter ${tuple.label}/${model} did not verify — what now?`,
+          options: [
+            { value: "model", label: "Re-enter this model" },
+            { value: "route", label: "Re-enter the shared upstream route" },
+            { value: "keep", label: "Keep it anyway" },
+          ],
+          initialValue: "route",
+        });
+        if (isCancel(next)) return null;
+        if (next === "keep") continue;
+        if (next === "model") {
+          const changed = await text({
+            message: `OpenRouter ${tuple.label}: model`,
+            initialValue: model,
+          });
+          if (isCancel(changed)) return null;
+          tuple.setModel(String(changed));
+        } else {
+          const changed = await text({
+            message: "OpenRouter shared upstream provider (empty = auto-route)",
+            initialValue: openrouterProvider ?? "",
+          });
+          if (isCancel(changed)) return null;
+          const slug = String(changed).trim();
+          openrouterProvider = slug || undefined;
+          openrouterRouting =
+            slug && defaults.openrouterRouting && slug === defaults.openrouterProvider
+              ? structuredClone(defaults.openrouterRouting)
+              : slug
+                ? { only: [slug] }
+                : undefined;
+        }
+        // Revalidate every earlier tuple. Successful identical tuples are served
+        // from the wizard cache; a changed model/route necessarily makes a new key.
+        restart = true;
+        break;
+      }
+    }
   }
 
   return buildCustomConfig({
@@ -587,6 +789,8 @@ async function runCustom(
     desktopNotifications: Boolean(desktopNotifications),
     prePushWarn: Boolean(prePushWarn),
     ...(openrouterProvider ? { openrouterProvider } : {}),
+    ...(openrouterRouting ? { openrouterRouting } : {}),
+    ...(Object.keys(providerModels).length > 0 ? { providerModels } : {}),
     ...(ollamaBaseUrl ? { ollamaBaseUrl } : {}),
   });
 }
@@ -599,6 +803,7 @@ async function promptModelWithProbe(
   provider: ProviderId,
   auth: "oauth" | "openrouter" | "apikey",
   initialModel: string = MODEL_DEFAULT[provider],
+  purpose: "reviewer" | "critic" | "curator" = "reviewer",
   baseUrl?: string,
 ): Promise<string | null> {
   let initial = initialModel;
@@ -606,6 +811,11 @@ async function promptModelWithProbe(
     const model = await text({ message: `${provider}: model`, initialValue: initial });
     if (isCancel(model)) return null;
     const chosen = String(model);
+
+    // OpenRouter's one shared upstream route is selected only after every role
+    // and fallback is known. Probing here would repeat Alpha.11's bug by testing
+    // an auto-routed tuple different from the one eventually persisted.
+    if (provider === "openrouter") return chosen;
 
     const verify = await confirm({
       message: `Verify ${provider}/${chosen} with a test call?`,
@@ -619,6 +829,7 @@ async function promptModelWithProbe(
     const keyEnv = apiKeyEnvFor(provider); // hoist: a double call yields `string | undefined`, tripping TS2379 under exactOptionalPropertyTypes
     const r = await probeModel({
       provider,
+      purpose,
       model: chosen,
       auth,
       ...(keyEnv ? { apiKeyEnv: keyEnv } : {}),

@@ -4,7 +4,10 @@ import {
   apiKeyEnvFor,
   authFor,
   availabilityHint,
+  distinctOpenrouterProbeTuples,
   ollamaNotes,
+  openrouterReviewerProbeTuples,
+  sharedProviderModel,
 } from "../../src/cli/commands/setup.ts";
 
 describe("setup wizard — ollama plumbing", () => {
@@ -58,5 +61,52 @@ describe("setup wizard — ollama plumbing", () => {
     expect(ollamaNotes({ usedAsJudge: true, endpoint: "local", keyPresent: false })).toHaveLength(
       2,
     );
+  });
+});
+
+describe("setup wizard — shared provider model", () => {
+  it("keeps an OpenRouter primary and fallback on one probed, persisted model", () => {
+    const reviewers = [
+      { provider: "openrouter" as const, persona: "security", model: "vendor/model-a" },
+      {
+        provider: "codex" as const,
+        persona: "security",
+        model: "gpt-5.5",
+        fallback: ["openrouter" as const],
+      },
+    ];
+    const providerModels = { openrouter: "vendor/model-a" };
+    const selection = sharedProviderModel(reviewers, providerModels, "openrouter");
+
+    selection.set("vendor/model-b");
+
+    expect(selection.get()).toBe("vendor/model-b");
+    expect(reviewers[0]?.model).toBe("vendor/model-b");
+    expect(providerModels.openrouter).toBe("vendor/model-b");
+
+    const tuples = openrouterReviewerProbeTuples(reviewers, providerModels);
+    expect(tuples.map((tuple) => tuple.purpose)).toEqual(["reviewer", "fallback"]);
+    tuples[1]?.setModel("vendor/model-c");
+    expect(tuples[0]?.getModel()).toBe("vendor/model-c");
+    expect(reviewers[0]?.model).toBe("vendor/model-c");
+  });
+
+  it("deduplicates identical OpenRouter prompt tuples but keeps different purposes", () => {
+    const model = { value: "vendor/model" };
+    const tuple = (purpose: "reviewer" | "fallback") => ({
+      label: purpose,
+      purpose,
+      getModel: () => model.value,
+      setModel: (value: string) => {
+        model.value = value;
+      },
+    });
+
+    const distinct = distinctOpenrouterProbeTuples(
+      [tuple("reviewer"), tuple("reviewer"), tuple("fallback"), tuple("fallback")],
+      { only: ["alibaba"] },
+    );
+
+    expect(distinct.map(({ purpose }) => purpose)).toEqual(["reviewer", "fallback"]);
   });
 });

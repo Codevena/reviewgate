@@ -4,6 +4,7 @@
 // over the scored cases, pins provenance, enforces the exit-4 quality gate, and
 // writes a schema-valid results JSON. No real reviewer CLIs.
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,11 +145,190 @@ function newCorpus(): string {
 }
 
 describe("runBenchRun", () => {
+  it("canonicalizes macOS /var aliases when checking a clean committed corpus", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    execFileSync("git", ["init", "-q"], { cwd: corpus });
+    execFileSync("git", ["config", "user.email", "bench@example.invalid"], { cwd: corpus });
+    execFileSync("git", ["config", "user.name", "Bench Test"], { cwd: corpus });
+    execFileSync("git", ["add", "."], { cwd: corpus });
+    execFileSync("git", ["commit", "-qm", "freeze corpus"], { cwd: corpus });
+
+    const out = join(corpus, "attempt", "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      adapters: { codex: smartCodexStub() },
+    });
+
+    expect(res.exitCode).toBe(0);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.provenance.corpus_dirty).toBe(false);
+    expect(result.provenance.integrity?.repository_dirty).toBe(false);
+  });
+
+  it("rejects direct authoritative runs because only matrix validates the frozen protocol", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let calls = 0;
+    const reviewer = smartCodexStub();
+    const counted: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        calls++;
+        return reviewer.review(input);
+      },
+    };
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out: join(corpus, "results.json"),
+      adapters: { codex: counted },
+      authoritative: true,
+      preregistration: "sql-injection-001/case.json",
+      maxProviderCalls: 10,
+      maxOutputTokens: 128,
+      runnerInfo: { kind: "compiled", sha256: "a".repeat(64) },
+    });
+    expect(res.exitCode).toBe(4);
+    expect(res.stderr).toContain("authoritative protocol is matrix-only");
+    expect(calls).toBe(0);
+  });
+
+  it("fails authoritative provenance before making a provider call", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let calls = 0;
+    const reviewer = smartCodexStub();
+    const counted: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        calls++;
+        return reviewer.review(input);
+      },
+    };
+    const out = join(corpus, "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      adapters: { codex: counted },
+      authoritative: true,
+      maxProviderCalls: 10,
+      maxOutputTokens: 128,
+      runnerInfo: { kind: "compiled", sha256: "a".repeat(64) },
+    });
+    expect(res.exitCode).toBe(4);
+    expect(res.stderr).toContain("before provider calls");
+    expect(calls).toBe(0);
+  });
+
+  it("stops external calls at the hard provider-call ceiling and preserves the invalid result", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let calls = 0;
+    const reviewer = smartCodexStub();
+    const counted: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        calls++;
+        return reviewer.review(input);
+      },
+    };
+    const out = join(corpus, "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      adapters: { codex: counted },
+      maxProviderCalls: 1,
+    });
+    expect(res.exitCode).toBe(4);
+    expect(calls).toBe(1);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.provenance.integrity?.provider_calls_used).toBe(1);
+    expect(result.cost.find((c) => c.provider === "codex")?.calls).toBe(1);
+  });
+
+  it("marks benchmark reviews no-retry so one budget unit is one physical call", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    const flags: Array<boolean | undefined> = [];
+    const reviewer = smartCodexStub();
+    const inspecting: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        flags.push(input.disableRetries);
+        return reviewer.review(input);
+      },
+    };
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out: join(corpus, "no-retry", "results.json"),
+      maxProviderCalls: 2,
+      adapters: { codex: inspecting },
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(flags).toEqual([true, true]);
+  });
+
+  it("preserves a stateful critic receiver through the direct run budget wrapper", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    class StatefulCritic implements ProviderAdapter {
+      readonly id = "openrouter" as const;
+      private readonly marker = "bound";
+      completeCalls = 0;
+
+      private assertBound(): void {
+        if (this.marker !== "bound") throw new Error("critic method lost its receiver");
+      }
+
+      async preflight() {
+        this.assertBound();
+        return { available: true, version: "stub-1", authMode: "openrouter" as const, error: null };
+      }
+
+      async review(): Promise<ReviewResult> {
+        throw new Error("critic must use complete()");
+      }
+
+      async complete() {
+        this.assertBound();
+        this.completeCalls++;
+        return JSON.stringify({ verdicts: [{ signature: "sql-inj", verdict: "keep" }] });
+      }
+    }
+    const critic = new StatefulCritic();
+    const out = join(corpus, "bound-critic", "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      suppressors: { critic: "openrouter" },
+      criticModel: "deepseek/deepseek-v4-flash",
+      maxProviderCalls: 10,
+      adapters: { codex: smartCodexStub(), openrouter: critic },
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(critic.completeCalls).toBe(1);
+  });
+
   it("scores a healthy seeded+clean corpus, writes a schema-valid result, exit 0", async () => {
     const corpus = newCorpus();
     writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
     writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
-    const out = join(corpus, "results.json");
+    const out = join(corpus, "attempt-01", "results.json");
 
     const res = await runBenchRun({
       repoRoot: corpus,
@@ -181,6 +361,7 @@ describe("runBenchRun", () => {
     expect(result.provenance.cache).toBe("cold");
     expect(result.provenance.config_hash.length).toBeGreaterThan(0);
     expect(result.provenance.case_count).toEqual({ seeded: 1, clean: 1 });
+    expect(result.provenance.case_run_count).toEqual({ seeded: 1, clean: 1, total: 2 });
     // Per-provider RAW layer present + authoritative at full coverage.
     const codex = result.providers.find((p) => p.provider === "codex");
     expect(codex?.authoritative).toBe(true);
@@ -188,7 +369,9 @@ describe("runBenchRun", () => {
     // Cost records the OAuth quota calls even at $0 billed.
     const cost = result.cost.find((c) => c.provider === "codex");
     expect(cost?.oauth_quota_calls).toBeGreaterThanOrEqual(2);
-    expect(cost?.billed_usd).toBe(0);
+    expect(cost?.tokens_in).toBeNull();
+    expect(cost?.tokens_out).toBeNull();
+    expect(cost?.billed_usd).toBeNull();
   });
 
   it("fails the quality gate (exit 4) when a case.json is malformed", async () => {

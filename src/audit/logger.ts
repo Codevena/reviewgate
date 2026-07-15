@@ -1,5 +1,5 @@
 // src/audit/logger.ts
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditEvent, EventType, Trigger } from "../schemas/audit-event.ts";
@@ -89,8 +89,17 @@ export class AuditLogger {
     const d = String(now.getUTCDate()).padStart(2, "0");
     const dir = join(this.auditDir, String(y), m, d);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const stamp = `${now.getUTCHours()}${String(now.getUTCMinutes()).padStart(2, "0")}${String(now.getUTCSeconds()).padStart(2, "0")}`;
-    return join(dir, `${stamp}.jsonl`);
+    // One AuditLogger owns one independent hash chain. A timestamp-only name lets
+    // concurrent hook processes append unrelated chains to the same file, making
+    // an honest log look tampered. Keep the basename portable and collision-safe:
+    // fixed-width UTC time + pid + 128 random bits, all in a conservative alphabet.
+    const stamp = [
+      String(now.getUTCHours()).padStart(2, "0"),
+      String(now.getUTCMinutes()).padStart(2, "0"),
+      String(now.getUTCSeconds()).padStart(2, "0"),
+      String(now.getUTCMilliseconds()).padStart(3, "0"),
+    ].join("");
+    return join(dir, `${stamp}-p${process.pid}-${randomBytes(16).toString("hex")}.jsonl`);
   }
 
   async append(input: AuditEventInput): Promise<AuditEvent> {

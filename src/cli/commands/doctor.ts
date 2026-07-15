@@ -653,8 +653,15 @@ export function quotaCooldownCheck(repoRoot: string, now: Date): Check | null {
   };
 }
 
-function checkBinary(bin: string, name: string): Check {
-  const r = spawnSync(bin, ["--version"], { encoding: "utf8" });
+export function checkBinary(bin: string, name: string, timeoutMs = 5_000): Check {
+  // Doctor is itself a recovery tool, so a wedged provider CLI must not wedge
+  // diagnosis indefinitely. Version probes should be near-instant; a bounded
+  // failure remains visible in the report and frees the child deterministically.
+  const r = spawnSync(bin, ["--version"], {
+    encoding: "utf8",
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+  });
   if (r.status === 0)
     return { name, status: "ok", detail: (r.stdout ?? "").trim().split("\n")[0] ?? "" };
   return {

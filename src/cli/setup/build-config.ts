@@ -1,4 +1,5 @@
 import type { DeepPartial, ReviewgateConfig } from "../../config/define-config.ts";
+import type { OpenRouterProviderRouting } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 
 export interface ReviewerAnswer {
@@ -52,6 +53,11 @@ export interface CustomAnswers {
    *  models). Empty/absent → auto-route. Written as providers.openrouter
    *  .openrouterProvider = { only: [slug] }. Only applied when openrouter is used. */
   openrouterProvider?: string;
+  /** Existing structured route, retained byte-for-byte when the user leaves the
+   * seeded route unchanged. An edited slug uses openrouterProvider/{only}. */
+  openrouterRouting?: OpenRouterProviderRouting;
+  /** Models for providers that are used only through a quota-fallback chain. */
+  providerModels?: Partial<Record<ProviderId, string>>;
   /** Ollama endpoint override (Local). Absent → Cloud (baseUrl omitted). Written as providers.ollama.baseUrl. */
   ollamaBaseUrl?: string;
 }
@@ -69,7 +75,7 @@ const DEFAULT_AUTH: Record<ProviderId, "oauth" | "openrouter" | "apikey"> = {
 // plus its optional upstream-provider routing (openrouterProvider → { only: [slug] }).
 function providersFor(
   ids: { provider: ProviderId; model?: string }[],
-  openrouterProvider?: string,
+  openrouterRouting?: OpenRouterProviderRouting,
   ollamaBaseUrl?: string,
 ): DeepPartial<ReviewgateConfig>["providers"] {
   const out: Record<string, unknown> = {};
@@ -78,8 +84,7 @@ function providersFor(
     if (model) entry.model = model;
     if (provider === "openrouter") {
       entry.apiKeyEnv = "OPENROUTER_API_KEY";
-      const slug = openrouterProvider?.trim();
-      if (slug) entry.openrouterProvider = { only: [slug] };
+      if (openrouterRouting) entry.openrouterProvider = openrouterRouting;
     }
     if (provider === "ollama") {
       entry.apiKeyEnv = "OLLAMA_API_KEY";
@@ -132,12 +137,26 @@ export function buildQuickPreset(input: QuickInput): DeepPartial<ReviewgateConfi
 }
 
 export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfig> {
-  const providerIds: { provider: ProviderId; model?: string }[] = a.reviewers.map((r) => ({
-    provider: r.provider,
-    model: r.model,
-  }));
-  if (a.critic) providerIds.push({ provider: a.critic.provider });
-  if (a.brain) providerIds.push({ provider: a.brain.curator.provider });
+  const providerIds: { provider: ProviderId; model?: string }[] = [];
+  // A provider has one providers.<id>.model even when it appears in several
+  // reviewer/fallback/critic/curator roles. Keep one canonical provider entry
+  // instead of relying on object-spread side effects across duplicate entries.
+  const addProvider = (provider: ProviderId, model?: string): void => {
+    const existing = providerIds.find((entry) => entry.provider === provider);
+    if (existing) {
+      if (!existing.model && model) existing.model = model;
+      return;
+    }
+    providerIds.push({ provider, ...(model ? { model } : {}) });
+  };
+  for (const reviewer of a.reviewers) {
+    addProvider(reviewer.provider, a.providerModels?.[reviewer.provider] ?? reviewer.model);
+  }
+  for (const fallback of new Set(a.reviewers.flatMap((r) => r.fallback ?? []))) {
+    addProvider(fallback, a.providerModels?.[fallback]);
+  }
+  if (a.critic) addProvider(a.critic.provider, a.providerModels?.[a.critic.provider]);
+  if (a.brain) addProvider(a.brain.curator.provider, a.providerModels?.[a.brain.curator.provider]);
 
   // Record<string,unknown> so contextDocs can be null (a valid override); defineConfig validates it.
   const phases: Record<string, unknown> = {
@@ -180,8 +199,10 @@ export function buildCustomConfig(a: CustomAnswers): DeepPartial<ReviewgateConfi
   }
   phases.contextDocs = a.contextDocs ? { enabled: true } : null;
 
+  const slug = a.openrouterProvider?.trim();
+  const openrouterRouting = a.openrouterRouting ?? (slug ? { only: [slug] } : undefined);
   return {
-    providers: providersFor(providerIds, a.openrouterProvider, a.ollamaBaseUrl),
+    providers: providersFor(providerIds, openrouterRouting, a.ollamaBaseUrl),
     phases: phases as DeepPartial<ReviewgateConfig>["phases"],
     sandbox: { mode: a.sandboxMode ?? "off" },
     notify: { desktop: a.desktopNotifications ?? false },

@@ -7,8 +7,9 @@ diffs whose bugs (and known-clean changes) are known in advance — per provider
 for the aggregated panel, and with the suppression layers **ablated** so you can
 see which ones actually move the number.
 
-This is a **smoke test**, not a rigorous benchmark: ~18 hand-written cases, LLM
-reviewers that vary run-to-run. Every rate is reported with its raw denominator
+This is a **small controlled benchmark**, not a public leaderboard: 30
+hand-written/mutated cases, with LLM reviewers that vary run-to-run. Every rate is
+reported with its raw denominator
 and a **Wilson 95% CI**, and `--repeat` reports the run-to-run spread, precisely so
 a one-case swing or a lucky run isn't mistaken for signal.
 
@@ -16,21 +17,22 @@ a one-case swing or a lucky run isn't mistaken for signal.
 
 `bench/cases/` — one directory per case (`case.json` + `diff.patch`):
 
-- **10 clean** cases — correct, defect-free changes (pure typed helpers). Every
+- **16 clean** cases — correct, defect-free changes. Every
   blocking finding on a clean case is a **false positive**. This is where the
   suppression stack is scored.
-- **8 seeded-bug** cases — a diff that introduces exactly one real defect
-  (SQL/command/SSRF/XSS injection, path traversal, hardcoded secret, weak hashing,
-  a dropped promise). Drives **recall**.
+- **14 seeded-bug** cases — a diff that introduces exactly one real defect,
+  including injections/traversal, tenant isolation, concurrency, redirect,
+  deserialization and transaction failures. Drives **recall**.
 
 Each `diff.patch` is a self-contained new-file diff (applies to an empty tree);
 each `case.json` is validated by the `reviewgate.bench.case.v1` schema. A label's
 `tag` may list several phrasings (any-of) so a finding matches however the reviewer
 words it. See any case for the shape, e.g. `bench/cases/sql-injection-ts/`.
 
-## Results
+## Historical Alpha.11 bootstrap result
 
-A representative run on this 18-case corpus (commit `75d3142`), panel =
+The following dated single-pass smoke used the older 18-case corpus at commit
+`75d3142`, panel =
 **codex + claude-code**, critic = **openrouter/deepseek**. Single pass — the CIs are
 wide by design at this N, and LLM reviewers vary run-to-run (`--repeat` quantifies
 the spread).
@@ -64,6 +66,10 @@ _A single precise reviewer (e.g. codex alone) is more precise out of the box; th
 panel's value is recall robustness across heterogeneous models, and the critic is
 what keeps its false-positive rate in check. Reproduce both below._
 
+It is historical context, not the Alpha.12 headline. Alpha.12 results are accepted
+for publication only when the committed preregistration, 30-case × 3-repeat full
+coverage gate, compiled-runner hash and paired response-hash manifest all pass.
+
 ## Reproduce it
 
 Runtime is [Bun](https://bun.sh); reviewers are OAuth-first ($0 within your
@@ -80,15 +86,25 @@ reviewgate bench run    --corpus bench/cases --providers codex,gemini,claude-cod
 # Run-to-run stability (mean ± spread over K repeats):
 reviewgate bench run    --corpus bench/cases --repeat 3 --out repeat.json
 
-# Ablation — does a suppression layer earn its keep? (the money-shot)
+# Paired critic ablation — reviewers run once; critic-off replays exact responses:
 reviewgate bench matrix --corpus bench/cases --providers codex,claude-code \
-                        --ablate critic --critic openrouter --repeat 3 --out matrix.json
+  --ablate critic --critic openrouter \
+  --critic-model deepseek/deepseek-v4-flash \
+  --critic-openrouter-provider alibaba --repeat 3 \
+  --min-clean 16 --min-seeded 14 --max-failed-frac 0 \
+  --max-provider-calls 270 --max-output-tokens 2048 \
+  --authoritative --preregistration bench/preregistrations/alpha12-v2.json \
+  --out bench/results/alpha12-v2/<attempt>/matrix.json
 ```
 
 `bench run` exits `0` (scored) · `2` (usage) · `3` (no reviewer completed) ·
 `4` (benchmark-invalid — e.g. a malformed case, or zero clean/seeded cases). A run
 whose corpus had uncommitted edits, or any invalid case, is flagged
-**non-authoritative** in the report.
+**non-authoritative** in the report. The publication protocol is intentionally
+matrix-only: `bench matrix --authoritative` additionally requires a semantically
+matching committed preregistration, a clean real commit, a hashed compiled runner,
+hard call/output bounds, 100% reviewer coverage and 100% eligible-critic coverage.
+`bench run` cannot mint an authoritative result on its own.
 
 ## What bench measures (and what it doesn't)
 

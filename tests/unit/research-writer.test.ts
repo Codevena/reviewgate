@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { $ } from "bun";
 import { computeDiffFacts } from "../../src/research/diff-facts.ts";
 import { writeResearch } from "../../src/research/research-writer.ts";
+import { buildSymbolGraph } from "../../src/research/symbol-graph.ts";
 import { triageFromFacts } from "../../src/triage/matrix.ts";
 
 describe("writeResearch", () => {
@@ -108,5 +109,27 @@ describe("writeResearch", () => {
     expect(md).not.toContain("```");
     // The marker-bearing path is rendered on exactly one changed-files bullet.
     expect(md.split("\n").filter((l) => l.startsWith("- src/")).length).toBe(1);
+  });
+
+  it("renders caller paths without leaking the checkout root", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-research-portable-"));
+    mkdirSync(join(repo, ".reviewgate"), { recursive: true });
+    writeFileSync(join(repo, "a.ts"), "export function alpha() { return 1; }\n");
+    writeFileSync(join(repo, "nested.ts"), "import { alpha } from './a';\nalpha();\n");
+    const diff = "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n";
+    const facts = computeDiffFacts(diff);
+    const graph = await buildSymbolGraph({ files: [join(repo, "a.ts")], repoRoot: repo });
+
+    await writeResearch({
+      repoRoot: repo,
+      facts,
+      triage: triageFromFacts(facts),
+      symbolGraph: graph,
+      conventions: { summary: "portable" },
+    });
+
+    const md = readFileSync(join(repo, ".reviewgate", "research.md"), "utf8");
+    expect(md).toContain("nested.ts:2");
+    expect(md).not.toContain(repo);
   });
 });

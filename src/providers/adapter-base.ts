@@ -51,6 +51,10 @@ export interface Preflight {
 
 export interface ReviewInput {
   promptFile: string;
+  /** Optional in-memory prompt used by capability probes that must not create a
+   * repository file. HTTP adapters may prefer it over promptFile; CLI adapters
+   * continue to use promptFile. */
+  promptText?: string | undefined;
   workingDir: string;
   findingsPath: string;
   persona: string;
@@ -64,6 +68,9 @@ export interface ReviewInput {
   // spawnSafely's sandbox option. Mode "strict" refuses to run if sandbox-exec is
   // unavailable; "permissive" falls back to unisolated execution.
   sandbox?: { profile: SandboxProfile; mode: "strict" | "permissive" };
+  /** Execute at most one physical provider invocation. Benchmark call ceilings
+   * set this so an adapter-local retry cannot escape the recorded budget. */
+  disableRetries?: boolean | undefined;
 }
 
 export type ReviewStatus = "ok" | "error" | "abstain" | "timeout" | "quota-exhausted";
@@ -108,6 +115,8 @@ export interface CompleteOptions {
   model: string;
   apiKeyEnv?: string;
   timeoutMs?: number;
+  /** Provider-side output ceiling. OpenRouter transmits this as `max_tokens`. */
+  maxTokens?: number | undefined;
   auth?: "oauth" | "apikey" | "openrouter";
   /** OpenRouter-only: upstream-provider routing (see OpenRouterProviderRouting). */
   openrouterProvider?: OpenRouterProviderRouting;

@@ -323,6 +323,26 @@ describe("CodexAdapter retry-once", () => {
     expect(spawns).toBe(1);
   });
 
+  it("disableRetries bounds a benchmark review to one physical Codex invocation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-codex-no-retry-"));
+    const counter = join(dir, "count.txt");
+    writeFileSync(counter, "");
+    process.env.RG_FAKE_COUNTER = counter;
+    process.env.RG_FAKE_A1 = "garbage";
+    process.env.RG_FAKE_A2 = "ok";
+    try {
+      const adapter = new CodexAdapter({ binPath: ATTEMPT_BIN });
+      const result = await adapter.review({ ...makeReviewInput(dir), disableRetries: true });
+      expect(result.status).toBe("error");
+      expect(spawnCount(counter)).toBe(1);
+      expect(result.statusDetail ?? "").not.toContain("(after retry)");
+    } finally {
+      Reflect.deleteProperty(process.env, "RG_FAKE_COUNTER");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A1");
+      Reflect.deleteProperty(process.env, "RG_FAKE_A2");
+    }
+  });
+
   it("abort: pre-aborted signal → no retry (one spawn)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-codex-abort-"));
     const counter = join(dir, "count.txt");

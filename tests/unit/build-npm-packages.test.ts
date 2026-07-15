@@ -36,6 +36,7 @@ describe("npm package manifests", () => {
       "1.2.3",
     );
     expect(linux.libc).toEqual(["glibc"]);
+    expect(darwin.homepage).toBe("https://reviewgate.codevena.dev/");
   });
 
   it("mainManifest pins each platform pkg EXACTLY, declares no runtime deps, no os/cpu", () => {
@@ -47,6 +48,8 @@ describe("npm package manifests", () => {
       os?: unknown;
       cpu?: unknown;
       engines: Record<string, string>;
+      description: string;
+      homepage: string;
     };
     expect(m.name).toBe("reviewgate");
     expect(m.bin).toEqual({ reviewgate: "bin/reviewgate.cjs" });
@@ -57,5 +60,7 @@ describe("npm package manifests", () => {
     expect(m.os).toBeUndefined();
     expect(m.cpu).toBeUndefined();
     expect(m.engines.node).toBe(">=20");
+    expect(m.homepage).toBe("https://reviewgate.codevena.dev/");
+    expect(m.description).toContain("Claude Code and Codex");
   });
 });
