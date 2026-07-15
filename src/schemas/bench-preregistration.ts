@@ -54,6 +54,9 @@ export const BenchPreregistrationSchema = z
     hard_gates: z
       .object({
         maximum_provider_calls: z.number().int().positive(),
+        // Optional for backwards compatibility with the already-frozen Attempt 01;
+        // absent resolves to the historical single critic attempt.
+        maximum_critic_attempts_per_eligible_case: z.number().int().positive().optional(),
         maximum_openrouter_output_tokens_per_call: z.number().int().positive(),
         maximum_failed_fraction: z.number().min(0).max(1),
         reviewer_coverage: z.literal(1),

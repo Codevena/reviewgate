@@ -50,18 +50,27 @@ export async function runCritic(
   provider: string,
   opts: CompleteOptions,
   findings: Finding[],
+  maxAttempts = 1,
 ): Promise<CriticRunResult> {
   if (typeof adapter.complete !== "function") {
     return { map: new Map(), info: { provider, status: "misconfigured", verdicts: 0 } };
   }
-  let text: string;
-  try {
-    text = await adapter.complete(buildCriticPrompt(findings), opts);
-  } catch {
-    return { map: new Map(), info: { provider, status: "error", verdicts: 0 } };
+  const attemptLimit = Number.isSafeInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 1;
+  const prompt = buildCriticPrompt(findings);
+  let finalStatus: "error" | "empty" = "empty";
+  for (let attempt = 1; attempt <= attemptLimit; attempt++) {
+    try {
+      const text = await adapter.complete(prompt, opts);
+      const map = parseCriticOutput(text);
+      if (map.size > 0) {
+        return { map, info: { provider, status: "ran", verdicts: map.size } };
+      }
+      finalStatus = "empty";
+    } catch {
+      finalStatus = "error";
+    }
   }
-  const map = parseCriticOutput(text);
-  return { map, info: { provider, status: map.size > 0 ? "ran" : "empty", verdicts: map.size } };
+  return { map: new Map(), info: { provider, status: finalStatus, verdicts: 0 } };
 }
 
 // Locate the real `{"verdicts":[...]}` payload inside arbitrary model output.

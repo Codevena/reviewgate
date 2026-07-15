@@ -27,7 +27,7 @@ export function platformManifest(t: Target, version: string): Record<string, unk
   return {
     name: pkgName(t),
     version,
-    description: `Reviewgate prebuilt binary for ${t.os}-${t.cpu}.`,
+    description: `Reviewgate prebuilt binary for Claude Code and Codex (${t.os}-${t.cpu}).`,
     license: "MIT",
     author: "Markus Wiesecke (https://github.com/Codevena)",
     homepage: "https://reviewgate.codevena.dev/",

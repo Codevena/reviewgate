@@ -84,6 +84,8 @@ const CriticProvenanceSchema = z
     provider: z.string(),
     model: z.string(),
     openrouter_provider: OpenRouterRoutingSnapshotSchema.nullable(),
+    // Additive for Alpha.12 Attempt 02; optional keeps older published artifacts valid.
+    max_attempts: z.number().int().positive().optional(),
   })
   .strict();
 

@@ -322,6 +322,109 @@ describe("runBenchRun", () => {
 
     expect(res.exitCode).toBe(0);
     expect(critic.completeCalls).toBe(1);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.provenance.critic?.max_attempts).toBe(1);
+  });
+
+  it("rejects a non-positive critic attempt limit before any provider call", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let calls = 0;
+    const reviewer = smartCodexStub();
+    const counted: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        calls++;
+        return reviewer.review(input);
+      },
+    };
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out: join(corpus, "invalid-critic-attempts", "results.json"),
+      criticMaxAttempts: 0,
+      adapters: { codex: counted },
+    });
+
+    expect(res.exitCode).toBe(2);
+    expect(res.stderr).toContain("--critic-max-attempts must be a positive integer");
+    expect(calls).toBe(0);
+  });
+
+  it("counts every explicit critic retry as a physical provider call", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let criticCalls = 0;
+    const critic: ProviderAdapter = {
+      id: "openrouter",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "openrouter", error: null };
+      },
+      async review() {
+        throw new Error("critic must use complete()");
+      },
+      async complete() {
+        criticCalls++;
+        if (criticCalls === 1) throw new Error("transient upstream error");
+        return JSON.stringify({ verdicts: [{ signature: "sql-inj", verdict: "keep" }] });
+      },
+    };
+    const out = join(corpus, "critic-retry-counted", "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      suppressors: { critic: "openrouter" },
+      criticModel: "deepseek/deepseek-v4-flash",
+      criticMaxAttempts: 2,
+      maxProviderCalls: 4,
+      adapters: { codex: smartCodexStub(), openrouter: critic },
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(criticCalls).toBe(2);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.provenance.integrity?.provider_calls_used).toBe(4);
+    expect(result.cost.find((c) => c.provider === "openrouter")?.calls).toBe(2);
+    expect(result.provenance.critic?.max_attempts).toBe(2);
+  });
+
+  it("does not make an uncounted retry after the shared call ceiling is exhausted", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    let criticCalls = 0;
+    const critic: ProviderAdapter = {
+      id: "openrouter",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "openrouter", error: null };
+      },
+      async review() {
+        throw new Error("critic must use complete()");
+      },
+      async complete() {
+        criticCalls++;
+        throw new Error("transient upstream error");
+      },
+    };
+    const out = join(corpus, "critic-retry-ceiling", "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      suppressors: { critic: "openrouter" },
+      criticMaxAttempts: 2,
+      maxProviderCalls: 3,
+      adapters: { codex: smartCodexStub(), openrouter: critic },
+    });
+
+    expect(res.exitCode).toBe(4);
+    expect(res.stderr).toContain("provider-call ceiling exhausted");
+    expect(criticCalls).toBe(1);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.provenance.integrity?.provider_calls_used).toBe(3);
   });
 
   it("scores a healthy seeded+clean corpus, writes a schema-valid result, exit 0", async () => {

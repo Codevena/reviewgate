@@ -39,6 +39,13 @@ describe("npm package manifests", () => {
     expect(darwin.homepage).toBe("https://reviewgate.codevena.dev/");
   });
 
+  it("names Claude Code and Codex in every generated platform description", () => {
+    for (const target of TARGETS) {
+      const manifest = platformManifest(target, "1.2.3") as { description: string };
+      expect(manifest.description).toContain("Claude Code and Codex");
+    }
+  });
+
   it("mainManifest pins each platform pkg EXACTLY, declares no runtime deps, no os/cpu", () => {
     const m = mainManifest("1.2.3") as {
       name: string;

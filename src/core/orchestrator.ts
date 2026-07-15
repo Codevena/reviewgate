@@ -218,6 +218,9 @@ export interface OrchestratorInput {
   // per-provider attribution (duplicate provider, fake corroboration). Each
   // provider must be measured as itself; a failed slot is a real coverage gap.
   disableLastResortFailover?: boolean;
+  // Benchmark-only reliability control. Runtime callers omit this and retain
+  // exactly one critic completion attempt.
+  criticMaxAttempts?: number;
 }
 
 // P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
@@ -2303,6 +2306,7 @@ export class Orchestrator {
               : {}),
           },
           groundedFindings,
+          this.input.criticMaxAttempts ?? 1,
         );
         criticMap = r.map.size > 0 ? r.map : undefined;
         criticInfo = r.info;

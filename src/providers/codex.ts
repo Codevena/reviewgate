@@ -126,6 +126,10 @@ export class CodexAdapter implements ProviderAdapter {
       // stdin...".
       const args = [
         "exec",
+        // Provider calls must be reproducible and isolated from ambient MCP
+        // servers/profiles in $CODEX_HOME/config.toml. Authentication still comes
+        // from CODEX_HOME; only user configuration is ignored.
+        "--ignore-user-config",
         "--disable",
         "shell_tool",
         "--sandbox",
@@ -323,6 +327,7 @@ export class CodexAdapter implements ProviderAdapter {
       // codex `exec` otherwise refuses ("Not inside a trusted directory").
       const args = [
         "exec",
+        "--ignore-user-config",
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",

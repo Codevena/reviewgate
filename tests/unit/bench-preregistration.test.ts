@@ -11,6 +11,7 @@ import { BenchPreregistrationSchema } from "../../src/schemas/bench-preregistrat
 
 const REPO = join(import.meta.dir, "../..");
 const PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2.json";
+const ATTEMPT_02_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-02.json";
 
 function matrixInput(): BenchMatrixInput {
   return {
@@ -49,6 +50,20 @@ function preregistration(): unknown {
   return JSON.parse(readFileSync(join(REPO, PREREGISTRATION_PATH), "utf8"));
 }
 
+function attempt02Input(): BenchMatrixInput {
+  return {
+    ...matrixInput(),
+    out: "bench/results/alpha12-v2/attempt-02/matrix.json",
+    criticMaxAttempts: 2,
+    maxProviderCalls: 360,
+    preregistration: ATTEMPT_02_PREREGISTRATION_PATH,
+  };
+}
+
+function attempt02Preregistration(): unknown {
+  return JSON.parse(readFileSync(join(REPO, ATTEMPT_02_PREREGISTRATION_PATH), "utf8"));
+}
+
 describe("Alpha.12 benchmark preregistration", () => {
   it("parses and exactly matches the frozen authoritative matrix protocol", () => {
     const input = matrixInput();
@@ -57,6 +72,37 @@ describe("Alpha.12 benchmark preregistration", () => {
     expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
       [],
     );
+  });
+
+  it("matches Attempt 02's explicit critic-attempt limit without changing Attempt 01", () => {
+    const input = attempt02Input();
+    const frozen = BenchPreregistrationSchema.parse(attempt02Preregistration());
+
+    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
+      [],
+    );
+    expect(
+      validateMatrixPreregistration(
+        matrixInput(),
+        benchConfig(matrixInput()),
+        preregistration(),
+        "bench/cases",
+      ),
+    ).toEqual([]);
+  });
+
+  it("rejects critic-attempt drift before the provider boundary", () => {
+    const input = attempt02Input();
+    const frozen = BenchPreregistrationSchema.parse(attempt02Preregistration());
+    const reasons = validateMatrixPreregistration(
+      { ...input, criticMaxAttempts: 3 },
+      benchConfig(input),
+      frozen,
+      input.corpus,
+    );
+
+    expect(reasons).toContain("command differs from preregistration");
+    expect(reasons).toContain("critic-attempt limit differs");
   });
 
   it("rejects result-affecting command, corpus, roster, and budget drift", () => {
@@ -107,7 +153,11 @@ describe("Alpha.12 benchmark preregistration", () => {
         return '{"verdicts":[]}';
       },
     });
-    const input = { ...matrixInput(), maxProviderCalls: 271 };
+    const input = {
+      ...matrixInput(),
+      out: "bench/results/alpha12-v2/test-mismatch/matrix.json",
+      maxProviderCalls: 271,
+    };
 
     const result = await import("../../src/cli/commands/bench.ts").then(({ runBenchMatrix }) =>
       runBenchMatrix({

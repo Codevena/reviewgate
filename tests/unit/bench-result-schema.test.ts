@@ -86,6 +86,7 @@ describe("BenchResultSchema", () => {
           provider: "openrouter",
           model: "deepseek/deepseek-v4-flash",
           openrouter_provider: { only: ["alibaba"] },
+          max_attempts: 2,
         },
         integrity: {
           source_commit: "a".repeat(40),

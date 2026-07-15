@@ -619,6 +619,10 @@ const bench = defineCommand({
           type: "string",
           description: "Pinned OpenRouter upstream slug for the critic (for example alibaba)",
         },
+        "critic-max-attempts": {
+          type: "string",
+          description: "Maximum critic completions per eligible case (benchmark only; default 1)",
+        },
         "max-provider-calls": {
           type: "string",
           description: "Hard ceiling on paid/quota provider calls",
@@ -657,6 +661,7 @@ const bench = defineCommand({
         const repeat = num(args.repeat);
         const maxProviderCalls = num(args["max-provider-calls"]);
         const maxOutputTokens = num(args["max-output-tokens"]);
+        const criticMaxAttempts = num(args["critic-max-attempts"]);
         const confidenceFloor = num(args["confidence-floor"]);
         const suppressors = {
           ...(typeof args.critic === "string" && args.critic.length > 0
@@ -690,6 +695,7 @@ const bench = defineCommand({
             : {}),
           ...(maxProviderCalls !== undefined ? { maxProviderCalls } : {}),
           ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+          ...(criticMaxAttempts !== undefined ? { criticMaxAttempts } : {}),
           ...(Object.keys(suppressors).length > 0 ? { suppressors } : {}),
         });
         if (res.stdout) process.stdout.write(res.stdout);
@@ -745,6 +751,10 @@ const bench = defineCommand({
           type: "string",
           description: "Pinned OpenRouter upstream slug for the critic",
         },
+        "critic-max-attempts": {
+          type: "string",
+          description: "Maximum critic completions per eligible case (benchmark only; default 1)",
+        },
         "max-provider-calls": { type: "string", description: "Shared hard call ceiling" },
         "max-output-tokens": { type: "string", description: "OpenRouter output ceiling" },
         authoritative: {
@@ -780,6 +790,7 @@ const bench = defineCommand({
         const repeat = num(args.repeat);
         const maxProviderCalls = num(args["max-provider-calls"]);
         const maxOutputTokens = num(args["max-output-tokens"]);
+        const criticMaxAttempts = num(args["critic-max-attempts"]);
         const minClean = num(args["min-clean"]);
         const minSeeded = num(args["min-seeded"]);
         const maxFailedFrac = num(args["max-failed-frac"]);
@@ -805,6 +816,7 @@ const bench = defineCommand({
             : {}),
           ...(maxProviderCalls !== undefined ? { maxProviderCalls } : {}),
           ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+          ...(criticMaxAttempts !== undefined ? { criticMaxAttempts } : {}),
           ...(minClean !== undefined ? { minClean } : {}),
           ...(minSeeded !== undefined ? { minSeeded } : {}),
           ...(maxFailedFrac !== undefined ? { maxFailedFrac } : {}),

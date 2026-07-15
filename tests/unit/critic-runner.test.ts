@@ -63,14 +63,76 @@ describe("runCritic", () => {
   });
 
   it("records an error (no throw) when complete() rejects", async () => {
+    let calls = 0;
     const adapter: Pick<ProviderAdapter, "complete"> = {
       complete: async () => {
+        calls++;
         throw new Error("boom");
       },
     };
     const { map, info } = await runCritic(adapter, "codex", OPTS, [mkFinding()]);
     expect(info.status).toBe("error");
     expect(map.size).toBe(0);
+    expect(calls).toBe(1);
+  });
+
+  it("retries a rejected completion up to the explicit attempt limit", async () => {
+    let calls = 0;
+    const adapter: Pick<ProviderAdapter, "complete"> = {
+      complete: async () => {
+        calls++;
+        if (calls === 1) throw new Error("transient");
+        return JSON.stringify({ verdicts: [{ signature: "sig-1", verdict: "keep" }] });
+      },
+    };
+    const { map, info } = await runCritic(adapter, "openrouter", OPTS, [mkFinding()], 2);
+    expect(calls).toBe(2);
+    expect(info.status).toBe("ran");
+    expect(map.get("sig-1")?.verdict).toBe("keep");
+  });
+
+  it("retries empty/unparseable output and stops at the first non-empty verdict map", async () => {
+    let calls = 0;
+    const adapter: Pick<ProviderAdapter, "complete"> = {
+      complete: async () => {
+        calls++;
+        return calls === 1
+          ? "not critic json"
+          : JSON.stringify({ verdicts: [{ signature: "sig-1", verdict: "likely_fp" }] });
+      },
+    };
+    const { map, info } = await runCritic(adapter, "openrouter", OPTS, [mkFinding()], 3);
+    expect(calls).toBe(2);
+    expect(info.status).toBe("ran");
+    expect(map.get("sig-1")?.verdict).toBe("likely_fp");
+  });
+
+  it("does not spend a retry after the first parseable non-empty verdict map", async () => {
+    let calls = 0;
+    const adapter: Pick<ProviderAdapter, "complete"> = {
+      complete: async () => {
+        calls++;
+        return JSON.stringify({ verdicts: [{ signature: "sig-1", verdict: "keep" }] });
+      },
+    };
+    const { info } = await runCritic(adapter, "openrouter", OPTS, [mkFinding()], 2);
+    expect(calls).toBe(1);
+    expect(info.status).toBe("ran");
+  });
+
+  it("exhausts exactly the requested attempts and reports the final empty state", async () => {
+    let calls = 0;
+    const adapter: Pick<ProviderAdapter, "complete"> = {
+      complete: async () => {
+        calls++;
+        if (calls === 1) throw new Error("transient");
+        return '{"verdicts":[]}';
+      },
+    };
+    const { map, info } = await runCritic(adapter, "openrouter", OPTS, [mkFinding()], 2);
+    expect(calls).toBe(2);
+    expect(map.size).toBe(0);
+    expect(info.status).toBe("empty");
   });
 
   it("forwards the abort signal through CompleteOptions to complete()", async () => {

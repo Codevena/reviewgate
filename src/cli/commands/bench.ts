@@ -88,6 +88,8 @@ export interface BenchRunInput {
   ablationLabels?: string[];
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Benchmark-only physical critic completion limit; runtime default remains 1. */
+  criticMaxAttempts?: number;
   /** Hard provider-call and OpenRouter output bounds (required for authoritative runs). */
   maxProviderCalls?: number;
   maxOutputTokens?: number;
@@ -536,6 +538,12 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
   ) {
     return usage("--max-output-tokens must be a positive integer");
   }
+  if (
+    input.criticMaxAttempts !== undefined &&
+    (!Number.isInteger(input.criticMaxAttempts) || input.criticMaxAttempts <= 0)
+  ) {
+    return usage("--critic-max-attempts must be a positive integer");
+  }
   const window = input.window ?? 5;
   const includeAdvisory = input.includeAdvisory ?? false;
   const maxFailedFrac = input.maxFailedFrac ?? 0.1;
@@ -625,6 +633,9 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
         window,
         includeAdvisory,
         adapters,
+        ...(input.criticMaxAttempts !== undefined
+          ? { criticMaxAttempts: input.criticMaxAttempts }
+          : {}),
         ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
       });
       caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome, r));
@@ -802,6 +813,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
               config.phases.critic.provider === "openrouter"
                 ? (config.providers.openrouter?.openrouterProvider ?? null)
                 : null,
+            max_attempts: input.criticMaxAttempts ?? 1,
           }
         : null,
       integrity: {
@@ -931,6 +943,7 @@ export interface BenchMatrixInput {
   criticProvider?: ProviderId;
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  criticMaxAttempts?: number;
   maxProviderCalls?: number;
   maxOutputTokens?: number;
   authoritative?: boolean;
@@ -972,11 +985,16 @@ function canonicalMatrixCommand(input: BenchMatrixInput): string[] {
     String(input.minSeeded ?? ""),
     "--max-failed-frac",
     String(input.maxFailedFrac ?? 0.1),
+  ];
+  if (input.criticMaxAttempts !== undefined) {
+    command.push("--critic-max-attempts", String(input.criticMaxAttempts));
+  }
+  command.push(
     "--max-provider-calls",
     String(input.maxProviderCalls ?? ""),
     "--max-output-tokens",
     String(input.maxOutputTokens ?? ""),
-  ];
+  );
   if (input.window !== undefined) command.push("--window", String(input.window));
   if (input.includeAdvisory) command.push("--include-advisory");
   if (input.authoritative) command.push("--authoritative");
@@ -1070,6 +1088,12 @@ export function validateMatrixPreregistration(
 
   if (prereg.hard_gates.maximum_provider_calls !== input.maxProviderCalls) {
     reasons.push("provider-call ceiling differs");
+  }
+  if (
+    (prereg.hard_gates.maximum_critic_attempts_per_eligible_case ?? 1) !==
+    (input.criticMaxAttempts ?? 1)
+  ) {
+    reasons.push("critic-attempt limit differs");
   }
   if (prereg.hard_gates.maximum_openrouter_output_tokens_per_call !== input.maxOutputTokens) {
     reasons.push("output-token ceiling differs");
@@ -1377,6 +1401,9 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         ...(input.criticModel ? { criticModel: input.criticModel } : {}),
         ...(input.criticOpenrouterProvider
           ? { criticOpenrouterProvider: input.criticOpenrouterProvider }
+          : {}),
+        ...(input.criticMaxAttempts !== undefined
+          ? { criticMaxAttempts: input.criticMaxAttempts }
           : {}),
         ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
         ...(input.maxProviderCalls !== undefined

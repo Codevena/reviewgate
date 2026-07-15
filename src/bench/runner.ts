@@ -211,6 +211,8 @@ export interface RunBenchCaseInput {
    * so failover doesn't depend on which reviewer CLIs happen to be installed;
    * production omits it and the Orchestrator probes the real binaries/keys. */
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
+  /** Benchmark-only critic completion limit; omitted means the runtime default (1). */
+  criticMaxAttempts?: number;
 }
 
 /** Adapt a persisted Finding to the matcher's shape. Index-derived id guarantees
@@ -307,6 +309,9 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       // Measure each provider as itself: a quota-exhausted slot must NOT poach
       // another panel member (that corrupts per-provider attribution).
       disableLastResortFailover: true,
+      ...(input.criticMaxAttempts !== undefined
+        ? { criticMaxAttempts: input.criticMaxAttempts }
+        : {}),
       ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
     });
     // Sanitize the case id before embedding it in the run id: BenchCaseSchema
