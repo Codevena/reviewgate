@@ -43,6 +43,12 @@ export interface SymbolGraph {
   callers: Record<string, CallerRef[]>;
 }
 
+function sortCallerRefs(refs: CallerRef[]): CallerRef[] {
+  return [...refs].sort(
+    (a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line,
+  );
+}
+
 type LoadedLanguage = Awaited<ReturnType<typeof Language.load>>;
 
 let parserReady: Promise<void> | null = null;
@@ -362,7 +368,10 @@ export function normalizeCallerRefs(
       normalizedRefs.push({ file: normalized.file, line: ref.line });
     }
   }
-  return normalizedRefs;
+  // ripgrep scans in parallel and does not guarantee cross-file output order.
+  // Caller refs are rendered into the trusted reviewer prompt, so normalize the
+  // order before hashing/caching/replaying an otherwise identical request.
+  return sortCallerRefs(normalizedRefs);
 }
 
 function escapeRegExp(s: string): string {
@@ -403,7 +412,9 @@ export function scanCallersFallback(
   } catch {
     // best-effort — a glob/read failure just yields fewer callers
   }
-  return refs;
+  // Bun.Glob traversal order is likewise not a portability contract. Keep the
+  // no-ripgrep fallback byte-identical to itself across hosts and repeated runs.
+  return sortCallerRefs(refs);
 }
 
 // rg if available, else the built-in scan. On abort, return [] WITHOUT running

@@ -156,6 +156,27 @@ describe("symbol-graph", () => {
     ).toEqual([{ file: "src/caller.ts", line: 1 }]);
   });
 
+  it("sorts ripgrep caller refs deterministically for stable reviewer prompts", () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-symgraph-rg-order-"));
+    mkdirSync(join(repo, "src"), { recursive: true });
+    writeFileSync(join(repo, "src", "a.ts"), "sharedSymbol();\nsharedSymbol();\n");
+    writeFileSync(join(repo, "src", "z.ts"), "sharedSymbol();\nsharedSymbol();\n");
+
+    expect(
+      symbolGraphModule.normalizeCallerRefs(repo, "sharedSymbol", [
+        { file: "src/z.ts", line: 2 },
+        { file: "src/a.ts", line: 2 },
+        { file: "src/z.ts", line: 1 },
+        { file: "src/a.ts", line: 1 },
+      ]),
+    ).toEqual([
+      { file: "src/a.ts", line: 1 },
+      { file: "src/a.ts", line: 2 },
+      { file: "src/z.ts", line: 1 },
+      { file: "src/z.ts", line: 2 },
+    ]);
+  });
+
   it("excludes fallback-ignored directories in the ripgrep scan itself", () => {
     const buildArgs = (
       symbolGraphModule as unknown as {

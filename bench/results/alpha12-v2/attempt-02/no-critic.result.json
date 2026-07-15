@@ -1,0 +1,1786 @@
+{
+  "schema": "reviewgate.bench.result.v1",
+  "provenance": {
+    "reviewgate_version": "0.1.0-alpha.12",
+    "corpus_commit": "1ea1a3a402ac7dc2502ab96c6033c6e0396eb7df",
+    "corpus_dirty": false,
+    "providers": [
+      {
+        "id": "codex",
+        "cli_version": "codex-cli 0.144.4",
+        "model": "gpt-5.5",
+        "persona": "security"
+      },
+      {
+        "id": "claude-code",
+        "cli_version": "2.1.210 (Claude Code)",
+        "model": "claude-sonnet-4-6",
+        "persona": "security"
+      }
+    ],
+    "config_hash": "d7fc3d32b5dd19cba09eeb3301cd178679f93b9b48db5d36930c1b7600a7a93f",
+    "window": 5,
+    "repeat": 3,
+    "include_advisory": false,
+    "temperature": null,
+    "stores": "per-case-fresh",
+    "cache": "cold",
+    "file_context": "full",
+    "phases": {
+      "critic": false,
+      "reputation": true,
+      "fp_ledger": false,
+      "confidence_floor": 0.6,
+      "scope_to_diff": true,
+      "ablations": [
+        "critic"
+      ]
+    },
+    "host_os": "darwin-arm64",
+    "timestamp": "2026-07-15T12:45:28.306Z",
+    "case_count": {
+      "seeded": 14,
+      "clean": 16
+    },
+    "case_run_count": {
+      "seeded": 42,
+      "clean": 48,
+      "total": 90
+    },
+    "critic": null,
+    "integrity": {
+      "source_commit": "1ea1a3a402ac7dc2502ab96c6033c6e0396eb7df",
+      "repository_dirty": false,
+      "runner_sha256": "c041cf84d148e03350566c11f347c940bbff94e0c166aba269f242d370ce3fd2",
+      "runner_kind": "compiled",
+      "preregistration_sha256": "0447d668bad1fe9dfb599c9e4e31418bf3d5f32385656d76d12fb460a80a4347",
+      "authoritative_requested": true,
+      "max_provider_calls": 360,
+      "provider_calls_used": 0,
+      "max_output_tokens": 2048
+    }
+  },
+  "cases": [
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "review-error",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 90,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 60,
+      "error": null
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 41,
+      "error": null
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 58,
+      "error": null
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 58,
+      "error": null
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 49,
+      "error": null
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 50,
+      "error": null
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 60,
+      "error": null
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 47,
+      "error": null
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 58,
+      "error": null
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 46,
+      "error": null
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 44,
+      "error": null
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 44,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 81,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 101,
+      "error": null
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 54,
+      "error": null
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 86,
+      "error": null
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 88,
+      "error": null
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 76,
+      "error": null
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "review-error",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 59,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 1,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 116,
+      "error": null
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 118,
+      "error": null
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 63,
+      "error": null
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 62,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 83,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 88,
+      "error": null
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 43,
+      "error": null
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 62,
+      "error": null
+    },
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 86,
+      "error": null
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 52,
+      "error": null
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 41,
+      "error": null
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 56,
+      "error": null
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 50,
+      "error": null
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 50,
+      "error": null
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 44,
+      "error": null
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 54,
+      "error": null
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 47,
+      "error": null
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 44,
+      "error": null
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 46,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 89,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 84,
+      "error": null
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 62,
+      "error": null
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 60,
+      "error": null
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 87,
+      "error": null
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 63,
+      "error": null
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "review-error",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 60,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "review-error",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 106,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "review-error",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 115,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 61,
+      "error": null
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 81,
+      "error": null
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 42,
+      "error": null
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 56,
+      "error": null
+    },
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "review-error",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 91,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 40,
+      "error": null
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 57,
+      "error": null
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 53,
+      "error": null
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 55,
+      "error": null
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 36,
+      "error": null
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 53,
+      "error": null
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 44,
+      "error": null
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 39,
+      "error": null
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 41,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 89,
+      "error": null
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 59,
+      "error": null
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 59,
+      "error": null
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 82,
+      "error": null
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 60,
+      "error": null
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 60,
+      "error": null
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 1,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 114,
+      "error": null
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "review-error",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 0,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 109,
+      "error": "no reviewer completed (verdict ERROR)"
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 56,
+      "error": null
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 62,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 85,
+      "error": null
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 39,
+      "error": null
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 54,
+      "error": null
+    }
+  ],
+  "providers": [
+    {
+      "provider": "claude-code",
+      "coverage": {
+        "num": 83,
+        "den": 90,
+        "value": 0.9222222222222223,
+        "ci_lo": 0.8480613981740798,
+        "ci_hi": 0.9618151846827111
+      },
+      "precision": {
+        "num": 34,
+        "den": 183,
+        "value": 0.18579234972677597,
+        "ci_lo": 0.13611052957732375,
+        "ci_hi": 0.24839438316604182
+      },
+      "recall": {
+        "num": 34,
+        "den": 39,
+        "value": 0.8717948717948718,
+        "ci_lo": 0.7329425662025455,
+        "ci_hi": 0.9439718246302862
+      },
+      "authoritative": true
+    },
+    {
+      "provider": "codex",
+      "coverage": {
+        "num": 83,
+        "den": 90,
+        "value": 0.9222222222222223,
+        "ci_lo": 0.8480613981740798,
+        "ci_hi": 0.9618151846827111
+      },
+      "precision": {
+        "num": 25,
+        "den": 51,
+        "value": 0.49019607843137253,
+        "ci_lo": 0.35857485894370744,
+        "ci_hi": 0.623190761054303
+      },
+      "recall": {
+        "num": 25,
+        "den": 39,
+        "value": 0.6410256410256411,
+        "ci_lo": 0.4841814855954854,
+        "ci_hi": 0.7725791454100714
+      },
+      "authoritative": true
+    }
+  ],
+  "cost": [],
+  "critic": null,
+  "aggregate": {
+    "precision": {
+      "num": 36,
+      "den": 104,
+      "value": 0.34615384615384615,
+      "ci_lo": 0.2616770520253859,
+      "ci_hi": 0.44159105701229157
+    },
+    "recall": {
+      "num": 36,
+      "den": 39,
+      "value": 0.9230769230769231,
+      "ci_lo": 0.7967892883204503,
+      "ci_hi": 0.9734926046962203
+    },
+    "clean_fp_rate": {
+      "num": 39,
+      "den": 44,
+      "value": 0.8863636363636364,
+      "ci_lo": 0.7602084758339172,
+      "ci_hi": 0.950472193989075
+    }
+  },
+  "stability": {
+    "repeats": 3,
+    "precision": {
+      "mean": 0.34649859943977585,
+      "stddev": 0.02790737057579144,
+      "min": 0.3142857142857143,
+      "max": 0.38235294117647056,
+      "samples": 3
+    },
+    "recall": {
+      "mean": 0.9227716727716727,
+      "stddev": 0.004864889331657302,
+      "min": 0.9166666666666666,
+      "max": 0.9285714285714286,
+      "samples": 3
+    },
+    "clean_fp_rate": {
+      "mean": 0.8857142857142857,
+      "stddev": 0.03389548651438513,
+      "min": 0.8571428571428571,
+      "max": 0.9333333333333333,
+      "samples": 3
+    }
+  }
+}
