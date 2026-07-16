@@ -13,6 +13,7 @@ const REPO = join(import.meta.dir, "../..");
 const PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2.json";
 const ATTEMPT_02_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-02.json";
 const ATTEMPT_03_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-03.json";
+const ATTEMPT_04_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-04.json";
 
 function matrixInput(): BenchMatrixInput {
   return {
@@ -77,6 +78,18 @@ function attempt03Preregistration(): unknown {
   return JSON.parse(readFileSync(join(REPO, ATTEMPT_03_PREREGISTRATION_PATH), "utf8"));
 }
 
+function attempt04Input(): BenchMatrixInput {
+  return {
+    ...attempt03Input(),
+    out: "bench/results/alpha12-v2/attempt-04/matrix.json",
+    preregistration: ATTEMPT_04_PREREGISTRATION_PATH,
+  };
+}
+
+function attempt04Preregistration(): unknown {
+  return JSON.parse(readFileSync(join(REPO, ATTEMPT_04_PREREGISTRATION_PATH), "utf8"));
+}
+
 describe("Alpha.12 benchmark preregistration", () => {
   it("parses and exactly matches the frozen authoritative matrix protocol", () => {
     const input = matrixInput();
@@ -107,6 +120,15 @@ describe("Alpha.12 benchmark preregistration", () => {
   it("matches Attempt 03's unchanged protocol after the prompt-determinism fix", () => {
     const input = attempt03Input();
     const frozen = BenchPreregistrationSchema.parse(attempt03Preregistration());
+
+    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
+      [],
+    );
+  });
+
+  it("matches Attempt 04's unchanged protocol after the compact critic-output fix", () => {
+    const input = attempt04Input();
+    const frozen = BenchPreregistrationSchema.parse(attempt04Preregistration());
 
     expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
       [],

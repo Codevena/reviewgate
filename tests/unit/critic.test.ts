@@ -20,6 +20,16 @@ const baseFinding: Finding = {
 };
 
 describe("buildCriticPrompt", () => {
+  it("asks for compact verdict-only JSON to keep critic completions below provider length caps", () => {
+    const prompt = buildCriticPrompt([baseFinding]);
+
+    expect(prompt).toContain('{"verdicts":[{"signature":"<sig>","verdict":"keep|likely_fp"}]}');
+    expect(prompt).toContain("No reasons");
+    expect(prompt).toContain("compact JSON");
+    expect(prompt).not.toContain('"reason"');
+    expect(prompt).toContain("exactly one verdict object per input signature line");
+  });
+
   it("neutralizes injection markers in the reviewer message/file before embedding", () => {
     // A hallucinated finding's message/file is untrusted reviewer-LLM output embedded
     // into the TRUSTED critic prompt — markers must be defanged + newlines stripped so
