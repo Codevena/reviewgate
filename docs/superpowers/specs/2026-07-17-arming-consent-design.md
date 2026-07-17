@@ -166,6 +166,20 @@ independently shippable" means: shippable as the *self-blessing security fix*;
 it does not by itself deliver the zero-writes-when-unarmed guarantee, which is
 S2's job. This is now stated rather than implied.
 
+**Known defense-in-depth follow-up (TOCTOU, accepted).** The `hasProjectSource`
+pre-check and `bootstrapControlPlane`'s internal config read are not one atomic
+read: a project config that races in between them would be blessed into the LKG
+and only caught by the post-write fingerprint check (which currently returns the
+tainted config with an `invalid`-classified pending change). This is NOT
+exploitable under the threat model — the S0 case (a config committed at clone
+time) is present at the pre-check and throws immediately with no race, and the
+window requires an external process writing `reviewgate.config.ts` within a
+sub-millisecond gap, i.e. prior code execution on the host (the very capability
+the guard assumes absent). The clean fix is read-once: load the snapshot, verify
+its source fingerprint against the pre-check, and bless exactly that snapshot
+(passing it into `bootstrapControlPlane`). Deferred because it touches the
+shared init bootstrap path and the race is not practically reachable.
+
 ### S2 — Arming probe in gate entry
 
 Explicit `armed()` check before any state write, panel, checks, or
