@@ -255,6 +255,56 @@ describe("runBenchRun", () => {
     expect(result.cost.find((c) => c.provider === "codex")?.calls).toBe(1);
   });
 
+  it("stamps an authoritative verdict into a clean run's artifact", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    execFileSync("git", ["init", "-q"], { cwd: corpus });
+    execFileSync("git", ["config", "user.email", "bench@example.invalid"], { cwd: corpus });
+    execFileSync("git", ["config", "user.name", "Bench Test"], { cwd: corpus });
+    execFileSync("git", ["add", "."], { cwd: corpus });
+    execFileSync("git", ["commit", "-qm", "freeze corpus"], { cwd: corpus });
+
+    const out = join(corpus, "attempt", "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      adapters: { codex: smartCodexStub() },
+    });
+
+    expect(res.exitCode).toBe(0);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.verdict).toBeDefined();
+    expect(result.verdict?.authoritative).toBe(true);
+    expect(result.verdict?.gate_exit_code).toBe(0);
+    expect(result.verdict?.reasons).toEqual([]);
+  });
+
+  it("stamps a non-authoritative verdict into the artifact when the quality gate fails", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+
+    const out = join(corpus, "results.json");
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      adapters: { codex: smartCodexStub() },
+      maxProviderCalls: 1,
+    });
+
+    // exit 4 (benchmark-invalid) must be recorded IN the file, not only as an
+    // ephemeral exit code — a downstream baseline collector reads the artifact.
+    expect(res.exitCode).toBe(4);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.verdict?.authoritative).toBe(false);
+    expect(result.verdict?.gate_exit_code).toBe(4);
+    expect(result.verdict?.reasons.length).toBeGreaterThan(0);
+    expect(result.verdict?.reasons.some((r) => r.includes("ceiling"))).toBe(true);
+  });
+
   it("marks benchmark reviews no-retry so one budget unit is one physical call", async () => {
     const corpus = newCorpus();
     writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);

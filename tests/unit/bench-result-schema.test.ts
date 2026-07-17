@@ -130,6 +130,59 @@ describe("BenchResultSchema", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts an optional stamped verdict", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: {
+        authoritative: false,
+        gate_exit_code: 4,
+        reasons: ["reviewer codex coverage 0/1 (100% required)"],
+      },
+    });
+    if (!r.success) console.error(r.error);
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects a verdict with an unknown key (strict)", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: true, gate_exit_code: 0, reasons: [], extra: 1 },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a verdict whose authoritative flag contradicts gate_exit_code", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: true, gate_exit_code: 4, reasons: ["x"] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a verdict with an out-of-domain gate_exit_code", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: false, gate_exit_code: 2, reasons: ["x"] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a non-authoritative verdict with no stated reasons", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: false, gate_exit_code: 4, reasons: [] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects an authoritative verdict that carries reasons", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: true, gate_exit_code: 0, reasons: ["stray"] },
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("rejects an unknown schema tag", () => {
     const r = BenchResultSchema.safeParse({ ...validResult, schema: "reviewgate.bench.result.v2" });
     expect(r.success).toBe(false);

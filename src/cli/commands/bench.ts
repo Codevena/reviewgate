@@ -849,22 +849,10 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
   const panelCoverage = configuredSum > 0 ? okSum / configuredSum : 1;
   const panelDegraded = coverageCases.length > 0 && panelCoverage < COVERAGE_FLOOR;
 
-  // Validate + write the result regardless of verdict (partial data stays legible).
-  BenchResultSchema.parse(result);
-  // Delay directory creation until every provider call has completed: an output
-  // path inside the repository must not make an authoritative clean-tree check
-  // invalidate itself before the run starts.
-  mkdirSync(dirname(outputPath), { recursive: true });
-  writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
-
-  // ERROR: no reviewer completed anywhere (pure provider outage, no corpus problems).
-  if (scoredCount === 0 && reviewErrorCount > 0 && invalidCount === 0 && !budget.exceeded) {
-    return {
-      exitCode: 3,
-      stdout: "",
-      stderr: "bench run: ERROR — no reviewer completed on any case (providers down / quota)\n",
-    };
-  }
+  // ERROR: no reviewer completed anywhere (pure provider outage, no corpus
+  // problems). Precedence over benchmark-invalid, matching the historical order.
+  const outage =
+    scoredCount === 0 && reviewErrorCount > 0 && invalidCount === 0 && !budget.exceeded;
 
   const gateReasons: string[] = [];
   if (invalidCount > 0) gateReasons.push(`${invalidCount} invalid case(s)`);
@@ -904,6 +892,34 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
         `critic coverage ${critic.ran}/${critic.eligible} eligible calls (100% and at least one required)`,
       );
     }
+  }
+
+  // Stamp the gate outcome INTO the artifact so a saved result is self-describing:
+  // `authoritative` mirrors the exit-0 decision; a degraded run (e.g. a reviewer
+  // quota-dry → 0% coverage) records `authoritative:false` with its reasons rather
+  // than leaving the signal only in the ephemeral exit code. Computed before the
+  // write; the write itself is unchanged (partial data stays legible).
+  const gateExitCode: 0 | 3 | 4 = outage ? 3 : gateReasons.length > 0 ? 4 : 0;
+  result.verdict = {
+    authoritative: gateExitCode === 0,
+    gate_exit_code: gateExitCode,
+    reasons: outage ? ["no reviewer completed on any case (providers down / quota)"] : gateReasons,
+  };
+
+  // Validate + write the result regardless of verdict (partial data stays legible).
+  BenchResultSchema.parse(result);
+  // Delay directory creation until every provider call has completed: an output
+  // path inside the repository must not make an authoritative clean-tree check
+  // invalidate itself before the run starts.
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
+
+  if (outage) {
+    return {
+      exitCode: 3,
+      stdout: "",
+      stderr: "bench run: ERROR — no reviewer completed on any case (providers down / quota)\n",
+    };
   }
 
   if (gateReasons.length > 0) {

@@ -98,6 +98,35 @@ describe("isAuthoritative", () => {
     expect(isAuthoritative(baseResult()).ok).toBe(true);
   });
 
+  it("prefers a stamped non-authoritative verdict over re-derivation", () => {
+    // baseResult() re-derives as ok; the stamped verdict is the runner's own
+    // gate outcome and must win so a saved artifact is the single source of truth.
+    const r = isAuthoritative(
+      baseResult({
+        verdict: {
+          authoritative: false,
+          gate_exit_code: 4,
+          reasons: ["reviewer codex coverage 0/90 (100% required)"],
+        },
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons).toEqual(["reviewer codex coverage 0/90 (100% required)"]);
+  });
+
+  it("does NOT let a stamped authoritative verdict bypass a failing signal (demote-only)", () => {
+    // A stamped authoritative:true must not override the dirty-corpus signal —
+    // otherwise a forged or buggy stamp could elevate trust. The stamp can only demote.
+    const r = isAuthoritative(
+      baseResult({
+        provenance: { ...baseResult().provenance, corpus_dirty: true },
+        verdict: { authoritative: true, gate_exit_code: 0, reasons: [] },
+      }),
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join(" ")).toContain("dirty");
+  });
+
   it("is not ok when the corpus was dirty", () => {
     const r = isAuthoritative(
       baseResult({ provenance: { ...baseResult().provenance, corpus_dirty: true } }),

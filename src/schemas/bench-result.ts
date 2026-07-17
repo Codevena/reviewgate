@@ -296,6 +296,39 @@ export const CriticResultSchema = z
     }
   });
 
+// The run's own quality-gate outcome, stamped into the artifact so a saved
+// result is SELF-DESCRIBING. Trustworthiness was previously knowable only from
+// the process exit code (ephemeral) or by digging into per-provider coverage;
+// a consumer collecting baselines could mistake a quota-degraded run (a
+// reviewer at 0% coverage → de-facto single-provider panel) for an authoritative
+// one. `authoritative` mirrors the runner's exit-0 decision; `gate_exit_code`
+// is 0 (clean) | 3 (provider outage) | 4 (benchmark-invalid); `reasons` lists
+// the blocking gate reasons. Optional for backward-compat with result files
+// written before this field — `isAuthoritative()` re-derives when it is absent.
+export const BenchVerdictSchema = z
+  .object({
+    authoritative: z.boolean(),
+    // 0 (clean) | 3 (provider outage) | 4 (benchmark-invalid) — the only exit
+    // codes under which a result file is written.
+    gate_exit_code: z.union([z.literal(0), z.literal(3), z.literal(4)]),
+    reasons: z.array(z.string()),
+  })
+  .strict()
+  // Invariants the runner always upholds; enforced at the schema boundary so a
+  // crafted/buggy artifact carrying a contradictory verdict fails validation
+  // instead of silently passing.
+  .refine((v) => v.authoritative === (v.gate_exit_code === 0), {
+    message: "authoritative must equal (gate_exit_code === 0)",
+    path: ["authoritative"],
+  })
+  // A non-authoritative verdict must state WHY (else the report shows a bare
+  // "NON-AUTHORITATIVE" banner with no cause — a misleading audit trail); an
+  // authoritative one carries no reasons. `authoritative ⟺ reasons empty`.
+  .refine((v) => v.authoritative === (v.reasons.length === 0), {
+    message: "a non-authoritative verdict must state reasons; an authoritative one must have none",
+    path: ["reasons"],
+  });
+
 export const BenchResultSchema = z
   .object({
     schema: z.literal("reviewgate.bench.result.v1"),
@@ -315,6 +348,7 @@ export const BenchResultSchema = z
       .strict(),
     // Present (object) only under `--repeat K` (K>1); null/absent for a single run.
     stability: StabilitySchema.nullable().optional(),
+    verdict: BenchVerdictSchema.optional(),
   })
   .strict();
 
@@ -375,4 +409,5 @@ export type SpreadStat = z.infer<typeof SpreadStatSchema>;
 export type Stability = z.infer<typeof StabilitySchema>;
 export type ProviderResult = z.infer<typeof ProviderResultSchema>;
 export type Cost = z.infer<typeof CostSchema>;
+export type BenchVerdict = z.infer<typeof BenchVerdictSchema>;
 export type BenchResult = z.infer<typeof BenchResultSchema>;

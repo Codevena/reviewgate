@@ -65,6 +65,15 @@ export function isAuthoritative(result: BenchResult): { ok: boolean; reasons: st
       }
     }
   }
+  // The runner-stamped verdict is DEMOTE-ONLY here: a stamped non-authoritative
+  // verdict is honored (the runner's gate knows run-time reasons like panel
+  // coverage that re-derivation cannot see) and its reasons folded in, but a
+  // stamped authoritative:true NEVER bypasses a failing signal above — a forged
+  // or buggy stamp cannot elevate trust. Absent verdict → pure re-derivation.
+  if (result.verdict && !result.verdict.authoritative) {
+    const merged = [...new Set([...reasons, ...result.verdict.reasons])];
+    return { ok: false, reasons: merged };
+  }
   return { ok: reasons.length === 0, reasons };
 }
 
