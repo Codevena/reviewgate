@@ -25,7 +25,16 @@ export const ControlPlaneStateSchema = z.object({
   approved_effective_fingerprint: z.string().min(64).max(64),
   approved_config: ConfigSchema,
   approved_at: z.string(),
-  approved_via: z.enum(["defaults", "init", "human", "automatic-strengthening"]),
+  // "automatic-global": auto-baselined a defaults+GLOBAL-config tree on first
+  // contact (no init, no human approval). Distinct from "defaults" so an auditor
+  // sees that a user-authored global policy — not pure built-ins — was captured.
+  approved_via: z.enum([
+    "defaults",
+    "init",
+    "human",
+    "automatic-strengthening",
+    "automatic-global",
+  ]),
   pending: ControlPlanePendingSchema.nullable().default(null),
 });
 

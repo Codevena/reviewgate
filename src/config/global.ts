@@ -90,6 +90,10 @@ export interface EffectiveConfigInput {
 export function inspectConfigSources(input: EffectiveConfigInput): {
   sourceFingerprint: string;
   hasCustomSource: boolean;
+  // Project layer only (reviewgate.config.ts IN the repo). This is the layer a
+  // cloned/foreign repo controls, so first-contact self-blessing keys off it —
+  // the global layer (~/.config) is the user's own trusted policy, not a vector.
+  hasProjectSource: boolean;
 } {
   const env = input.env ?? (process.env as Record<string, string | undefined>);
   const home = input.home ?? "";
@@ -98,6 +102,7 @@ export function inspectConfigSources(input: EffectiveConfigInput): {
   return {
     sourceFingerprint: sha256(`${global.sourceHash}\0${project.sourceHash}`),
     hasCustomSource: global.source !== null || project.source !== null,
+    hasProjectSource: project.source !== null,
   };
 }
 

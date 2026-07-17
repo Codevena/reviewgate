@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  ControlPlaneBootstrapRequiredError,
   analysePolicyChange,
   approveControlPlane,
   bootstrapControlPlane,
@@ -257,6 +258,54 @@ describe("gate policy control plane", () => {
     await expect(resolveControlPlaneConfig({ cwd: repo, ...envFor(home) })).rejects.toThrow(
       /last-known-good baseline/i,
     );
+  });
+
+  // S1 (arming): first-contact self-blessing is the S0 RCE/exfil vector — a freshly
+  // cloned repo's committed reviewgate.config.ts (checks.commands shell-out, provider
+  // baseUrl/apiKeyEnv) must NOT become trusted policy just because the gate ran once.
+  it("refuses to self-bless a custom project config on first contact (no LKG, no managed hook)", async () => {
+    const repo = temp("rg-control-firstcontact-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ loop: { softPassPolicy: 'allow' } }");
+    await expect(resolveControlPlaneConfig({ cwd: repo, ...envFor(home) })).rejects.toThrow(
+      ControlPlaneBootstrapRequiredError,
+    );
+    // Must not have written a blessed baseline as a side effect.
+    expect(existsSync(controlPlaneStatePath(repo))).toBe(false);
+  });
+
+  // The GLOBAL layer (~/.config/reviewgate) is the user's OWN policy — not a
+  // foreign vector — so a global-only tree auto-baselines. Only a repo-committed
+  // PROJECT config gates first contact. (Revises the spec's original F-006 stance
+  // after the failing gate tests showed the global layer is user-authored/trusted.)
+  it("auto-baselines a GLOBAL-only config (the user's own trusted policy, not a first-contact vector)", async () => {
+    const repo = temp("rg-control-globalonly-");
+    const home = temp("rg-control-home-");
+    const globalDir = join(home, ".config", "reviewgate");
+    mkdirSync(globalDir, { recursive: true });
+    writeFileSync(
+      join(globalDir, "reviewgate.config.ts"),
+      "export default { loop: { softPassPolicy: 'allow' } };\n",
+    );
+    const res = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(res.change).toBeNull();
+    expect(existsSync(controlPlaneStatePath(repo))).toBe(true);
+    // the user's global policy is captured, not rejected
+    expect(res.config.loop.softPassPolicy).toBe("allow");
+    // audit trail must not mislabel a captured global policy as pure defaults
+    const state = JSON.parse(readFileSync(controlPlaneStatePath(repo), "utf8"));
+    expect(state.approved_via).toBe("automatic-global");
+  });
+
+  it("still auto-baselines a defaults-only repo (nothing attacker-controlled)", async () => {
+    const repo = temp("rg-control-defaultsonly-");
+    const home = temp("rg-control-home-");
+    // No project reviewgate.config.ts and no global config → pure defaults.
+    const res = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(res.change).toBeNull();
+    expect(existsSync(controlPlaneStatePath(repo))).toBe(true);
+    const state = JSON.parse(readFileSync(controlPlaneStatePath(repo), "utf8"));
+    expect(state.approved_via).toBe("defaults");
   });
 
   it("writes a human-readable dedicated policy report", async () => {

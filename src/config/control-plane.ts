@@ -46,9 +46,10 @@ export type ControlPlaneFinalizeResult =
   | { kind: "changed-during-review"; message: string };
 
 export class ControlPlaneBootstrapRequiredError extends Error {
-  constructor() {
+  constructor(message?: string) {
     super(
-      "Gate policy has no last-known-good baseline. Run `reviewgate config approve` from an interactive terminal to bootstrap it; an already-installed gate will not silently re-baseline through `init`.",
+      message ??
+        "Gate policy has no last-known-good baseline. Run `reviewgate config approve` from an interactive terminal to bootstrap it; an already-installed gate will not silently re-baseline through `init`.",
     );
     this.name = "ControlPlaneBootstrapRequiredError";
   }
@@ -313,7 +314,9 @@ function baseState(
 }
 
 export async function bootstrapControlPlane(
-  input: EffectiveConfigInput & { approvedVia: "defaults" | "init" | "human" },
+  input: EffectiveConfigInput & {
+    approvedVia: "defaults" | "init" | "human" | "automatic-global";
+  },
 ): Promise<ControlPlaneState> {
   mkdirSync(reviewgateDir(input.cwd), { recursive: true });
   const lock = await flock(controlPlaneLockPath(input.cwd));
@@ -340,14 +343,30 @@ export async function resolveControlPlaneConfig(
   const source = inspectConfigSources(input);
   let approved = readState(input.cwd);
   if (!approved) {
-    // Defaults have no mutable project/global policy to approve. For an unmanaged
-    // manual gate invocation, the first valid config establishes its baseline.
-    // An initialized repo whose state vanished MUST block instead of blessing the
-    // current file, because deletion must not reset human approval.
+    // No LKG. Reviewgate has exactly two bootstrap doors, both human-typed:
+    // `reviewgate init` and `reviewgate config approve`. A gate invocation must NOT
+    // silently bless the config it finds:
+    //   - an initialized repo whose state vanished MUST block — deletion must not
+    //     reset human approval;
+    //   - a first-contact PROJECT config MUST block — a freshly cloned repo's
+    //     reviewgate.config.ts can run arbitrary `checks.commands` or exfiltrate
+    //     secrets via a provider baseUrl/apiKeyEnv, so self-approving it on the
+    //     first gate run is the S0 RCE/exfil vector.
+    // The GLOBAL layer (~/.config) is the user's OWN trusted policy, not a foreign
+    // vector, so a defaults-only OR global-only tree may auto-baseline; only a
+    // repo-committed project config gates first contact.
     if (managedHookExists(input.cwd)) throw new ControlPlaneBootstrapRequiredError();
+    if (source.hasProjectSource) {
+      throw new ControlPlaneBootstrapRequiredError(
+        "This checkout ships a committed Reviewgate policy (reviewgate.config.ts) that has not been approved here, and no last-known-good baseline exists. Reviewgate will NOT self-approve a repo's config on first contact — a cloned repo's config could run arbitrary shell checks or exfiltrate secrets. Run `reviewgate init`, or `reviewgate config approve` from an interactive terminal, to arm this checkout.",
+      );
+    }
+    // Reached only for a defaults-only OR global-only tree (project configs threw
+    // above). Label the global-only case distinctly so `control-plane.json` does
+    // not misrepresent a captured user global policy as pure built-in defaults.
     approved = await bootstrapControlPlane({
       ...input,
-      approvedVia: source.hasCustomSource ? "init" : "defaults",
+      approvedVia: source.hasCustomSource ? "automatic-global" : "defaults",
     });
   }
 
