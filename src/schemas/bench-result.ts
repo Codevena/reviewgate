@@ -305,13 +305,28 @@ export const CriticResultSchema = z
 // is 0 (clean) | 3 (provider outage) | 4 (benchmark-invalid); `reasons` lists
 // the blocking gate reasons. Optional for backward-compat with result files
 // written before this field — `isAuthoritative()` re-derives when it is absent.
+// Reason strings are rendered VERBATIM into terminal reports (`reviewgate bench
+// report <path>` accepts an arbitrary file). Reject ASCII control/escape bytes at
+// the parse boundary so a crafted artifact cannot smuggle ANSI/VT100 sequences
+// (cursor moves, screen clears) that rewrite surrounding output. Runner-produced
+// reasons are plain sentences. (No control-char regex literal — biome flags those.)
+function hasControlChar(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return true;
+  }
+  return false;
+}
+
 export const BenchVerdictSchema = z
   .object({
     authoritative: z.boolean(),
     // 0 (clean) | 3 (provider outage) | 4 (benchmark-invalid) — the only exit
     // codes under which a result file is written.
     gate_exit_code: z.union([z.literal(0), z.literal(3), z.literal(4)]),
-    reasons: z.array(z.string()),
+    reasons: z.array(
+      z.string().refine((s) => !hasControlChar(s), "reasons must not contain control characters"),
+    ),
   })
   .strict()
   // Invariants the runner always upholds; enforced at the schema boundary so a

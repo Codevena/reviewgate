@@ -183,6 +183,14 @@ describe("BenchResultSchema", () => {
     expect(r.success).toBe(false);
   });
 
+  it("rejects a verdict reason containing an ANSI/control escape sequence", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: false, gate_exit_code: 4, reasons: ["[2Jcleared"] },
+    });
+    expect(r.success).toBe(false);
+  });
+
   it("rejects an unknown schema tag", () => {
     const r = BenchResultSchema.safeParse({ ...validResult, schema: "reviewgate.bench.result.v2" });
     expect(r.success).toBe(false);
