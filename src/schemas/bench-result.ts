@@ -313,7 +313,10 @@ export const CriticResultSchema = z
 function hasControlChar(s: string): boolean {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c < 0x20 || c === 0x7f) return true;
+    // C0 (<0x20) + DEL (0x7f) + C1 (0x80–0x9f). C1 matters because U+009B is the
+    // 8-bit CSI — terminals in 8-bit mode treat it as ESC+"[", so it can drive
+    // the same VT100 sequences as an ESC.
+    if (c < 0x20 || c === 0x7f || (c >= 0x80 && c <= 0x9f)) return true;
   }
   return false;
 }

@@ -183,10 +183,18 @@ describe("BenchResultSchema", () => {
     expect(r.success).toBe(false);
   });
 
-  it("rejects a verdict reason containing an ANSI/control escape sequence", () => {
+  it("rejects a verdict reason containing a C0 ESC (ANSI/VT100) sequence", () => {
     const r = BenchResultSchema.safeParse({
       ...validResult,
-      verdict: { authoritative: false, gate_exit_code: 4, reasons: ["[2Jcleared"] },
+      verdict: { authoritative: false, gate_exit_code: 4, reasons: ["\u001b[2Jcleared"] },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a verdict reason containing an 8-bit C1 CSI (U+009B) sequence", () => {
+    const r = BenchResultSchema.safeParse({
+      ...validResult,
+      verdict: { authoritative: false, gate_exit_code: 4, reasons: ["\u009b2Jcleared"] },
     });
     expect(r.success).toBe(false);
   });
