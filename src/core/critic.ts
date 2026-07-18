@@ -61,7 +61,12 @@ export async function runCritic(
   let finalStatus: "error" | "empty" = "empty";
   for (let attempt = 1; attempt <= attemptLimit; attempt++) {
     try {
-      const text = await adapter.complete(prompt, opts);
+      // Force reasoning OFF: the critic is a keep/demote classification that needs
+      // no chain-of-thought, and a reasoning model's CoT overflows maxTokens and
+      // truncates the verdict JSON to empty (the root cause of intermittent critic
+      // coverage gaps in the alpha.12 benchmark). Providers that don't support the
+      // flag ignore it.
+      const text = await adapter.complete(prompt, { ...opts, disableReasoning: true });
       const map = parseCriticOutput(text);
       if (map.size > 0) {
         return { map, info: { provider, status: "ran", verdicts: map.size } };

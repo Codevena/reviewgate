@@ -62,6 +62,27 @@ describe("OpenRouterAdapter.complete (raw judge completion)", () => {
     expect(capturedBody.response_format).toBeUndefined();
     expect(capturedBody.messages?.[0]?.content).toBe("judge this");
     expect(capturedBody.max_tokens).toBe(64);
+    // Default: reasoning is left to the model (no explicit key).
+    expect((capturedBody as { reasoning?: unknown }).reasoning).toBeUndefined();
+  });
+
+  it("disables model reasoning when disableReasoning is set (reasoning tokens count against max_tokens and truncate the JSON to empty)", async () => {
+    process.env.OR_JUDGE_KEY = "k";
+    let capturedBody: { reasoning?: unknown } = {};
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      capturedBody = JSON.parse(init.body);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const adapter = new OpenRouterAdapter({ fetchImpl });
+    await adapter.complete("classify", {
+      model: "m",
+      apiKeyEnv: "OR_JUDGE_KEY",
+      disableReasoning: true,
+    });
+    expect(capturedBody.reasoning).toEqual({ enabled: false });
   });
 
   it("throws on a missing API key (caller falls back to its default verdict)", async () => {

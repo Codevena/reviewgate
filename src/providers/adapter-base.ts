@@ -126,6 +126,13 @@ export interface CompleteOptions {
   signal?: AbortSignal;
   /** Ollama-only: OpenAI-compat base URL for the completion (critic/judge on a non-cloud daemon). */
   baseUrl?: string;
+  // Ask the provider to emit NO chain-of-thought. A reasoning model (e.g.
+  // deepseek-v4-flash) spends variable reasoning tokens against `maxTokens`; when
+  // they overflow the cap the response truncates BEFORE the JSON content, yielding
+  // an empty/unparseable result. For a classification task (critic keep/demote,
+  // grounding lookup) reasoning adds no value, so disabling it makes the output
+  // deterministic and cheap. OpenRouter honors this via `reasoning:{enabled:false}`.
+  disableReasoning?: boolean;
 }
 
 export interface ProviderAdapter {

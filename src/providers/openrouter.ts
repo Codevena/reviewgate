@@ -256,6 +256,9 @@ export class OpenRouterAdapter implements ProviderAdapter {
       model: opts.model,
       messages: [{ role: "user", content: prompt }],
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      // A reasoning model's chain-of-thought counts against max_tokens and can
+      // truncate the JSON to empty; disable it for classification completions.
+      ...(opts.disableReasoning ? { reasoning: { enabled: false } } : {}),
       ...providerRoutingBody(opts.openrouterProvider),
     };
     const controller = new AbortController();

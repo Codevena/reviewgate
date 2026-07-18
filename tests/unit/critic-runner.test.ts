@@ -46,6 +46,18 @@ describe("runCritic", () => {
     expect(map.get("sig-fp")?.verdict).toBe("likely_fp");
   });
 
+  it("forces reasoning OFF on the completion (a reasoning model burns its max_tokens on chain-of-thought and truncates before the JSON -> empty verdicts)", async () => {
+    let seen: CompleteOptions | undefined;
+    const adapter: Pick<ProviderAdapter, "complete"> = {
+      complete: async (_prompt, opts) => {
+        seen = opts;
+        return JSON.stringify({ verdicts: [{ signature: "s", verdict: "keep" }] });
+      },
+    };
+    await runCritic(adapter, "openrouter", OPTS, [mkFinding({ signature: "s" })]);
+    expect(seen?.disableReasoning).toBe(true);
+  });
+
   it("is a VISIBLE no-op (misconfigured) when the adapter has no complete()", async () => {
     const adapter: Pick<ProviderAdapter, "complete"> = {};
     const { map, info } = await runCritic(adapter, "codex", OPTS, [mkFinding()]);
