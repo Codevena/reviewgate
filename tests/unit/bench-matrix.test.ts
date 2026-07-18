@@ -4,6 +4,7 @@
 // LLM critic needed): a low-confidence FP on the clean case is demoted at the
 // baseline floor and survives when the floor is ablated → a real Δ.
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,6 +137,17 @@ function newCorpus(): string {
   return dir;
 }
 
+function initGitRepo(dir: string): void {
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "bench-test@example.test"], {
+    cwd: dir,
+    stdio: "ignore",
+  });
+  execFileSync("git", ["config", "user.name", "Bench Test"], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: dir, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: dir, stdio: "ignore" });
+}
+
 describe("runBenchMatrix", () => {
   it("reports the confidence-floor ablation Δ (baseline demotes a low-conf FP; ablated keeps it)", async () => {
     const corpus = newCorpus();
@@ -256,6 +268,59 @@ describe("runBenchMatrix", () => {
     expect(matrix.artifacts?.baseline.path).toBe("baseline.result.json");
     expect(matrix.artifacts?.variants[0]?.path).toBe("no-critic.result.json");
     expect(matrix.artifacts?.reviewer_responses.path).toBe("reviewer-responses.sha256.json");
+  });
+
+  it("fails closed when a replay variant records a different source commit than the baseline", async () => {
+    const corpus = newCorpus();
+    initGitRepo(corpus);
+    const artifactDir = join(corpus, "provenance-mismatch");
+    let criticCalls = 0;
+    const critic: ProviderAdapter = {
+      id: "openrouter",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "openrouter", error: null };
+      },
+      async review() {
+        throw new Error("critic must use complete()");
+      },
+      async complete() {
+        criticCalls++;
+        if (criticCalls === 2) {
+          writeFileSync(join(corpus, "after-baseline.txt"), "new committed state\n");
+          execFileSync("git", ["add", "after-baseline.txt"], { cwd: corpus, stdio: "ignore" });
+          execFileSync("git", ["commit", "-m", "advance during matrix"], {
+            cwd: corpus,
+            stdio: "ignore",
+          });
+        }
+        return JSON.stringify({
+          verdicts: [
+            { signature: "sql-inj", verdict: "keep" },
+            { signature: "nit", verdict: "likely_fp" },
+          ],
+        });
+      },
+    };
+
+    const res = await runBenchMatrix({
+      repoRoot: corpus,
+      corpus,
+      out: join(artifactDir, "matrix.json"),
+      ablate: ["critic"],
+      criticProvider: "openrouter",
+      criticModel: "deepseek/deepseek-v4-flash",
+      maxOutputTokens: 128,
+      maxProviderCalls: 10,
+      adapters: { codex: stub(), openrouter: critic },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+
+    expect(res.exitCode).toBe(4);
+    expect(res.stderr).toContain("variant corpus commit differs from baseline");
+    expect(res.stderr).toContain("variant source commit differs from baseline");
+    expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "no-critic.result.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "matrix.json"))).toBe(false);
   });
 
   it("preserves method binding through budget, capture and replay wrappers", async () => {

@@ -1265,6 +1265,28 @@ function relativeArtifact(fromDir: string, path: string): string {
   return relative(fromDir, path).split("\\").join("/");
 }
 
+function matrixVariantProvenanceMismatch(baseline: BenchResult, variant: BenchResult): string[] {
+  const reasons: string[] = [];
+  const baseIntegrity = baseline.provenance.integrity;
+  const variantIntegrity = variant.provenance.integrity;
+  if (baseline.provenance.corpus_commit !== variant.provenance.corpus_commit) {
+    reasons.push("variant corpus commit differs from baseline");
+  }
+  if (baseIntegrity?.source_commit !== variantIntegrity?.source_commit) {
+    reasons.push("variant source commit differs from baseline");
+  }
+  if (baseIntegrity?.repository_dirty !== variantIntegrity?.repository_dirty) {
+    reasons.push("variant repository dirty state differs from baseline");
+  }
+  if (baseIntegrity?.runner_sha256 !== variantIntegrity?.runner_sha256) {
+    reasons.push("variant runner hash differs from baseline");
+  }
+  if (baseIntegrity?.preregistration_sha256 !== variantIntegrity?.preregistration_sha256) {
+    reasons.push("variant preregistration hash differs from baseline");
+  }
+  return reasons;
+}
+
 /**
  * Ablation matrix (spec §8): run the corpus once as a BASELINE (full suppression)
  * and once per `--ablate` layer with that ONE layer turned off, then report the
@@ -1515,6 +1537,20 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         };
       }
       const r = variantRun.result;
+      const provenanceMismatch = matrixVariantProvenanceMismatch(baseline, r);
+      if (provenanceMismatch.length > 0) {
+        mkdirSync(artifactDir, { recursive: true });
+        writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
+        writeFileSync(responseManifestPath, readFileSync(responseManifestTempPath));
+        if (existsSync(variantRun.tempPath)) {
+          writeFileSync(finalPath, readFileSync(variantRun.tempPath));
+        }
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — ${provenanceMismatch.join("; ")}\n`,
+        };
+      }
       const resultHash = sha256File(variantRun.tempPath);
       completedVariantArtifacts.push({ tempPath: variantRun.tempPath, finalPath });
       variantArtifactRefs.push({

@@ -1,0 +1,154 @@
+{
+  "schema": "reviewgate.bench.matrix.v1",
+  "provenance": {
+    "reviewgate_version": "0.1.0-alpha.12",
+    "corpus_commit": "f9ff7a96dcf259dbbca40fecfa9de2f35a68a4b1",
+    "corpus_dirty": false,
+    "providers": [
+      {
+        "id": "codex",
+        "cli_version": "codex-cli 0.144.6",
+        "model": "gpt-5.5",
+        "persona": "security"
+      },
+      {
+        "id": "claude-code",
+        "cli_version": "2.1.214 (Claude Code)",
+        "model": "claude-sonnet-4-6",
+        "persona": "security"
+      }
+    ],
+    "config_hash": "e154384c245dbad6fb4dfd7c7287eb1e36590a8602c7f2c4330b95c1fdc7b7b0",
+    "window": 5,
+    "repeat": 3,
+    "include_advisory": false,
+    "temperature": null,
+    "stores": "per-case-fresh",
+    "cache": "cold",
+    "file_context": "full",
+    "phases": {
+      "critic": true,
+      "reputation": true,
+      "fp_ledger": false,
+      "confidence_floor": 0.6,
+      "scope_to_diff": true,
+      "ablations": []
+    },
+    "host_os": "darwin-arm64",
+    "timestamp": "2026-07-18T22:04:20.955Z",
+    "case_count": {
+      "seeded": 14,
+      "clean": 16
+    },
+    "case_run_count": {
+      "seeded": 42,
+      "clean": 48,
+      "total": 90
+    },
+    "critic": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "openrouter_provider": {
+        "only": [
+          "alibaba"
+        ],
+        "allowFallbacks": false
+      },
+      "max_attempts": 2
+    },
+    "integrity": {
+      "source_commit": "f9ff7a96dcf259dbbca40fecfa9de2f35a68a4b1",
+      "repository_dirty": false,
+      "runner_sha256": "0ee7d1c006ccadfb62c97f12a6382b1a50144adb9b708eab4e422525f1020a90",
+      "runner_kind": "compiled",
+      "preregistration_sha256": "2d28c20d16ce1b98c45d5cd554e4194f2d8e3531c56ca33761a6cf6c83369a5e",
+      "authoritative_requested": true,
+      "max_provider_calls": 360,
+      "provider_calls_used": 264,
+      "max_output_tokens": 2048
+    }
+  },
+  "variants": [
+    {
+      "label": "baseline",
+      "ablation": "",
+      "class": "baseline",
+      "precision": {
+        "num": 35,
+        "den": 101,
+        "value": 0.3465346534653465,
+        "ci_lo": 0.2608952761313301,
+        "ci_hi": 0.44342016979337817
+      },
+      "recall": {
+        "num": 35,
+        "den": 42,
+        "value": 0.8333333333333334,
+        "ci_lo": 0.6939599725535115,
+        "ci_hi": 0.9168408335360192
+      },
+      "clean_fp_rate": {
+        "num": 32,
+        "den": 48,
+        "value": 0.6666666666666666,
+        "ci_lo": 0.5254010970594798,
+        "ci_hi": 0.7832321930518142
+      },
+      "delta": null,
+      "authoritative": true,
+      "result_ref": "baseline.result.json",
+      "result_sha256": "a942683bb6faaa0a519f863bd2f4eca60a9ad532040b9a421edda8a1ab4c5142"
+    },
+    {
+      "label": "-critic",
+      "ablation": "critic",
+      "class": "A",
+      "precision": {
+        "num": 35,
+        "den": 111,
+        "value": 0.3153153153153153,
+        "ci_lo": 0.23628881341881844,
+        "ci_hi": 0.40669726128774997
+      },
+      "recall": {
+        "num": 35,
+        "den": 42,
+        "value": 0.8333333333333334,
+        "ci_lo": 0.6939599725535115,
+        "ci_hi": 0.9168408335360192
+      },
+      "clean_fp_rate": {
+        "num": 38,
+        "den": 48,
+        "value": 0.7916666666666666,
+        "ci_lo": 0.6574109872738206,
+        "ci_hi": 0.882697270420944
+      },
+      "delta": {
+        "precision": 0.031219338150031195,
+        "recall": 0,
+        "clean_fp_rate": -0.125
+      },
+      "authoritative": true,
+      "result_ref": "no-critic.result.json",
+      "result_sha256": "477768f94d44a164cb0ad23231eb96b59be66f9062464007416e7f2a779b2232"
+    }
+  ],
+  "authoritative": true,
+  "artifacts": {
+    "baseline": {
+      "path": "baseline.result.json",
+      "sha256": "a942683bb6faaa0a519f863bd2f4eca60a9ad532040b9a421edda8a1ab4c5142"
+    },
+    "variants": [
+      {
+        "path": "no-critic.result.json",
+        "sha256": "477768f94d44a164cb0ad23231eb96b59be66f9062464007416e7f2a779b2232"
+      }
+    ],
+    "reviewer_responses": {
+      "path": "reviewer-responses.sha256.json",
+      "sha256": "7d810672bec4f75fb5f7f473c0c4ba41e140db0f45981bf0ca8b8113b6877b6d"
+    }
+  }
+}
