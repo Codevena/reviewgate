@@ -123,6 +123,23 @@ export function singleReviewerCheck(cfg: ReviewgateConfig): Check | null {
   };
 }
 
+// loop.acknowledgePass turns every clean PASS into a one-time block so the agent
+// is TOLD the review passed. It is NOT agent-loop-safe: paired with a pending
+// policy candidate (a house-rule change awaiting TTY-only `config approve`) or an
+// actively-editing agent it re-blocks every turn, and an agent cannot clear the
+// nag itself. notify.desktop is the loop-safe way to surface a pass. Advisory
+// (warn), never a hard fail. Returns null when off (the default). (FlashBuddy field bug.)
+export function acknowledgePassCheck(cfg: ReviewgateConfig): Check | null {
+  if (!cfg.loop.acknowledgePass) return null;
+  return {
+    name: "loop.acknowledgePass",
+    status: "warn",
+    detail:
+      "acknowledgePass blocks every clean PASS for the agent to acknowledge — not agent-loop-safe. With a pending policy candidate (e.g. a house-rule change awaiting `reviewgate config approve`) or an actively-editing agent it re-nags every turn, and a TTY-only approval an agent can't run means the loop never clears itself.",
+    hint: "Prefer loop.acknowledgePass:false + notify.desktop:true (the loop-safe pass notification).",
+  };
+}
+
 // Lore (per-repo curated project knowledge, draft->canon). Optional/advisory —
 // never a hard `fail`, only `ok`/`warn`, mirroring curatorCheck's posture. Returns
 // null when `phases.lore` is null (off, the default), matching curatorCheck's
@@ -768,6 +785,8 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     checks.push(reviewersEnabledCheck(cfg));
     const solo = singleReviewerCheck(cfg);
     if (solo) checks.push(solo);
+    const ack = acknowledgePassCheck(cfg);
+    if (ack) checks.push(ack);
     // gemini → agy is OAuth-only; an apikey auth on the gemini provider is inert.
     const gem = cfg.providers.gemini;
     if (gem?.enabled && gem.auth === "apikey") {

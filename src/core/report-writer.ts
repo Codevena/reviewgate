@@ -389,6 +389,8 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
       "};",
       "```",
       "",
+      "> ℹ Editing `reviewgate.config.ts` is a gate-policy change: it needs a one-time `reviewgate config approve` in a **real terminal** afterwards (a house-rule addition is non-monotonic — an agent cannot approve it). Until you approve, the gate keeps reviewing your code under the last-known-good policy; it will not silently adopt the new rule.",
+      "",
     ];
   });
   // Lore v1 (2026-07-09): invalid/broad/zero-match entries + the render-budget
