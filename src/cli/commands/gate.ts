@@ -931,9 +931,31 @@ async function runStopGate(
   const decision = await driver.run();
 
   if (decision.kind === "block") {
-    const policyNotice = policy?.change
-      ? `\n\n🔐 Gate policy candidate remains pending. Code is still being reviewed under approved policy ${policy.approvedEffectiveFingerprint.slice(0, 12)}; details: ${policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "")}.`
-      : "";
+    let policyNotice = "";
+    if (policy?.change) {
+      if (decision.policyReviewPassed === true && policy.change.classification !== "invalid") {
+        // A clean PASS/SOFT-PASS under LKG that acknowledgePass/forceSoftAck rendered
+        // as a block must STILL finalize the control-plane review — mirroring the
+        // allow_stop path below — or a pending candidate never reaches
+        // reviewed_under_lkg and `reviewgate config approve` deadlocks (FlashBuddy bug).
+        const finalized = await finalizeControlPlaneReview(input.repoRoot, policy, {
+          env: process.env as Record<string, string | undefined>,
+          home: homedir(),
+        });
+        if (finalized.kind === "auto-approved") {
+          policyNotice = `\n\n🔐 Gate policy ${finalized.classification === "strengthening" ? "strengthening" : "source-equivalent change"} adopted after this pass under the prior approved policy.`;
+        } else if (
+          finalized.kind === "approval-required" ||
+          finalized.kind === "invalid" ||
+          finalized.kind === "changed-during-review"
+        ) {
+          policyNotice = `\n\n${finalized.message}`;
+        }
+        // "unchanged" (candidate reverted to LKG mid-batch) → no notice needed.
+      } else {
+        policyNotice = `\n\n🔐 Gate policy candidate remains pending. Code is still being reviewed under approved policy ${policy.approvedEffectiveFingerprint.slice(0, 12)}; details: ${policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "")}.`;
+      }
+    }
     const reason = `${decision.reason}${policyNotice}`;
     if (cfg.notify.desktop) notifyDesktop("Reviewgate", reason);
     return {

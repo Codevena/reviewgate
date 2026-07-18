@@ -145,7 +145,12 @@ export interface LoopInput {
 
 export type LoopDecision =
   | { kind: "allow_stop"; reason: string; policyReviewPassed?: true }
-  | { kind: "block"; reason: string };
+  // `policyReviewPassed` on a block: acknowledgePass/forceSoftAck render a clean
+  // PASS/SOFT-PASS as a block (the agent acknowledges by ending again). That is
+  // still a successful review under the last-known-good policy, so the gate must
+  // advance the control-plane checkpoint — else a pending policy candidate can
+  // never reach reviewed_under_lkg and `reviewgate config approve` deadlocks.
+  | { kind: "block"; reason: string; policyReviewPassed?: true };
 
 interface DirtyFlag {
   diff_hash: string;
@@ -2181,6 +2186,10 @@ export class LoopDriver {
         this.i.config.loop.acknowledgePass || forceSoftAck
           ? {
               kind: "block",
+              // A PASS/SOFT-PASS rendered as an acknowledge-block is still a clean
+              // review under the LKG policy — carry the checkpoint so the gate
+              // finalizes a pending policy candidate (see LoopDecision).
+              policyReviewPassed: true,
               reason: forceSoftAck
                 ? `🟡 Reviewgate · GATE OPEN — ⚠️ SOFT-PASS (iteration ${nextIter}): ${formatPanelSummary(result.summary)}${coverageSuffix}. These are non-blocking warnings — review them in .reviewgate/pending.md, then end your turn again to accept and pass through.`
                 : coverage
