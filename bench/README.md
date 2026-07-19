@@ -92,8 +92,9 @@ reviewgate bench matrix --corpus bench/cases --providers codex,claude-code \
   --critic-model deepseek/deepseek-v4-flash \
   --critic-openrouter-provider alibaba --repeat 3 \
   --min-clean 16 --min-seeded 14 --max-failed-frac 0 \
-  --max-provider-calls 270 --max-output-tokens 2048 \
-  --authoritative --preregistration bench/preregistrations/alpha12-v2.json \
+  --critic-max-attempts 2 --reviewer-max-attempts 2 \
+  --max-provider-calls 450 --max-output-tokens 2048 \
+  --authoritative --preregistration bench/preregistrations/alpha12-v2-attempt-07.json \
   --out bench/results/alpha12-v2/<attempt>/matrix.json
 ```
 
@@ -105,6 +106,11 @@ matrix-only: `bench matrix --authoritative` additionally requires a semantically
 matching committed preregistration, a clean real commit, a hashed compiled runner,
 hard call/output bounds, 100% reviewer coverage and 100% eligible-critic coverage.
 `bench run` cannot mint an authoritative result on its own.
+
+Benchmark retry limits are explicit protocol inputs. `--critic-max-attempts`
+retries empty/unparseable critic completions. `--reviewer-max-attempts` retries a
+configured reviewer only after a non-OK raw review status. Every physical retry
+consumes the shared `--max-provider-calls` ceiling and is stamped into provenance.
 
 ## What bench measures (and what it doesn't)
 

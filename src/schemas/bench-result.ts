@@ -100,6 +100,9 @@ const IntegrityProvenanceSchema = z
     max_provider_calls: z.number().int().positive().nullable(),
     provider_calls_used: z.number().int().nonnegative(),
     max_output_tokens: z.number().int().positive().nullable(),
+    // Optional for backwards compatibility with older Alpha.12 artifacts; absent
+    // means the historical single physical reviewer invocation per case.
+    reviewer_max_attempts: z.number().int().positive().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {

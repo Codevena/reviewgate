@@ -16,6 +16,7 @@ const ATTEMPT_03_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attem
 const ATTEMPT_04_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-04.json";
 const ATTEMPT_05_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-05.json";
 const ATTEMPT_06_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-06.json";
+const ATTEMPT_07_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-07.json";
 
 function matrixInput(): BenchMatrixInput {
   return {
@@ -116,6 +117,20 @@ function attempt06Preregistration(): unknown {
   return JSON.parse(readFileSync(join(REPO, ATTEMPT_06_PREREGISTRATION_PATH), "utf8"));
 }
 
+function attempt07Input(): BenchMatrixInput {
+  return {
+    ...attempt06Input(),
+    out: "bench/results/alpha12-v2/attempt-07/matrix.json",
+    reviewerMaxAttempts: 2,
+    maxProviderCalls: 450,
+    preregistration: ATTEMPT_07_PREREGISTRATION_PATH,
+  };
+}
+
+function attempt07Preregistration(): unknown {
+  return JSON.parse(readFileSync(join(REPO, ATTEMPT_07_PREREGISTRATION_PATH), "utf8"));
+}
+
 describe("Alpha.12 benchmark preregistration", () => {
   it("parses and exactly matches the frozen authoritative matrix protocol", () => {
     const input = matrixInput();
@@ -179,6 +194,15 @@ describe("Alpha.12 benchmark preregistration", () => {
     );
   });
 
+  it("matches Attempt 07's explicit reviewer retry protocol after the Claude coverage miss", () => {
+    const input = attempt07Input();
+    const frozen = BenchPreregistrationSchema.parse(attempt07Preregistration());
+
+    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
+      [],
+    );
+  });
+
   it("rejects critic-attempt drift before the provider boundary", () => {
     const input = attempt02Input();
     const frozen = BenchPreregistrationSchema.parse(attempt02Preregistration());
@@ -191,6 +215,20 @@ describe("Alpha.12 benchmark preregistration", () => {
 
     expect(reasons).toContain("command differs from preregistration");
     expect(reasons).toContain("critic-attempt limit differs");
+  });
+
+  it("rejects reviewer-attempt drift before the provider boundary", () => {
+    const input = attempt06Input();
+    const frozen = BenchPreregistrationSchema.parse(attempt06Preregistration());
+    const reasons = validateMatrixPreregistration(
+      { ...input, reviewerMaxAttempts: 2 },
+      benchConfig(input),
+      frozen,
+      input.corpus,
+    );
+
+    expect(reasons).toContain("command differs from preregistration");
+    expect(reasons).toContain("reviewer-attempt limit differs");
   });
 
   it("rejects result-affecting command, corpus, roster, and budget drift", () => {

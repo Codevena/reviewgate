@@ -90,6 +90,8 @@ export interface BenchRunInput {
   criticOpenrouterProvider?: OpenRouterProviderRouting;
   /** Benchmark-only physical critic completion limit; runtime default remains 1. */
   criticMaxAttempts?: number;
+  /** Benchmark-only physical reviewer invocation limit per configured reviewer/case. */
+  reviewerMaxAttempts?: number;
   /** Hard provider-call and OpenRouter output bounds (required for authoritative runs). */
   maxProviderCalls?: number;
   maxOutputTokens?: number;
@@ -239,8 +241,13 @@ function budgetAdapters(
   countReviewCalls: boolean,
   countCompletionCalls: boolean,
   maxOutputTokens: number | undefined,
+  reviewerMaxAttempts: number | undefined,
 ): Partial<Record<ProviderId, ProviderAdapter>> {
   const wrapped: Partial<Record<ProviderId, ProviderAdapter>> = {};
+  const maxReviewAttempts =
+    reviewerMaxAttempts !== undefined && Number.isFinite(reviewerMaxAttempts)
+      ? Math.max(1, Math.floor(reviewerMaxAttempts))
+      : 1;
   for (const [rawId, adapter] of Object.entries(adapters) as Array<
     [ProviderId, ProviderAdapter | undefined]
   >) {
@@ -250,13 +257,21 @@ function budgetAdapters(
       id: adapter.id,
       preflight: (cfg: ProviderConfig) => adapter.preflight(cfg),
       review: async (input: Parameters<ProviderAdapter["review"]>[0]) => {
-        if (countReviewCalls) consumeProviderCall(budget, rawId);
-        return adapter.review({
-          ...input,
-          // One recorded benchmark call must equal one physical provider call.
-          disableRetries: true,
-          cfg: rawId === "openrouter" ? capOpenRouterConfig(input.cfg, maxOutputTokens) : input.cfg,
-        });
+        let last: ReviewResult | null = null;
+        for (let attempt = 1; attempt <= maxReviewAttempts; attempt++) {
+          if (countReviewCalls) consumeProviderCall(budget, rawId);
+          const result = await adapter.review({
+            ...input,
+            // One recorded benchmark attempt must equal one physical provider call.
+            disableRetries: true,
+            cfg:
+              rawId === "openrouter" ? capOpenRouterConfig(input.cfg, maxOutputTokens) : input.cfg,
+          });
+          if (result.status === "ok") return result;
+          last = result;
+        }
+        if (last) return last;
+        throw new Error("benchmark reviewer attempt loop produced no result");
       },
       ...(complete
         ? {
@@ -544,6 +559,12 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
   ) {
     return usage("--critic-max-attempts must be a positive integer");
   }
+  if (
+    input.reviewerMaxAttempts !== undefined &&
+    (!Number.isInteger(input.reviewerMaxAttempts) || input.reviewerMaxAttempts <= 0)
+  ) {
+    return usage("--reviewer-max-attempts must be a positive integer");
+  }
   const window = input.window ?? 5;
   const includeAdvisory = input.includeAdvisory ?? false;
   const maxFailedFrac = input.maxFailedFrac ?? 0.1;
@@ -611,6 +632,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
     input.countProviderCalls !== false,
     input.countCompletionCalls ?? input.countProviderCalls !== false,
     input.maxOutputTokens,
+    input.reviewerMaxAttempts,
   );
 
   // --- run every case, `repeat` times (repeats OUTER so per-repeat metrics group) ---
@@ -826,6 +848,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
         max_provider_calls: budget.max,
         provider_calls_used: budget.used - budgetStart,
         max_output_tokens: input.maxOutputTokens ?? null,
+        reviewer_max_attempts: input.reviewerMaxAttempts ?? 1,
       },
     },
     cases: caseResults,
@@ -960,6 +983,7 @@ export interface BenchMatrixInput {
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
   criticMaxAttempts?: number;
+  reviewerMaxAttempts?: number;
   maxProviderCalls?: number;
   maxOutputTokens?: number;
   authoritative?: boolean;
@@ -1004,6 +1028,9 @@ function canonicalMatrixCommand(input: BenchMatrixInput): string[] {
   ];
   if (input.criticMaxAttempts !== undefined) {
     command.push("--critic-max-attempts", String(input.criticMaxAttempts));
+  }
+  if (input.reviewerMaxAttempts !== undefined) {
+    command.push("--reviewer-max-attempts", String(input.reviewerMaxAttempts));
   }
   command.push(
     "--max-provider-calls",
@@ -1110,6 +1137,11 @@ export function validateMatrixPreregistration(
     (input.criticMaxAttempts ?? 1)
   ) {
     reasons.push("critic-attempt limit differs");
+  }
+  if (
+    (prereg.hard_gates.maximum_reviewer_attempts_per_case ?? 1) !== (input.reviewerMaxAttempts ?? 1)
+  ) {
+    reasons.push("reviewer-attempt limit differs");
   }
   if (prereg.hard_gates.maximum_openrouter_output_tokens_per_call !== input.maxOutputTokens) {
     reasons.push("output-token ceiling differs");
@@ -1442,6 +1474,9 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
           : {}),
         ...(input.criticMaxAttempts !== undefined
           ? { criticMaxAttempts: input.criticMaxAttempts }
+          : {}),
+        ...(input.reviewerMaxAttempts !== undefined
+          ? { reviewerMaxAttempts: input.reviewerMaxAttempts }
           : {}),
         ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
         ...(input.maxProviderCalls !== undefined

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runBenchMatrix } from "../../src/cli/commands/bench.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
-import { BenchMatrixSchema } from "../../src/schemas/bench-result.ts";
+import { BenchMatrixSchema, BenchResultSchema } from "../../src/schemas/bench-result.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 const DB_DIFF = [
@@ -268,6 +268,63 @@ describe("runBenchMatrix", () => {
     expect(matrix.artifacts?.baseline.path).toBe("baseline.result.json");
     expect(matrix.artifacts?.variants[0]?.path).toBe("no-critic.result.json");
     expect(matrix.artifacts?.reviewer_responses.path).toBe("reviewer-responses.sha256.json");
+  });
+
+  it("replays reviewer retry attempts in the same order as the captured baseline", async () => {
+    const corpus = newCorpus();
+    const artifactDir = join(corpus, "attempt-retry");
+    const out = join(artifactDir, "matrix.json");
+    let reviewCalls = 0;
+    const reviewer = stub();
+    const flaky: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        reviewCalls++;
+        if (reviewCalls === 1) {
+          return {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: 1,
+            exitCode: 1,
+            rawEventsPath: "",
+            rawText: "",
+            status: "error",
+            statusDetail: "transient malformed output",
+          } satisfies ReviewResult;
+        }
+        return reviewer.review(input);
+      },
+    };
+
+    const res = await runBenchMatrix({
+      repoRoot: corpus,
+      corpus,
+      out,
+      ablate: ["confidence-floor"],
+      adapters: { codex: flaky },
+      maxProviderCalls: 3,
+      reviewerMaxAttempts: 2,
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(reviewCalls).toBe(3);
+    const baseline = BenchResultSchema.parse(
+      JSON.parse(readFileSync(join(artifactDir, "baseline.result.json"), "utf8")),
+    );
+    const variant = BenchResultSchema.parse(
+      JSON.parse(readFileSync(join(artifactDir, "no-confidence-floor.result.json"), "utf8")),
+    );
+    expect(baseline.providers[0]?.coverage.value).toBe(1);
+    expect(variant.providers[0]?.coverage.value).toBe(1);
+    expect(baseline.provenance.integrity?.provider_calls_used).toBe(3);
+    expect(baseline.provenance.integrity?.reviewer_max_attempts).toBe(2);
+    const manifest = JSON.parse(
+      readFileSync(join(artifactDir, "reviewer-responses.sha256.json"), "utf8"),
+    ) as { entries: unknown[] };
+    expect(manifest.entries).toHaveLength(3);
   });
 
   it("fails closed when a replay variant records a different source commit than the baseline", async () => {

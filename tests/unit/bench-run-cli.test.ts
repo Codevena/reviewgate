@@ -330,6 +330,53 @@ describe("runBenchRun", () => {
     expect(flags).toEqual([true, true]);
   });
 
+  it("can retry non-ok reviewer outputs under an explicit benchmark retry budget", async () => {
+    const corpus = newCorpus();
+    writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
+    writeCase(corpus, "clean-add-001", cleanJson, UTIL_DIFF);
+    const reviewer = smartCodexStub();
+    let calls = 0;
+    const flaky: ProviderAdapter = {
+      ...reviewer,
+      async review(input) {
+        calls++;
+        if (calls === 1) {
+          return {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: 1,
+            exitCode: 1,
+            rawEventsPath: "",
+            rawText: "",
+            status: "error",
+            statusDetail: "transient malformed output",
+          } satisfies ReviewResult;
+        }
+        return reviewer.review(input);
+      },
+    };
+    const out = join(corpus, "reviewer-retry", "results.json");
+
+    const res = await runBenchRun({
+      repoRoot: corpus,
+      corpus,
+      out,
+      providers: ["codex"],
+      adapters: { codex: flaky },
+      maxProviderCalls: 3,
+      reviewerMaxAttempts: 2,
+    });
+
+    expect(res.exitCode).toBe(0);
+    expect(calls).toBe(3);
+    const result = BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(result.providers[0]?.coverage.value).toBe(1);
+    expect(result.provenance.integrity?.provider_calls_used).toBe(3);
+    expect(result.provenance.integrity?.reviewer_max_attempts).toBe(2);
+  }, 15_000);
+
   it("preserves a stateful critic receiver through the direct run budget wrapper", async () => {
     const corpus = newCorpus();
     writeCase(corpus, "sql-injection-001", seededJson, DB_DIFF);
