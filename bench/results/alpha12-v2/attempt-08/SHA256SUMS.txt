@@ -1,0 +1,3 @@
+717635909259b408168800e4f03fb14bd66a36a1ef178069e98a9af83e65e334  baseline.result.json
+f076535dedead3ebabf4657d0deed05d5feb5b75166e9c5385b7722e74ae5b0b  ../../../preregistrations/alpha12-v2-attempt-08.json
+2161978c72783fa908da2d0cdb176c161bc191d0b24aea24b00db734d089a813  ../../../../dist/reviewgate

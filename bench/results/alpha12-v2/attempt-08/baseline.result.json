@@ -1,0 +1,2473 @@
+{
+  "schema": "reviewgate.bench.result.v1",
+  "provenance": {
+    "reviewgate_version": "0.1.0-alpha.12",
+    "corpus_commit": "b368df0f6eec11acac58164dcfeeeb89c20b77f0",
+    "corpus_dirty": false,
+    "providers": [
+      {
+        "id": "codex",
+        "cli_version": "codex-cli 0.145.0",
+        "model": "gpt-5.5",
+        "persona": "security"
+      },
+      {
+        "id": "claude-code",
+        "cli_version": "2.1.217 (Claude Code)",
+        "model": "claude-sonnet-4-6",
+        "persona": "security"
+      }
+    ],
+    "config_hash": "e154384c245dbad6fb4dfd7c7287eb1e36590a8602c7f2c4330b95c1fdc7b7b0",
+    "window": 5,
+    "repeat": 3,
+    "include_advisory": false,
+    "temperature": null,
+    "stores": "per-case-fresh",
+    "cache": "cold",
+    "file_context": "full",
+    "phases": {
+      "critic": true,
+      "reputation": true,
+      "fp_ledger": false,
+      "confidence_floor": 0.6,
+      "scope_to_diff": true,
+      "ablations": []
+    },
+    "host_os": "darwin-arm64",
+    "timestamp": "2026-07-22T08:19:48.864Z",
+    "case_count": {
+      "seeded": 14,
+      "clean": 16
+    },
+    "case_run_count": {
+      "seeded": 42,
+      "clean": 48,
+      "total": 90
+    },
+    "critic": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "openrouter_provider": {
+        "only": [
+          "alibaba"
+        ],
+        "allowFallbacks": false
+      },
+      "max_attempts": 2
+    },
+    "integrity": {
+      "source_commit": "b368df0f6eec11acac58164dcfeeeb89c20b77f0",
+      "repository_dirty": false,
+      "runner_sha256": "2161978c72783fa908da2d0cdb176c161bc191d0b24aea24b00db734d089a813",
+      "runner_kind": "compiled",
+      "preregistration_sha256": "f076535dedead3ebabf4657d0deed05d5feb5b75166e9c5385b7722e74ae5b0b",
+      "authoritative_requested": true,
+      "max_provider_calls": 450,
+      "provider_calls_used": 301,
+      "max_output_tokens": 2048,
+      "reviewer_max_attempts": 2
+    }
+  },
+  "cases": [
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 34516,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 19177,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 12103,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 12900,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 17885,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 20101,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 29648,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 19041,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 25722,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 15405,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 12672,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 27740,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 15677,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 23220,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 20279,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 30863,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 27927,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 30960,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 20952,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 35636,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 44994,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 28688,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 38484,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 51653,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 25235,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 19068,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 22025,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 18539,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 27157,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 15435,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 24676,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 33445,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 15655,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 15864,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 11221,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 10216,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 14043,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 16286,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 36845,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 11043,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 10807,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 10758,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 13480,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 24292,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 19165,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 21874,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 15104,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 17582,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 10877,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 18222,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 26582,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 13992,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 40829,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 28069,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 22365,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 101591,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 8,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 106538,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 46949,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 36976,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 2,
+      "latency_ms": 22862,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "archive-entry-contained-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "ba85c0bb332c87246d9b489c8db3fe3906d395b2f732a6dfcc4ad65b0066ac5b",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 173909,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "archive-entry-escape-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "92ab759c1a67a81ba87f164cd90ae191c461a97b38efdaeb6ec1a6d69711b6b7",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 37084,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-average-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "c41b9fb54202d31c40b9aab73980a88b9661c74bcf582aaf8fba990459a26356",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 30278,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-capitalize-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "3a2a5bdc9ad24fc99a783e3c58d31377fec4e370b7fea7d1e9c27f8400c908e0",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 49299,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 1,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 38903,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-dataclass-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e1d7fff69cb76f15b3b7f6d6c91010010b7f792680f88287d8bdcefb50c44369",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 36388,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-debounce-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "76bccdc849efba1420bb9d91ef02a714d33b67756f5e1de328657a3684baeebc",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 72238,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-namedtuple-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "9f964b373a201e626a0bdcd701610d574a631ad92bb71557cda2ff7aeb94a54f",
+      "counts": {
+        "tp": 0,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 36785,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-pick-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "69837bf174ec627596f0bc16b6c555574a770b685dc83e3cd7a0da582c6cc7d1",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 67283,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-slugify-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d6c857e5dd1db8093c5176aa257c63f93078bbb1d2dc9678578a4679478f32c4",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 53631,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "clean-sum-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e0636b2c4aaf2941b2846e9a9160f75a05ed82334a7229b188e0648242fcbef6",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 16692,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": false,
+        "status": "not-eligible",
+        "verdicts": 0,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "clean-titlecase-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "56e37cada968f8b19a510aee3f015357161c02d5997e45160ef58303ce6de154",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 59341,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "command-injection-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "9f25ed784846185cbfddb555d6a030118c3cb65a856691aa0db4e73fa0799ccc",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 30365,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 7,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "hardcoded-secret-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "acad5bf39577e117eae1a3b2dacb631dd7b50b3135f42f47ffd91077df1c4689",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 77299,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 5,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "inventory-reservation-check-then-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "c0417c7d26fabb5d17b7612673c690e0308eecfccd336519dbadd6f7a0fe7a11",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 43080,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "inventory-reservation-serialized-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "e4ad82bdd5c176f2b597e315a0d27dde5b1b1e5992b8f796156b09050dd15565",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 76410,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "missing-await-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "a048dbe55ba3d9a3076d2c49696a641383f6c5fc7354014fe1762acfc4724712",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 20314,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "path-traversal-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "8b0cf0c0122bd31fab4d10b180ec39267a073fee719524ceca279cf855f88838",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 39140,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "profile-update-atomic-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "a4b550abec0029f3075158136178cae1ade5bd841f26682b7ba3a71745249c09",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 51228,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 2
+      }
+    },
+    {
+      "id": "profile-update-partial-write-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "30ccb09fb57a94aa304381ecbddb448638c62e708d111a80e6bc4bbbcd5d1872",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 58233,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "session-payload-json-validated-py",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "d133394ee659b8505e3cc8a985937b59279eb14bd210959655f1bb283096f95f",
+      "counts": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 145574,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 5,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "session-payload-pickle-execution-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "b7565e220953e5f813bc091cdd40cb5fa8fad9029f070d86702e8f77c3f0dc03",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 57227,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 6,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "signed-return-target-open-redirect-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "f151c28313484c5a97bf796273c1ab75dc89a9d027d40dbd9425ed7b09ea1451",
+      "counts": {
+        "tp": 1,
+        "fp": 2,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 108201,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 4,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "signed-return-target-same-origin-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "62c79b2314d555927694dd83f522a9ad98fb787642c51a183fb67eeb281ad404",
+      "counts": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 192985,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 5,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 21767,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 5,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "ssrf-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "27928cb0ca74de5b3aea206fa07e0236b07b557d5376124c2b8893a2f146d8e1",
+      "counts": {
+        "tp": 1,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 50152,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 7,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-enforced-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "96376c0dc551b9afd1b158e1e8b0273f1af44a0d2180536910ee7fa042761ed9",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 61172,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "tenant-order-scope-omitted-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2480164335261ee71d66acc28de9cd83ea1288e470f81daeb62005e04af9a17f",
+      "counts": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 1,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 33778,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 2,
+        "demoted": 0
+      }
+    },
+    {
+      "id": "weak-hash-py",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "657d089820f7931445a9a9a2907b31a41b372dac62a3ffe322bc8d5a2f368e32",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 28834,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 5,
+        "demoted": 1
+      }
+    },
+    {
+      "id": "xss-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "d392612f7bc02332fdbb41d8417fcc2f06862384542f78821ee609041bf201e0",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 2,
+      "panel_configured": 2,
+      "file_context": "full",
+      "repeat": 3,
+      "latency_ms": 31044,
+      "error": null,
+      "critic": {
+        "provider": "openrouter",
+        "eligible": true,
+        "status": "ran",
+        "verdicts": 3,
+        "demoted": 0
+      }
+    }
+  ],
+  "providers": [
+    {
+      "provider": "claude-code",
+      "coverage": {
+        "num": 35,
+        "den": 90,
+        "value": 0.3888888888888889,
+        "ci_lo": 0.2946991721093655,
+        "ci_hi": 0.49217541134937376
+      },
+      "precision": {
+        "num": 14,
+        "den": 82,
+        "value": 0.17073170731707318,
+        "ci_lo": 0.10451594667058835,
+        "ci_hi": 0.26641739088142896
+      },
+      "recall": {
+        "num": 14,
+        "den": 18,
+        "value": 0.7777777777777778,
+        "ci_lo": 0.5478541568378739,
+        "ci_hi": 0.9099907189139831
+      },
+      "authoritative": false
+    },
+    {
+      "provider": "codex",
+      "coverage": {
+        "num": 90,
+        "den": 90,
+        "value": 1,
+        "ci_lo": 0.9590643744356734,
+        "ci_hi": 1
+      },
+      "precision": {
+        "num": 29,
+        "den": 56,
+        "value": 0.5178571428571429,
+        "ci_lo": 0.39010383924176983,
+        "ci_hi": 0.6433178058754173
+      },
+      "recall": {
+        "num": 29,
+        "den": 42,
+        "value": 0.6904761904761905,
+        "ci_lo": 0.5397400606391092,
+        "ci_hi": 0.8092889714120513
+      },
+      "authoritative": true
+    }
+  ],
+  "cost": [
+    {
+      "provider": "codex",
+      "calls": 90,
+      "cache_hits": 0,
+      "tokens_in": null,
+      "tokens_out": null,
+      "billed_usd": null,
+      "oauth_quota_calls": 90
+    },
+    {
+      "provider": "claude-code",
+      "calls": 145,
+      "cache_hits": 0,
+      "tokens_in": null,
+      "tokens_out": null,
+      "billed_usd": null,
+      "oauth_quota_calls": 145
+    },
+    {
+      "provider": "openrouter",
+      "calls": 66,
+      "cache_hits": 0,
+      "tokens_in": null,
+      "tokens_out": null,
+      "billed_usd": null,
+      "oauth_quota_calls": 0
+    }
+  ],
+  "critic": {
+    "provider": "openrouter",
+    "eligible": 66,
+    "ran": 66,
+    "coverage": {
+      "num": 66,
+      "den": 66,
+      "value": 1,
+      "ci_lo": 0.9449974429864586,
+      "ci_hi": 1
+    },
+    "authoritative": true
+  },
+  "aggregate": {
+    "precision": {
+      "num": 31,
+      "den": 78,
+      "value": 0.3974358974358974,
+      "ci_lo": 0.29611864644382385,
+      "ci_hi": 0.5083814170868827
+    },
+    "recall": {
+      "num": 31,
+      "den": 42,
+      "value": 0.7380952380952381,
+      "ci_lo": 0.5893126929422804,
+      "ci_hi": 0.8469735971216702
+    },
+    "clean_fp_rate": {
+      "num": 23,
+      "den": 48,
+      "value": 0.4791666666666667,
+      "ci_lo": 0.34471316176951616,
+      "ci_hi": 0.616707676966572
+    }
+  },
+  "stability": {
+    "repeats": 3,
+    "precision": {
+      "mean": 0.4306064306064306,
+      "stddev": 0.1011999780477292,
+      "min": 0.3076923076923077,
+      "max": 0.5555555555555556,
+      "samples": 3
+    },
+    "recall": {
+      "mean": 0.7380952380952381,
+      "stddev": 0.08908708063747475,
+      "min": 0.6428571428571429,
+      "max": 0.8571428571428571,
+      "samples": 3
+    },
+    "clean_fp_rate": {
+      "mean": 0.4791666666666667,
+      "stddev": 0.28105703256733416,
+      "min": 0.25,
+      "max": 0.875,
+      "samples": 3
+    }
+  },
+  "verdict": {
+    "authoritative": false,
+    "gate_exit_code": 4,
+    "reasons": [
+      "aggregate panel coverage 69% < 80%",
+      "reviewer claude-code coverage 35/90 (100% required)"
+    ]
+  }
+}
