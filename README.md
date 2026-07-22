@@ -180,12 +180,14 @@ so it can't merge unreviewed work "while you sleep":
 In a full "write loops, not code" setup, Reviewgate is the `/goal`-style
 verifier that runs at the end of each turn.
 
-**And there is inspectable evidence—not just a product claim.** In one published
-single-pass smoke on an 18-case labelled corpus, the panel caught 8/8 seeded bugs,
-while the demote-only critic reduced clean-case false positives from 9/10 to 4/10
-at zero recall loss in that run. This is small-N, hand-authored and not a stable
-leaderboard. Numbers, Wilson intervals, limitations and a copy-paste reproduction
-path: **[`bench/`](bench/README.md)**. Real gate-run provenance and dogfood cases:
+**And there is inspectable evidence—not just a product claim.** The current
+Alpha.12 benchmark v2 publishes raw artifacts for a preregistered 30-case corpus
+run three times with Codex + Claude Code and an OpenRouter/DeepSeek critic. Both
+reviewers reached 90/90 coverage; the critic reached 86/86 eligible coverage. In
+that run, the critic improved aggregate precision from 0.3091 to 0.3505 and
+reduced clean-case false positives from 0.8958 to 0.7292 at unchanged recall
+(0.8095). The corpus is still hand-authored and the clean-FP rate is still high;
+this is alpha evidence, not a leaderboard. Raw artifacts and caveats:
 **[`docs/evidence.md`](docs/evidence.md)**.
 
 ---

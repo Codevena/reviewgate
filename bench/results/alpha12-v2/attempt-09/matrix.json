@@ -1,0 +1,155 @@
+{
+  "schema": "reviewgate.bench.matrix.v1",
+  "provenance": {
+    "reviewgate_version": "0.1.0-alpha.12",
+    "corpus_commit": "50f01fcf088c2419ebac1a9a3e283debc5840a35",
+    "corpus_dirty": false,
+    "providers": [
+      {
+        "id": "codex",
+        "cli_version": "codex-cli 0.145.0",
+        "model": "gpt-5.5",
+        "persona": "security"
+      },
+      {
+        "id": "claude-code",
+        "cli_version": "2.1.217 (Claude Code)",
+        "model": "claude-sonnet-4-6",
+        "persona": "security"
+      }
+    ],
+    "config_hash": "e154384c245dbad6fb4dfd7c7287eb1e36590a8602c7f2c4330b95c1fdc7b7b0",
+    "window": 5,
+    "repeat": 3,
+    "include_advisory": false,
+    "temperature": null,
+    "stores": "per-case-fresh",
+    "cache": "cold",
+    "file_context": "full",
+    "phases": {
+      "critic": true,
+      "reputation": true,
+      "fp_ledger": false,
+      "confidence_floor": 0.6,
+      "scope_to_diff": true,
+      "ablations": []
+    },
+    "host_os": "darwin-arm64",
+    "timestamp": "2026-07-22T10:06:58.101Z",
+    "case_count": {
+      "seeded": 14,
+      "clean": 16
+    },
+    "case_run_count": {
+      "seeded": 42,
+      "clean": 48,
+      "total": 90
+    },
+    "critic": {
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "openrouter_provider": {
+        "only": [
+          "alibaba"
+        ],
+        "allowFallbacks": false
+      },
+      "max_attempts": 2
+    },
+    "integrity": {
+      "source_commit": "50f01fcf088c2419ebac1a9a3e283debc5840a35",
+      "repository_dirty": false,
+      "runner_sha256": "2161978c72783fa908da2d0cdb176c161bc191d0b24aea24b00db734d089a813",
+      "runner_kind": "compiled",
+      "preregistration_sha256": "22c9910a67fe52718299876354728d335b17e97639a2a6099e7e12ac00c7a06f",
+      "authoritative_requested": true,
+      "max_provider_calls": 450,
+      "provider_calls_used": 270,
+      "max_output_tokens": 2048,
+      "reviewer_max_attempts": 2
+    }
+  },
+  "variants": [
+    {
+      "label": "baseline",
+      "ablation": "",
+      "class": "baseline",
+      "precision": {
+        "num": 34,
+        "den": 97,
+        "value": 0.35051546391752575,
+        "ci_lo": 0.26291093968524726,
+        "ci_hi": 0.4495089286987989
+      },
+      "recall": {
+        "num": 34,
+        "den": 42,
+        "value": 0.8095238095238095,
+        "ci_lo": 0.6669922598996131,
+        "ci_hi": 0.9001799171835226
+      },
+      "clean_fp_rate": {
+        "num": 35,
+        "den": 48,
+        "value": 0.7291666666666666,
+        "ci_lo": 0.5900303501775939,
+        "ci_hi": 0.8343404237254355
+      },
+      "delta": null,
+      "authoritative": true,
+      "result_ref": "baseline.result.json",
+      "result_sha256": "271883f9f519b6fd73154244543befd3c62021576df960b70e2fe7e54b156d29"
+    },
+    {
+      "label": "-critic",
+      "ablation": "critic",
+      "class": "A",
+      "precision": {
+        "num": 34,
+        "den": 110,
+        "value": 0.3090909090909091,
+        "ci_lo": 0.2303998458198076,
+        "ci_hi": 0.40066602038494586
+      },
+      "recall": {
+        "num": 34,
+        "den": 42,
+        "value": 0.8095238095238095,
+        "ci_lo": 0.6669922598996131,
+        "ci_hi": 0.9001799171835226
+      },
+      "clean_fp_rate": {
+        "num": 43,
+        "den": 48,
+        "value": 0.8958333333333334,
+        "ci_lo": 0.7783257830561368,
+        "ci_hi": 0.9546782809581869
+      },
+      "delta": {
+        "precision": 0.041424554826616666,
+        "recall": 0,
+        "clean_fp_rate": -0.16666666666666674
+      },
+      "authoritative": true,
+      "result_ref": "no-critic.result.json",
+      "result_sha256": "62ec16af88d1ac5675366868bd95802e141f846c9d318822966fe48d5789e0d7"
+    }
+  ],
+  "authoritative": true,
+  "artifacts": {
+    "baseline": {
+      "path": "baseline.result.json",
+      "sha256": "271883f9f519b6fd73154244543befd3c62021576df960b70e2fe7e54b156d29"
+    },
+    "variants": [
+      {
+        "path": "no-critic.result.json",
+        "sha256": "62ec16af88d1ac5675366868bd95802e141f846c9d318822966fe48d5789e0d7"
+      }
+    ],
+    "reviewer_responses": {
+      "path": "reviewer-responses.sha256.json",
+      "sha256": "2ca68a227ca9dd9e87a28364ac06ae637542b2274ff2faf870d7df850b03f2e1"
+    }
+  }
+}

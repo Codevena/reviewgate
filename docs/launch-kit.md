@@ -46,9 +46,10 @@ a clean pass.
 > and the provenance/checksums are published.
 >
 > This is alpha software. Sandboxing is opt-in, uses a denylist read model, and
-> does not isolate network egress. The current benchmark is an 18-case,
-> single-pass smoke—not a leaderboard. I would especially value feedback on the
-> decision protocol and fail-closed semantics.
+> does not isolate network egress. The current Alpha.12 benchmark is a
+> preregistered 30-case × 3-repeat run with raw artifacts—not a leaderboard. I
+> would especially value feedback on the decision protocol and fail-closed
+> semantics.
 >
 > Website: https://reviewgate.codevena.dev/
 > Source: https://github.com/Codevena/reviewgate
@@ -72,8 +73,8 @@ a clean pass.
 >
 > I have published the caveats too: CLI sandboxes are opt-in, filesystem reads
 > are denylist-based rather than allowlist-based, and network egress remains
-> open. The benchmark headline comes from one small 18-case smoke and is labelled
-> accordingly.
+> open. The benchmark headline comes from a preregistered 30-case × 3-repeat
+> Alpha.12 run with raw artifacts and is labelled accordingly.
 >
 > Real Alpha.11 evidence and demo provenance:
 > https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md
@@ -103,7 +104,7 @@ a clean pass.
 - Confirm CI, Pages, GitHub Release and all npm packages are green/live.
 - Open every link from a signed-out browser.
 - Use the demo GIF or a fresh screen recording; do not crop out the replay notice.
-- Keep “alpha”, sandbox/network limits and the small-N benchmark caveat visible.
+- Keep “alpha”, sandbox/network limits and the hand-authored benchmark caveat visible.
 - Answer technical questions with the evidence page, not stronger claims.
-- Do not announce a repeated benchmark until the raw result JSON and run metadata
-  are actually published.
+- Quote only the published Attempt-09 benchmark numbers unless a newer raw-artifact
+  run is committed first.

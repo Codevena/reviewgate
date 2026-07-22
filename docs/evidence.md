@@ -9,7 +9,7 @@ presented as stronger evidence than it is.
 | Evidence | What it supports | What it does not support |
 | --- | --- | --- |
 | [Alpha.11 recorded replay](../assets/demo/README.md) | The released gate can block a real finding, consume an explicit fixed decision, re-review the changed diff, pass, and verify its audit chains. | It is one model, one bug and one deterministic replay—not a broad accuracy benchmark. |
-| [18-case bench smoke](../bench/README.md) | On one published run, the configured panel found all 8 seeded bugs; the critic reduced clean-case false positives from 9/10 to 4/10. | The corpus is hand-written, the run is single-pass and no raw result JSON was committed. It is not a leaderboard or a statistically stable estimate. |
+| [Alpha.12 benchmark v2 Attempt 09](../bench/results/alpha12-v2/attempt-09/MANIFEST.md) | A preregistered 30-case × 3-repeat run reached full reviewer and critic coverage, published raw artifacts, and measured critic impact. | The corpus is hand-written, the clean-FP rate remains high, and the result is not a leaderboard or a statistically stable model-quality estimate. |
 | Historical dogfood incidents below | Review and field use exposed concrete fail-open and hook-hardening defects that were then fixed and regression-tested. | Git commits prove the fixes; reviewer attribution comes from the project session record, not cryptographic commit metadata. |
 
 ## Reproducible Alpha.11 gate run
@@ -94,21 +94,48 @@ session record rather than something Git itself proves.
 
 ## Benchmark evidence and limits
 
-The published bench report describes one representative run at commit
-[`75d3142`](https://github.com/Codevena/reviewgate/commit/75d3142), with 10 clean
-and 8 seeded-bug cases, a Codex + Claude Code panel and an OpenRouter/DeepSeek
-critic:
+The current published benchmark is Alpha.12 benchmark v2, Attempt 09. It was run
+from clean commit
+[`50f01fc`](https://github.com/Codevena/reviewgate/commit/50f01fcf088c2419ebac1a9a3e283debc5840a35)
+with a preregistered 30-case corpus, three repeats, a Codex + Claude Code
+reviewer panel and an OpenRouter/DeepSeek critic pinned to the `alibaba`
+upstream.
 
-- recall: 8/8 (Wilson 95% CI 0.68–1.00);
-- precision: 8/12 (0.67; CI 0.39–0.86);
-- clean-case false-positive rate: 4/10 (0.40; CI 0.17–0.69);
-- without the critic: 8/20 precision and 9/10 clean-case false positives, with
-  the same 8/8 recall.
+Raw artifacts:
 
-These are useful smoke signals, not settled model-quality numbers. LLM outputs
-vary, the cases are hand-authored and the repository currently publishes the
-report and corpus but not the raw result artifact from that historical run. A
-repeated, raw-artifact benchmark remains future evidence—not a completed claim.
+- [`matrix.json`](../bench/results/alpha12-v2/attempt-09/matrix.json)
+- [`baseline.result.json`](../bench/results/alpha12-v2/attempt-09/baseline.result.json)
+- [`no-critic.result.json`](../bench/results/alpha12-v2/attempt-09/no-critic.result.json)
+- [`reviewer-responses.sha256.json`](../bench/results/alpha12-v2/attempt-09/reviewer-responses.sha256.json)
+- [`MANIFEST.md`](../bench/results/alpha12-v2/attempt-09/MANIFEST.md)
+- [`SHA256SUMS.txt`](../bench/results/alpha12-v2/attempt-09/SHA256SUMS.txt)
+
+Hard-gate outcome:
+
+- matrix authoritative: `true`;
+- Codex reviewer coverage: 90/90;
+- Claude Code reviewer coverage: 90/90;
+- OpenRouter critic coverage: 86/86 eligible calls;
+- repository dirty at run time: `false`;
+- provider calls used by the baseline: 270/450.
+
+Headline values from the matrix:
+
+| variant | precision | recall | clean-case FP rate |
+| --- | ---: | ---: | ---: |
+| baseline | 0.3505 | 0.8095 | 0.7292 |
+| without critic | 0.3091 | 0.8095 | 0.8958 |
+
+In this run, the critic improved aggregate precision by about 4.1 percentage
+points and reduced clean-case false positives by about 16.7 percentage points,
+without changing recall. The absolute clean-FP rate remains high. Treat these as
+alpha benchmark evidence for this corpus and provider roster, not as settled
+model-quality numbers or a leaderboard.
+
+Historical note: an older Alpha.11 single-pass smoke on an 18-case labelled
+corpus caught 8/8 seeded bugs and showed the critic reducing clean-case false
+positives from 9/10 to 4/10. That run remains useful as early smoke evidence, but
+Attempt 09 is the first repeated raw-artifact benchmark to cite.
 
 Reproduce a current run with your own authenticated providers:
 
@@ -117,8 +144,8 @@ reviewgate bench run --corpus bench/cases --repeat 3 --out repeat.json
 reviewgate bench report repeat.json
 ```
 
-Provider versions, model names, roster, corpus tree and output JSON should travel
-together with any number quoted from a new run.
+Provider versions, model names, roster, corpus tree, preregistration and output
+JSON should travel together with any number quoted from a new run.
 
 ## Known provider caveat from the Alpha.11 recording
 
