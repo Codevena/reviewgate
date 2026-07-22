@@ -8,6 +8,7 @@ website and evidence immediately before publishing.
 - Website: https://reviewgate.codevena.dev/
 - GitHub: https://github.com/Codevena/reviewgate
 - npm: https://www.npmjs.com/package/reviewgate
+- Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.12
 - Evidence: https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md
 - Demo: https://github.com/Codevena/reviewgate#reviewgate
 
@@ -47,12 +48,15 @@ a clean pass.
 >
 > This is alpha software. Sandboxing is opt-in, uses a denylist read model, and
 > does not isolate network egress. The current Alpha.12 benchmark is a
-> preregistered 30-case × 3-repeat run with raw artifacts—not a leaderboard. I
-> would especially value feedback on the decision protocol and fail-closed
-> semantics.
+> preregistered 30-case × 3-repeat run with raw artifacts: Codex and Claude Code
+> both reached 90/90 coverage, the critic reached 86/86 eligible coverage, and
+> the critic reduced clean-case false positives by 16.7 percentage points at
+> unchanged recall. It is still not a leaderboard. I would especially value
+> feedback on the decision protocol and fail-closed semantics.
 >
 > Website: https://reviewgate.codevena.dev/
 > Source: https://github.com/Codevena/reviewgate
+> Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.12
 
 ## Reddit / LocalLLaMA draft
 
@@ -74,7 +78,9 @@ a clean pass.
 > I have published the caveats too: CLI sandboxes are opt-in, filesystem reads
 > are denylist-based rather than allowlist-based, and network egress remains
 > open. The benchmark headline comes from a preregistered 30-case × 3-repeat
-> Alpha.12 run with raw artifacts and is labelled accordingly.
+> Alpha.12 run with raw artifacts: 90/90 coverage for both reviewers, 86/86
+> eligible critic coverage, and 16.7 percentage points fewer clean-case false
+> positives with the critic enabled at unchanged recall.
 >
 > Real Alpha.11 evidence and demo provenance:
 > https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md
@@ -97,6 +103,9 @@ a clean pass.
 5. Six provider paths, native Claude Code + Codex hooks, last-known-good policy
    control plane, plain local evidence. MIT, alpha, honest threat model.
    https://github.com/Codevena/reviewgate
+6. Alpha.12 is live on npm. The benchmark v2 run is preregistered and raw:
+   30 cases × 3 repeats, Codex 90/90, Claude Code 90/90, critic 86/86 eligible;
+   critic reduced clean-FP by 16.7pp at unchanged recall.
 
 ## Pre-publish checklist
 
