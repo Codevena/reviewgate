@@ -109,7 +109,9 @@ a clean pass.
 
 ## Pre-publish checklist
 
-- Run `bash assets/demo/demo.sh` with the released version.
+- Run `assets/demo/demo.sh` with `reviewgate@0.1.0-alpha.11`, because this is a
+  historical Alpha.11 cassette replay. For a fresh Alpha.12 demo, record and
+  publish a new cassette first.
 - Confirm CI, Pages, GitHub Release and all npm packages are green/live.
 - Open every link from a signed-out browser.
 - Use the demo GIF or a fresh screen recording; do not crop out the replay notice.
