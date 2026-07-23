@@ -117,7 +117,11 @@ Hard-gate outcome:
 - Claude Code reviewer coverage: 90/90;
 - OpenRouter critic coverage: 86/86 eligible calls;
 - repository dirty at run time: `false`;
-- provider calls used by the baseline: 270/450.
+- provider calls used by the baseline: 270/450;
+- retry protocol: up to 2 physical attempts per reviewer and per critic call
+  (preregistered; every attempt is budget-counted). The coverage above is under
+  this protocol — a single-attempt run (the production default) records lower
+  reviewer coverage whenever a reviewer transiently misses a case.
 
 Headline values from the matrix:
 
@@ -131,6 +135,16 @@ points and reduced clean-case false positives by about 16.7 percentage points,
 without changing recall. The absolute clean-FP rate remains high. Treat these as
 alpha benchmark evidence for this corpus and provider roster, not as settled
 model-quality numbers or a leaderboard.
+
+Stability across the three repeats (same protocol, mean ± sd, min–max) shows the
+metrics are not point-stable — the clean-FP rate in particular ranges widely:
+
+- precision: 0.353 ± 0.034 (0.306–0.379);
+- recall: 0.810 ± 0.034 (0.786–0.857);
+- clean-case FP rate: 0.729 ± 0.106 (0.625–0.875).
+
+So read each headline as a small-sample central tendency with real run-to-run
+variance, not a fixed figure.
 
 Historical note: an older Alpha.11 single-pass smoke on an 18-case labelled
 corpus caught 8/8 seeded bugs and showed the critic reducing clean-case false

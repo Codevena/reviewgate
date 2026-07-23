@@ -183,11 +183,14 @@ verifier that runs at the end of each turn.
 **And there is inspectable evidence—not just a product claim.** The current
 Alpha.12 benchmark v2 publishes raw artifacts for a preregistered 30-case corpus
 run three times with Codex + Claude Code and an OpenRouter/DeepSeek critic. Both
-reviewers reached 90/90 coverage; the critic reached 86/86 eligible coverage. In
-that run, the critic improved aggregate precision from 0.3091 to 0.3505 and
-reduced clean-case false positives from 0.8958 to 0.7292 at unchanged recall
-(0.8095). The corpus is still hand-authored and the clean-FP rate is still high;
-this is alpha evidence, not a leaderboard. Raw artifacts and caveats:
+reviewers reached 90/90 coverage under a preregistered 2-attempt retry protocol;
+the critic reached 86/86 eligible coverage. In that run, the critic improved
+aggregate precision from 0.3091 to 0.3505 and reduced clean-case false positives
+from 0.8958 to 0.7292 at unchanged recall (0.8095). Across the three repeats the
+clean-FP rate ranged 0.625–0.875 (0.729 ± 0.106), so read the headline as a
+small-sample central tendency, not a fixed figure. The corpus is still
+hand-authored and the clean-FP rate is still high; this is alpha evidence, not a
+leaderboard. Raw artifacts and caveats:
 **[`docs/evidence.md`](docs/evidence.md)**.
 
 ---
