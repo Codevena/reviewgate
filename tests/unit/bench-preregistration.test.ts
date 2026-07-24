@@ -19,6 +19,7 @@ const ATTEMPT_06_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attem
 const ATTEMPT_07_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-07.json";
 const ATTEMPT_08_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-08.json";
 const ATTEMPT_09_PREREGISTRATION_PATH = "bench/preregistrations/alpha12-v2-attempt-09.json";
+const FROZEN_RELEASE = "v0.1.0-alpha.12";
 
 function matrixInput(): BenchMatrixInput {
   return {
@@ -157,94 +158,93 @@ function attempt09Preregistration(): unknown {
   return JSON.parse(readFileSync(join(REPO, ATTEMPT_09_PREREGISTRATION_PATH), "utf8"));
 }
 
+function validateFrozen(
+  input: BenchMatrixInput,
+  frozen: ReturnType<typeof BenchPreregistrationSchema.parse>,
+): string[] {
+  return validateMatrixPreregistration(
+    input,
+    benchConfig(input),
+    frozen,
+    input.corpus,
+    FROZEN_RELEASE,
+  );
+}
+
 describe("Alpha.12 benchmark preregistration", () => {
   it("parses and exactly matches the frozen authoritative matrix protocol", () => {
     const input = matrixInput();
     const frozen = BenchPreregistrationSchema.parse(preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
+  });
+
+  it("rejects the historical release through the production default", () => {
+    const input = matrixInput();
+    const frozen = BenchPreregistrationSchema.parse(preregistration());
+
+    expect(
+      validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus),
+    ).toContain("release version differs");
   });
 
   it("matches Attempt 02's explicit critic-attempt limit without changing Attempt 01", () => {
     const input = attempt02Input();
     const frozen = BenchPreregistrationSchema.parse(attempt02Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
-    expect(
-      validateMatrixPreregistration(
-        matrixInput(),
-        benchConfig(matrixInput()),
-        preregistration(),
-        "bench/cases",
-      ),
-    ).toEqual([]);
+    expect(validateFrozen(input, frozen)).toEqual([]);
+    const attempt01Input = matrixInput();
+    const attempt01Frozen = BenchPreregistrationSchema.parse(preregistration());
+    expect(validateFrozen(attempt01Input, attempt01Frozen)).toEqual([]);
   });
 
   it("matches Attempt 03's unchanged protocol after the prompt-determinism fix", () => {
     const input = attempt03Input();
     const frozen = BenchPreregistrationSchema.parse(attempt03Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 04's unchanged protocol after the compact critic-output fix", () => {
     const input = attempt04Input();
     const frozen = BenchPreregistrationSchema.parse(attempt04Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 05's unchanged protocol after the critic reasoning fix", () => {
     const input = attempt05Input();
     const frozen = BenchPreregistrationSchema.parse(attempt05Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 06's unchanged protocol after the matrix provenance check", () => {
     const input = attempt06Input();
     const frozen = BenchPreregistrationSchema.parse(attempt06Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 07's explicit reviewer retry protocol after the Claude coverage miss", () => {
     const input = attempt07Input();
     const frozen = BenchPreregistrationSchema.parse(attempt07Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 08's unchanged retry protocol after Claude repeat-3 degradation", () => {
     const input = attempt08Input();
     const frozen = BenchPreregistrationSchema.parse(attempt08Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("matches Attempt 09's unchanged retry protocol after Claude start-of-run degradation", () => {
     const input = attempt09Input();
     const frozen = BenchPreregistrationSchema.parse(attempt09Preregistration());
 
-    expect(validateMatrixPreregistration(input, benchConfig(input), frozen, input.corpus)).toEqual(
-      [],
-    );
+    expect(validateFrozen(input, frozen)).toEqual([]);
   });
 
   it("rejects critic-attempt drift before the provider boundary", () => {

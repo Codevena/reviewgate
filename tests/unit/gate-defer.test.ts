@@ -55,6 +55,7 @@ describe("gate defer-on-contention", () => {
       const out = await runGate({
         repoRoot: repo,
         hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
         hookStdinRaw: "{}",
         lockTimeoutMs: 200,
       });
@@ -92,7 +93,12 @@ describe("gate defer-on-contention", () => {
     const repo = gitRepo("rg-defer-consume-");
     await new StateStore(repo).initialise("01HDEFER03");
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
-    const out = await runGate({ repoRoot: repo, hook: "stop", hookStdinRaw: "{}" });
+    const out = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+    });
     expect(out.exitCode).toBe(0);
     expect(existsSync(deferredFlagPath(repo))).toBe(false); // consumed by the review
   }, 30_000);

@@ -58,6 +58,7 @@ describe("full loop integration", () => {
     const firstStop = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxModeOverride: "off",
@@ -104,6 +105,7 @@ describe("full loop integration", () => {
     const secondStop = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxModeOverride: "off",
@@ -111,7 +113,7 @@ describe("full loop integration", () => {
     expect(secondStop.exitCode).toBe(0);
     const state = JSON.parse(readFileSync(join(repo, ".reviewgate", "state.json"), "utf8"));
     expect(state.iteration).toBe(2);
-  });
+  }, 15_000);
 
   it("reviews committed work that arrived WITHOUT an Edit/Write (HEAD-advanced trigger)", async () => {
     // Simulates a `git merge`/`git commit` via Bash (or a worktree merge): HEAD
@@ -132,6 +134,7 @@ describe("full loop integration", () => {
     const stop = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxModeOverride: "off",
@@ -161,6 +164,7 @@ describe("full loop integration", () => {
     const stop = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
       sandboxModeOverride: "off",

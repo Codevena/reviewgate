@@ -148,6 +148,8 @@ describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
       collectGitInfo,
       collectDiff,
       false,
+      false,
+      { dwellMs: 0 },
     );
     expect(ctx.diff).toContain("sneaky.ts"); // synthesis reviewed the untracked file
   });
@@ -176,6 +178,8 @@ describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
       collectGitInfo,
       collectDiff,
       false,
+      false,
+      { dwellMs: 0 },
     );
     expect(ctx.reviewBase).toBeNull();
     expect(ctx.diff).toContain("sneaky2.ts");
@@ -338,7 +342,12 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
     const tree = await workingTreeStateHash(repo);
     await seedEscalated(repo, { escalated_head_sha: sha, escalated_tree_hash: tree });
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
-    const out = await runGate({ repoRoot: repo, hook: "stop", hookStdinRaw: "{}" });
+    const out = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+    });
     expect(out.stdout).toBe(""); // no block decision emitted
     expect(out.stderr).toContain("ESCALATION.md");
     expect(out.stderr.toLowerCase()).not.toContain("no code changes since last review");

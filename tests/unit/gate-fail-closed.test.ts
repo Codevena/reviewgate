@@ -9,7 +9,12 @@
 import { describe, expect, it } from "bun:test";
 import { type GateInput, type GateOutput, runGateSafe } from "../../src/cli/commands/gate.ts";
 
-const baseInput: GateInput = { repoRoot: "/tmp/nope", hook: "stop", hookStdinRaw: "{}" };
+const baseInput: GateInput = {
+  repoRoot: "/tmp/nope",
+  hook: "stop",
+  hookStdinRaw: "{}",
+  snapshotVerifyOpts: { dwellMs: 0 },
+};
 
 describe("runGateSafe — fail-closed on internal error", () => {
   it("a thrown error during a STOP gate emits a fail-closed block (exit 0)", async () => {

@@ -1,10 +1,12 @@
 // src/core/reviewed-snapshot.ts
 //
 // T1 (field report 2026-07-03): per-file content manifest of the reviewed diff.
-// The orchestrator captures it before the cache key is computed (the delta scope
-// derived from it is part of the key) so state.reviewed_snapshot records EXACTLY
-// the working-tree bytes the panel saw; the delta-scope pass (iteration ≥ 2) and
-// the content-identity PASS ledger compare later tree states against it.
+// The Stop gate captures it inside the accepted diff/tree verification round and
+// passes it into the orchestrator before the cache key is computed (direct
+// Orchestrator/bench callers retain a local fallback). This binds
+// state.reviewed_snapshot to the same verified artifact the panel saw; the
+// delta-scope pass (iteration ≥ 2) and content-identity PASS ledger compare later
+// tree states against it.
 //
 // Fail-safe contract: EVERY path in the reviewed diff gets an entry — a missing
 // key can only mean "not part of the reviewed diff", never "we could not read

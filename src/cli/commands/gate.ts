@@ -14,6 +14,7 @@ import type { loadEffectiveConfig } from "../../config/global.ts";
 import { buildSessionStartInjection } from "../../core/agent-lessons/inject.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
+import { type SnapshotFileEntry, snapshotReviewedFiles } from "../../core/reviewed-snapshot.ts";
 import { computeForeignFiles } from "../../core/session-manifest.ts";
 import { StateStore } from "../../core/state-store.ts";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../../hooks/handlers.ts";
 import type { ProviderAdapter } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
+import { computeDiffFacts } from "../../research/diff-facts.ts";
 import { writeFileAtomic, writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { FlockTimeoutError, flock, readLockHolder } from "../../utils/flock.ts";
 import {
@@ -73,6 +75,21 @@ interface ReviewContext {
   // was recovered against a wider fallback base — surfaced to reviewers so the diff
   // isn't trusted as a complete picture even when collectDiff didn't itself truncate.
   diffIncomplete: boolean;
+  // Snapshot-race fix (Dealbarg field incident 2026-07): the working-tree
+  // fingerprint sampled in the SAME verify round as the shipped diff — the
+  // reviewed-through blessing is bound to the reviewed artifact instead of being
+  // hashed later against whatever the tree looks like then (the old "residual
+  // micro-window"). May be null (fingerprint indeterminate) — consumers already
+  // treat null as "changed" (fail toward review).
+  snapshotTree: string | null;
+  // Set when the paired verify rounds exhausted their cap with the tree still
+  // changing between reads (a concurrent writer). The shipped diff is the LATEST
+  // read; downstream: render banner + reviewed-snapshot manifest suppression.
+  snapshotUnstable?: { recaptures: number };
+  // Per-file manifest captured inside the accepted verification round. null means
+  // the capture remained unstable, so downstream identity/delta optimizations
+  // must stay disabled.
+  capturedSnapshotFiles: Record<string, SnapshotFileEntry> | null;
   // #7: set when the pre-review settle-check hit its cap without the working tree
   // going quiet (a writer was still active). Render-only banner downstream.
   workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
@@ -120,6 +137,11 @@ export interface GateInput {
   collectGitInfoFn?: typeof collectGitInfo;
   collectDiffFn?: typeof collectDiff;
   loadConfigFn?: typeof loadEffectiveConfig;
+  // Test seam for the paired snapshot verification (dwell/rounds/clock): the
+  // REAL 2s dwell would push every gate-invoking unit test past bun's 5s
+  // per-test cap. Merged over the production wiring; deadlineAt stays the
+  // gate's own setup deadline unless explicitly overridden.
+  snapshotVerifyOpts?: SnapshotVerifyOpts;
 }
 
 export interface GateOutput {
@@ -558,6 +580,49 @@ export async function resolveReviewBase(
   return await mb(repoRoot, "HEAD", base);
 }
 
+// Snapshot-race verification (Dealbarg field incident 2026-07): dwell between
+// paired verify rounds. A transient in-place mutation (apply → test → restore)
+// shorter than the dwell can never satisfy two consecutive rounds, so it is
+// detected and re-captured instead of reviewed. Defense-in-depth, NOT a
+// guarantee — a mutation held across the ENTIRE verified window is
+// indistinguishable from real state (the guaranteed fix is cooperating
+// isolation: run mutation tests in a copy/worktree, never in-place concurrently
+// with turn-end).
+export const SNAPSHOT_VERIFY_DWELL_MS = 2000;
+// Verification re-reads after round 0. Exhausting them with the tree still
+// changing between reads → snapshotUnstable (banner + manifest suppression).
+export const SNAPSHOT_VERIFY_MAX_ROUNDS = 3;
+
+// Test seams + budget wiring for the paired verify rounds. All optional —
+// production callers pass only deadlineAt (the shared setup deadline).
+export interface SnapshotVerifyOpts {
+  treeHashFn?: typeof workingTreeStateHash;
+  snapshotFilesFn?: typeof snapshotReviewedFiles;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+  // Epoch ms of the setup deadline; null/absent = no budget. The guard stops
+  // verifying BEFORE starting a read that cannot fit (silent unverified path —
+  // status-quo behavior), so verification never turns a slow-but-working setup
+  // into a fail-closed block.
+  deadlineAt?: number | null;
+  dwellMs?: number;
+  maxRounds?: number;
+}
+
+function snapshotFilesEqual(
+  left: Record<string, SnapshotFileEntry>,
+  right: Record<string, SnapshotFileEntry>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  if (leftKeys.length !== Object.keys(right).length) return false;
+  return leftKeys.every((path) => {
+    if (!Object.hasOwn(right, path)) return false;
+    const a = left[path];
+    const b = right[path];
+    return a?.status === b?.status && a?.hash === b?.hash;
+  });
+}
+
 // Pre-deadline setup: resolve the review base + collect the diff (incl. the
 // HEAD-advanced synthesis path). Extracted so runStopGate can bound it with a
 // setup budget (M-A0.2). The git helpers are injected so the budget path can be
@@ -569,6 +634,7 @@ export async function gatherReviewContext(
   diffFn: typeof collectDiff,
   settleBeforeReview: boolean,
   scopeToSession = false,
+  verifyOpts: SnapshotVerifyOpts = {},
 ): Promise<ReviewContext> {
   const gitInfo = await gitInfoFn(input.repoRoot);
   // #7: before snapshotting the working tree (either diffFn call below), wait
@@ -605,6 +671,11 @@ export async function gatherReviewContext(
   // Reused when the HEAD-advanced path already computed the since-base diff, so
   // the gate doesn't run collectDiff twice for the same base.
   let precomputedDiff: string | undefined;
+  // Wall-clock cost of that precompute — folded into the verify budget guard's
+  // round-0 estimate when the precomputed diff is reused, since the reused
+  // round 0 then times only the (near-clean-tree) hash while a verify round
+  // costs a full diff+hash pair (round-2 plan review).
+  let precomputedMs = 0;
   // Set when the dirty.flag could not be parsed (truncated / half-written / hand-
   // edited). Forces diffIncomplete downstream so reviewers don't trust the diff as
   // a complete picture (we recovered the widest base we could, but the captured
@@ -651,7 +722,9 @@ export async function gatherReviewContext(
     // uncommitted (+ untracked) work since the last review, so one call handles
     // both the HEAD-advance and the dirty-tree case. Reaching this line at all
     // means the fast-exit already saw a change; the extra diff is not wasted.
+    const precomputeStart = Date.now();
     const sinceLast = gitInfo.sha && last ? await diffFn(input.repoRoot, last) : "";
+    precomputedMs = Date.now() - precomputeStart;
     if (sinceLast.trim().length > 0) {
       reviewBase = last;
       precomputedDiff = sinceLast;
@@ -692,8 +765,90 @@ export async function gatherReviewContext(
     reviewBase = correctedBase;
     precomputedDiff = undefined;
   }
-  const diff =
-    precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
+  // --- Paired verified snapshot (Dealbarg field incident 2026-07) ---
+  // A single read of the live working tree is not a safe review input: a parallel
+  // writer (an in-place mutation test, codegen) can transiently mutate files and
+  // restore them, and a capture landing inside that window reviews a state that
+  // never corresponded to any commit → phantom findings. The pre-capture
+  // settle-check cannot catch this (an applied-and-held mutation looks QUIET).
+  // Each round samples BOTH artifacts — the review diff and the working-tree
+  // fingerprint plus the per-file identity manifest — and the capture is accepted
+  // only when two consecutive rounds agree on all three, separated by a dwell (a
+  // transient shorter than the dwell can never satisfy both rounds). Convergence
+  // re-captures the restored true state.
+  // Exits:
+  //   verified  — consecutive rounds agreed; blessed hash = same round as diff.
+  //   unverified (silent, status-quo) — diff marked incomplete (positional check;
+  //     doubling a capped 60s collection could blow the setup budget), budget
+  //     guard fired, or fingerprint indeterminate (null) with agreeing diffs.
+  //   unstable  — rounds exhausted while still flapping → ship the LATEST pair +
+  //     banner + reviewed-snapshot manifest suppression downstream.
+  const treeHashFn = verifyOpts.treeHashFn ?? workingTreeStateHash;
+  const snapshotFilesFn = verifyOpts.snapshotFilesFn ?? snapshotReviewedFiles;
+  const vSleep =
+    verifyOpts.sleep ?? ((ms: number) => new Promise<void>((res) => setTimeout(res, ms)));
+  const vNow = verifyOpts.now ?? Date.now;
+  const vDeadlineAt = verifyOpts.deadlineAt ?? null;
+  const dwellMs = verifyOpts.dwellMs ?? SNAPSHOT_VERIFY_DWELL_MS;
+  const requestedMaxRounds = verifyOpts.maxRounds ?? SNAPSHOT_VERIFY_MAX_ROUNDS;
+  const maxRounds = Number.isFinite(requestedMaxRounds)
+    ? Math.max(1, Math.floor(requestedMaxRounds))
+    : SNAPSHOT_VERIFY_MAX_ROUNDS;
+  const round0Start = vNow();
+  let diff = precomputedDiff ?? (await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs));
+  let snapshotTree = await treeHashFn(input.repoRoot);
+  let capturedSnapshotFiles = snapshotFilesFn(
+    input.repoRoot,
+    computeDiffFacts(diff).files.map((file) => file.path),
+  );
+  const round0Ms = vNow() - round0Start + (precomputedDiff !== undefined ? precomputedMs : 0);
+  let snapshotUnstable: { recaptures: number } | undefined;
+  let snapshotVerified = false;
+  let recaptures = 0;
+  let mismatchSeen = false;
+  for (;;) {
+    // Incompleteness FIRST (codex step-2 W2): a diff that came back truncated —
+    // including one returned by the FINAL allowed re-capture — ends verification
+    // silently. Collection jitter (the truncation trailer flapping in and out of
+    // consecutive reads) must never masquerade as a concurrent-writer banner;
+    // the diffIncomplete path already trust-limits everything downstream.
+    if (diffMarkedIncomplete(diff)) break;
+    if (recaptures >= maxRounds) {
+      snapshotUnstable = { recaptures };
+      break;
+    }
+    if (vDeadlineAt !== null && vDeadlineAt - vNow() < dwellMs + 2 * round0Ms) {
+      // Budget exhausted (codex step-2 W1): if churn was already OBSERVED, a
+      // silent exit would let the reviewed-snapshot artifacts be seeded off a
+      // tree we KNOW was changing — take the unstable path instead. Only a
+      // budget exit with zero observed mismatches stays silent (unverified).
+      if (mismatchSeen) snapshotUnstable = { recaptures };
+      break;
+    }
+    await vSleep(dwellMs);
+    const d = await diffFn(input.repoRoot, reviewBase, undefined, reviewBaseTs);
+    const h = await treeHashFn(input.repoRoot);
+    const files = snapshotFilesFn(
+      input.repoRoot,
+      computeDiffFacts(d).files.map((file) => file.path),
+    );
+    const diffAgrees = d === diff;
+    const hashAgrees = h !== null && h === snapshotTree;
+    const filesAgree = snapshotFilesEqual(files, capturedSnapshotFiles);
+    const hashIndeterminate = h === null || snapshotTree === null;
+    diff = d;
+    snapshotTree = h;
+    capturedSnapshotFiles = files;
+    if (diffAgrees && hashAgrees && filesAgree) {
+      snapshotVerified = true;
+      break;
+    }
+    // Agreeing diffs but an indeterminate fingerprint: nothing observably flapped,
+    // we just cannot PROVE stability — silent unverified, never the unstable banner.
+    if (diffAgrees && filesAgree && hashIndeterminate) break;
+    mismatchSeen = true;
+    recaptures++;
+  }
   // Slice A (P1): files FOREIGN to this session (byte-identical to its SessionStart baseline,
   // not tool-owned). Computed from the per-session manifest, keyed by the session_id in the
   // Stop stdin. No session_id / empty baseline (single-agent, clean start) / scoping disabled
@@ -732,6 +887,18 @@ export async function gatherReviewContext(
     diff,
     reviewBase,
     diffIncomplete: dirtyFlagUnparsed,
+    // Unstable capture (codex step-2 C2): within one round the diff and the hash
+    // are read sequentially, so with ZERO agreement evidence the final H may
+    // fingerprint a DIFFERENT state than the shipped diff (writer raced between
+    // the two reads) — blessing it could record a never-reviewed state as
+    // reviewed-through and let the next Stop skip-clean over it. Ship null
+    // instead: consumers treat null as "changed" (fail toward review).
+    snapshotTree: snapshotUnstable ? null : snapshotTree,
+    ...(snapshotUnstable ? { snapshotUnstable } : {}),
+    // Delta/content-identity state is a new optimization and has no legacy
+    // unverified mode: persist it only after the full triple agreed. Budget,
+    // incomplete, and indeterminate-fingerprint exits explicitly disable it.
+    capturedSnapshotFiles: snapshotVerified ? capturedSnapshotFiles : null,
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
     foreignFiles,
     attribution,
@@ -779,19 +946,22 @@ async function runStopGate(
         diffFn,
         cfg.phases.review.settleBeforeReview ?? false,
         cfg.phases.review.scopeToSession ?? true,
+        // Budget wiring for the paired verify rounds: the guard stops verifying
+        // before starting a read that can't fit the shared setup deadline.
+        // Test-seam overrides (dwell/rounds/clock) merge over it.
+        { deadlineAt: setupDeadlineAt, ...input.snapshotVerifyOpts },
       );
-      // Dogfood F-001: hash the working tree ONCE, immediately after the diff
-      // snapshot, so "reviewed-through" records the tree the diff was computed
-      // FROM — not whatever the tree looks like when the state is written after
-      // the multi-minute panel run, which could include a concurrent session's
-      // mid-review edit no panel ever saw (stored == post-edit tree → the next
-      // Stop skip-cleans, fail-open). With the snapshot value, a mid-review edit
-      // leaves stored ≠ current → the next Stop probe fails toward review.
-      // Residual micro-window (documented, ticket 1): an edit landing between
-      // collectDiff inside gatherReviewContext and this hash is still blessed —
-      // sub-ms vs the previous minutes-wide window; full closure needs
-      // compare-at-delete against the snapshot-time flag state.
-      const snapshotTree = await workingTreeStateHash(input.repoRoot);
+      // Dogfood F-001 + snapshot-race fix: "reviewed-through" records the tree
+      // fingerprint sampled in the SAME verify round as the shipped diff (inside
+      // gatherReviewContext) — never a fresh post-review hash, which would bless
+      // a concurrent session's mid-review edit as reviewed (stored == post-edit
+      // tree → the next Stop skip-cleans, fail-open). The old residual
+      // micro-window (ticket 1: an edit landing between collectDiff and a later
+      // separate hash) is closed in the verified-stable case by the same-round
+      // pairing; in the unverified/unstable cases the binding is single-round —
+      // no worse than the old behavior, with the unstable case additionally
+      // suppressing the reviewed-snapshot manifest downstream.
+      const snapshotTree = ctx.snapshotTree;
       return { host, adapters, ctx, snapshotTree };
     })();
     setup =
@@ -903,6 +1073,11 @@ async function runStopGate(
     diffIncomplete,
     ...(largeDiff ? { largeDiff } : {}),
     ...(workspaceUnsettled ? { workspaceUnsettled } : {}),
+    // Snapshot-race: unstable capture → banner + reviewed-snapshot suppression.
+    ...(ctx.snapshotUnstable ? { snapshotUnstable: ctx.snapshotUnstable } : {}),
+    // Bind delta/content-identity state to the exact manifest sampled inside the
+    // accepted diff/tree verification round. null explicitly disables it.
+    capturedSnapshotFiles: ctx.capturedSnapshotFiles,
     // Slice A (P1): files this session did not author → demoted to advisory in the aggregator.
     ...(foreignFiles ? { foreignFiles } : {}),
     // S2: session_id + dirtyNow snapshot → orchestrator stamps session_attributable / whole_diff_attributable.

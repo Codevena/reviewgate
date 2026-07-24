@@ -41,6 +41,8 @@ describe("gatherReviewContext settle wiring (#7)", () => {
       stubGitInfo as never,
       stubDiff as never,
       true,
+      false,
+      { dwellMs: 0 },
     );
     expect(ctx.workspaceUnsettled).toBeUndefined(); // clean tree → settled, no banner
   });
@@ -55,6 +57,8 @@ describe("gatherReviewContext settle wiring (#7)", () => {
       stubGitInfo as never,
       stubDiff as never,
       false,
+      false,
+      { dwellMs: 0 },
     );
     expect(ctx.workspaceUnsettled).toBeUndefined();
   });

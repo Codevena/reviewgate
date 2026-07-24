@@ -105,6 +105,7 @@ describe("runGate — no-change stop skips the lock", () => {
       const out = await runGate({
         repoRoot: repo,
         hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
         hookStdinRaw: "{}",
         lockTimeoutMs: 200,
       });

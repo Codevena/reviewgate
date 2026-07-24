@@ -106,6 +106,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: stubReviewer("sneaky.ts") },
       sandboxModeOverride: "off",
@@ -148,6 +149,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: stubReviewer("sneaky2.ts") },
       sandboxModeOverride: "off",
@@ -180,6 +182,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
       out = await runGate({
         repoRoot: repo,
         hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
         hookStdinRaw: "{}",
         providerOverrides: { codex: stubReviewer("sneaky3.ts") },
         sandboxModeOverride: "off",
@@ -236,6 +239,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: stubReviewer("a.ts") },
       sandboxModeOverride: "off",
@@ -278,6 +282,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: stubReviewer("sneaky4.ts") },
       sandboxModeOverride: "off",

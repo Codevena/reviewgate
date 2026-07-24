@@ -319,7 +319,7 @@ curl -sSL https://raw.githubusercontent.com/Codevena/reviewgate/master/install.s
 reviewgate --version
 ```
 
-Pin a version with `REVIEWGATE_VERSION=v0.1.0-alpha.12`, or change where it lands
+Pin a version with `REVIEWGATE_VERSION=v0.1.0-alpha.13`, or change where it lands
 with `REVIEWGATE_INSTALL_DIR` / `REVIEWGATE_BIN_DIR`. macOS + Linux (arm64/x64).
 
 <details><summary>…or download the tarball manually</summary>
@@ -329,8 +329,8 @@ folder intact — the binary loads its sibling `grammars/` (tree-sitter `.wasm`)
 runtime. Each release ships a `SHA256SUMS.txt` to verify against:
 
 ```bash
-tar xzf reviewgate-v0.1.0-alpha.12-darwin-arm64.tar.gz
-ln -sf "$PWD/reviewgate-v0.1.0-alpha.12-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
+tar xzf reviewgate-v0.1.0-alpha.13-darwin-arm64.tar.gz
+ln -sf "$PWD/reviewgate-v0.1.0-alpha.13-darwin-arm64/reviewgate" /usr/local/bin/reviewgate
 reviewgate --version
 ```
 

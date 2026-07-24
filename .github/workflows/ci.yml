@@ -43,14 +43,14 @@ jobs:
         run: bun run lint
 
       # Build BEFORE the suite so tests/integration/binary.test.ts cannot silently
-      # skip because dist/reviewgate is absent. `bun test` then covers unit,
+      # skip because dist/reviewgate is absent. `bun run test` then covers unit,
       # deterministic integration and the real bwrap isolation test; credentialed
       # provider E2E remains explicitly opt-in.
       - name: Build host binary
         run: bun run build
 
       - name: Full deterministic suite
-        run: bun test
+        run: bun run test
 
   package-native:
     name: Package + native smoke (${{ matrix.os }})

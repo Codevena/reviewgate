@@ -49,6 +49,7 @@ describe("gate with a corrupt dirty.flag", () => {
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       // Capture the base arg; return an empty diff so the panel triages to skip
       // (this test asserts on base SELECTION, not on the review itself).

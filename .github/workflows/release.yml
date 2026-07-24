@@ -78,7 +78,7 @@ jobs:
           bun run typecheck
           bun run lint
           bun run build
-          bun test
+          bun run test
 
       - name: Build per-platform tarballs
         env:

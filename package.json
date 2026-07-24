@@ -1,6 +1,6 @@
 {
   "name": "reviewgate",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "description": "Independent code-review control loop for Claude Code and Codex — verifies diffs, requires explicit finding outcomes, and records honest defer/escalation states.",
   "type": "module",
   "packageManager": "bun@1.3.14",
@@ -35,9 +35,9 @@
   "scripts": {
     "dev": "bun run src/cli/index.ts",
     "build": "bun build src/cli/index.ts --compile --outfile dist/reviewgate && mkdir -p dist/grammars dist/bin-templates && cp node_modules/web-tree-sitter/web-tree-sitter.wasm node_modules/tree-sitter-typescript/*.wasm node_modules/tree-sitter-python/*.wasm dist/grammars/ && { cp bin-templates/*.sh dist/bin-templates/ 2>/dev/null || true; } && { cp -r src/personas dist/personas 2>/dev/null || true; }",
-    "test": "bun test",
-    "test:unit": "bun test tests/unit",
-    "test:integration": "bun test tests/integration",
+    "test": "bun test --timeout=15000 --no-orphans",
+    "test:unit": "bun test tests/unit --timeout=15000 --no-orphans",
+    "test:integration": "bun test tests/integration --timeout=15000 --no-orphans",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src tests bin",
     "format": "biome format --write src tests",

@@ -75,6 +75,7 @@ describe("tree hash is recorded at diff-snapshot time, not state-write time (dog
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: {
         codex: passingReviewerWithSideEffect(() => {

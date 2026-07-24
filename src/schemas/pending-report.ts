@@ -58,6 +58,11 @@ export const PendingReportSchema = z.object({
       waited_ms: z.number().int().nonnegative(),
     })
     .optional(),
+  // Snapshot-race fix: set when the gate's paired verify rounds exhausted their cap
+  // with the tree still changing between reads (a concurrent writer — e.g. an
+  // in-place mutation test). Render-only banner; the verdict is unaffected. The
+  // reviewed diff is the LATEST read; findings may describe transient state.
+  snapshot_unstable: z.object({ recaptures: z.number().int().min(1) }).optional(),
   // P11: set when this is a PURE docs-only review (triage riskClass "docs" — every changed
   // file is prose/markdown). Render-only — drives a "spec/docs review" framing banner so the
   // agent reads a prose finding as a prose review (e.g. verify a framework attribution) rather

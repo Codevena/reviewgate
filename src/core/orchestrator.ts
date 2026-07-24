@@ -198,6 +198,17 @@ export interface OrchestratorInput {
   // #7: set by the gate when the pre-review settle-check hit its cap without the
   // working tree going quiet. Render-only — passed straight into the PendingReport.
   workspaceUnsettled?: { last_write_ms_ago: number; waited_ms: number };
+  // Snapshot-race fix: set by the gate when the paired verify rounds exhausted
+  // their cap with the tree still changing between reads (a concurrent writer).
+  // Renders a banner AND suppresses the reviewed-snapshot manifest — a per-file
+  // manifest hashed off a churning tree must never seed the content-identity
+  // PASS ledger or the delta scope (fail-safe: consumers treat the absent
+  // manifest as "cannot prove unchanged" → full scope, no short-circuits).
+  snapshotUnstable?: { recaptures: number };
+  // Manifest sampled inside the gate's accepted diff/tree verification round.
+  // null explicitly disables delta/content-identity artifacts after an unstable
+  // capture; undefined preserves the direct Orchestrator/bench fallback.
+  capturedSnapshotFiles?: Record<string, SnapshotFileEntry> | null;
   // Slice A (P1): files FOREIGN to this session (byte-identical to its SessionStart baseline,
   // not tool-owned). Findings on these demote to advisory INFO in the aggregator. Folded into
   // the review cache key so a scoped result can't be served to a differently-scoped run (M3).
@@ -1066,16 +1077,26 @@ export class Orchestrator {
         appTopology = [];
       }
     }
-    // T1 (field report 2026-07-03): capture the per-file manifest of the tree state
-    // the panel is about to review (cheap: hashes only the diff's files). Computed
-    // BEFORE the cache key because the T4 delta scope derived from it must be part
-    // of the key — a PASS produced under a NARROW gating scope must never be served
-    // to a run that would review the full scope. Attached only to the full-panel
-    // return; skip/checks/error paths deliberately leave it undefined.
-    const reviewedSnapshotFiles: Record<string, SnapshotFileEntry> = snapshotReviewedFiles(
-      repo,
-      facts.files.map((f) => f.path),
-    );
+    // T1 (field report 2026-07-03): use the per-file manifest captured inside the
+    // gate's accepted diff/tree verification round. Direct Orchestrator/bench
+    // callers have no gate snapshot and retain the local fallback. Resolved BEFORE
+    // the cache key because the T4 delta scope derived from it must be part of the
+    // key — a PASS produced under a NARROW gating scope must never be served to a
+    // run that would review the full scope. Attached only to the full-panel return;
+    // skip/checks/error paths deliberately leave it undefined.
+    // Snapshot-race fix: an UNSTABLE capture (tree changing between the gate's
+    // verify rounds) must not produce a manifest at all — variable-level
+    // undefined, never {} (an empty record would persist a truthy {files:{}}
+    // snapshot and make computeDeltaScope return a near-empty gating scope,
+    // demoting fresh blocking findings — fail-open; round-2 plan review).
+    const reviewedSnapshotFiles: Record<string, SnapshotFileEntry> | undefined =
+      this.input.snapshotUnstable || this.input.capturedSnapshotFiles === null
+        ? undefined
+        : (this.input.capturedSnapshotFiles ??
+          snapshotReviewedFiles(
+            repo,
+            facts.files.map((f) => f.path),
+          ));
     // --- Lore v1 (2026-07-09): per-repo curated project knowledge (draft→canon).
     // Load/classify/select/render + run the canon-promotion guard, ALL inside one
     // try/catch — lore is optional context (spec, "Failure behavior"): any error
@@ -1196,7 +1217,9 @@ export class Orchestrator {
     const deltaScope =
       this.input.reportMode !== "one-shot" &&
       this.input.config.phases.review.deltaReview !== false &&
-      !this.input.diffIncomplete
+      !this.input.diffIncomplete &&
+      // Unstable snapshot → no manifest → no delta narrowing (full scope).
+      reviewedSnapshotFiles !== undefined
         ? computeDeltaScope(
             reviewedSnapshotFiles,
             opts.reviewedSnapshot ?? null,
@@ -1373,6 +1396,8 @@ export class Orchestrator {
     const ledger = opts.passLedger;
     if (
       ledger &&
+      // Unstable snapshot → no manifest → content identity unprovable → full review.
+      reviewedSnapshotFiles !== undefined &&
       this.input.reportMode !== "one-shot" &&
       !this.input.diffIncomplete &&
       cacheEnabled &&
@@ -3190,6 +3215,7 @@ export class Orchestrator {
         ...(this.input.workspaceUnsettled
           ? { workspace_unsettled: this.input.workspaceUnsettled }
           : {}),
+        ...(this.input.snapshotUnstable ? { snapshot_unstable: this.input.snapshotUnstable } : {}),
         ...(docsReview ? { docs_review: true } : {}),
         ...(agentLessonRecurrences.length
           ? { agent_lesson_recurrences: agentLessonRecurrences }

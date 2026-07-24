@@ -1052,6 +1052,7 @@ export function validateMatrixPreregistration(
   config: ReviewgateConfig,
   preregistration: unknown,
   corpus: string,
+  expectedRelease = `v${RG_VERSION}`,
 ): string[] {
   const parsed = BenchPreregistrationSchema.safeParse(preregistration);
   if (!parsed.success) {
@@ -1065,7 +1066,7 @@ export function validateMatrixPreregistration(
   if (stableJson(prereg.command) !== stableJson(expectedCommand)) {
     reasons.push("command differs from preregistration");
   }
-  if (prereg.release !== `v${RG_VERSION}`) reasons.push("release version differs");
+  if (prereg.release !== expectedRelease) reasons.push("release version differs");
 
   const corpusRoot = resolve(input.repoRoot, corpus);
   let actualCases: LoadedCase[];

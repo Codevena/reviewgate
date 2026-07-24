@@ -341,6 +341,14 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
         "",
       ]
     : [];
+  // Snapshot-race fix: the paired verify rounds never saw two consecutive agreeing
+  // reads — a concurrent writer kept mutating the tree during capture. Advisory.
+  const snapshotUnstableBanner = r.snapshot_unstable
+    ? [
+        `> ⚠ **Snapshot unstable:** the working tree kept changing while the review diff was being captured (re-captured ${r.snapshot_unstable.recaptures}×, no two consecutive reads agreed). This review reflects the LATEST read; findings may describe TRANSIENT state written by a parallel process (e.g. an in-place mutation test or codegen). If a finding does not match the committed code, suspect the concurrent writer and re-run after it finishes. Guaranteed fix: run mutation tests in a copy/worktree, never in-place concurrently with turn-end.`,
+        "",
+      ]
+    : [];
   // Agent Lessons (2026-07-04): pre-rendered + sanitized recurrence notes (a finding this round
   // matches a recurring accepted+fixed lesson). Render-only; the verdict/counts are unaffected.
   const agentLessonRecurrenceBanner = (r.agent_lesson_recurrences ?? []).flatMap((note) => [
@@ -455,6 +463,7 @@ function renderMd(r: PendingReport, mode: "gate" | "one-shot", collapseLowTrust 
     ...singleReviewerBanner,
     ...largeDiffBanner,
     ...unsettledBanner,
+    ...snapshotUnstableBanner,
     ...agentLessonRecurrenceBanner,
     ...fragmentationBanner,
     ...loreBanner,

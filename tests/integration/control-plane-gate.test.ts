@@ -151,7 +151,12 @@ describe("control-plane gate integration", () => {
   it("a config-only Bash mutation cannot take the unchanged-tree fast exit", async () => {
     const repo = await repoWithApprovedPolicy("allow");
     writePolicy(repo, "allow", "candidate-model"); // no PostToolUse trigger
-    const out = await runGate({ repoRoot: repo, hook: "stop", hookStdinRaw: "{}" });
+    const out = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+    });
     const decision = JSON.parse(out.stdout || "{}") as { decision?: string; reason?: string };
     expect(decision.decision).toBe("block");
     expect(decision.reason).toContain("GATE POLICY CHANGED");
@@ -176,6 +181,7 @@ describe("control-plane gate integration", () => {
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: warnReviewer() },
       sandboxModeOverride: "off",
@@ -209,6 +215,7 @@ describe("control-plane gate integration", () => {
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: cleanReviewer() },
       sandboxModeOverride: "off",
@@ -238,6 +245,7 @@ describe("control-plane gate integration", () => {
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       providerOverrides: { codex: quotaReviewer() },
       sandboxModeOverride: "off",

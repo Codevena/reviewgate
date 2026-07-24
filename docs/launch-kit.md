@@ -8,7 +8,7 @@ website and evidence immediately before publishing.
 - Website: https://reviewgate.codevena.dev/
 - GitHub: https://github.com/Codevena/reviewgate
 - npm: https://www.npmjs.com/package/reviewgate
-- Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.12
+- Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.13
 - Evidence: https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md
 - Demo: https://github.com/Codevena/reviewgate#reviewgate
 
@@ -56,7 +56,7 @@ a clean pass.
 >
 > Website: https://reviewgate.codevena.dev/
 > Source: https://github.com/Codevena/reviewgate
-> Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.12
+> Release: https://github.com/Codevena/reviewgate/releases/tag/v0.1.0-alpha.13
 
 ## Reddit / LocalLLaMA draft
 

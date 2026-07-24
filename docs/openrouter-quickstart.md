@@ -6,7 +6,7 @@ This path needs no reviewer CLI. You still need git, a supported coding-agent ho
 ## Install and configure
 
 ```bash
-npm i -g reviewgate@0.1.0-alpha.12
+npm i -g reviewgate@0.1.0-alpha.13
 cd your-git-repository
 export OPENROUTER_API_KEY='…'
 reviewgate init --host both

@@ -42,7 +42,12 @@ describe("Codex hook wire protocol", () => {
   it("emits the Codex Stop continuation shape on fail-closed errors", async () => {
     const repo = tmp();
     const result = await runGateSafe(
-      { repoRoot: repo, hook: "stop", hookStdinRaw: JSON.stringify({ stop_hook_active: true }) },
+      {
+        repoRoot: repo,
+        hook: "stop",
+        hookStdinRaw: JSON.stringify({ stop_hook_active: true }),
+        snapshotVerifyOpts: { dwellMs: 0 },
+      },
       async () => {
         throw new Error("synthetic failure");
       },

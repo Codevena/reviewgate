@@ -26,6 +26,7 @@ describe("gate setup budget", () => {
     const out = await runGate({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       setupBudgetMs: 60, // tiny so the test is fast
       // Keep this test scoped to the intended git/diff phase. A real control-plane
@@ -48,6 +49,7 @@ describe("gate setup budget", () => {
     const out = await runGateSafe({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       setupBudgetMs: 60,
       loadConfigFn: () => new Promise<never>(() => {}), // config import wedged
@@ -71,6 +73,7 @@ describe("gate setup budget", () => {
     const out = await runGateSafe({
       repoRoot: repo,
       hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
       hookStdinRaw: "{}",
       setupBudgetMs: 300,
       loadConfigFn: async (o) => {
