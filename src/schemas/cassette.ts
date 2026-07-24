@@ -34,6 +34,11 @@ export const ReviewResultSchema = z.object({
   rawText: z.string().optional(),
   status: ReviewStatusSchema,
   statusDetail: z.string().optional(),
+  // Honest-inference flag (2026-07-24): must survive record→replay, else zod's
+  // unknown-key stripping would replay a recorded gemini silent-stall as a
+  // CONFIDENT quota and reintroduce the dishonest "quota until" label in
+  // bench/demo replay mode.
+  quotaInferred: z.boolean().optional(),
 });
 
 export const CassetteEntrySchema = z

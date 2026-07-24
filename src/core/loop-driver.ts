@@ -2721,9 +2721,11 @@ export class LoopDriver {
     const reviewers = this.i.config.phases.review.reviewers ?? [];
     const providers = [...new Set(reviewers.map((r) => r.provider))];
     const store = new QuotaCooldownStore(this.i.repoRoot);
-    // Only GENUINE quota caps belong in this "quota-degraded panel" note (per its contract) —
-    // a timeout / slow-error backoff is a different degradation, surfaced via formatCoverageNote.
-    // Back-compat: an entry with no recorded reason is treated as quota.
+    // Quota-class caps belong in this "quota-degraded panel" note: banner-confirmed
+    // ("quota"), legacy entries with no recorded reason, AND inferred quota (a
+    // zero-output stall guessed as a cap — it benches the reviewer identically, so
+    // it degrades the panel identically). A timeout / slow-error backoff is a
+    // different degradation, surfaced via formatCoverageNote.
     const capped = providers
       .map((p) => ({
         p: p as string,
@@ -2732,7 +2734,8 @@ export class LoopDriver {
       }))
       .filter(
         (x): x is { p: string; until: string; reason: CooldownReason | undefined } =>
-          x.until !== null && (x.reason === "quota" || x.reason === undefined),
+          x.until !== null &&
+          (x.reason === "quota" || x.reason === "inferred-quota" || x.reason === undefined),
       );
     if (capped.length === 0) return null;
     const list = capped.map((x) => `${x.p} (capped until ${x.until})`).join(", ");

@@ -291,12 +291,16 @@ describe("GeminiAdapter.review — silent stall (agy quota hang)", () => {
     const hangBin = makeFakeBin(dir, "agy-hang.sh", "#!/usr/bin/env bash\nsleep 30\n");
     const promptFile = join(dir, "prompt.txt");
     writeFileSync(promptFile, "review this");
-    const adapter = new GeminiAdapter({ binPath: hangBin });
+    // Small probeTimeoutMs: the discriminator probe hits the SAME hanging fake
+    // (silent too → the quota inference stands); the default 15s probe budget
+    // would push this test past its cap. Probe behavior itself is covered in
+    // tests/unit/gemini-silent-stall-probe.test.ts.
+    const adapter = new GeminiAdapter({ binPath: hangBin, probeTimeoutMs: 800 });
     const res = await adapter.review({
       // Tiny budget → the zero-byte watchdog (zeroByteWatchdogMs = budget) trips on
       // its first poll and SIGKILLs the silent hang; the wall-timeout backstop sits a
       // buffer above. The watchdog polls on a coarse 5s interval (spawn.ts), so allow
-      // up to ~6s for the kill — see the explicit bun test timeout below.
+      // up to ~6s per kill (review + probe) — see the explicit bun test timeout below.
       cfg: { enabled: true, auth: "oauth", model: "ignored", timeoutMs: 500 },
       reviewerId: "gemini-architecture",
       promptFile,
@@ -307,8 +311,11 @@ describe("GeminiAdapter.review — silent stall (agy quota hang)", () => {
     });
     expect(res.status).toBe("quota-exhausted");
     expect(res.verdict).toBe("ERROR");
-    expect(res.statusDetail).toContain("TTY only");
-  }, 12_000);
+    // Honest inference contract (2026-07-24): the classification is a GUESS and
+    // says so — quotaInferred rides along, and the detail names the TTY-only banner.
+    expect(res.quotaInferred).toBe(true);
+    expect(res.statusDetail).toMatch(/TTY.only/);
+  }, 20_000);
 });
 
 describe("GeminiAdapter.complete (judge completion)", () => {

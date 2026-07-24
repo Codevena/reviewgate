@@ -30,6 +30,10 @@ import {
 
 export interface GeminiAdapterOptions {
   binPath?: string;
+  // Test seam for the silent-stall discriminator probe budget (default
+  // AGY_PROBE_TIMEOUT_MS). A probe test with a deliberately-silent fake agy
+  // would otherwise wait the full 15s inside bun's 5s per-test cap.
+  probeTimeoutMs?: number;
 }
 
 // agy (Antigravity) is architecturally a coding AGENT, not a one-shot completion
@@ -44,6 +48,11 @@ export const AGY_REVIEW_TIMEOUT_CAP_MS = 90_000;
 // Extra headroom on the spawn wall-timeout so agy's OWN --print-timeout fires first
 // and prints its detectable sentinel, rather than being SIGKILLed mid-output.
 const AGY_SPAWN_BUFFER_MS = 10_000;
+// Budget for the silent-stall discriminator probe (field incident 2026-07-23):
+// a healthy agy answers a trivial no-repo prompt well inside this; a quota'd agy
+// hangs silently on EVERY piped request (its banner is TTY-only), so a silent
+// probe strengthens the quota inference while ANY probe output refutes it.
+export const AGY_PROBE_TIMEOUT_MS = 15_000;
 
 // agy's stdout sentinel when it abandons an agentic loop at --print-timeout WITHOUT
 // producing a review (it still exits 0). Anchored at the start so a genuine review
@@ -96,8 +105,65 @@ export function classifyAgyOutcome(input: {
 export class GeminiAdapter implements ProviderAdapter {
   readonly id = "gemini" as const;
   private readonly binPath: string;
+  private readonly probeTimeoutMs: number;
   constructor(opts: GeminiAdapterOptions = {}) {
     this.binPath = opts.binPath ?? "agy";
+    this.probeTimeoutMs = opts.probeTimeoutMs ?? AGY_PROBE_TIMEOUT_MS;
+  }
+
+  // Discriminator probe after a silent stall: quota throttles ALL requests, a
+  // prompt-specific hang (agentic crawl, transport flake) does not. Ask agy a
+  // trivial question with NO repo access (cwd = the run temp dir, no --add-dir).
+  // Three outcomes:
+  //   quota-banner — the probe reply IS a quota/usage banner (a quota'd agy CAN
+  //                  print one on stdout and still exit 0 — the F-043 class):
+  //                  the cap is now CONFIRMED, not inferred; carry the banner
+  //                  text so a parseable reset time can win downstream.
+  //   alive        — any OTHER stdout: agy works, the review stall was a hang.
+  //   silent       — zero output again: consistent with quota (inference stands).
+  // Best-effort by contract: every failure path returns "silent"; this must
+  // never throw a new error out of review(). Probe files live in the run temp
+  // dir the caller already reaps.
+  private async probeAlive(
+    run: string,
+    input: ReviewInput,
+  ): Promise<{ kind: "alive" | "silent" } | { kind: "quota-banner"; banner: string }> {
+    try {
+      const promptFile = join(run, "probe.txt");
+      writeFileSync(promptFile, "Reply with exactly: OK\n");
+      const outFile = join(run, "probe-out.txt");
+      const errFile = join(run, "probe-err.log");
+      const res = await spawnSafely({
+        command: this.binPath, // the CONFIGURED binary, never a bare "agy" (plan-gate R1-W1)
+        args: [
+          "-p",
+          "--dangerously-skip-permissions",
+          "--print-timeout",
+          `${this.probeTimeoutMs}ms`,
+        ],
+        env: scrubReviewerEnv(process.env),
+        cwd: run,
+        stdinFile: promptFile,
+        stdoutFile: outFile,
+        stderrFile: errFile,
+        timeoutMs: this.probeTimeoutMs + AGY_SPAWN_BUFFER_MS,
+        zeroByteWatchdogMs: this.probeTimeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+        ...(input.sandbox ? { sandbox: input.sandbox } : {}),
+      });
+      void res; // exit code is irrelevant: only WHAT agy produced matters
+      const outText = readFileSafe(outFile);
+      const errText = readFileSafe(errFile);
+      // Banner check FIRST (Claude-B review): probe stdout uses the banner-shaped
+      // channel-aware matcher (a probe answer could theoretically quote quota
+      // wording mid-sentence); stderr is agy's own diagnostic channel → full scan.
+      if (isQuotaBanner(outText) || isQuotaExhausted(errText)) {
+        return { kind: "quota-banner", banner: (outText.trim() || errText.trim()).slice(0, 1000) };
+      }
+      return { kind: outText.trim().length > 0 ? "alive" : "silent" };
+    } catch {
+      return { kind: "silent" };
+    }
   }
 
   async preflight(cfg: ProviderConfig): Promise<Preflight> {
@@ -182,8 +248,43 @@ export class GeminiAdapter implements ProviderAdapter {
         outText,
         errText,
       });
-      const status = outcome.status;
-      if (status !== "ok") {
+      if (outcome.status !== "ok") {
+        let status: ReviewStatus = outcome.status;
+        // Both agy quota-exhausted classifications here are GUESSES (no banner
+        // text was ever seen — agy prints it TTY-only): the silent stall AND the
+        // print-timeout sentinel. Carry that honestly so the cooldown records
+        // reason "inferred-quota" instead of asserting a confident "quota until"
+        // (field incident 2026-07-23: a crawl-hang misreported as a quota cap).
+        let quotaInferred = outcome.silentStall || isAgyPrintTimeout(outText);
+        let statusDetail = outcome.silentStall
+          ? "agy produced no output and was killed by the watchdog/timeout — agy prints its quota/usage banner to the TTY only, so a silent stall is treated as an INFERRED quota cap (cooling down)."
+          : isAgyPrintTimeout(outText)
+            ? "agy hit its capped print-timeout inside an agentic tool loop without producing a review — treated as cooldown-worthy (inferred, not banner-confirmed) so this doomed reviewer is skipped (failover) instead of re-run every iteration."
+            : errText.slice(0, 1000) || outText.slice(0, 1000);
+        // Silent stall is AMBIGUOUS (quota vs prompt-specific hang) — run the
+        // no-repo discriminator probe, unless the bench single-spawn contract
+        // (disableRetries) forbids a second physical invocation or the gate
+        // deadline already fired. The sentinel path gets NO probe: agy
+        // demonstrably ran its loop, so it is not globally throttled.
+        if (outcome.silentStall && input.disableRetries !== true && !input.signal?.aborted) {
+          const probe = await this.probeAlive(run, input);
+          if (probe.kind === "quota-banner") {
+            // The probe reply IS a quota banner → the cap is CONFIRMED, no longer
+            // a guess. Carry the banner text: cooldownEffectFor runs
+            // parseQuotaResetAt over statusDetail, so a parseable reset wins as
+            // source "parsed" instead of a guessed backoff (Claude-B review).
+            quotaInferred = false;
+            statusDetail = `agy went silent on the review prompt and its follow-up no-repo probe returned a quota/usage banner — CONFIRMED quota cap. Probe output: ${probe.banner}`;
+          } else if (probe.kind === "alive") {
+            status = "timeout";
+            quotaInferred = false;
+            statusDetail =
+              "agy went silent on the review prompt but answered a follow-up no-repo probe — NOT a quota cap; treating as a hung review (timeout backoff).";
+          } else {
+            statusDetail =
+              "agy produced no output on the review AND stayed silent on a follow-up no-repo probe — consistent with a quota cap (inferred; agy prints its banner TTY-only). Cooling down.";
+          }
+        }
         return {
           reviewerId: input.reviewerId,
           verdict: "ERROR",
@@ -195,11 +296,8 @@ export class GeminiAdapter implements ProviderAdapter {
           // string and never reads the file back (it uses the in-memory rawText).
           rawEventsPath: outFile,
           status,
-          statusDetail: outcome.silentStall
-            ? "agy produced no output and was killed by the watchdog/timeout — agy prints its quota/usage banner to the TTY only, so a silent stall is treated as a quota cap (cooling down)."
-            : isAgyPrintTimeout(outText)
-              ? "agy hit its capped print-timeout inside an agentic tool loop without producing a review — treated as cooldown-worthy so this doomed reviewer is skipped (failover) instead of re-run every iteration."
-              : errText.slice(0, 1000) || outText.slice(0, 1000),
+          ...(quotaInferred ? { quotaInferred: true } : {}),
+          statusDetail,
         };
       }
       const { out, mapped, rawText } = this.parse(

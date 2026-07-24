@@ -57,8 +57,12 @@ export const BACKOFF_SCHEDULE_MS = [5 * 60_000, 20 * 60_000, BACKOFF_CAP_MS];
  */
 export const BACKOFF_STREAK_STALE_MS = 24 * 60 * 60_000;
 
-/** The recorded cause of a default-source backoff. A "parsed" reset is always a real quota. */
-export type CooldownReason = "quota" | "timeout" | "error";
+/** The recorded cause of a default-source backoff. A "parsed" reset is always a real
+ * quota. "inferred-quota" = the provider's quota-exhausted status was a GUESS (e.g.
+ * agy's silent zero-output stall — its banner is TTY-only and a crawl-hang looks
+ * identical), so the label must say so instead of asserting a confident "quota until"
+ * (field incident 2026-07-23). */
+export type CooldownReason = "quota" | "inferred-quota" | "timeout" | "error";
 
 /**
  * Honest user-facing prefix for a cooled-down provider's reset time. ONLY a genuine
@@ -73,6 +77,8 @@ export function cooldownReasonLabel(reason: CooldownReason | undefined): string 
       return "timed out — backing off until";
     case "error":
       return "errored — backing off until";
+    case "inferred-quota":
+      return "produced no output (quota inferred, unconfirmed — its banner is TTY-only); backing off until";
     default:
       return "quota until";
   }

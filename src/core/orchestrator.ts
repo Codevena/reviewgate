@@ -496,9 +496,13 @@ export function cooldownEffectFor(
 ): CooldownEffect | null {
   if (res.status === "quota-exhausted") {
     const parsed = parseQuotaResetAt(res.statusDetail, now);
+    // quotaInferred is consulted ONLY on the no-parsed-reset branch: a parseable
+    // reset time is a real provider banner and always wins as source "parsed".
+    // Without one, an INFERRED quota (adapter guessed off a zero-output stall)
+    // records the honest "inferred-quota" reason instead of asserting "quota".
     return parsed
       ? { provider, resetAt: parsed, source: "parsed" }
-      : { provider, source: "default", reason: "quota" };
+      : { provider, source: "default", reason: res.quotaInferred ? "inferred-quota" : "quota" };
   }
   if (res.status === "ok") return { provider, clear: true };
   if (res.status === "timeout" && timeoutCooldownMs > 0) {

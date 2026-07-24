@@ -101,6 +101,12 @@ export interface ReviewResult {
   rawText?: string;
   status: ReviewStatus;
   statusDetail?: string;
+  // True when a "quota-exhausted" status is a GUESS rather than a banner/429-
+  // confirmed fact — e.g. agy's silent zero-output stall (its quota banner is
+  // TTY-only, so a crawl-hang is byte-identical). The cooldown records reason
+  // "inferred-quota" for these so the user-facing label never asserts a
+  // confident "quota until" off an inference (field incident 2026-07-23).
+  quotaInferred?: boolean;
 }
 
 /**
