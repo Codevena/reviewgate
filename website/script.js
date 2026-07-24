@@ -148,8 +148,44 @@ if ("IntersectionObserver" in window) {
   document.querySelectorAll(".reveal").forEach((element) => element.classList.add("visible"));
 }
 
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const terminal = document.querySelector("[data-replay]");
+if (terminal) {
+  const lines = [...terminal.querySelectorAll(".t-line")];
+  let lineTimers = [];
+  const clearLineTimers = () => {
+    lineTimers.forEach((timer) => window.clearTimeout(timer));
+    lineTimers = [];
+  };
+  const play = () => {
+    clearLineTimers();
+    if (reducedMotion) {
+      lines.forEach((line) => line.classList.remove("t-hidden"));
+      return;
+    }
+    lines.forEach((line) => line.classList.add("t-hidden"));
+    lines.forEach((line, index) => {
+      lineTimers.push(window.setTimeout(() => line.classList.remove("t-hidden"), 260 + index * 340));
+    });
+  };
+  terminal.querySelector(".replay-btn")?.addEventListener("click", play);
+  if ("IntersectionObserver" in window && !reducedMotion) {
+    lines.forEach((line) => line.classList.add("t-hidden"));
+    const terminalObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          terminalObserver.disconnect();
+          play();
+        }
+      });
+    }, { threshold: .3 });
+    terminalObserver.observe(terminal);
+  }
+}
+
 const readout = document.querySelector("#cursor-readout");
-if (readout && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+if (readout && !reducedMotion) {
   window.addEventListener("pointermove", (event) => {
     const x = String(Math.round(event.clientX)).padStart(4, "0");
     const y = String(Math.round(event.clientY)).padStart(4, "0");

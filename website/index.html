@@ -18,7 +18,7 @@
   <meta name="twitter:title" content="Reviewgate — Nothing passes unseen">
   <meta name="twitter:description" content="The native verification loop for Claude Code and Codex agents.">
   <meta name="twitter:image" content="https://reviewgate.codevena.dev/screenshots/desktop.png">
-  <title>Reviewgate — Nothing passes unseen</title>
+  <title>Reviewgate — AI code review gate for Claude Code &amp; Codex</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="script.js" defer></script>
@@ -36,7 +36,7 @@
       <a href="#setup">Setup</a>
     </nav>
     <div class="top-actions">
-      <span class="live"><i></i>Enforcement online</span>
+      <span class="live"><i></i>Fail-closed · Alpha</span>
       <a class="github-link" href="https://github.com/Codevena/reviewgate" aria-label="Reviewgate on GitHub">GitHub ↗</a>
       <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="mobile-menu">Menu</button>
     </div>
@@ -56,7 +56,7 @@
       <div class="tunnel" aria-hidden="true"></div>
       <span class="hero-code" id="cursor-readout">POINTER 0000:0000 / SIGNAL LOCKED</span>
       <div class="hero-meta shell">
-        <p class="eyebrow">Blacksite protocol / Independent code verification</p>
+        <p class="eyebrow">Stop-hook interception / Independent code verification</p>
         <p class="coordinates">Claude Code + Codex / <b>Native stop enforcement</b></p>
       </div>
       <h1 class="shell"><span>Nothing</span><span>passes</span><span>unseen.</span></h1>
@@ -66,7 +66,7 @@
         <p>Turn intercepted. One blocking finding returned to the coding agent.</p>
       </article>
       <div class="hero-bottom shell">
-        <p>Reviewgate sits between <strong>“code written”</strong> and <strong>“turn complete.”</strong> It captures the actual change, runs independent reviewers and keeps non-PASS outcomes visible.</p>
+        <p><strong>Reviewgate is an automated code-review gate for Claude Code and Codex.</strong> Native hooks intercept the agent between “code written” and “turn complete,” run independent reviewers on the actual diff and block the turn until findings are resolved.</p>
         <div class="command" data-copy="npm i -g reviewgate">
           <span>›</span><code>npm i -g reviewgate</code><button type="button">Copy</button>
         </div>
@@ -160,8 +160,24 @@
         <div class="metrics">
           <div class="metric"><b>1 CRITICAL</b><span>Real SQL-injection finding · iteration 1</span></div>
           <div class="metric"><b>PASS / 02</b><span>Accepted fix · parameterized query · re-review</span></div>
+          <div class="metric"><b>−16.7pp</b><span>Clean-run false positives with critic on · recall unchanged</span></div>
           <div class="metric"><b>SHA-256</b><span>Cassette checksum + verified audit chains</span></div>
-          <small>The gate and verdict path execute live; only the two recorded OpenRouter responses replay. Alpha.12 bench v2: 30 cases × 3 repeats with raw artifacts; critic reduced clean-FP by 16.7pp at unchanged recall. Still alpha, not a leaderboard.</small>
+          <small>The gate and verdict path execute live; only the two recorded OpenRouter responses replay. Critic impact measured in Alpha.12 bench v2: 30 cases × 3 repeats with raw artifacts. Still alpha, not a leaderboard.</small>
+        </div>
+      </div>
+      <div class="proof-terminal shell reveal">
+        <div class="terminal" data-replay>
+          <header><span>Recorded run / Alpha.11 replay</span><button class="replay-btn" type="button">Replay</button></header>
+          <pre aria-label="Condensed transcript of the recorded Alpha.11 gate run"><code><span class="t-line"><span class="code-prompt">$</span> bash assets/demo/demo.sh  <span class="code-comment"># reviewgate@0.1.0-alpha.11</span></span>
+<span class="t-line">▸ Stop hook — turn intercepted · diff captured</span>
+<span class="t-line">▸ Panel: deepseek-v4-flash via OpenRouter · pinned upstream</span>
+<span class="t-line t-alert">✖ CRITICAL sql-injection — string-concatenated query · iteration 01</span>
+<span class="t-line t-alert">⛔ GATE CLOSED — finding F-001 returned to the coding agent</span>
+<span class="t-line"><span class="code-prompt">$</span> <span class="code-comment"># agent fixes the query: bind parameter · decision F-001 accepted / fixed</span></span>
+<span class="t-line">▸ Re-review · iteration 02</span>
+<span class="t-line t-ok">✓ GATE OPEN — PASS</span>
+<span class="t-line t-ok">✓ audit verify — every event hash matches</span></code></pre>
+          <p class="terminal-note">Condensed transcript of the recorded Alpha.11 run. The gate, decision ledger and audit chain execute live; only the two provider responses replay. Provenance, hashes and the runnable script: <a href="https://github.com/Codevena/reviewgate/blob/master/docs/evidence.md">docs/evidence.md ↗</a></p>
         </div>
       </div>
     </section>
@@ -282,7 +298,7 @@
     <section class="section deploy" id="deploy">
       <div class="deploy-inner shell reveal">
         <p class="section-label">Deployment order / One command</p>
-        <h2>Arm the<br><em>blacksite.</em></h2>
+        <h2>Arm the<br><em>gate.</em></h2>
         <div class="command" data-copy="npm i -g reviewgate">
           <span>›</span><code>npm i -g reviewgate</code><button type="button">Copy command</button>
         </div>
