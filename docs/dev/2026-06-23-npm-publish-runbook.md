@@ -72,7 +72,27 @@ auto-assigned `latest`). While the only releases are alphas, the `publish-npm` j
 Once a **stable** release exists, switch prereleases to `--tag next` so they don't move `latest`.
 
 ## Verify
+
+⚠️ **Do NOT `npm i -g reviewgate` on the dev machine.** npm's global prefix here is
+`/Users/markus/.local`, so a global install writes `/Users/markus/.local/bin/reviewgate` —
+which IS the symlink to this repo's `dist/reviewgate` that every other repo resolves
+through. It would be replaced by npm's launcher shim. Smoke-test in an isolated prefix:
+
 ```bash
-npm i -g reviewgate@<version>
-reviewgate doctor
+smoke="$(mktemp -d)"
+npm i --prefix "$smoke" reviewgate@<version> --no-audit --no-fund
+"$smoke/node_modules/.bin/reviewgate" --version   # must print <version>
+"$smoke/node_modules/.bin/reviewgate" doctor      # run from a gated repo
 ```
+
+The `--version` line is the real assertion: the launcher SPAWNS the platform binary, so a
+correct version proves the whole optionalDependency → binary path resolved. Also confirm
+`doctor`'s tree-sitter grammar path points **inside the installed platform package** — that
+is the `bun --compile` wasm trap, and `bun test` cannot catch it.
+
+**Propagation lag:** immediately after publish, the registry serves the metadata before the
+tarballs. The optional platform package then fails to fetch — and optional deps fail
+**silently**: you get `added 1 package` (after minutes of retries) and the launcher reports
+"unsupported platform". This is not a broken release. Wait a few minutes and reinstall until
+you see `added 2 packages`. To settle it fast, install the **previous** version the same way
+as a control — if that pulls 2 packages in ~1s, the new one is just lagging.
