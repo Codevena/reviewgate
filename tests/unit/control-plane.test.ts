@@ -334,4 +334,99 @@ describe("gate policy control plane", () => {
     expect(reverted.change).toBeNull();
     expect((await controlPlaneStatus(repo, envFor(home))).state?.pending).toBeNull();
   });
+
+  it("delivers the approval notice once per candidate and never refreshes the review timestamp", async () => {
+    const repo = temp("rg-control-once-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-model' } } }");
+
+    const first = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    const a = await finalizeControlPlaneReview(repo, first, envFor(home));
+    expect(a).toMatchObject({ kind: "approval-required", alreadyNotified: false });
+    const t1 = (await controlPlaneStatus(repo, envFor(home))).state?.pending?.reviewed_under_lkg_at;
+    expect(t1).not.toBeNull();
+
+    // Advance the wall clock past ISO millisecond resolution so a regression that
+    // re-stamps the timestamp is actually VISIBLE to the assertion below.
+    await Bun.sleep(5);
+
+    const second = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    const b = await finalizeControlPlaneReview(repo, second, envFor(home));
+    expect(b).toMatchObject({ kind: "approval-required", alreadyNotified: true });
+    expect(b.kind === "approval-required" && b.message).toContain("pending human approval");
+    const t2 = (await controlPlaneStatus(repo, envFor(home))).state?.pending?.reviewed_under_lkg_at;
+    expect(t2).toBe(t1 as string);
+
+    // The quiet path must still leave the candidate approvable by a human.
+    const challenge = `APPROVE ${second.observedEffectiveFingerprint?.slice(0, 12)}`;
+    await approveControlPlane(repo, challenge, envFor(home));
+    const approved = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(approved.change).toBeNull();
+    expect(approved.config.providers.codex.model).toBe("candidate-model");
+  });
+
+  it("re-arms the one-time notice when the config changes to a new candidate", async () => {
+    const repo = temp("rg-control-rearm-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-one' } } }");
+    const first = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(await finalizeControlPlaneReview(repo, first, envFor(home))).toMatchObject({
+      alreadyNotified: false,
+    });
+    const repeat = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(await finalizeControlPlaneReview(repo, repeat, envFor(home))).toMatchObject({
+      alreadyNotified: true,
+    });
+
+    // A DIFFERENT candidate is a different trust decision — the notice re-arms.
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-two' } } }");
+    const third = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(third.change?.reviewed_under_lkg_at).toBeNull();
+    expect(await finalizeControlPlaneReview(repo, third, envFor(home))).toMatchObject({
+      alreadyNotified: false,
+    });
+  });
+
+  // I-2: invariant 5 ("changed-during-review keeps blocking") had zero direct
+  // coverage. Resolve while NOTHING is pending (change: null) — gate.ts calls
+  // finalizeControlPlaneReview unconditionally, even on a null change — then
+  // write a real candidate AFTER that snapshot but BEFORE finalize runs, to
+  // simulate a config edit landing mid-review (e.g. a concurrent Bash write).
+  // This specific shape (stale `change: null`) exercises ONLY the top-level
+  // source-fingerprint guard at the top of finalizeControlPlaneReview: with
+  // `resolution.change` null, the function's very next line is
+  // `if (!resolution.change) return { kind: "unchanged" }`, so any later guard
+  // deeper in the function (which also independently detects a changed source
+  // once `resolution.change` is non-null) never runs — a mutation to the
+  // top-level guard alone is what this test is designed to catch.
+  it("refuses to report 'unchanged' when the config source changed mid-review", async () => {
+    const repo = temp("rg-control-mid-review-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+
+    // Resolve against the UNCHANGED config: nothing is pending.
+    const resolution = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(resolution.change).toBeNull();
+
+    // The config changes AFTER resolveControlPlaneConfig captured its snapshot
+    // but BEFORE finalizeControlPlaneReview is called with that stale snapshot.
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-model' } } }");
+
+    const finalized = await finalizeControlPlaneReview(repo, resolution, envFor(home));
+    expect(finalized.kind).toBe("changed-during-review");
+    expect(finalized.kind === "changed-during-review" && finalized.message).toContain(
+      "changed during the review",
+    );
+
+    // The new candidate must still be pending, untouched by the stale review.
+    const status = await controlPlaneStatus(repo, envFor(home));
+    expect(status.state?.pending?.classification).toBe("approval-required");
+    expect(status.state?.pending?.reviewed_under_lkg_at).toBeNull();
+  });
 });

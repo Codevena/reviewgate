@@ -7,6 +7,7 @@ import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import {
   type ControlPlaneResolution,
   finalizeControlPlaneReview,
+  renderPendingPolicyNotice,
   resolveControlPlaneConfig,
 } from "../../config/control-plane.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
@@ -410,24 +411,46 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   // A config candidate is outside the normal working-tree fingerprint by design,
   // so it explicitly forces the lock path. This covers Edit and Bash mutations,
   // committed and uncommitted, without feeding config source to reviewers.
-  const probe = policy?.change ? "review" : await stopProbe(input.repoRoot);
+  // Slice 3: a candidate that has ALREADY passed under the LKG no longer forces a
+  // review on every stop. Only a human TTY `reviewgate config approve` can clear
+  // it, so re-running the panel on an unchanged tree every turn burns the agent's
+  // turns on something it cannot resolve. An `invalid` candidate keeps forcing
+  // forever — that one the agent CAN fix, so it must stay fail-closed.
+  // The `classification === "invalid"` disjunct is defence-in-depth, not the
+  // load-bearing mechanism: an invalid candidate's `reviewed_under_lkg_at` is
+  // structurally always null (its only writer is unreachable for `invalid`, and
+  // `persistPending`'s carry-forward can't land a non-null marker on it since its
+  // `effective_fingerprint` is null), so `reviewed_under_lkg_at === null` alone
+  // already forces review for `invalid` too — this clause just says so explicitly.
+  const policyForcesReview =
+    policy?.change != null &&
+    (policy.change.classification === "invalid" || policy.change.reviewed_under_lkg_at === null);
+  const probe = policyForcesReview ? "review" : await stopProbe(input.repoRoot);
+  // Keep a settled candidate visible on the exits that never reach the block/allow
+  // messages below. Suppressed for `invalid` — "pending human approval" would be
+  // the wrong story for a config that simply does not parse. M-5: joined with
+  // "\n\n", same separator as every other site that appends this notice (see
+  // the block-path policyNotice below and the allow_stop signal join) — one
+  // shared renderer, one shared separator.
+  const pendingPolicyNotice =
+    policy?.change != null && policy.change.classification !== "invalid"
+      ? `\n\n${renderPendingPolicyNotice(input.repoRoot, policy.approvedEffectiveFingerprint)}`
+      : "";
   if (probe === "skip-clean") {
     return {
       exitCode: 0,
       stdout: "",
-      stderr: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
+      stderr: `🟢 Reviewgate · GATE OPEN — No code changes since last review.${pendingPolicyNotice}`,
     };
   }
   if (probe === "skip-escalated") {
     // stopProbe's escalated standing-down branch (escalated + HEAD/tree unmoved
     // since the announce) PRODUCES this value; mapped here — never silently
-    // falls through to the green message. Exact copy per the plan (2026-07-03
-    // fail-open-remediation.md, Task 5 Step 3a).
+    // falls through to the green message.
     return {
       exitCode: 0,
       stdout: "",
-      stderr:
-        "🟠 Reviewgate · GATE STANDING DOWN — an escalation is pending human review (.reviewgate/ESCALATION.md). The escalated change-set has NOT been machine-reviewed; new work will re-arm the gate.",
+      stderr: `🟠 Reviewgate · GATE STANDING DOWN — an escalation is pending human review (.reviewgate/ESCALATION.md). The escalated change-set has NOT been machine-reviewed; new work will re-arm the gate.${pendingPolicyNotice}`,
     };
   }
   // probe === "review" → fall through to the lock path below.
@@ -1127,6 +1150,10 @@ async function runStopGate(
           policyNotice = `\n\n${finalized.message}`;
         }
         // "unchanged" (candidate reverted to LKG mid-batch) → no notice needed.
+        // NOTE: the else branch below deliberately keeps its own wording and does
+        // NOT use renderPendingPolicyNotice — it is reached when the run did not
+        // complete cleanly (policyReviewPassed !== true), which is a different
+        // story from a settled candidate waiting on a human.
       } else {
         policyNotice = `\n\n🔐 Gate policy candidate remains pending. Code is still being reviewed under approved policy ${policy.approvedEffectiveFingerprint.slice(0, 12)}; details: ${policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "")}.`;
       }
@@ -1165,9 +1192,9 @@ async function runStopGate(
       home: homedir(),
     });
     if (
-      finalized.kind === "approval-required" ||
       finalized.kind === "invalid" ||
-      finalized.kind === "changed-during-review"
+      finalized.kind === "changed-during-review" ||
+      (finalized.kind === "approval-required" && !finalized.alreadyNotified)
     ) {
       if (cfg.notify.desktop) notifyDesktop("Reviewgate", finalized.message);
       return {
@@ -1175,6 +1202,15 @@ async function runStopGate(
         stdout: JSON.stringify({ decision: "block", reason: finalized.message }),
         stderr: finalized.message,
       };
+    }
+    if (finalized.kind === "approval-required") {
+      // Slice 3: the human was already told once, in a blocked turn, and the
+      // candidate is unchanged since. Keep it visible but never spend another of
+      // the agent's turns on it — `reviewgate config approve` is TTY-only, so the
+      // agent has no way to clear this and would just re-block forever. M-5:
+      // "\n\n", matching the block path's policyNotice and pendingPolicyNotice
+      // above — one shared renderer, one shared separator.
+      signal = `${decision.reason}\n\n${finalized.message}`;
     }
     if (finalized.kind === "auto-approved") {
       signal = `${decision.reason}\n🔐 Gate policy ${finalized.classification === "strengthening" ? "strengthening" : "source-equivalent change"} adopted after this pass under the prior approved policy.`;

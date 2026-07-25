@@ -124,18 +124,19 @@ export function singleReviewerCheck(cfg: ReviewgateConfig): Check | null {
 }
 
 // loop.acknowledgePass turns every clean PASS into a one-time block so the agent
-// is TOLD the review passed. It is NOT agent-loop-safe: paired with a pending
-// policy candidate (a house-rule change awaiting TTY-only `config approve`) or an
-// actively-editing agent it re-blocks every turn, and an agent cannot clear the
-// nag itself. notify.desktop is the loop-safe way to surface a pass. Advisory
-// (warn), never a hard fail. Returns null when off (the default). (FlashBuddy field bug.)
+// is TOLD the review passed. Still not the recommended setting: with an actively-
+// editing agent it costs a turn on every clean round. Since slice 3 a pending
+// policy candidate no longer compounds it (the approval notice blocks once per
+// candidate, then only annotates), but notify.desktop remains the loop-safe way
+// to surface a pass. Advisory (warn), never a hard fail. Returns null when off
+// (the default). (FlashBuddy field bug.)
 export function acknowledgePassCheck(cfg: ReviewgateConfig): Check | null {
   if (!cfg.loop.acknowledgePass) return null;
   return {
     name: "loop.acknowledgePass",
     status: "warn",
     detail:
-      "acknowledgePass blocks every clean PASS for the agent to acknowledge — not agent-loop-safe. With a pending policy candidate (e.g. a house-rule change awaiting `reviewgate config approve`) or an actively-editing agent it re-nags every turn, and a TTY-only approval an agent can't run means the loop never clears itself.",
+      "acknowledgePass blocks every clean PASS for the agent to acknowledge — one extra turn per clean round, and with an actively-editing agent that is every turn. A pending policy candidate awaiting `reviewgate config approve` no longer compounds it (the notice blocks once per candidate, then only annotates), but notify.desktop reaches you without spending a turn.",
     hint: "Prefer loop.acknowledgePass:false + notify.desktop:true (the loop-safe pass notification).",
   };
 }

@@ -125,6 +125,34 @@ function cleanReviewer(): ProviderAdapter {
   };
 }
 
+// A clean reviewer that records how many times the panel actually ran. The point
+// of slice 3 is that a settled candidate stops re-reviewing an unchanged tree —
+// asserting only "the turn was allowed" would NOT catch a regression that keeps
+// paying for a full panel run on every stop.
+function countingCleanReviewer(): ProviderAdapter & { calls: number } {
+  const adapter: ProviderAdapter & { calls: number } = {
+    calls: 0,
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "stub", authMode: "oauth" as const, error: null };
+    },
+    async review(input: Parameters<ProviderAdapter["review"]>[0]): Promise<ReviewResult> {
+      adapter.calls += 1;
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "PASS",
+        findings: [],
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 0,
+        rawEventsPath: "",
+        status: "ok",
+      };
+    },
+  };
+  return adapter;
+}
+
 function quotaReviewer(): ProviderAdapter {
   return {
     id: "codex",
@@ -258,5 +286,167 @@ describe("control-plane gate integration", () => {
       readFileSync(join(repo, ".reviewgate", "control-plane.json"), "utf8"),
     );
     expect(control.pending.reviewed_under_lkg_at).toBeNull();
+  }, 30_000);
+
+  it("stops re-reviewing an unchanged tree once the candidate has passed under the LKG", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "a.ts"), "export const a = 7;\n");
+    writePolicy(repo, "allow", "candidate-model");
+    await runGate({
+      repoRoot: repo,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "a.ts") },
+      }),
+    });
+    const reviewer = countingCleanReviewer();
+    const first = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: reviewer },
+      sandboxModeOverride: "off",
+    });
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    expect(reviewer.calls).toBe(1);
+
+    // The load-bearing guard: pending.json is rewritten unconditionally by every
+    // full lock+orchestrator pass -- including a cache hit (orchestrator.ts's
+    // cache-hit branch still calls writeReport, just with an empty `runs` array,
+    // so it swaps in a fresh generated_at and a synthetic reviewers[0].id of
+    // "reviewgate" instead of the real "codex-security" from the first pass).
+    // The pre-lock skip-clean exit in gate.ts, by contrast, returns before
+    // Orchestrator or finalizeControlPlaneReview are ever reached, so it cannot
+    // touch this file. Snapshotting it here and asserting it is byte-identical
+    // after the second stop is what actually proves no full pass happened --
+    // unlike the stderr text below, which a repeat "approval-required" pass
+    // reproduces verbatim (see control-plane.ts's alreadyNotified branch), and
+    // unlike reviewer.calls, which a cache hit keeps flat regardless of whether
+    // a full pass ran.
+    //
+    // M-4: both this pending.json guard and the stderr assertions below only
+    // discriminate "settled candidate, no forced review" from "full pass ran"
+    // because `a.ts` above is left modified-but-UNCOMMITTED, so the stop diff
+    // stays non-empty and `dirty.flag` stays set going into the second stop.
+    // loop-driver.ts's no-dirty-flag branch (~line 961) returns a `reason`
+    // string byte-identical to the "No code changes since last review" text
+    // asserted below AND returns before Orchestrator/finalizeControlPlaneReview
+    // run, so it too would leave pending.json untouched. If a future edit
+    // commits `a.ts` in this fixture (clearing dirty.flag on its own), both
+    // guards go vacuous at once — they'd pass even if the settled-candidate
+    // skip this test targets were deleted, because the ordinary skip-clean
+    // exit would produce the identical observable outcome.
+    const pendingBefore = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
+
+    // Second stop, nothing changed: the candidate is settled, so the gate must NOT
+    // force another full panel run on something the agent cannot resolve.
+    const second = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: reviewer },
+      sandboxModeOverride: "off",
+    });
+    expect(second.stderr).toContain("No code changes since last review");
+    expect(second.stderr).toContain("pending human approval");
+    expect(reviewer.calls).toBe(1);
+    const pendingAfter = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
+    expect(pendingAfter).toBe(pendingBefore);
+  }, 30_000);
+
+  it("blocks once per candidate, then allows later passing turns with a quiet notice", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "a.ts"), "export const a = 11;\n");
+    writePolicy(repo, "allow", "candidate-model");
+    const trigger = (file: string) =>
+      runGate({
+        repoRoot: repo,
+        hook: "trigger",
+        hookStdinRaw: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: file } }),
+      });
+    const stop = (reviewer: ProviderAdapter) =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: reviewer },
+        sandboxModeOverride: "off",
+      });
+
+    await trigger(join(repo, "a.ts"));
+    const reviewer = countingCleanReviewer();
+    const first = await stop(reviewer);
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    expect(first.stderr).toContain("GATE POLICY CHANGED");
+
+    // New code, still nothing the agent can do about the candidate: the panel runs
+    // and the turn is ALLOWED, with the candidate merely annotated.
+    writeFileSync(join(repo, "a.ts"), "export const a = 12;\n");
+    await trigger(join(repo, "a.ts"));
+    const second = await stop(reviewer);
+    expect(second.stdout).toBe("");
+    expect(second.stderr).toContain("pending human approval");
+    expect(second.stderr).not.toContain("GATE POLICY CHANGED");
+    expect(reviewer.calls).toBe(2);
+  }, 30_000);
+
+  it("does not re-block an agent on a settled candidate even with acknowledgePass", async () => {
+    // The FlashBuddy field bug: acknowledgePass + a pending house-rule candidate
+    // re-blocked every single turn, and `config approve` is TTY-only.
+    // Note: this reproduces the bug end-to-end, but its second stop is idle (no
+    // code change) and so takes Task 2's `skip-clean` exit in gate.ts — it does
+    // NOT exercise Task 3's `approval-required` handling below.
+    const repo = await repoWithApprovedPolicy("allow", { acknowledgePass: true });
+    writeFileSync(join(repo, "a.ts"), "export const a = 13;\n");
+    writePolicy(repo, "allow", "candidate-model", { acknowledgePass: true });
+    await runGate({
+      repoRoot: repo,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "a.ts") },
+      }),
+    });
+    const stop = () =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: cleanReviewer() },
+        sandboxModeOverride: "off",
+      });
+    const first = await stop();
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    const second = await stop();
+    expect(second.stdout).toBe("");
+    expect(second.stderr).toContain("pending human approval");
+  }, 30_000);
+
+  it("keeps blocking every stop while the config is invalid", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "reviewgate.config.ts"), "export default { not: valid ts ;\n");
+    const stop = () =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: cleanReviewer() },
+        sandboxModeOverride: "off",
+      });
+    for (const _ of [1, 2]) {
+      const out = await stop();
+      expect((JSON.parse(out.stdout || "{}") as { decision?: string }).decision).toBe("block");
+      expect(out.stderr).toContain("GATE POLICY INVALID");
+    }
+    const control = JSON.parse(
+      readFileSync(join(repo, ".reviewgate", "control-plane.json"), "utf8"),
+    ) as { pending?: { reviewed_under_lkg_at: string | null } };
+    expect(control.pending?.reviewed_under_lkg_at).toBeNull();
   }, 30_000);
 });
