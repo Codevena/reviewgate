@@ -1,79 +1,112 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-07-25 (nach dem alpha.14-Release). Supersedes all earlier content in this file._
+_Last updated: 2026-07-26 (nach S2). Supersedes all earlier content in this file._
 
 ## One-line state
-`v0.1.0-alpha.14` is **released** — tagged, pushed, all 5 npm packages live via OIDC
-(`latest` = `0.1.0-alpha.14`), GitHub Release carries 4 tarballs + `SHA256SUMS.txt`, the
-published launcher is smoke-tested, and the local dev binary is rebuilt to match. Master is
-green at `29fb8b1` (2939 pass / 12 skip / 0 fail), working tree clean, nothing unreleased.
+`v0.1.0-alpha.14` is released and on npm; **S2 (the arming probe) is implemented and green
+but NOT pushed** — 4 commits sit on local `master` waiting for Markus's OK.
 
-## What this session did
-Read the previous handoff, found its central claim **false**, and shipped the release it
-actually needed.
+## What got done this session — and how it was verified
 
-**The previous handoff was stale.** It named "tag + release alpha.12/13" as THE NEXT TASK.
-Both were already tagged, pushed and on npm — alpha.13 since 2026-07-24T12:19Z. What was
-genuinely unreleased were the **10 commits after the alpha.13 tag**: the website
-readability/theming pass (`531de90`), the honest inferred-quota labelling + silent-agy-stall
-probe (`a745d37`), and slice 3 / agent-safe pending policy candidate (`b8565fa..19e1e73`).
-So the release cut was **alpha.14**, not alpha.12/13.
+**1. alpha.14 released** (pushed, verified). The previous handoff claimed "tag + release
+alpha.12/13" was the next task; both were already tagged, pushed and on npm (alpha.13 since
+2026-07-24T12:19Z) — verified via `git ls-remote --tags origin` and `npm view reviewgate
+versions`. The genuinely unreleased work was the 10 commits after the alpha.13 tag, cut as
+**alpha.14**: all 5 npm packages live via OIDC (`dist-tags.latest = 0.1.0-alpha.14`),
+GitHub Release with 4 tarballs + `SHA256SUMS.txt`, published launcher smoke-tested in an
+isolated prefix (`--version` printed `0.1.0-alpha.14`, and `doctor` resolved the tree-sitter
+grammars from inside the installed platform package). Local dev binary rebuilt to match.
 
-Release commit `29fb8b1` bumps `package.json` plus every user-facing pin: README install
-examples (the manual-tarball block + `REVIEWGATE_VERSION`), `docs/openrouter-quickstart.md`,
-`docs/launch-kit.md` release links. README:37's `alpha.11` mention was deliberately left
-alone — it records which version produced the replay recording, it is not an install pin.
+**2. S2 — arming probe** (committed, green, **unpushed**). A hook-invoked gate in an unarmed
+checkout is now answered from a pure READ: no `.reviewgate/`, no state, no `dirty.flag`, no
+panel, no `checks.commands` under a policy nobody approved in that checkout. Loud
+`NOT ARMED here` when the repo ships an unapproved `reviewgate.config.ts`, silent when it
+ships no policy. Deleting `.reviewgate/control-plane.json` still fail-closed blocks.
 
-Gates before the tag: `bun test` 2939/12/0, `tsc --noEmit` clean, `biome check` clean (610
-files), `bun run build:npm` + `bun run verify:npm` green at 0.1.0-alpha.14. CI `release` +
-`publish-npm` both green.
+Verified, not asserted:
+- Suite **2951 pass / 12 skip / 0 fail** (2963 total, +12 new tests) — re-run at HEAD `f6df88c`.
+- `bunx tsc --noEmit` clean · `bun run lint` clean (613 files).
+- **6 mutations killed in a copy** — removing the `state-missing` fall-through, widening the
+  allowlist to a catch-all, dropping the stop-only restriction on the notice, disabling the
+  probe, swapping the probe's check order, flipping the `state-missing` kind. Every assertion
+  has been seen red at least once.
+- Plan-gate: 3 rounds against codex, 5 CRITICAL total, final **PASS**. All mappings are in
+  the plan doc.
 
-## THE NEXT TASK — the work that was parked behind the launch
-Nothing release-shaped is open. The two deferred items from the slice-3 handoff are now
-unblocked, in this order:
+## Current metrics
+| | |
+|---|---|
+| HEAD | `f6df88c`, working tree clean |
+| Unpushed | **4 commits** — `e147835` (plan) · `63bd072` (probe) · `38d16e5` (test arming) · `f6df88c` (gate wiring) |
+| Suite | 2951 pass / 12 skip / **0 fail** (2963 across 420 files) |
+| Static | tsc clean · biome clean |
+| npm | `0.1.0-alpha.14`, all 5 packages, `latest` |
 
-1. **`docs/AGENTS.md` does not describe the pending-policy case.** Slice 3 changed what an
-   agent sees when an `approval-required` policy candidate is live (blocks once, annotates
-   afterwards), and the agent-facing protocol doc never got the paragraph. Markus explicitly
-   kept this out of the slice-3 branch — it is a small, self-contained docs task.
-2. **Arming S2 (arming probe) / S3 (worktree inheritance)** from
-   `docs/superpowers/specs/2026-07-17-arming-consent-design.md`. S3 is the coverage blind
-   spot CLAUDE.md already documents: a `git worktree` inherits none of the repo-local hook
-   files, so the Stop gate never fires there and that work ends un-reviewed (fail-open).
+**→ Ask Markus whether to push before doing anything else.** Commits carry no
+`Co-Authored-By` line.
+
+## THE NEXT TASK — S3, worktree trust inheritance
+Entry point: **`probeArming` in `src/config/control-plane.ts`** — S3 adds exactly one branch
+there, and the signature is already `async` so the awaited `git rev-parse --git-common-dir`
+call needs no call-site changes.
+
+**Why it's next:** S2 made an unarmed checkout *safe*; S3 makes a linked worktree *usable*
+without a second TTY approval — resolve the common gitdir, read the main checkout's
+`control-plane.json` read-only, and inherit approval **iff the effective fingerprints match**.
+The spec is explicit (§S3, F-007) that the comparison must be
+`effectiveConfigFingerprint(loadEffectiveConfigSnapshot)` — defaults ← global ← project — not
+a hash of the committed project file, or a global-config edit would silently change policy in
+every inheriting worktree.
+
+**What S3 does NOT do — do not repeat this session's mistake.** S3 does not make the gate
+fire in a worktree. It is trust *inheritance* for the case where hooks already fire there.
+What makes hooks exist in a worktree is **S4** (`init --user`, deferred) or `reviewgate init`
+inside the worktree. The worktree limitation is already disclosed publicly in `README.md:71`,
+`docs/AGENTS.md:298` and on the landing page (`website/index.html:275`) — it is not a hidden
+risk, and it is not a launch blocker.
 
 ## Traps that still hold
-- **`npm i -g reviewgate` CLOBBERS the dev symlink.** npm's global prefix on this machine is
-  `/Users/markus/.local`, so a global install writes `/Users/markus/.local/bin/reviewgate` —
-  which IS the symlink to `dist/reviewgate` that every other repo resolves through. The
-  runbook's verify step (`npm i -g reviewgate@<v>`) is therefore **wrong for this machine**.
-  Smoke-test the published package in an isolated prefix instead:
-  `npm i --prefix <scratch>/smoke reviewgate@<v>` then run `<scratch>/smoke/node_modules/.bin/reviewgate`.
-- **npm tarball propagation lags the registry metadata by minutes.** Installing immediately
-  after publish silently skipped the optional platform package (optional deps fail SILENTLY —
-  "added 1 package in 2m" was retries timing out, and the launcher then reported "unsupported
-  platform"). It is NOT a broken release; retry a few minutes later ("added 2 packages"). The
-  control that settles it fast: install the *previous* version the same way — alpha.13 pulled
-  2 packages in 1s while alpha.14 pulled 1 in 2m.
-- **A handoff is a claim, not evidence.** Verify `git ls-remote --tags origin` and
-  `npm view <pkg> versions` before acting on any "next task: release X".
-- **`bun run build` deploys to ALL repos** via the `~/.local/bin/reviewgate` → `dist/reviewgate`
-  symlink. Never build while an authoritative benchmark run is in flight (it pins `runner_sha256`).
-- **Never `git add -A` here** — it stages `.reviewgate/` runtime state. Stage explicit paths.
-- **Never push without Markus's explicit OK.** Commits carry no `Co-Authored-By` line.
-- **Codex is quota-exhausted until 2026-07-29T07:21Z** (`doctor` shows the cooldown; it
-  auto-resumes, no config change). Fallback chain: agy (agentic, reads the repo) → GLM-5.2 via
-  Ollama (completion, needs everything inline) → Claude reviewer subagent. An errored reviewer
-  is not a pass — always check exit code AND log size.
-- **A green assertion is not a working assertion.** Slice 3 shipped, then had to fix, a
-  regression test true on both correct and broken code. The guard that works is pinned to
-  `.reviewgate/pending.json` byte-equality — an artifact the skip path provably never writes.
+- **Never hand-write a `control-plane.json` fixture.** `approved_source_fingerprint` /
+  `approved_effective_fingerprint` are `z.string().min(64).max(64)` and `approved_config` is
+  the full `ConfigSchema`, so a short-string fixture fails to parse, `readState` returns null,
+  and the test silently exercises the UNARMED path **while looking green**. Use
+  `tests/helpers/arm.ts` → `armCheckout()`.
+- **`armCheckout` must use `process.env` + `homedir()`, never a fake home.** This machine has
+  `~/.config/reviewgate/reviewgate.config.ts`. Arming with a fake home bootstraps from defaults
+  only; the next `runGate` resolves with the real home, the effective fingerprints differ, and
+  you get an `approval-required` candidate that forces the review path and breaks unrelated
+  assertions. The spec already recorded this exact failure mode for S1.
+- **The arming branch is an ALLOWLIST on purpose.** `gate.ts` allows only
+  `unarmed-with-config` and `unarmed-bare`; everything else falls through to the fail-closed
+  path. Do NOT "simplify" it to `!arming.armed` or `kind !== "state-missing"` — a blocklist
+  fails OPEN for any kind added to `ArmingProbe` later.
+- **`probeArming` must never parse the config**, only ask whether a project source exists.
+  The edit that BREAKS `reviewgate.config.ts` is exactly the one whose trigger signal has to
+  survive (`gate.ts:316-318`).
+- **The probe must not write.** Any "fix" that takes the gate lock before probing (e.g. to
+  close the TOCTOU window flagged and dispositioned this session) creates `.reviewgate/` and
+  the lock file — precisely the write the zero-writes guarantee forbids.
+- **`bun run build` deploys to ALL repos** via `~/.local/bin/reviewgate` → `dist/reviewgate`.
+- **`npm i -g reviewgate` CLOBBERS that symlink** — npm's global prefix here is
+  `/Users/markus/.local`. Smoke-test a release in an isolated prefix (`npm i --prefix …`).
+  See `docs/dev/2026-06-23-npm-publish-runbook.md`, which was corrected this session.
+- **npm tarball propagation lags the registry metadata by minutes**; optional deps fail
+  SILENTLY, so a too-early install shows `added 1 package` and an "unsupported platform"
+  launcher. Not a broken release — retry, and use the previous version as a control.
+- **Never `git add -A` here** (stages `.reviewgate/` runtime state). Stage explicit paths.
 - **Suite flakes under load:** `tests/unit/sandbox-audit-fixes.test.ts` and
   `tests/integration/cassette-pipeline.test.ts` can fail in a full parallel run and pass 3/3
   isolated. Re-run isolated before believing a failure.
+- **`doctor`'s codex quota cooldown was WRONG this session** — it showed a cooldown until
+  2026-07-29 while `codex exec` answered normally. Suspicion: an *inferred* cooldown is not
+  cleared when the provider becomes reachable again. **Unverified — own task.** Always probe
+  `codex exec "Reply with exactly: OK" </dev/null` before believing the cooldown.
 
 ## Read-first order
 1. This file.
-2. `git log --oneline v0.1.0-alpha.13..HEAD` for everything alpha.14 shipped.
-3. `docs/dev/2026-06-23-npm-publish-runbook.md` for the release mechanics — but read the
-   symlink-clobber trap above first, its verify step is unsafe here.
-4. `docs/superpowers/specs/2026-07-17-arming-consent-design.md` for the S2/S3 work.
+2. `docs/superpowers/plans/2026-07-25-arming-probe-s2.md` — especially the three plan-gate
+   findings mappings at the end; they explain why the code looks the way it does.
+3. `docs/superpowers/specs/2026-07-17-arming-consent-design.md` §S3 + §8 for the S3 design
+   and the F-007 fingerprint rule.
+4. `src/config/control-plane.ts:probeArming` and its call site at the top of
+   `src/cli/commands/gate.ts:runGate`.
