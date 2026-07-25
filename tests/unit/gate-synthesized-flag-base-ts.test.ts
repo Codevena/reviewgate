@@ -17,6 +17,7 @@ import { BASE_TS_NO_SCOPING_SENTINEL } from "../../src/hooks/handlers.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import { deferredFlagPath, dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
 // In-process reviewer stub returning a CRITICAL in-diff finding (mirroring
 // tests/fixtures/fake-codex.sh: CRITICAL security on foo.ts:1). The gate then
@@ -61,7 +62,7 @@ function stubReviewer(): ProviderAdapter {
   };
 }
 
-function gitRepo(prefix: string): string {
+async function gitRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   const env = {
     ...process.env,
@@ -77,6 +78,7 @@ function gitRepo(prefix: string): string {
     stdio: "ignore",
   });
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
@@ -86,7 +88,7 @@ function headSha(repo: string): string {
 
 describe("synthesized dirty.flag carries an explicit base_ts (F-15)", () => {
   it("consumeDeferredFlag synthesis writes the no-scoping sentinel", async () => {
-    const repo = gitRepo("rg-synth-defer-");
+    const repo = await gitRepo("rg-synth-defer-");
     const base = headSha(repo);
     const st = new StateStore(repo);
     await st.initialise("01HXF15DEFER");
@@ -103,7 +105,7 @@ describe("synthesized dirty.flag carries an explicit base_ts (F-15)", () => {
   });
 
   it("HEAD-advanced trigger synthesis writes the no-scoping sentinel", async () => {
-    const repo = gitRepo("rg-synth-headadv-");
+    const repo = await gitRepo("rg-synth-headadv-");
     const base = headSha(repo);
     const st = new StateStore(repo);
     await st.initialise("01HXF15HEADADV");

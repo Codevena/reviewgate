@@ -18,15 +18,17 @@ import { StateStore } from "../../src/core/state-store.ts";
 import { flock } from "../../src/utils/flock.ts";
 import { gitHeadSha, workingTreeStateHash } from "../../src/utils/git.ts";
 import { dirtyFlagPath, gateLockPath, reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function freshRepo(prefix: string): string {
+async function freshRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
-function gitRepo(prefix: string): string {
-  const repo = freshRepo(prefix);
+async function gitRepo(prefix: string): Promise<string> {
+  const repo = await freshRepo(prefix);
   const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
   run("init", "-q");
   run("config", "user.email", "t@t.t");
@@ -39,13 +41,13 @@ function gitRepo(prefix: string): string {
 
 describe("stopProbe", () => {
   it("'review' when no dirty flag and the repo was never reviewed (last sha null) — S1 closes the core-loop#2 hole", async () => {
-    const repo = freshRepo("rg-skip-null-");
+    const repo = await freshRepo("rg-skip-null-");
     await new StateStore(repo).initialise("01HSKIP001");
     expect(await stopProbe(repo, async () => "anysha")).toBe("review");
   });
 
   it("'skip-clean' when no dirty flag, HEAD unchanged, AND the tree hash matches the last review", async () => {
-    const repo = freshRepo("rg-skip-same-");
+    const repo = await freshRepo("rg-skip-same-");
     const state = new StateStore(repo);
     await state.initialise("01HSKIP002");
     await state.update((cur) => ({
@@ -63,7 +65,7 @@ describe("stopProbe", () => {
   });
 
   it("'review' when HEAD advanced past the last review (committed-via-Bash must still be reviewed)", async () => {
-    const repo = freshRepo("rg-skip-adv-");
+    const repo = await freshRepo("rg-skip-adv-");
     const state = new StateStore(repo);
     await state.initialise("01HSKIP003");
     await state.update((cur) => ({ ...cur, last_reviewed_head_sha: "abc123" }));
@@ -71,7 +73,7 @@ describe("stopProbe", () => {
   });
 
   it("'review' when a dirty flag is present (there IS something to review)", async () => {
-    const repo = freshRepo("rg-skip-dirty-");
+    const repo = await freshRepo("rg-skip-dirty-");
     await new StateStore(repo).initialise("01HSKIP004");
     writeFileSync(
       dirtyFlagPath(repo),
@@ -87,7 +89,7 @@ describe("runGate — no-change stop skips the lock", () => {
     // integration test needs a REAL git repo with the state seeded to the
     // repo's actual current HEAD/tree (runGate calls stopProbe with the real
     // gitHeadSha/workingTreeStateHash, not injected stubs).
-    const repo = gitRepo("rg-skip-int-");
+    const repo = await gitRepo("rg-skip-int-");
     const sha = await gitHeadSha(repo);
     const tree = await workingTreeStateHash(repo);
     const state = new StateStore(repo);

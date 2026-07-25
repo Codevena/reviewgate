@@ -24,8 +24,9 @@ import {
   gateLockPath,
   reviewgateDir,
 } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function gitRepo(prefix: string): string {
+async function gitRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   const env = {
     ...process.env,
@@ -40,12 +41,13 @@ function gitRepo(prefix: string): string {
     stdio: "ignore",
   });
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
 describe("gate defer-on-contention", () => {
   it("DEFERS (allow_stop) instead of blocking when the lock is held, and writes deferred.flag", async () => {
-    const repo = gitRepo("rg-defer-");
+    const repo = await gitRepo("rg-defer-");
     writeFileSync(
       dirtyFlagPath(repo),
       JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
@@ -70,7 +72,7 @@ describe("gate defer-on-contention", () => {
   });
 
   it("readLockHolder reports the holding pid (M-A3 diagnostics)", async () => {
-    const repo = gitRepo("rg-defer-holder-");
+    const repo = await gitRepo("rg-defer-holder-");
     const held = await flock(gateLockPath(repo));
     try {
       const h = readLockHolder(gateLockPath(repo));
@@ -83,14 +85,14 @@ describe("gate defer-on-contention", () => {
   });
 
   it("a deferred.flag forces the lock path (stopProbe returns 'review')", async () => {
-    const repo = gitRepo("rg-defer-force-");
+    const repo = await gitRepo("rg-defer-force-");
     await new StateStore(repo).initialise("01HDEFER02"); // last sha null → would normally skip
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
     expect(await stopProbe(repo, async () => "x")).toBe("review");
   });
 
   it("consumes the deferred.flag once the lock is acquired (no defer loop)", async () => {
-    const repo = gitRepo("rg-defer-consume-");
+    const repo = await gitRepo("rg-defer-consume-");
     await new StateStore(repo).initialise("01HDEFER03");
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
     const out = await runGate({
@@ -103,8 +105,8 @@ describe("gate defer-on-contention", () => {
     expect(existsSync(deferredFlagPath(repo))).toBe(false); // consumed by the review
   }, 30_000);
 
-  it("keeps the deferred.flag when dirty-flag synthesis fails (never drops a review — codex CRITICAL)", () => {
-    const repo = gitRepo("rg-defer-failsafe-");
+  it("keeps the deferred.flag when dirty-flag synthesis fails (never drops a review — codex CRITICAL)", async () => {
+    const repo = await gitRepo("rg-defer-failsafe-");
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
     // Force writeFileAtomic(dirtyFlagPath) to throw: make .reviewgate read-only so the
     // per-write-unique temp file can't be created (EACCES). (writeFileAtomic now uses a
@@ -120,7 +122,7 @@ describe("gate defer-on-contention", () => {
   });
 
   it("handleReset clears the deferred.flag", async () => {
-    const repo = gitRepo("rg-defer-reset-");
+    const repo = await gitRepo("rg-defer-reset-");
     writeFileSync(deferredFlagPath(repo), JSON.stringify({ ts: new Date().toISOString() }));
     await handleReset({ repoRoot: repo });
     expect(existsSync(deferredFlagPath(repo))).toBe(false);
@@ -128,16 +130,16 @@ describe("gate defer-on-contention", () => {
 });
 
 describe("lockContentionDecision — only genuine contention defers (F-002)", () => {
-  it("defers on a FlockTimeoutError (real contention) and writes the marker", () => {
-    const repo = gitRepo("rg-lcd-defer-");
+  it("defers on a FlockTimeoutError (real contention) and writes the marker", async () => {
+    const repo = await gitRepo("rg-lcd-defer-");
     const out = lockContentionDecision(repo, new FlockTimeoutError("timed out"));
     expect(out.stdout).toBe(""); // allow_stop
     expect(out.stderr.toLowerCase()).toContain("deferred");
     expect(existsSync(deferredFlagPath(repo))).toBe(true);
   });
 
-  it("FAILS CLOSED on a lock-SYSTEM error (non-timeout), never defers", () => {
-    const repo = gitRepo("rg-lcd-infra-");
+  it("FAILS CLOSED on a lock-SYSTEM error (non-timeout), never defers", async () => {
+    const repo = await gitRepo("rg-lcd-infra-");
     const err = Object.assign(new Error("EACCES: permission denied, open lock"), {
       code: "EACCES",
     });
@@ -147,8 +149,8 @@ describe("lockContentionDecision — only genuine contention defers (F-002)", ()
     expect(existsSync(deferredFlagPath(repo))).toBe(false); // no spurious marker
   });
 
-  it("FAILS CLOSED on contention when the deferred marker cannot be durably written", () => {
-    const repo = gitRepo("rg-lcd-nomark-");
+  it("FAILS CLOSED on contention when the deferred marker cannot be durably written", async () => {
+    const repo = await gitRepo("rg-lcd-nomark-");
     // Force writeFileAtomic(deferredFlagPath) to throw: a DIRECTORY at the target path
     // makes the final renameSync(tmp, path) fail (EISDIR). (Per-write-unique temp names
     // mean obstructing a fixed `${path}.tmp` no longer works.)

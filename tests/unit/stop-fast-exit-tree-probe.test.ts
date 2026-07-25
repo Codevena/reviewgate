@@ -22,15 +22,17 @@ import {
   workingTreeStateHash,
 } from "../../src/utils/git.ts";
 import { escalationMdPath, reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function freshRepo(prefix: string): string {
+async function freshRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
-function gitRepo(prefix: string): string {
-  const repo = freshRepo(prefix);
+async function gitRepo(prefix: string): Promise<string> {
+  const repo = await freshRepo(prefix);
   const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
   run("init", "-q");
   run("config", "user.email", "t@t.t");
@@ -43,7 +45,7 @@ function gitRepo(prefix: string): string {
 
 describe("stopProbe — working-tree probe (S1)", () => {
   test("no flag + HEAD unchanged + tree hash unchanged → skip-clean (fast exit)", async () => {
-    const repo = freshRepo("rg-probe-clean-");
+    const repo = await freshRepo("rg-probe-clean-");
     const state = new StateStore(repo);
     await state.initialise("01PROBECLEAN");
     await state.update((cur) => ({
@@ -61,7 +63,7 @@ describe("stopProbe — working-tree probe (S1)", () => {
   });
 
   test("no flag + HEAD unchanged + tree hash DIFFERS → review (Bash edit)", async () => {
-    const repo = freshRepo("rg-probe-differs-");
+    const repo = await freshRepo("rg-probe-differs-");
     const state = new StateStore(repo);
     await state.initialise("01PROBEDIFFERS");
     await state.update((cur) => ({
@@ -79,7 +81,7 @@ describe("stopProbe — working-tree probe (S1)", () => {
   });
 
   test("no flag + HEAD unchanged + current hash null → review (fail toward review)", async () => {
-    const repo = freshRepo("rg-probe-curnull-");
+    const repo = await freshRepo("rg-probe-curnull-");
     const state = new StateStore(repo);
     await state.initialise("01PROBECURNULL");
     await state.update((cur) => ({
@@ -97,7 +99,7 @@ describe("stopProbe — working-tree probe (S1)", () => {
   });
 
   test("no flag + stored hash null (pre-migration state) → review", async () => {
-    const repo = freshRepo("rg-probe-storednull-");
+    const repo = await freshRepo("rg-probe-storednull-");
     const state = new StateStore(repo);
     await state.initialise("01PROBESTOREDNULL");
     await state.update((cur) => ({
@@ -115,7 +117,7 @@ describe("stopProbe — working-tree probe (S1)", () => {
   });
 
   test("no flag + last_reviewed_head_sha null → review (was the core-loop#2 hole)", async () => {
-    const repo = freshRepo("rg-probe-lastnull-");
+    const repo = await freshRepo("rg-probe-lastnull-");
     await new StateStore(repo).initialise("01PROBELASTNULL"); // last_reviewed_head_sha = null default
     expect(
       await stopProbe(
@@ -129,7 +131,7 @@ describe("stopProbe — working-tree probe (S1)", () => {
 
 describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
   test("Bash-created UNTRACKED file with unchanged HEAD reaches review (S1 end-to-end)", async () => {
-    const repo = gitRepo("rg-probe-e2e-untracked-");
+    const repo = await gitRepo("rg-probe-e2e-untracked-");
     const sha = await gitHeadSha(repo);
     const tree = await workingTreeStateHash(repo);
     const state = new StateStore(repo);
@@ -168,7 +170,7 @@ describe("stopProbe / gatherReviewContext — S1 end-to-end", () => {
   // have caught this. This test still pins the narrower, still-true fact that
   // `gatherReviewContext` computes the right diff on this branch.
   test("last=null + no flag + uncommitted Bash edit → gatherReviewContext computes the right diff (round-13 C1; flag persistence is NOT proven here)", async () => {
-    const repo = gitRepo("rg-probe-e2e-nulllast-");
+    const repo = await gitRepo("rg-probe-e2e-nulllast-");
     const state = new StateStore(repo);
     await state.initialise("01PROBEE2ENULL"); // last_reviewed_head_sha = null default; no dirty flag
     writeFileSync(join(repo, "sneaky2.ts"), "export const x = 1;\n");
@@ -215,7 +217,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   }
 
   test("escalated + HEAD unmoved + tree unmoved + no flag → 'skip-escalated' (S3b)", async () => {
-    const repo = freshRepo("rg-probe-escalated-clean-");
+    const repo = await freshRepo("rg-probe-escalated-clean-");
     await seedEscalated(repo);
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     expect(
@@ -228,7 +230,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated + HEAD MOVED past escalated_head_sha → 'review' (lock path, Path A recovery)", async () => {
-    const repo = freshRepo("rg-probe-escalated-headmoved-");
+    const repo = await freshRepo("rg-probe-escalated-headmoved-");
     await seedEscalated(repo);
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     expect(
@@ -241,7 +243,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated + HEAD unmoved but TREE changed (post-escalation Bash edit) → 'review' (round-2 C1)", async () => {
-    const repo = freshRepo("rg-probe-escalated-treechanged-");
+    const repo = await freshRepo("rg-probe-escalated-treechanged-");
     await seedEscalated(repo);
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     expect(
@@ -254,7 +256,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated + stored escalated_tree_hash null → 'review' (fail toward review)", async () => {
-    const repo = freshRepo("rg-probe-escalated-storednull-");
+    const repo = await freshRepo("rg-probe-escalated-storednull-");
     await seedEscalated(repo, { escalated_tree_hash: null });
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     expect(
@@ -267,7 +269,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated + current tree hash null → 'review' (fail toward review)", async () => {
-    const repo = freshRepo("rg-probe-escalated-curnull-");
+    const repo = await freshRepo("rg-probe-escalated-curnull-");
     await seedEscalated(repo);
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     expect(
@@ -280,7 +282,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated but ESCALATION.md is missing → 'review', never a stand-down over a stale state bit (round-4 W1)", async () => {
-    const repo = freshRepo("rg-probe-escalated-noartifact-");
+    const repo = await freshRepo("rg-probe-escalated-noartifact-");
     await seedEscalated(repo);
     rmSync(escalationMdPath(repo), { force: true }); // never written in this test
     expect(
@@ -300,7 +302,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
     // whenever HEAD/tree happen to match the last CLEAN review. That fall-through
     // would also silently defeat the quota-latch and missing-ESCALATION.md guards,
     // which live inside the branch.
-    const repo = freshRepo("rg-probe-escalated-nullsha-");
+    const repo = await freshRepo("rg-probe-escalated-nullsha-");
     await seedEscalated(repo, {
       escalated_head_sha: null,
       // Worst case for the fall-through: seed the S1 baseline so the
@@ -319,7 +321,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
   });
 
   test("escalated + quota-exhausted-persistent latch → 'review', NEVER stands down (round-13 W1)", async () => {
-    const repo = freshRepo("rg-probe-escalated-quotalatch-");
+    const repo = await freshRepo("rg-probe-escalated-quotalatch-");
     await seedEscalated(repo, { escalation_reason: "quota-exhausted-persistent" as const });
     writeFileSync(escalationMdPath(repo), "# ESCALATED\n");
     // Even with head/tree matching and the artifact present, the quota latch
@@ -337,7 +339,7 @@ describe("stopProbe — escalated standing-down branch (S3b)", () => {
     // Integration-level: runGate calls stopProbe with the REAL gitHeadSha/
     // workingTreeStateHash (no injected stubs), so this needs a real git repo
     // whose current HEAD/tree match the recorded announce-time values.
-    const repo = gitRepo("rg-probe-escalated-rungate-");
+    const repo = await gitRepo("rg-probe-escalated-rungate-");
     const sha = await gitHeadSha(repo);
     const tree = await workingTreeStateHash(repo);
     await seedEscalated(repo, { escalated_head_sha: sha, escalated_tree_hash: tree });

@@ -37,8 +37,9 @@ import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-
 import type { Finding } from "../../src/schemas/finding.ts";
 import { collectDiff, gitHeadSha, workingTreeStateHash } from "../../src/utils/git.ts";
 import { dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function gitRepo(prefix: string): string {
+async function gitRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
   run("init", "-q");
@@ -48,6 +49,7 @@ function gitRepo(prefix: string): string {
   run("add", "a.ts");
   run("commit", "-qm", "init");
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
@@ -96,7 +98,7 @@ function stubReviewer(file: string): ProviderAdapter {
 
 describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-C1)", () => {
   it("(a) last=null + no flag + uncommitted Bash edit + a CRITICAL finding → BLOCK, never the green message", async () => {
-    const repo = gitRepo("rg-stopc1-nulllast-");
+    const repo = await gitRepo("rg-stopc1-nulllast-");
     await new StateStore(repo).initialise("01STOPC1NULLLAST"); // last_reviewed_head_sha = null (fresh)
     // Simulated Bash-tool edit: no Edit/Write tool ran, so no PostToolUse fired —
     // there is genuinely no dirty.flag on disk, exactly the S1 scenario.
@@ -133,7 +135,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
   }, 30_000);
 
   it("(b) last≠null + HEAD unchanged + tree DIFFERS (uncommitted Bash edit) stays reviewed end-to-end through runGate", async () => {
-    const repo = gitRepo("rg-stopc1-treediffers-");
+    const repo = await gitRepo("rg-stopc1-treediffers-");
     const sha = await gitHeadSha(repo);
     const tree = await workingTreeStateHash(repo);
     const state = new StateStore(repo);
@@ -165,7 +167,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     // Unix permission bits, so the forced write failure wouldn't materialize).
     if (typeof process.getuid === "function" && process.getuid() === 0) return;
 
-    const repo = gitRepo("rg-stopc1-writefail-");
+    const repo = await gitRepo("rg-stopc1-writefail-");
     await new StateStore(repo).initialise("01STOPC1WRITEFAIL"); // last=null
     writeFileSync(join(repo, "sneaky3.ts"), "export const z = 3;\n");
 
@@ -223,7 +225,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     // `last`) is EMPTY and the synthesis block never runs (no flag persisted),
     // while the fallback HEAD-relative diff is non-empty (the uncommitted revert)
     // → the belt is the only thing that writes the flag.
-    const repo = gitRepo("rg-stopc1-beltbase-");
+    const repo = await gitRepo("rg-stopc1-beltbase-");
     const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
     const lastSha = await gitHeadSha(repo); // "last reviewed" = the v1 commit
     if (lastSha === null) throw new Error("test setup: HEAD sha unavailable");
@@ -270,7 +272,7 @@ describe("a non-empty Stop diff always persists a dirty flag or fail-closes (S1-
     // The race is injected via collectDiffFn: the concurrent trigger's flag is
     // written AFTER gatherReviewContext's own has-flag check already ran (so the
     // no-flag synthesis path is taken) but BEFORE the belt executes.
-    const repo = gitRepo("rg-stopc1-noclobber-");
+    const repo = await gitRepo("rg-stopc1-noclobber-");
     await new StateStore(repo).initialise("01STOPC1NOCLOB"); // last=null → belt is the writer
     writeFileSync(join(repo, "sneaky4.ts"), "export const w = 4;\n");
     const concurrentFlag = JSON.stringify({

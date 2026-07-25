@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { runGate } from "../../src/cli/commands/gate.ts";
 import { StateStore } from "../../src/core/state-store.ts";
 import { dirtyFlagPath, reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
 const GIT_ENV = {
   ...process.env,
@@ -29,6 +30,7 @@ function sh(repo: string, cmd: string): string {
 describe("gate with a corrupt dirty.flag", () => {
   it("falls back to the last reviewed sha as the base (fails toward MORE coverage)", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-gate-dirty-corrupt-"));
+    await armCheckout(repo);
     sh(repo, "git init -q -b main");
     writeFileSync(join(repo, "a.txt"), "A\n");
     sh(repo, "git add -A && git commit -q -m A");

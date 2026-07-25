@@ -14,8 +14,9 @@ import {
   reviewgateDir,
   stateJsonPath,
 } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function seedRepo(): string {
+async function seedRepo(): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), "rg-gate-reset-lock-"));
   mkdirSync(reviewgateDir(repo), { recursive: true });
   writeFileSync(
@@ -23,12 +24,13 @@ function seedRepo(): string {
     JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
   );
   writeFileSync(stateJsonPath(repo), JSON.stringify({ iteration: 3 }));
+  await armCheckout(repo);
   return repo;
 }
 
 describe("gate reset hook locking", () => {
   it("acquires + releases the gate lock around the reset (no leftover lock)", async () => {
-    const repo = seedRepo();
+    const repo = await seedRepo();
     const out = await runGate({ repoRoot: repo, hook: "reset", hookStdinRaw: "{}" });
     expect(out.exitCode).toBe(0);
     // State was cleared — S1: re-seeded fresh (not left absent), so the very
@@ -43,7 +45,7 @@ describe("gate reset hook locking", () => {
   });
 
   it("falls back to an unlocked reset (with a warning) when the lock is held by a stop-gate", async () => {
-    const repo = seedRepo();
+    const repo = await seedRepo();
     // Simulate an in-flight stop-gate holding the lock.
     const held = await flock(gateLockPath(repo));
     try {

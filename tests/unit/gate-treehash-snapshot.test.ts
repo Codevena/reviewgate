@@ -24,8 +24,9 @@ import { StateStore } from "../../src/core/state-store.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import { workingTreeStateHash } from "../../src/utils/git.ts";
 import { reviewgateDir } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function gitRepo(prefix: string): string {
+async function gitRepo(prefix: string): Promise<string> {
   const repo = mkdtempSync(join(tmpdir(), prefix));
   const run = (...a: string[]) => execFileSync("git", a, { cwd: repo });
   run("init", "-q");
@@ -35,6 +36,7 @@ function gitRepo(prefix: string): string {
   run("add", "a.ts");
   run("commit", "-qm", "init");
   mkdirSync(reviewgateDir(repo), { recursive: true });
+  await armCheckout(repo);
   return repo;
 }
 
@@ -64,7 +66,7 @@ function passingReviewerWithSideEffect(sideEffect: () => void): ProviderAdapter 
 
 describe("tree hash is recorded at diff-snapshot time, not state-write time (dogfood F-001)", () => {
   it("a mid-review concurrent edit is NOT blessed by a PASS: stored hash = snapshot, next stop reviews", async () => {
-    const repo = gitRepo("rg-treehash-snap-");
+    const repo = await gitRepo("rg-treehash-snap-");
     await new StateStore(repo).initialise("01TREEHASHSNAP");
     // The edit under review (uncommitted, Bash-style — the belt persists the flag).
     writeFileSync(join(repo, "sneaky.ts"), "export const s = 1;\n");

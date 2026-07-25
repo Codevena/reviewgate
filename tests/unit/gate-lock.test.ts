@@ -18,10 +18,12 @@ import {
   gateLockPath,
   reviewgateDir,
 } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
 describe("gate stop-hook lock", () => {
   it("DEFERS (allow_stop, not block) when the gate lock is already held", async () => {
     const repo = mkdtempSync(join(tmpdir(), "rg-gate-lock-"));
+    await armCheckout(repo);
     mkdirSync(reviewgateDir(repo), { recursive: true });
     writeFileSync(
       dirtyFlagPath(repo),

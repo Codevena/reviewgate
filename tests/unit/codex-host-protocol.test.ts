@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runGate, runGateSafe } from "../../src/cli/commands/gate.ts";
 import { dirtyFlagPath } from "../../src/utils/paths.ts";
+import { armCheckout } from "../helpers/arm.ts";
 
-function tmp(): string {
-  return mkdtempSync(join(tmpdir(), "rg-codex-protocol-"));
+async function tmp(): Promise<string> {
+  const repo = mkdtempSync(join(tmpdir(), "rg-codex-protocol-"));
+  await armCheckout(repo);
+  return repo;
 }
 
 describe("Codex hook wire protocol", () => {
@@ -27,7 +30,7 @@ describe("Codex hook wire protocol", () => {
         tool_input: { command: "printf changed > src/a.ts" },
       },
     ]) {
-      const repo = tmp();
+      const repo = await tmp();
       const result = await runGate({
         repoRoot: repo,
         hook: "trigger",
@@ -40,7 +43,7 @@ describe("Codex hook wire protocol", () => {
   });
 
   it("emits the Codex Stop continuation shape on fail-closed errors", async () => {
-    const repo = tmp();
+    const repo = await tmp();
     const result = await runGateSafe(
       {
         repoRoot: repo,
@@ -59,7 +62,7 @@ describe("Codex hook wire protocol", () => {
   });
 
   it("accepts Codex SessionStart fields and seeds session state", async () => {
-    const repo = tmp();
+    const repo = await tmp();
     writeFileSync(join(repo, "reviewgate.config.ts"), "export default {};\n");
     const result = await runGate({
       repoRoot: repo,
