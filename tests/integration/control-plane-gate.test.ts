@@ -312,6 +312,21 @@ describe("control-plane gate integration", () => {
     expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
     expect(reviewer.calls).toBe(1);
 
+    // The load-bearing guard: pending.json is rewritten unconditionally by every
+    // full lock+orchestrator pass -- including a cache hit (orchestrator.ts's
+    // cache-hit branch still calls writeReport, just with an empty `runs` array,
+    // so it swaps in a fresh generated_at and a synthetic reviewers[0].id of
+    // "reviewgate" instead of the real "codex-security" from the first pass).
+    // The pre-lock skip-clean exit in gate.ts, by contrast, returns before
+    // Orchestrator or finalizeControlPlaneReview are ever reached, so it cannot
+    // touch this file. Snapshotting it here and asserting it is byte-identical
+    // after the second stop is what actually proves no full pass happened --
+    // unlike the stderr text below, which a repeat "approval-required" pass
+    // reproduces verbatim (see control-plane.ts's alreadyNotified branch), and
+    // unlike reviewer.calls, which a cache hit keeps flat regardless of whether
+    // a full pass ran.
+    const pendingBefore = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
+
     // Second stop, nothing changed: the candidate is settled, so the gate must NOT
     // force another full panel run on something the agent cannot resolve.
     const second = await runGate({
@@ -325,5 +340,7 @@ describe("control-plane gate integration", () => {
     expect(second.stderr).toContain("No code changes since last review");
     expect(second.stderr).toContain("pending human approval");
     expect(reviewer.calls).toBe(1);
+    const pendingAfter = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
+    expect(pendingAfter).toBe(pendingBefore);
   }, 30_000);
 });
