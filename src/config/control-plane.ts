@@ -337,6 +337,40 @@ function managedHookExists(repoRoot: string): boolean {
   return existsSync(join(repoRoot, ".reviewgate", "bin", "gate"));
 }
 
+// S2 arming probe. `armed` answers exactly one question: may this checkout run the
+// gate's writing/reviewing machinery at all? It is DERIVED, never persisted — and the
+// probe itself must not create `.reviewgate/`, since the whole point is a zero-writes
+// answer for an unarmed checkout. It therefore only READS.
+//
+// The three unarmed kinds are NOT interchangeable:
+//   - "state-missing": a managed hook proves `init` armed this checkout, so a missing
+//     LKG means the approval was DELETED. The caller must keep failing closed —
+//     otherwise `rm .reviewgate/control-plane.json` becomes a gate bypass.
+//   - "unarmed-with-config": a fresh clone / worktree carrying a committed policy that
+//     nobody approved here. Allow, but say so LOUDLY.
+//   - "unarmed-bare": no policy, no hook. A user-scoped hook (S4) has to be invisible
+//     in random repos, so this one stays silent.
+//
+// Deliberately does NOT parse the config: it only asks whether a project source EXISTS
+// (raw bytes), so the gate.ts invariant "triggering must not depend on a VALID config"
+// survives an edit that makes reviewgate.config.ts unparseable.
+//
+// S3 extends ONLY this function, with the worktree-inheritance branch.
+export type ArmingProbe =
+  | { armed: true }
+  | { armed: false; kind: "state-missing" | "unarmed-with-config" | "unarmed-bare" };
+
+// Async by contract, not by need: S3 adds an awaited `git rev-parse --git-common-dir`
+// here, and keeping the signature stable now means no call site changes then.
+export async function probeArming(input: EffectiveConfigInput): Promise<ArmingProbe> {
+  if (readState(input.cwd)) return { armed: true };
+  if (managedHookExists(input.cwd)) return { armed: false, kind: "state-missing" };
+  return {
+    armed: false,
+    kind: inspectConfigSources(input).hasProjectSource ? "unarmed-with-config" : "unarmed-bare",
+  };
+}
+
 export async function resolveControlPlaneConfig(
   input: EffectiveConfigInput,
 ): Promise<ControlPlaneResolution> {
