@@ -1,6 +1,6 @@
 # Agent-safe pending policy candidate (arming slice 3)
 
-_Date: 2026-07-25 · Status: approved design, not yet implemented_
+_Date: 2026-07-25 · Status: implemented (`b8565fa`, `d6b3631`, `1a832d1`, `81606ae`, `f789f6b`)_
 
 ## Problem
 
@@ -104,7 +104,14 @@ are exactly two production call sites, `gate.ts:1116` and `gate.ts:1163`, both
 covered by change 3; the four test call sites read only `.kind`.
 
 - `reviewed_under_lkg_at === null` → set it to now, `alreadyNotified: false`,
-  `message` = the existing loud `approvalMessage` (text unchanged).
+  `message` = the existing loud `approvalMessage`. **Revised post-review:** the
+  non-invalid branch of `approvalMessage` gained one more sentence telling the
+  agent explicitly that it has nothing to do here — the original text pointed
+  only at the TTY-only `reviewgate config approve`, which an agent reading the
+  block reason could misread as something to act on (retry the command, or
+  re-edit `reviewgate.config.ts`, which only mints a new candidate and earns
+  another block). The `invalid` branch is untouched: an agent *can* and should
+  fix an invalid config, so no such disclaimer belongs there.
 - already set → leave it, `alreadyNotified: true`, `message` = the quiet pending
   notice produced by the shared renderer of change 4 (one text, one source —
   the loud first-contact `approvalMessage` and the quiet repeat notice must not

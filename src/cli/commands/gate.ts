@@ -416,16 +416,25 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   // it, so re-running the panel on an unchanged tree every turn burns the agent's
   // turns on something it cannot resolve. An `invalid` candidate keeps forcing
   // forever — that one the agent CAN fix, so it must stay fail-closed.
+  // The `classification === "invalid"` disjunct is defence-in-depth, not the
+  // load-bearing mechanism: an invalid candidate's `reviewed_under_lkg_at` is
+  // structurally always null (its only writer is unreachable for `invalid`, and
+  // `persistPending`'s carry-forward can't land a non-null marker on it since its
+  // `effective_fingerprint` is null), so `reviewed_under_lkg_at === null` alone
+  // already forces review for `invalid` too — this clause just says so explicitly.
   const policyForcesReview =
     policy?.change != null &&
     (policy.change.classification === "invalid" || policy.change.reviewed_under_lkg_at === null);
   const probe = policyForcesReview ? "review" : await stopProbe(input.repoRoot);
   // Keep a settled candidate visible on the exits that never reach the block/allow
   // messages below. Suppressed for `invalid` — "pending human approval" would be
-  // the wrong story for a config that simply does not parse.
+  // the wrong story for a config that simply does not parse. M-5: joined with
+  // "\n\n", same separator as every other site that appends this notice (see
+  // the block-path policyNotice below and the allow_stop signal join) — one
+  // shared renderer, one shared separator.
   const pendingPolicyNotice =
     policy?.change != null && policy.change.classification !== "invalid"
-      ? ` ${renderPendingPolicyNotice(input.repoRoot, policy.approvedEffectiveFingerprint)}`
+      ? `\n\n${renderPendingPolicyNotice(input.repoRoot, policy.approvedEffectiveFingerprint)}`
       : "";
   if (probe === "skip-clean") {
     return {
@@ -1198,8 +1207,10 @@ async function runStopGate(
       // Slice 3: the human was already told once, in a blocked turn, and the
       // candidate is unchanged since. Keep it visible but never spend another of
       // the agent's turns on it — `reviewgate config approve` is TTY-only, so the
-      // agent has no way to clear this and would just re-block forever.
-      signal = `${decision.reason}\n${finalized.message}`;
+      // agent has no way to clear this and would just re-block forever. M-5:
+      // "\n\n", matching the block path's policyNotice and pendingPolicyNotice
+      // above — one shared renderer, one shared separator.
+      signal = `${decision.reason}\n\n${finalized.message}`;
     }
     if (finalized.kind === "auto-approved") {
       signal = `${decision.reason}\n🔐 Gate policy ${finalized.classification === "strengthening" ? "strengthening" : "source-equivalent change"} adopted after this pass under the prior approved policy.`;

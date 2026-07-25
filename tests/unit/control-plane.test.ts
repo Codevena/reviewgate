@@ -391,4 +391,42 @@ describe("gate policy control plane", () => {
       alreadyNotified: false,
     });
   });
+
+  // I-2: invariant 5 ("changed-during-review keeps blocking") had zero direct
+  // coverage. Resolve while NOTHING is pending (change: null) — gate.ts calls
+  // finalizeControlPlaneReview unconditionally, even on a null change — then
+  // write a real candidate AFTER that snapshot but BEFORE finalize runs, to
+  // simulate a config edit landing mid-review (e.g. a concurrent Bash write).
+  // This specific shape (stale `change: null`) exercises ONLY the top-level
+  // source-fingerprint guard at the top of finalizeControlPlaneReview: with
+  // `resolution.change` null, the function's very next line is
+  // `if (!resolution.change) return { kind: "unchanged" }`, so any later guard
+  // deeper in the function (which also independently detects a changed source
+  // once `resolution.change` is non-null) never runs — a mutation to the
+  // top-level guard alone is what this test is designed to catch.
+  it("refuses to report 'unchanged' when the config source changed mid-review", async () => {
+    const repo = temp("rg-control-mid-review-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+
+    // Resolve against the UNCHANGED config: nothing is pending.
+    const resolution = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(resolution.change).toBeNull();
+
+    // The config changes AFTER resolveControlPlaneConfig captured its snapshot
+    // but BEFORE finalizeControlPlaneReview is called with that stale snapshot.
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-model' } } }");
+
+    const finalized = await finalizeControlPlaneReview(repo, resolution, envFor(home));
+    expect(finalized.kind).toBe("changed-during-review");
+    expect(finalized.kind === "changed-during-review" && finalized.message).toContain(
+      "changed during the review",
+    );
+
+    // The new candidate must still be pending, untouched by the stale review.
+    const status = await controlPlaneStatus(repo, envFor(home));
+    expect(status.state?.pending?.classification).toBe("approval-required");
+    expect(status.state?.pending?.reviewed_under_lkg_at).toBeNull();
+  });
 });

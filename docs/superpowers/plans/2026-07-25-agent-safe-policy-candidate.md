@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Runtime is **Bun**. Use `bun`/`bunx`, never `npm`/`node`/`npx`. Tests are `bun test`, not jest/vitest.
-- `bunx tsc --noEmit` **and** `bun run lint` must both be clean before any task is considered done. Run the full `bun test` at the end of each task (baseline on `a745d37` is **2944 pass / 0 fail / 12 skip**).
+- `bunx tsc --noEmit` **and** `bun run lint` must both be clean before any task is considered done. Run the full `bun test` at the end of each task (baseline on `a745d37` is **2944 total / 0 fail** — 2929 pass / 15 skip on a clean worktree, or 2932 pass / 12 skip when `dist/reviewgate` already exists, since that flips 3 `tests/integration/binary.test.ts` tests from skipped to run; the total stays 2944 either way — compare the **total**, not the raw pass count).
 - **Never `git add -A` in this repo** — it stages `.reviewgate/` runtime state. Stage explicit paths only.
 - **Never run `bun run build`.** It deploys to every repo on this machine through the `~/.local/bin/reviewgate` → `dist/reviewgate` symlink. Building is not part of this plan.
 - Commit messages carry **no** `Co-Authored-By` line and no "generated with" footer.
@@ -645,7 +645,7 @@ bunx tsc --noEmit
 bun run lint
 bun test
 ```
-Expected: `tsc` clean; lint clean; the suite at **2950 pass / 0 fail / 12 skip** (2944 baseline + 6 new tests). If the count differs from baseline+6, find out why before continuing — a silently skipped test is a failed gate.
+Expected: `tsc` clean; lint clean; the suite at **2950 total / 0 fail** (2944 baseline total + 6 new tests) — 2935 pass / 15 skip on a clean worktree, or 2938 pass / 12 skip with `dist/reviewgate` present (see the baseline note above; same total either way). If the **total** differs from baseline+6, find out why before continuing — a silently skipped test is a failed gate.
 
 - [ ] **Step 5: Remove plan-gate scratch and commit**
 

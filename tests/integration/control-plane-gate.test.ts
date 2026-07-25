@@ -325,6 +325,19 @@ describe("control-plane gate integration", () => {
     // reproduces verbatim (see control-plane.ts's alreadyNotified branch), and
     // unlike reviewer.calls, which a cache hit keeps flat regardless of whether
     // a full pass ran.
+    //
+    // M-4: both this pending.json guard and the stderr assertions below only
+    // discriminate "settled candidate, no forced review" from "full pass ran"
+    // because `a.ts` above is left modified-but-UNCOMMITTED, so the stop diff
+    // stays non-empty and `dirty.flag` stays set going into the second stop.
+    // loop-driver.ts's no-dirty-flag branch (~line 961) returns a `reason`
+    // string byte-identical to the "No code changes since last review" text
+    // asserted below AND returns before Orchestrator/finalizeControlPlaneReview
+    // run, so it too would leave pending.json untouched. If a future edit
+    // commits `a.ts` in this fixture (clearing dirty.flag on its own), both
+    // guards go vacuous at once — they'd pass even if the settled-candidate
+    // skip this test targets were deleted, because the ordinary skip-clean
+    // exit would produce the identical observable outcome.
     const pendingBefore = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
 
     // Second stop, nothing changed: the candidate is settled, so the gate must NOT

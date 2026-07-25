@@ -451,7 +451,7 @@ function approvalMessage(repoRoot: string, pending: ControlPlanePending): string
   if (pending.classification === "invalid") {
     return `🔴 Reviewgate · GATE POLICY INVALID — ${pending.error ?? "the current config is invalid"}. Code was checked under the last-known-good policy; fix reviewgate.config.ts. Details: ${report}`;
   }
-  return `🔐 Reviewgate · GATE POLICY CHANGED — code passed under the last-known-good policy, but this non-monotonic change requires explicit human approval. Inspect ${report}, then run \`reviewgate config status\` and \`reviewgate config approve\` in an interactive terminal.`;
+  return `🔐 Reviewgate · GATE POLICY CHANGED — code passed under the last-known-good policy, but this non-monotonic change requires explicit human approval. Inspect ${report}, then run \`reviewgate config status\` and \`reviewgate config approve\` in an interactive terminal. As an agent you do not need to do anything about this: end your turn again and it will pass through — this reminder stays until a human approves, and editing reviewgate.config.ts again only creates a new candidate.`;
 }
 
 export async function finalizeControlPlaneReview(
