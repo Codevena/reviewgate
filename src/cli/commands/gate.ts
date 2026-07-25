@@ -1141,6 +1141,10 @@ async function runStopGate(
           policyNotice = `\n\n${finalized.message}`;
         }
         // "unchanged" (candidate reverted to LKG mid-batch) → no notice needed.
+        // NOTE: the else branch below deliberately keeps its own wording and does
+        // NOT use renderPendingPolicyNotice — it is reached when the run did not
+        // complete cleanly (policyReviewPassed !== true), which is a different
+        // story from a settled candidate waiting on a human.
       } else {
         policyNotice = `\n\n🔐 Gate policy candidate remains pending. Code is still being reviewed under approved policy ${policy.approvedEffectiveFingerprint.slice(0, 12)}; details: ${policyChangeReportPath(input.repoRoot).replace(`${input.repoRoot}/`, "")}.`;
       }
@@ -1179,9 +1183,9 @@ async function runStopGate(
       home: homedir(),
     });
     if (
-      finalized.kind === "approval-required" ||
       finalized.kind === "invalid" ||
-      finalized.kind === "changed-during-review"
+      finalized.kind === "changed-during-review" ||
+      (finalized.kind === "approval-required" && !finalized.alreadyNotified)
     ) {
       if (cfg.notify.desktop) notifyDesktop("Reviewgate", finalized.message);
       return {
@@ -1189,6 +1193,13 @@ async function runStopGate(
         stdout: JSON.stringify({ decision: "block", reason: finalized.message }),
         stderr: finalized.message,
       };
+    }
+    if (finalized.kind === "approval-required") {
+      // Slice 3: the human was already told once, in a blocked turn, and the
+      // candidate is unchanged since. Keep it visible but never spend another of
+      // the agent's turns on it — `reviewgate config approve` is TTY-only, so the
+      // agent has no way to clear this and would just re-block forever.
+      signal = `${decision.reason}\n${finalized.message}`;
     }
     if (finalized.kind === "auto-approved") {
       signal = `${decision.reason}\n🔐 Gate policy ${finalized.classification === "strengthening" ? "strengthening" : "source-equivalent change"} adopted after this pass under the prior approved policy.`;

@@ -343,4 +343,94 @@ describe("control-plane gate integration", () => {
     const pendingAfter = readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8");
     expect(pendingAfter).toBe(pendingBefore);
   }, 30_000);
+
+  it("blocks once per candidate, then allows later passing turns with a quiet notice", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "a.ts"), "export const a = 11;\n");
+    writePolicy(repo, "allow", "candidate-model");
+    const trigger = (file: string) =>
+      runGate({
+        repoRoot: repo,
+        hook: "trigger",
+        hookStdinRaw: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: file } }),
+      });
+    const stop = (reviewer: ProviderAdapter) =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: reviewer },
+        sandboxModeOverride: "off",
+      });
+
+    await trigger(join(repo, "a.ts"));
+    const reviewer = countingCleanReviewer();
+    const first = await stop(reviewer);
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    expect(first.stderr).toContain("GATE POLICY CHANGED");
+
+    // New code, still nothing the agent can do about the candidate: the panel runs
+    // and the turn is ALLOWED, with the candidate merely annotated.
+    writeFileSync(join(repo, "a.ts"), "export const a = 12;\n");
+    await trigger(join(repo, "a.ts"));
+    const second = await stop(reviewer);
+    expect(second.stdout).toBe("");
+    expect(second.stderr).toContain("pending human approval");
+    expect(second.stderr).not.toContain("GATE POLICY CHANGED");
+    expect(reviewer.calls).toBe(2);
+  }, 30_000);
+
+  it("does not re-block an agent on a settled candidate even with acknowledgePass", async () => {
+    // The FlashBuddy field bug: acknowledgePass + a pending house-rule candidate
+    // re-blocked every single turn, and `config approve` is TTY-only.
+    const repo = await repoWithApprovedPolicy("allow", { acknowledgePass: true });
+    writeFileSync(join(repo, "a.ts"), "export const a = 13;\n");
+    writePolicy(repo, "allow", "candidate-model", { acknowledgePass: true });
+    await runGate({
+      repoRoot: repo,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "a.ts") },
+      }),
+    });
+    const stop = () =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: cleanReviewer() },
+        sandboxModeOverride: "off",
+      });
+    const first = await stop();
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    const second = await stop();
+    expect(second.stdout).toBe("");
+    expect(second.stderr).toContain("pending human approval");
+  }, 30_000);
+
+  it("keeps blocking every stop while the config is invalid", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "reviewgate.config.ts"), "export default { not: valid ts ;\n");
+    const stop = () =>
+      runGate({
+        repoRoot: repo,
+        hook: "stop",
+        snapshotVerifyOpts: { dwellMs: 0 },
+        hookStdinRaw: "{}",
+        providerOverrides: { codex: cleanReviewer() },
+        sandboxModeOverride: "off",
+      });
+    for (const _ of [1, 2]) {
+      const out = await stop();
+      expect((JSON.parse(out.stdout || "{}") as { decision?: string }).decision).toBe("block");
+      expect(out.stderr).toContain("GATE POLICY INVALID");
+    }
+    const control = JSON.parse(
+      readFileSync(join(repo, ".reviewgate", "control-plane.json"), "utf8"),
+    ) as { pending?: { reviewed_under_lkg_at: string | null } };
+    expect(control.pending?.reviewed_under_lkg_at).toBeNull();
+  }, 30_000);
 });
