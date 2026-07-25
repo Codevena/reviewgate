@@ -1,84 +1,35 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-05-31. Read this first, then delete/ignore once you're oriented._
+_Last updated: 2026-07-25 (evening). Supersedes all earlier content in this file._
 
-## What Reviewgate is
-A code-review gate that runs **inside Claude Code's Stop hook**: on turn-end it spawns a
-heterogeneous LLM reviewer panel (codex/gemini/claude/opencode/openrouter CLIs) as subprocesses,
-aggregates findings under a severity-weighted veto, and **blocks the turn** until every finding is
-fixed or rejected-with-reason. File-based (no chat parsing). Runtime is **Bun**. **It dogfoods
-itself** — a `.reviewgate/` dir is present, so the gate runs on your own turns here.
+## One-line state
+Master is green and pushed (HEAD `19e1e73`, **2951 total / 0 fail** = 2939 pass / 12 skip), the binary is built and live in every repo via the `~/.local/bin/reviewgate` symlink (`0.1.0-alpha.13`), and the next task is **tagging + releasing alpha.12/13 on npm** — the launch that was deferred once already.
 
-## Current state (master is green)
-`bun test` → ~1219 pass / 0 fail (11 skip) · `bunx tsc --noEmit` clean · `bun run lint` clean · `bun run build` OK.
-The globally-installed `reviewgate` on PATH is a **symlink into this repo's `dist/`**, so after any
-source change you must `bun run build` for the fix to go live (both this repo's gate AND external
-dogfood repos like shoal run that symlinked binary).
+## What got done in the session that produced this handoff
+Slice 3 — **agent-safe pending policy candidate** — merged as `19e1e73` (6 commits, `--no-ff`).
 
-This session landed **5 changes (PRs #46–#47 + 3 direct fixes), all through a 2-engine DoD panel
-(Opus `code-reviewer` + codex; agy is the natural 3rd but was itself quota'd):**
+An `approval-required` policy candidate (raised when an agent edits `reviewgate.config.ts` non-monotonically — exactly what the FP-fragmentation banner tells it to do) forced a full review on **every** stop and was converted into a block on **every** completed pass, unbounded, while `reviewgate config approve` is TTY-only. It now blocks exactly once per candidate and only annotates afterwards.
 
-**Reviewer-spawn reliability (3 fixes, master):**
-- **NUL/control-byte strip** (`0aff3d4`): a NUL in a changed file (binary/UTF-16/NUL-after-8KB) flowed
-  through `sanitizeDiff` into the prompt and was passed as a reviewer argv element → `node:child_process`
-  threw `args[N] must be a string without null bytes`, erroring every reviewer at spawn. Fix:
-  `stripControlBytes` Layer 0 in `src/diff/sanitizer.ts` + a NUL backstop in `spawnSafely`.
-- **agy silent-stall quota detection** (`364453c`): quota'd + piped, `agy` hangs with **zero bytes**
-  (its banner is TTY-only). `classifyAgyOutcome` in `src/providers/gemini.ts` now treats a zero-output
-  watchdog/timeout kill as `quota-exhausted` → 15-min cooldown + failover instead of retrying every
-  iteration. `parseQuotaResetAt` parses agy's relative `Resets in 25m38s`; `/enable overages/i` signature added.
-  See `memory/reference_agy_silent_quota_hang.md`.
-- **gate stdin-TTY hang** (`e10628f`) + **reset confirmation** (PR #47, `4863b37`): `reviewgate gate
-  --hook reset` typed in a terminal hung on `Bun.stdin.text()` (TTY never EOFs). `readHookStdin()`
-  returns "" on a TTY; `hookFeedbackMessage()` prints `✓ Reviewgate: per-session state reset.`
-  interactive-only (piped hooks stay silent).
+**Correction to the previous handoff's diagnosis:** the loop was *not* `acknowledgePass`-specific. `gate.ts` converted `approval-required` into a block on the `allow_stop` path unconditionally, so the recommended config (`acknowledgePass:false` + `notify.desktop:true`) looped identically; `acknowledgePass` only changed which message the agent saw. The old handoff's TRAP note was still right about the block itself being loop-safe in isolation.
 
-**Sandbox Increment 2 — Linux `bwrap` (PR #46, master `f3e5ce3`) — COMPLETE:**
-- Filesystem-isolates reviewer subprocesses on **Linux** via `bubblewrap`, mirroring the macOS
-  `sandbox-exec` increment. Deny-mirror mount model: `--ro-bind / /` read-only, `--bind` the working
-  area, mask secrets LAST (`--tmpfs` dirs / `--ro-bind /dev/null` files), `--unshare-user/--unshare-pid`
-  (isolated `/proc`), `--die-with-parent`; **network NOT isolated** (documented).
-- New `src/sandbox/bwrap.ts` (`buildBwrapArgs` + `assertNoSandboxOverlap`), `bwrapAvailable()` + unified
-  `sandboxRuntimeAvailable()` probe (`src/sandbox/availability.ts`), classified `writeTargets` on
-  `SandboxProfile`, platform-aware `spawnSafely` branch + `ensureWriteTargets` (macOS path byte-for-byte
-  unchanged), doctor+orchestrator repointed to the single shared probe.
-- `strict` fails closed when bwrap is unavailable (e.g. Ubuntu 24.04 unprivileged-userns lockdown —
-  `reviewgate doctor` prints the `sysctl` remediation); `permissive` runs unisolated + WARN.
-- **Documented Linux-specific limitation:** glob-denies (`*.pem`/`.env*`) are NOT enforced on Linux
-  (mount model can't pattern-match) — honest divergence from macOS, which denies them anywhere.
-- Spec: `docs/superpowers/specs/2026-05-30-linux-bwrap-sandbox-filesystem-design.md` ·
-  Plan: `docs/superpowers/plans/2026-05-30-linux-bwrap-sandbox-filesystem.md`.
+Design: once-ness derives from the existing `pending.reviewed_under_lkg_at` — no new persisted state. It is already candidate-keyed via `persistPending`, so a re-edited config re-arms the notice for free, and it survives a SessionStart `reset` because `handleReset` does not touch `control-plane.json`.
 
-## The ONE open verification
-The real bwrap e2e (`tests/integration/bwrap-real.test.ts`) is `describe.skipIf`-gated and **skips on
-macOS** (the author host). It asserts `sandboxApplied` + secret-read-denied / workdir-rw / out-of-area-
-write-denied. **Run it on a Linux host/CI** (`bun test tests/integration/bwrap-real.test.ts`) to exercise
-real isolation — everything else is verified on macOS. This is the only thing the macOS dev box couldn't prove.
+Docs: `docs/superpowers/specs/2026-07-25-agent-safe-policy-candidate-design.md` (spec + plan-gate findings mapping) and `docs/superpowers/plans/2026-07-25-agent-safe-policy-candidate.md` (implementation plan) are committed.
 
-## Candidate next increments (pick per priority)
-- **Sandbox Increment 3 (optional hardening):** allow-list mount model (bind only what's needed) instead
-  of deny-mirror, and/or a targeted dotenv-mask to partially close the Linux glob-deny gap. Both were
-  deliberately deferred in the Increment-2 spec (see its "Out of scope" + "Recorded follow-up").
-- **Windows:** still unsupported (`mode:"off"` or WSL2). No plan.
-- The four original "honest weaknesses" remain addressed (fail-open→closed, property tests, isolation
-  now real on macOS **and Linux**, brain-promotion instrumented).
+## THE NEXT TASK — tag + release alpha.12/13
+Everything the release needs is in place: the alpha.12 benchmark is authoritative (attempt-09), `docs/evidence.md` is honest about run-to-run variance and the retry protocol, master is green, and the repo version is already `0.1.0-alpha.13`. What remains is the mechanical release path — tag, the 5-package npm publish (launcher + 4 platform packages), and a post-publish smoke test that the published launcher actually spawns the platform binary.
 
-## Workflow conventions (what worked — follow them)
-- **DoD panel before every merge:** Opus `code-reviewer` agent + **codex** (foreground, `</dev/null`).
-  **agy via `agy`** is the 3rd engine BUT is flaky (empty output / silent hang) and was quota'd this
-  session — don't block on it. **codex runs inside its own read-only sandbox**, so it FALSELY reports the
-  macOS `sandbox-exec`-availability tests as failing — those are environment artifacts, NOT branch defects
-  (verify the real suite in a normal shell: it's 0 fail). Scope codex re-reviews to ignore that.
-- **`rm -rf .review/` before each new review round** (stale findings once masked a PASS as FAIL).
-- **Prefer real end-to-end verification over stubs** — and when a reviewer claims a bug, reproduce its
-  exact probe before accepting/dismissing (codex caught a real write-before-guard ordering bug Opus missed
-  this session; the macOS sandbox-exec test "failures" were codex-sandbox artifacts — both required reproducing).
-- **codex/agy run FOREGROUND with stdin closed** (`</dev/null`). Backgrounding → 0-byte hang.
-- **Branch per change; never push to origin without explicit user permission.** Commits: no
-  "Co-Authored-By"/"powered by" lines (user's CLAUDE.md). `console.warn`/`console.error`, not a logger.
-- After merging to master, **`bun run build`** so the symlinked `dist/reviewgate` is live.
+## Traps that still hold
+- **`bun run build` deploys to ALL repos** via the `~/.local/bin/reviewgate` → `dist/reviewgate` symlink. Never build while an authoritative benchmark run is in flight (it pins `runner_sha256`).
+- **Never `git add -A` here** — it stages `.reviewgate/` runtime state. Stage explicit paths.
+- **Never push without Markus's explicit OK.** Commits carry no `Co-Authored-By` line.
+- **Codex was quota-exhausted until 2026-07-29.** The documented fallback chain worked: agy (agentic, reads the repo) and GLM-5.2 via Ollama (completion, needs everything inline). Note agy failed one round with `timeout waiting for response`, rc=1, and a 41-byte log **after** writing an empty `## FINDINGS / ## VERDICT PASS` skeleton — an errored reviewer is not a pass, always check exit code AND log size.
+- **A green assertion is not a working assertion.** This slice shipped, then had to fix, a regression test whose assertions were true on both the correct and the broken code (the review cache defeats "the reviewer was not called", and one stderr string appears on both paths). The guard that works is pinned to `.reviewgate/pending.json` byte-equality — an artifact the pre-lock skip exit provably never writes.
+- **Suite flakes under load:** `tests/unit/sandbox-audit-fixes.test.ts` and `tests/integration/cassette-pipeline.test.ts` can fail in a full parallel run and pass 3/3 in isolation. Not branch-related; re-run isolated before believing a failure.
+- Deferred, not forgotten: **`docs/AGENTS.md` does not describe the pending-policy case** (Markus's call, deliberately out of the slice-3 branch). **Arming S2 (arming probe) / S3 (worktree inheritance)** from `docs/superpowers/specs/2026-07-17-arming-consent-design.md` remain parked behind the launch.
 
-## Suggested opening prompt for the next session
-> "Read NEXT_SESSION.md. Master is green and the Linux bwrap sandbox shipped. The one open item is
-> running the gated bwrap e2e on a Linux host. Either set that up, or let's scope Sandbox Increment 3
-> (allow-list mounts / dotenv-mask for the Linux glob-deny gap) — brainstorm first."
+## Read-first order
+1. This file.
+2. `git log --oneline a745d37..19e1e73` for what slice 3 actually changed.
+3. `docs/superpowers/specs/2026-07-25-agent-safe-policy-candidate-design.md` if you need the control-plane reasoning.
+4. The npm packaging notes for the release mechanics (5-package esbuild layout; the launcher SPAWNS the binary, so `execPath` IS the binary).
