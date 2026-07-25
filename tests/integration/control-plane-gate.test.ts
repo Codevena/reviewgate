@@ -384,6 +384,9 @@ describe("control-plane gate integration", () => {
   it("does not re-block an agent on a settled candidate even with acknowledgePass", async () => {
     // The FlashBuddy field bug: acknowledgePass + a pending house-rule candidate
     // re-blocked every single turn, and `config approve` is TTY-only.
+    // Note: this reproduces the bug end-to-end, but its second stop is idle (no
+    // code change) and so takes Task 2's `skip-clean` exit in gate.ts — it does
+    // NOT exercise Task 3's `approval-required` handling below.
     const repo = await repoWithApprovedPolicy("allow", { acknowledgePass: true });
     writeFileSync(join(repo, "a.ts"), "export const a = 13;\n");
     writePolicy(repo, "allow", "candidate-model", { acknowledgePass: true });
