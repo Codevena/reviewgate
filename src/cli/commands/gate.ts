@@ -7,6 +7,7 @@ import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import {
   type ControlPlaneResolution,
   finalizeControlPlaneReview,
+  renderPendingPolicyNotice,
   resolveControlPlaneConfig,
 } from "../../config/control-plane.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
@@ -410,24 +411,37 @@ export async function runGate(input: GateInput): Promise<GateOutput> {
   // A config candidate is outside the normal working-tree fingerprint by design,
   // so it explicitly forces the lock path. This covers Edit and Bash mutations,
   // committed and uncommitted, without feeding config source to reviewers.
-  const probe = policy?.change ? "review" : await stopProbe(input.repoRoot);
+  // Slice 3: a candidate that has ALREADY passed under the LKG no longer forces a
+  // review on every stop. Only a human TTY `reviewgate config approve` can clear
+  // it, so re-running the panel on an unchanged tree every turn burns the agent's
+  // turns on something it cannot resolve. An `invalid` candidate keeps forcing
+  // forever — that one the agent CAN fix, so it must stay fail-closed.
+  const policyForcesReview =
+    policy?.change != null &&
+    (policy.change.classification === "invalid" || policy.change.reviewed_under_lkg_at === null);
+  const probe = policyForcesReview ? "review" : await stopProbe(input.repoRoot);
+  // Keep a settled candidate visible on the exits that never reach the block/allow
+  // messages below. Suppressed for `invalid` — "pending human approval" would be
+  // the wrong story for a config that simply does not parse.
+  const pendingPolicyNotice =
+    policy?.change != null && policy.change.classification !== "invalid"
+      ? ` ${renderPendingPolicyNotice(input.repoRoot, policy.approvedEffectiveFingerprint)}`
+      : "";
   if (probe === "skip-clean") {
     return {
       exitCode: 0,
       stdout: "",
-      stderr: "🟢 Reviewgate · GATE OPEN — No code changes since last review.",
+      stderr: `🟢 Reviewgate · GATE OPEN — No code changes since last review.${pendingPolicyNotice}`,
     };
   }
   if (probe === "skip-escalated") {
     // stopProbe's escalated standing-down branch (escalated + HEAD/tree unmoved
     // since the announce) PRODUCES this value; mapped here — never silently
-    // falls through to the green message. Exact copy per the plan (2026-07-03
-    // fail-open-remediation.md, Task 5 Step 3a).
+    // falls through to the green message.
     return {
       exitCode: 0,
       stdout: "",
-      stderr:
-        "🟠 Reviewgate · GATE STANDING DOWN — an escalation is pending human review (.reviewgate/ESCALATION.md). The escalated change-set has NOT been machine-reviewed; new work will re-arm the gate.",
+      stderr: `🟠 Reviewgate · GATE STANDING DOWN — an escalation is pending human review (.reviewgate/ESCALATION.md). The escalated change-set has NOT been machine-reviewed; new work will re-arm the gate.${pendingPolicyNotice}`,
     };
   }
   // probe === "review" → fall through to the lock path below.

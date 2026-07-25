@@ -125,6 +125,34 @@ function cleanReviewer(): ProviderAdapter {
   };
 }
 
+// A clean reviewer that records how many times the panel actually ran. The point
+// of slice 3 is that a settled candidate stops re-reviewing an unchanged tree —
+// asserting only "the turn was allowed" would NOT catch a regression that keeps
+// paying for a full panel run on every stop.
+function countingCleanReviewer(): ProviderAdapter & { calls: number } {
+  const adapter: ProviderAdapter & { calls: number } = {
+    calls: 0,
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "stub", authMode: "oauth" as const, error: null };
+    },
+    async review(input: Parameters<ProviderAdapter["review"]>[0]): Promise<ReviewResult> {
+      adapter.calls += 1;
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "PASS",
+        findings: [],
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 0,
+        rawEventsPath: "",
+        status: "ok",
+      };
+    },
+  };
+  return adapter;
+}
+
 function quotaReviewer(): ProviderAdapter {
   return {
     id: "codex",
@@ -258,5 +286,44 @@ describe("control-plane gate integration", () => {
       readFileSync(join(repo, ".reviewgate", "control-plane.json"), "utf8"),
     );
     expect(control.pending.reviewed_under_lkg_at).toBeNull();
+  }, 30_000);
+
+  it("stops re-reviewing an unchanged tree once the candidate has passed under the LKG", async () => {
+    const repo = await repoWithApprovedPolicy("allow");
+    writeFileSync(join(repo, "a.ts"), "export const a = 7;\n");
+    writePolicy(repo, "allow", "candidate-model");
+    await runGate({
+      repoRoot: repo,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(repo, "a.ts") },
+      }),
+    });
+    const reviewer = countingCleanReviewer();
+    const first = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: reviewer },
+      sandboxModeOverride: "off",
+    });
+    expect((JSON.parse(first.stdout || "{}") as { decision?: string }).decision).toBe("block");
+    expect(reviewer.calls).toBe(1);
+
+    // Second stop, nothing changed: the candidate is settled, so the gate must NOT
+    // force another full panel run on something the agent cannot resolve.
+    const second = await runGate({
+      repoRoot: repo,
+      hook: "stop",
+      snapshotVerifyOpts: { dwellMs: 0 },
+      hookStdinRaw: "{}",
+      providerOverrides: { codex: reviewer },
+      sandboxModeOverride: "off",
+    });
+    expect(second.stderr).toContain("No code changes since last review");
+    expect(second.stderr).toContain("pending human approval");
+    expect(reviewer.calls).toBe(1);
   }, 30_000);
 });
