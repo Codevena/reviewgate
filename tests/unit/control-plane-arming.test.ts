@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { probeArming } from "../../src/config/control-plane.ts";
+import { managedHookPath } from "../../src/utils/paths.ts";
 import { armCheckout } from "../helpers/arm.ts";
 
 function repo(): string {
@@ -14,8 +15,10 @@ function input(cwd: string) {
 }
 
 function addManagedHook(cwd: string): void {
-  mkdirSync(join(cwd, ".reviewgate", "bin"), { recursive: true });
-  writeFileSync(join(cwd, ".reviewgate", "bin", "gate"), "#!/bin/sh\n");
+  // Sourced from the same helper the probe uses, so the simulated "init armed this
+  // checkout" state cannot silently drift away from what managedHookExists checks.
+  mkdirSync(dirname(managedHookPath(cwd)), { recursive: true });
+  writeFileSync(managedHookPath(cwd), "#!/bin/sh\n");
 }
 
 describe("probeArming", () => {

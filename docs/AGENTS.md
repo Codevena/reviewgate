@@ -304,6 +304,27 @@ inside a worktree** and that work ends un-reviewed. If you do implementation in 
 worktree** to gate it, or do the work in / merge it back to the gated main checkout so it
 gets reviewed there. `reviewgate doctor` will **FAIL** when run inside an un-gated worktree.
 
+The S2 arming probe (below) does **not** change this. It makes a checkout where the gate
+does not fire *safe* rather than *gated* — installing hooks in a worktree is still
+`reviewgate init` inside it.
+
+## Unarmed checkouts (S2)
+
+A checkout is **armed** when an approved control-plane baseline exists for it — written by
+`reviewgate init` or `reviewgate config approve`. A hook-invoked gate in an UNARMED checkout
+does nothing and, importantly, **writes nothing**: no `.reviewgate/` directory, no state, no
+`dirty.flag`, no reviewer panel, and no `checks.commands` under a policy nobody approved here.
+
+- Checkout ships a `reviewgate.config.ts` that was never approved here (a fresh clone or
+  worktree) → the turn is allowed, with a loud `NOT ARMED here` notice naming
+  `reviewgate config approve`. The notice appears on `stop` only; printing it from
+  PostToolUse or SessionStart would repeat it on every tool call.
+- No policy at all → the turn is allowed, silently.
+
+**Deleting `.reviewgate/control-plane.json` does NOT disarm a checkout that `init` armed.**
+The managed hook is still present, so the gate fails closed and blocks until the approval is
+restored. Removing state is not a way out of the gate.
+
 ## Rules
 
 - **Never** edit, delete, or game `.reviewgate/` to escape the gate.

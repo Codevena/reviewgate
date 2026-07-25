@@ -14,6 +14,7 @@ import {
   controlPlaneFlagPath,
   controlPlaneLockPath,
   controlPlaneStatePath,
+  managedHookPath,
   policyChangeReportPath,
   reviewgateDir,
 } from "../utils/paths.ts";
@@ -334,7 +335,7 @@ export async function bootstrapControlPlane(
 }
 
 function managedHookExists(repoRoot: string): boolean {
-  return existsSync(join(repoRoot, ".reviewgate", "bin", "gate"));
+  return existsSync(managedHookPath(repoRoot));
 }
 
 // S2 arming probe. `armed` answers exactly one question: may this checkout run the

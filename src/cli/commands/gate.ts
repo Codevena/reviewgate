@@ -7,6 +7,7 @@ import { SETUP_BUDGET_MS_DEFAULT } from "../../config/budgets.ts";
 import {
   type ControlPlaneResolution,
   finalizeControlPlaneReview,
+  probeArming,
   renderPendingPolicyNotice,
   resolveControlPlaneConfig,
 } from "../../config/control-plane.ts";
@@ -313,6 +314,46 @@ export async function stopProbe(
 }
 
 export async function runGate(input: GateInput): Promise<GateOutput> {
+  // S2: probe arming BEFORE anything that writes. Every hook below writes something —
+  // trigger writes dirty.flag, reset wipes/seeds session state, stop runs the whole
+  // pipeline and resolveControlPlaneConfig can auto-baseline an LKG (mkdir .reviewgate/
+  // + writeState). An UNARMED checkout must be answered from a pure READ: no state, no
+  // panel, no checks.commands under a policy nobody approved here.
+  //
+  // The probe never parses the config (it only asks whether a project source exists),
+  // so the invariant below — triggering must not depend on a VALID config — survives.
+  //
+  // Skipped when loadConfigFn is injected: that seam deliberately bypasses the control
+  // plane for tests. It is test-only; the real CLI never supplies it.
+  if (!input.loadConfigFn) {
+    const arming = await probeArming({
+      cwd: input.repoRoot,
+      env: process.env as Record<string, string | undefined>,
+      home: homedir(),
+    });
+    // ALLOWLIST, never a blocklist. Only these two kinds may take the allow branch;
+    // everything else falls THROUGH to the normal path, which fail-closes. Written as
+    // `!== "state-missing"` this would fail OPEN for any kind added to ArmingProbe
+    // later (a probe-error sentinel, say) — the exact inversion of this gate's whole
+    // premise. "state-missing" is the one such kind today: resolveControlPlaneConfig
+    // rechecks the managed hook and throws ControlPlaneBootstrapRequiredError, which
+    // runGateSafe converts into a block, so deleting the approval cannot disarm a
+    // checkout that init armed.
+    if (
+      !arming.armed &&
+      (arming.kind === "unarmed-with-config" || arming.kind === "unarmed-bare")
+    ) {
+      // The notice belongs on `stop` only. Printing it from PostToolUse/SessionStart
+      // would repeat it on every tool call and every session start in every unarmed
+      // repo — under S4's user-scoped hooks, that is most repos.
+      const stderr =
+        input.hook === "stop" && arming.kind === "unarmed-with-config"
+          ? "🟠 Reviewgate · NOT ARMED here — this checkout ships a committed Reviewgate policy (reviewgate.config.ts) that has not been approved in this checkout, so the gate did NOT review this turn. Run `reviewgate config approve` in an interactive terminal (or `reviewgate init`) to arm it."
+          : "";
+      return { exitCode: 0, stdout: "", stderr };
+    }
+  }
+
   // Triggering must never depend on a valid config. In particular, the edit that
   // MAKES reviewgate.config.ts invalid must still arm the dedicated control-plane
   // flag; loading first would throw and lose that signal.

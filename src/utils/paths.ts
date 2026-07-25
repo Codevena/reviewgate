@@ -5,6 +5,13 @@ export function reviewgateDir(repoRoot: string): string {
   return resolve(repoRoot, ".reviewgate");
 }
 
+// The managed hook `init` writes. Its presence is what distinguishes "this checkout was
+// armed and its approval was DELETED" (fail closed) from "this checkout was never armed"
+// (allow), so the arming probe and anything simulating that state must agree on the path.
+export function managedHookPath(repoRoot: string): string {
+  return resolve(reviewgateDir(repoRoot), "bin", "gate");
+}
+
 export function stateJsonPath(repoRoot: string): string {
   return join(reviewgateDir(repoRoot), "state.json");
 }
