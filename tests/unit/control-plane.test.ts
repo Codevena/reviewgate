@@ -334,4 +334,61 @@ describe("gate policy control plane", () => {
     expect(reverted.change).toBeNull();
     expect((await controlPlaneStatus(repo, envFor(home))).state?.pending).toBeNull();
   });
+
+  it("delivers the approval notice once per candidate and never refreshes the review timestamp", async () => {
+    const repo = temp("rg-control-once-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-model' } } }");
+
+    const first = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    const a = await finalizeControlPlaneReview(repo, first, envFor(home));
+    expect(a).toMatchObject({ kind: "approval-required", alreadyNotified: false });
+    const t1 = (await controlPlaneStatus(repo, envFor(home))).state?.pending?.reviewed_under_lkg_at;
+    expect(t1).not.toBeNull();
+
+    // Advance the wall clock past ISO millisecond resolution so a regression that
+    // re-stamps the timestamp is actually VISIBLE to the assertion below.
+    await Bun.sleep(5);
+
+    const second = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    const b = await finalizeControlPlaneReview(repo, second, envFor(home));
+    expect(b).toMatchObject({ kind: "approval-required", alreadyNotified: true });
+    expect(b.kind === "approval-required" && b.message).toContain("pending human approval");
+    const t2 = (await controlPlaneStatus(repo, envFor(home))).state?.pending?.reviewed_under_lkg_at;
+    expect(t2).toBe(t1 as string);
+
+    // The quiet path must still leave the candidate approvable by a human.
+    const challenge = `APPROVE ${second.observedEffectiveFingerprint?.slice(0, 12)}`;
+    await approveControlPlane(repo, challenge, envFor(home));
+    const approved = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(approved.change).toBeNull();
+    expect(approved.config.providers.codex.model).toBe("candidate-model");
+  });
+
+  it("re-arms the one-time notice when the config changes to a new candidate", async () => {
+    const repo = temp("rg-control-rearm-");
+    const home = temp("rg-control-home-");
+    writeConfig(repo, "{ providers: { codex: { model: 'approved-model' } } }");
+    await bootstrapControlPlane({ cwd: repo, ...envFor(home), approvedVia: "init" });
+
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-one' } } }");
+    const first = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(await finalizeControlPlaneReview(repo, first, envFor(home))).toMatchObject({
+      alreadyNotified: false,
+    });
+    const repeat = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(await finalizeControlPlaneReview(repo, repeat, envFor(home))).toMatchObject({
+      alreadyNotified: true,
+    });
+
+    // A DIFFERENT candidate is a different trust decision — the notice re-arms.
+    writeConfig(repo, "{ providers: { codex: { model: 'candidate-two' } } }");
+    const third = await resolveControlPlaneConfig({ cwd: repo, ...envFor(home) });
+    expect(third.change?.reviewed_under_lkg_at).toBeNull();
+    expect(await finalizeControlPlaneReview(repo, third, envFor(home))).toMatchObject({
+      alreadyNotified: false,
+    });
+  });
 });

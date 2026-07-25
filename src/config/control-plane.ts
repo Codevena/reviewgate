@@ -41,7 +41,7 @@ export interface ControlPlaneResolution {
 export type ControlPlaneFinalizeResult =
   | { kind: "unchanged" }
   | { kind: "auto-approved"; classification: "equivalent" | "strengthening" }
-  | { kind: "approval-required"; message: string }
+  | { kind: "approval-required"; message: string; alreadyNotified: boolean }
   | { kind: "invalid"; message: string }
   | { kind: "changed-during-review"; message: string };
 
@@ -436,6 +436,16 @@ export async function resolveControlPlaneConfig(
   }
 }
 
+// Slice 3: the loud, blocking approval notice is delivered ONCE per candidate.
+// Every later gate message carries this quiet reminder instead, so the pending
+// candidate stays visible without costing the agent another turn on a decision
+// only a human at a terminal can make. Single source of truth for that text —
+// see docs/superpowers/specs/2026-07-25-agent-safe-policy-candidate-design.md.
+export function renderPendingPolicyNotice(repoRoot: string, approvedFingerprint: string): string {
+  const report = policyChangeReportPath(repoRoot).replace(`${repoRoot}/`, "");
+  return `🔐 Gate policy candidate still pending human approval — code was reviewed under approved policy ${approvedFingerprint.slice(0, 12)}. Run \`reviewgate config approve\` in an interactive terminal to adopt it. Details: ${report}.`;
+}
+
 function approvalMessage(repoRoot: string, pending: ControlPlanePending): string {
   const report = policyChangeReportPath(repoRoot).replace(`${repoRoot}/`, "");
   if (pending.classification === "invalid") {
@@ -513,11 +523,28 @@ export async function finalizeControlPlaneReview(
       clearPolicyArtifacts(repoRoot);
       return { kind: "auto-approved", classification: pending.classification };
     }
+    // Slice 3: the FIRST completed pass under the LKG delivers the loud, blocking
+    // approval notice; every later pass is a quiet, non-blocking reminder. The
+    // null->set transition is decided HERE, inside the control-plane lock, so two
+    // racing stop hooks can never both believe they are first. Do NOT refresh the
+    // timestamp on a repeat: it records when the candidate first passed, and
+    // approveControlPlane only requires it to be non-null.
+    if (pending.reviewed_under_lkg_at !== null) {
+      return {
+        kind: "approval-required",
+        message: renderPendingPolicyNotice(repoRoot, state.approved_effective_fingerprint),
+        alreadyNotified: true,
+      };
+    }
     const reviewed = { ...pending, reviewed_under_lkg_at: new Date().toISOString() };
     const next = { ...state, pending: reviewed };
     writeState(repoRoot, next);
     writeFileAtomic(policyChangeReportPath(repoRoot), renderReport(next), { mode: 0o600 });
-    return { kind: "approval-required", message: approvalMessage(repoRoot, reviewed) };
+    return {
+      kind: "approval-required",
+      message: approvalMessage(repoRoot, reviewed),
+      alreadyNotified: false,
+    };
   } finally {
     await lock.release();
   }
