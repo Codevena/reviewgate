@@ -49,6 +49,17 @@ counterfactual runs on the harvested findings instead.
   `codex` is excluded because it is genuinely out of quota until `2026-08-05T11:24:00.000Z`
   (verified live: `ERROR: You've hit your usage limit … try again at Aug 5th, 2026 1:24 PM`).
   Record the exact panel + model ids in the result's provenance block.
+- **≥2 distinct reviewer providers is MANDATORY, not a preference** (spike finding): with a
+  single reviewer, consensus, FP-ledger promotion and reputation-demote are all **inert** —
+  both `doctor` and `pending.md` say so outright. Those are precisely the layers M6 counts and
+  two of the four ablations toggle, so a one-reviewer pilot measures a system with half its
+  suppression stack switched off.
+- **Every panel provider must set `costPerMTokensUsd`** (spike finding): `cost_usd` is derived
+  from it, and without it every `run.complete` reports `cost_usd: 0`, making M5 unmeasurable.
+- **`reviewgate.config.ts` shape** (spike finding — the plan's first draft was invalid):
+  `phases.review.reviewers` takes **objects** (`{ provider, persona }`), never provider-id
+  strings, and `providers.codex` is **required**, not optional. See the verified working config
+  in `docs/dev/2026-07-29-headless-gate-spike.md`.
 - **A cassette contains raw reviewer output and raw prompts.** Review it before committing
   anything; the recording adapter already prints a warning saying so. Prefer keeping pilot
   cassettes out of git until reviewed.
@@ -73,8 +84,12 @@ grep -n 'record|replay' src/cassette/store.ts
 grep -n "export function reviewKey" -A 3 src/cassette/matching.ts
 # 4. ReplayAdapter serves FIFO per key and supports strict mode.
 grep -n "fifo\|strict" src/cassette/replay-adapter.ts | head
-# 5. iteration_stats carries critical/warn/info/cost_usd/verdict per iteration (M1, M5).
-grep -n "iteration_stats" -A 10 src/schemas/state.ts
+# 5. The audit log is the durable per-iteration record M1/M2/M5 read (state.json and
+#    decisions/ are wiped by the clean-PASS re-arm — spike finding S-2), and there is
+#    ALREADY a validated loader for it; the harvester must reuse it, not re-parse JSONL.
+grep -n "run.complete\|decision.applied" src/schemas/audit-event.ts
+grep -n "export function loadAuditWindow" -A 6 src/stats/load.ts
+grep -n "export interface LoadedRun" -A 6 src/stats/load.ts
 # 6. The bench corpus is 30 cases and already covers the seeded classes reused in Task 2.
 ls bench/cases | wc -l && ls bench/cases | grep -E "path-traversal|sql-injection|missing-await|hardcoded-secret|check-then-write|reservation"
 # 7. codex is genuinely quota-exhausted, which is why it is excluded from the pilot panel.
@@ -99,12 +114,31 @@ The six metrics this rig produces (definitions locked in Task 4):
 
 | # | Metric | Source |
 |---|---|---|
-| M1 | **Iterations-to-allow-stop per turn** (median + spread) | `state.json.iteration_stats[]` length per turn |
-| M2 | **FP burden per turn** = rejects with `reviewer_was_wrong` ÷ findings (**`null` when a turn produced zero findings**), **and its slope over turn index** | `decisions/<iter>.jsonl` + `pending.json` |
-| M3 | **Seeded-defect catch rate (recall)** | turn-script label × `pending.json` findings via `src/bench/matcher.ts` |
+| M1 | **Iterations-to-allow-stop per turn** (median + spread) | count of `run.complete` audit events for that turn |
+| M2 | **FP burden per turn** = rejects with `reviewer_was_wrong` ÷ findings (**`null` when a turn produced zero findings**), **and its slope over turn index** | `decision.applied` audit events + `run.complete.counts` |
+| M3 | **Seeded-defect catch rate (recall)** | turn-script label × the turn's findings via `src/bench/matcher.ts` |
 | M4 | **Escape rate** — seeded defects that reached a commit never having been flagged | turn-script label × all turns' findings |
-| M5 | **Cost + tokens per turn** | `state.json.iteration_stats[].cost_usd` |
+| M5 | **Cost + tokens per turn** | `run.complete.cost_usd` / `duration_ms` |
 | M6 | **Suppression provenance** — findings demoted by critic / reputation / fp-ledger / lore | `pending.json` per-finding fields |
+
+**Harvest from the AUDIT LOG, not from `state.json`/`decisions/` (spike finding, 2026-07-29).**
+On a clean-PASS re-arm the gate **wipes** the per-cycle state: after a green turn the sandbox
+showed `iteration: 0`, `iteration_stats: []`, `decision_history: []` and **no `decisions/`
+directory at all**. Snapshotting after the agent exits would therefore harvest an empty state
+for exactly the turns that succeed — M1, M2 and M5 would silently read zero. What survives is
+the hash-chained audit log under `.reviewgate/audit/<YYYY>/<MM>/<DD>/*.jsonl`, **one file per
+gate process**, carrying `run.complete` (verdict, counts, cost_usd, duration_ms),
+`decision.applied` (finding_id, severity, bucket) and `gate.decision` per iteration. Being
+hash-chained it is also tamper-evident, which is strictly better for a study artifact than a
+mutable state file. The snapshot must collect **all** audit files, since one turn yields
+several. `pending.json` is still snapshotted — it is the only place carrying per-finding
+demotion markers (M6) — but it is the LAST iteration's report, not the turn's history.
+
+**Seeded turns end in a reject, not a fix (spike finding).** The prompt instructs the unsafe
+construction, so the agent correctly declines to "fix" it and rejects the finding with
+`reviewer_was_wrong: false`. M2 counts only rejects **with** `reviewer_was_wrong: true`, so
+the definition survives — but the harvester must never treat "rejected" alone as an FP
+signal, and seeded turns structurally inflate M1 by one block + re-review cycle.
 
 **M2's slope is the headline claim** ("Reviewgate's false-positive load falls as history
 accumulates") and simultaneously the weakest number at pilot size. It must always be
@@ -139,7 +173,13 @@ goes into either of them** — the rig only ever *reads* artifacts they already 
 
 ---
 
-### Task 1: Feasibility spike — does the gate fire under `claude -p`?
+### Task 1: Feasibility spike — does the gate fire under `claude -p`? ✅ DONE 2026-07-29
+
+**Result: YES.** Hooks fire, the FAIL → decision → re-review loop runs in-chain in a single
+`claude -p` invocation, the cassette records, and the seeded `path-traversal` was caught as
+CRITICAL with a `rule_id` that matches the turn-script tags. Full write-up, including the five
+findings that changed this plan, is in `docs/dev/2026-07-29-headless-gate-spike.md`. The steps
+below are kept as the reproduction recipe.
 
 Everything downstream is worthless if a headless agent does not trigger the Stop gate and
 does not run the FAIL→fix→re-review loop in-chain. This task exists to answer that with
@@ -183,20 +223,31 @@ values are allowed in this file.
 cat > reviewgate.config.ts <<'CFG'
 export default {
   providers: {
-    openrouter: { enabled: true, model: "anthropic/claude-sonnet-4.5", apiKeyEnv: "OPENROUTER_API_KEY" },
+    codex: { enabled: false, auth: "oauth", model: "gpt-5.4-codex", timeoutMs: 300000 },
+    openrouter: {
+      enabled: true,
+      auth: "openrouter",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      model: "anthropic/claude-sonnet-4.5",
+      timeoutMs: 300000,
+      costPerMTokensUsd: 3,
+    },
   },
-  phases: { review: { reviewers: ["openrouter"] } },
+  phases: { review: { reviewers: [{ provider: "openrouter", persona: "security" }] } },
   loop: { runTimeoutMs: 600000 },
 }
 CFG
 git add reviewgate.config.ts && git commit -qm "arm"
-"$RG" init --host claude --yes </dev/null
+"$RG" init --host claude </dev/null
 ```
 
-Note: `init`'s exact non-interactive flag must be confirmed from `reviewgate init --help`
-in this step; if no non-interactive flag exists, arm by writing the control-plane baseline
-through `tests/helpers/arm.ts`'s approach rather than hand-writing `control-plane.json`
-(hand-written control-plane fixtures are forbidden in this repo).
+**This exact shape is verified against the schema.** Three traps, all hit on the first
+attempt: `reviewers` takes objects (`{ provider, persona }`), not provider-id strings;
+`providers.codex` is **required** even when disabled; and `costPerMTokensUsd` must be present
+or `cost_usd` stays 0 and M5 is unmeasurable. An invalid config fails **closed** — nothing is
+written and no `.reviewgate/` appears — so a mistake here is loud, not silent.
+`init --host claude </dev/null` is fully non-interactive; the `tests/helpers/arm.ts` fallback
+is not needed. For the real pilot add a **second** provider (see Global Constraints).
 
 - [ ] **Step 3: Run ONE headless agent turn that introduces an obvious defect**
 
@@ -506,8 +557,14 @@ Behaviour, in order, per turn:
    `repoRoot`, inheriting `REVIEWGATE_CASSETTE`. Record exit code and wall-clock.
 2. **After** the agent process exits (its Stop hook has therefore already run to
    completion), copy the whole `.reviewgate/` directory to
-   `<outDir>/turns/<index>/reviewgate/`, plus `git log --oneline` and `git diff HEAD` to
-   `<outDir>/turns/<index>/git.txt`.
+   `<outDir>/turns/<index>/.reviewgate/` — **that exact name**, so the snapshot is a valid
+   repo root and `loadAuditWindow` can be pointed at `<outDir>/turns/<index>/` unchanged —
+   plus `git log --oneline` and `git diff HEAD` to `<outDir>/turns/<index>/git.txt`. **The audit tree is the load-bearing part of that
+   copy** — `state.json` and `decisions/` are wiped by the clean-PASS re-arm, so the
+   `.reviewgate/audit/**/*.jsonl` files (several per turn, one per gate process) are the only
+   surviving per-iteration record. Copy the audit tree recursively and assert at least one
+   `run.complete` event was captured; a turn whose snapshot has no audit events is a harvest
+   failure, not a quiet zero.
 3. Append the turn record to the manifest and write the manifest after **every** turn, so
    a run killed mid-way still yields a harvestable partial result.
 4. Stop when `index > maxTurns`.
@@ -589,7 +646,18 @@ git commit -F .commit-msg.txt
   positives on a turn that had findings", which is a different and flattering claim).
 
 **Metric definitions (locked here so the reporter and the write-up cannot drift):**
-- **M1 iterations-to-allow-stop** = `iteration_stats.length` for that turn's snapshot;
+- **All per-iteration facts come from the turn's audit events — via the EXISTING loader.**
+  `loadAuditWindow` (`src/stats/load.ts`) already walks `.reviewgate/audit/<Y>/<M>/<D>/*.jsonl`
+  and returns `{ runs: Array<{ ts, run_id, iter, summary }>, decisions: DecisionOutcome[],
+  escalationCount }`, validated through `RunSummarySchema`/`DecisionOutcomeSchema`. Reuse it;
+  do not hand-parse JSONL, and do not re-derive the day-partition walk (it carries a −1-day
+  guard for processes that cross UTC midnight — a detail a fresh parser would get wrong).
+  Because it resolves `auditDir(repoRoot)`, **each turn snapshot must be laid out as a repo
+  root containing `.reviewgate/`**, so the harvester can point the loader straight at
+  `<outDir>/turns/<index>/`. Do **not** read `iteration_stats`/`decisions/` — a clean-PASS
+  re-arm empties them (spike finding S-2), which would silently zero M1/M2/M5 on precisely
+  the turns that pass.
+- **M1 iterations-to-allow-stop** = number of `run.complete` events for that turn;
   reported as median + `summarizeSpread`.
 - **M2 FP burden** = decisions with `verdict:"rejected"` and `reviewer_was_wrong:true`,
   divided by that turn's total findings — **and `null`, never `0`, when that turn produced
@@ -895,3 +963,28 @@ even with `--add-dir .`. It prefixes its own scratch root, so a prompt asking fo
 `.review/x.md` produces `~/.gemini/antigravity-cli/scratch/.review/x.md`. Look there before
 concluding a reviewer produced nothing — round 1 of this plan was briefly mistaken for a
 reviewer that failed to write its findings, when the file existed the whole time.
+
+## Revision after Task 1 execution (2026-07-29)
+
+Task 1 ran and the plan was corrected from what it found. A future delta reviewer should
+check these deltas, not re-litigate the rest. Full evidence:
+`docs/dev/2026-07-29-headless-gate-spike.md`.
+
+| # | What running it revealed | Where the plan changed |
+|---|---|---|
+| S-1 | Hooks DO fire under `claude -p`; the FAIL → decision → re-review loop runs in-chain in ONE invocation; the cassette records; the seeded defect was caught as CRITICAL with a tag-matching `rule_id` | Task 1 marked DONE; the load-bearing unknown is closed |
+| S-2 | **`state.json` + `decisions/` are WIPED on a clean-PASS re-arm** — a post-turn snapshot would harvest `iteration: 0`, empty stats and no decisions for every turn that passes, silently zeroing M1/M2/M5 | Harvest source moved to the hash-chained `.reviewgate/audit/**/*.jsonl` (several files per turn, one per gate process); Task 3 must assert ≥1 `run.complete` per turn; Task 4's metric definitions rewritten |
+| S-3 | The plan's `reviewgate.config.ts` was **invalid**: `reviewers` needs objects not strings, `providers.codex` is required. It failed closed and wrote nothing | Task 1 Step 2 replaced with the verified config; the three traps named |
+| S-4 | `cost_usd` is always 0 without `costPerMTokensUsd` | New Global Constraint; M5 would otherwise be unmeasurable |
+| S-5 | A single-reviewer panel makes consensus, FP-ledger and reputation **inert** — the layers M6 counts and half the ablations toggle | ≥2 providers promoted from preference to hard Global Constraint |
+| S-6 | Seeded turns end in a **reject with `reviewer_was_wrong: false`**, not a fix, because the prompt directed the unsafe construction | M2's definition survives unchanged (it counts only `reviewer_was_wrong: true`); stated explicitly, plus that seeded turns inflate M1 by one cycle |
+| S-7 | **A validated audit loader already exists** — `loadAuditWindow` (`src/stats/load.ts`) returns `{ runs: {ts, run_id, iter, summary}[], decisions, escalationCount }` through `RunSummarySchema`/`DecisionOutcomeSchema`, including a −1-day partition guard for processes crossing UTC midnight | Task 4 reuses it instead of hand-parsing JSONL; Task 3's snapshot layout pinned to `<outDir>/turns/<i>/.reviewgate/` so the loader can be pointed at the snapshot unchanged |
+| S-8 | Installing the user-scoped hooks turned this repo's OWN suite red: `worktree-gating.test.ts` called `worktreeGatedCheck` without a `home` argument, so it read the developer's real `~/.claude/settings.json` and the no-hooks case flipped to "gated" | Not a plan change — a repo fix, made in this session: the test now always passes an empty temp home. Worth knowing because **anyone who dogfoods `init --user` would have hit it** |
+
+**Out-of-scope discovery worth its own work item:** the agent found that Reviewgate's decision
+vocabulary has no honest disposition for "the reviewer is right, but the human directed this
+exposure" — `acknowledged-low-value` is barred for CRITICAL/security,
+`verified-not-applicable` requires moot-evidence, and `rejected` nudges toward
+`reviewer_was_wrong: true`. It used `rejected` with the flag explicitly `false` rather than,
+in its words, "poison the FP ledger to buy myself a green gate". Not a rig change; a
+Reviewgate protocol gap, found on turn one before any metric existed.
