@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runRigRun } from "../../src/cli/commands/rig.ts";
@@ -235,6 +242,36 @@ describe("rig driver", () => {
     expect(written).toContain(nasty);
     expect(written).not.toContain("pwned\n"); // the substitution must not have run
   });
+
+  test("archives an intermediate pending.json that the turn later overwrites", async () => {
+    // The whole point of the archiver. The gate rewrites pending.json every iteration, so after
+    // a turn ends green it holds a PASS report with zero findings — and the iteration that
+    // actually caught the seeded defect is gone. Recall would then read as "missed" for a
+    // defect the gate did catch. The audit log cannot substitute: its signatures are
+    // SHA-256 of [file, ruleId, ...], so no rule id or finding text survives in them.
+    const { root, scriptPath } = sandbox(1);
+    const pending = join(root, ".reviewgate", "pending.json");
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      // Fake agent that mimics a FAIL iteration followed by a PASS one, overwriting the
+      // report exactly as the real gate does.
+      agentCmd: () => [
+        "bash",
+        "-c",
+        `printf '%s' '{"verdict":"FAIL","findings":[{"rule_id":"path-traversal"}]}' > ${JSON.stringify(pending)}; sleep 0.7; printf '%s' '{"verdict":"PASS","findings":[]}' > ${JSON.stringify(pending)}`,
+      ],
+      maxTurns: 1,
+    });
+    const reportsDir = join(manifest.turns[0]?.snapshotDir ?? "", "reports");
+    const archived = readdirSync(reportsDir)
+      .filter((f) => f.endsWith("pending.json"))
+      .map((f) => readFileSync(join(reportsDir, f), "utf8"));
+    // The FAIL report must be recoverable even though the live file now says PASS.
+    expect(archived.some((c) => c.includes("path-traversal"))).toBe(true);
+    expect(readFileSync(pending, "utf8")).toContain("PASS");
+  }, 20_000);
 
   test("records the agent's exit code instead of swallowing a failed turn", async () => {
     const { root, scriptPath } = sandbox(1);

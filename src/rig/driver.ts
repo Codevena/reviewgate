@@ -3,7 +3,16 @@
 // snapshotting the gate's artifacts after each turn. The driver only ever READS the repo's
 // .reviewgate/ and copies it out — it must never write there, or the rig would be measuring
 // its own interference.
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { gateLockPath, reviewgateDir } from "../utils/paths.ts";
@@ -39,6 +48,7 @@ export interface DriverRunManifest {
 const QUIESCE_TIMEOUT_MS = 2_000;
 const QUIESCE_POLL_MS = 50;
 const COPY_RETRY_DELAY_MS = 100;
+const REPORT_POLL_MS = 250;
 
 /**
  * Agent exit is necessary but NOT sufficient. The Stop hook is synchronous, so the gate's
@@ -123,6 +133,47 @@ async function copyWithRetry(src: string, dest: string, turnIndex: number): Prom
 }
 
 /**
+ * Archive every version of `pending.{json,md}` that appears WHILE a turn runs.
+ *
+ * Without this, recall (M3) is unmeasurable. The gate rewrites `pending.json` each
+ * iteration, so after a turn ends green it holds the final PASS report with zero findings —
+ * the iteration that actually caught the seeded defect is gone. The audit log does not
+ * close the gap: it carries counts, costs and finding SIGNATURES, but a signature is a
+ * SHA-256 of `[file, ruleId, category, symbol, offset]`, so neither the rule id nor the
+ * finding text can be recovered from it. Matching a seeded defect's tags therefore needs
+ * the reports themselves, captured as they appear.
+ *
+ * Polling rather than fs.watch: the gate writes atomically (temp + rename), so any read
+ * returns a complete version, and a missed intermediate is far less bad than a torn one.
+ */
+function startReportArchiver(repoRoot: string, destDir: string): () => void {
+  mkdirSync(destDir, { recursive: true });
+  let seq = 0;
+  const seen = new Set<string>();
+  const capture = () => {
+    for (const name of ["pending.json", "pending.md"]) {
+      const src = join(reviewgateDir(repoRoot), name);
+      if (!existsSync(src)) continue;
+      try {
+        const body = readFileSync(src, "utf8");
+        const key = `${name}:${createHash("sha256").update(body).digest("hex")}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (name === "pending.json") seq += 1;
+        writeFileSync(join(destDir, `${seq}-${name}`), body);
+      } catch {
+        /* mid-rename read → try again on the next tick */
+      }
+    }
+  };
+  const timer = setInterval(capture, REPORT_POLL_MS);
+  return () => {
+    clearInterval(timer);
+    capture(); // final sweep: the last report may have landed after the last tick
+  };
+}
+
+/**
  * Run one agent turn, sending its output straight to a FILE DESCRIPTOR.
  *
  * Two reasons, and NOT the one you may expect. The gate flagged the previous
@@ -174,12 +225,21 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     // is written into it live (see runAgent). The .reviewgate/ snapshot still happens after.
     const snapshotDir = join(opts.outDir, "turns", String(turn.index));
     mkdirSync(snapshotDir, { recursive: true });
-    const agentExitCode = await runAgent(
-      opts.agentCmd(turn.prompt),
-      opts.repoRoot,
-      join(snapshotDir, "agent.log"),
-    );
-    await awaitQuiescent(opts.repoRoot, quiesceTimeoutMs);
+    // Started BEFORE the agent: the reports it archives only exist during the turn.
+    const stopArchiver = startReportArchiver(opts.repoRoot, join(snapshotDir, "reports"));
+    let agentExitCode: number;
+    try {
+      agentExitCode = await runAgent(
+        opts.agentCmd(turn.prompt),
+        opts.repoRoot,
+        join(snapshotDir, "agent.log"),
+      );
+      await awaitQuiescent(opts.repoRoot, quiesceTimeoutMs);
+    } finally {
+      // finally, not after: a quiescence failure must not leave an interval running for
+      // the rest of the process.
+      stopArchiver();
+    }
 
     // Snapshot AFTER the agent exits and the workspace settles. Laid out as a repo root
     // (a directory literally named `.reviewgate`) so `loadAuditWindow(snapshotDir)` reads
