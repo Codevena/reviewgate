@@ -1,118 +1,121 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-07-29, nach dem alpha.15-Release. Supersedes all earlier content._
+_Last updated: 2026-07-30, nach der Rig-Session (Tasks 1–3). Supersedes all earlier content._
 
 ## One-line state
-**The whole arming/consent chain S1–S4 is implemented, pushed AND released.** `origin/master`
-carries the release commit `c6c5f39`, tag `v0.1.0-alpha.15` is published and npm `latest` =
-`0.1.0-alpha.15`. The one thing still on the old version is the **local** binary. (This file's
-own commit may be unpushed — check `git status -sb`, don't assume either way.)
 
-## What got done this session
+The local toolchain is finally current (alpha.15 binary built, user-scoped hooks active) and
+**Phase 1 — the longitudinal effectiveness rig — is three tasks in**: turn-script schema,
+12-turn pilot script, and a driver that snapshots each turn. **Everything since `3eb8507` is UNPUSHED.**
 
-**Released `v0.1.0-alpha.15`** — one commit (`c6c5f39`: version + four version-pinned install
-examples), tag pushed, CI did the rest via OIDC.
+## What got done — and how it was verified
 
-Verified, not asserted:
-- Before the tag: suite **3022 pass / 12 skip / 0 fail** · `tsc --noEmit` clean · biome clean
-  (620 files) · `build:npm` + `verify:npm` clean.
-- Release run **30488650056: all four jobs green** (release · publish-npm · native smoke
-  macos-15 · native smoke ubuntu-latest); master CI 30488646036 green.
-- **Against the real registry, not just CI-green:** `dist-tags.latest` = `0.1.0-alpha.15`,
-  platform package likewise. Installed into a `mktemp` prefix: `added 2 packages` (no
-  propagation gap), `--version` = alpha.15 — which is what proves the launcher resolved and
-  spawned the platform binary — `hooks repo-hook-active` present, `init --help` documents
-  `--user`/`--remove`, and the tree-sitter grammar path points **inside** the installed
-  platform package (the `bun --compile` wasm trap that `bun test` structurally cannot catch).
+**The local binary was the blocker and is fixed.** `bun run build` — verified by probe, not
+by version string: `hooks` now appears in the usage line (the version alone cannot tell you,
+`package.json` and a stale build say the same thing). `~/.local/bin/reviewgate` resolves to it.
 
-**Two corrections to the previous handoff** (both worth knowing, because both cost time):
-- Its "the doc commits are local only" was **false** — `git ls-remote` already showed
-  `origin/master` at `1e9b8c7`. Same failure type as the 26.07. session. The claim was true
-  when written and was overtaken by its own final push.
-- **The version number was useless as a discriminator:** `package.json` and the installed
-  binary both said `alpha.14`. What actually proved the binary was stale was its build mtime
-  (25.07. vs S4 on 29.07.) and the missing `hooks` entry in its usage line.
+**`reviewgate init --user` is active here.** Verified live, all four cases: merge into
+`~/.claude/settings.json` left `brain-reminder.sh` and PreToolUse untouched; in this (armed)
+repo the shim stands down instantly with no output; in an unarmed repo it wrote **nothing**
+(no `.reviewgate/`); with an unapproved config present it printed the loud 🟠 notice and still
+wrote nothing. `doctor` reports `✓ user-scoped hooks … with a runnable Stop gate`.
+
+**The codex cooldown was never a bug.** Live probe: `ERROR: You've hit your usage limit …
+try again at Aug 5th, 2026 1:24 PM` — to the minute the stored `reset_at`, with
+`source: "parsed"`. Two sessions of suspicion refuted. What was actually wrong was the
+*display*: `doctor` showed the time but not its provenance, so a provider-reported cap and
+our own backoff guess looked identical. Fixed, reusing the existing `cooldownReasonLabel`.
+
+**Phase-1 plan is plan-gated** (agy round 1 FAIL with 2 CRITICAL → fixed → round 2 PASS) and
+**Tasks 1–3 are built**: the feasibility spike (hooks DO fire under `claude -p`, and the
+FAIL → decision → re-review loop runs in-chain in ONE invocation), the turn-script schema +
+`rig/scripts/pilot-01.json`, and `src/rig/driver.ts` + `reviewgate rig run`.
 
 ## Current metrics
+
 | | |
 |---|---|
-| commits | release commit = `c6c5f39` (pushed, tagged). For the LIVE head/push state read `git status -sb` + `git rev-parse HEAD @{u} \| uniq -c` (one line/count 2 = in sync) — do not trust a head hash written here, this file's own commit overtakes it |
-| Suite | 3022 pass / 12 skip / **0 fail** (3034 across 425 files), run at this commit's content |
-| Static | tsc clean · biome clean |
-| CI | green — release 30488650056, master 30488646036 |
-| npm | **`0.1.0-alpha.15` = `latest`** — S2, S3 and S4 are all released |
-| local binary | ⚠️ **still alpha.14** (`dist/reviewgate`, built 25.07.) — see next task |
+| HEAD | last CODE commit is `3e24fdb`; this handoff's own commit sits on top of it. Working tree clean |
+| Push state | **NOT pushed.** `origin/master` is `3eb8507`; everything after it is local. Read the LIVE count with `git rev-parse HEAD @{u} \| uniq -c` — one line/count 2 = in sync — because this file's own commit changes the number the moment it is written |
+| Suite | **3054 pass / 12 skip / 0 fail** (3066 across 428 files), run on exactly this content |
+| Static | `bunx tsc --noEmit` clean · biome clean (627 files) |
+| Gate | ran on HEAD and returned **PASS** (0 CRITICAL, 0 WARN, 4 INFO) |
+| Local binary | `0.1.0-alpha.15`, current (built 29.07. 22:40) |
 
-## THE NEXT TASK — `bun run build`, then `init --user`
+## THE NEXT TASK — Task 4, the harvester
 
-`bun run build` is no longer a side step; it is the entry point, and the ordering is the whole
-point:
+`docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md`, Task 4. It is next
+because everything before it only *collects*; Task 4 is where snapshots become numbers, and
+until it exists there is no baseline — which is the whole reason Phase 1 comes before the
+aggregator refactor (a behaviour-neutral refactor you cannot measure is a refactor you can
+only hope about).
 
-1. **`bun run build`.** `dist/reviewgate` is still the 25.07. build reporting `alpha.14`, and
-   `~/.local/bin/reviewgate` is a symlink to it that **every** repo on this machine resolves
-   through. So despite the release, every local gate run and every manual `reviewgate` call
-   still exercises pre-S2 behaviour. Publishing to npm did not change this.
-2. **`reviewgate init --user`** (`src/hosts/user-hooks.ts:installUserHooks`). This is the
-   deliberate dogfood step S4 left out of its end gate, for a real reason: a broken global
-   Stop hook breaks every Claude Code session on the machine at once. It must come **after**
-   the build, because the shims **bake the binary path in at install time** — run before the
-   build and they pin the old binary, whose gate still writes `.reviewgate/` into unarmed
-   repos. That is precisely the bug S2 fixed, reintroduced through the back door.
-
-Then, separately: **the lore backlog.** Three of four entries are `status: draft` and
-therefore inert — only approved canon is injected. Only `review-output-schema-strict` is canon
-*and* has its `approvals.jsonl` line. `worktree-gating`, `snapshot-verified-not-live` and
-`codex-sandbox-readonly-by-design` want a promotion decision from Markus; the gate raises a
-canon-promotion finding for it. **Never self-promote** and never hand-write an approvals line.
+Entry points: create `src/rig/harvest.ts` and `src/schemas/rig-result.ts`. **Reuse, do not
+rebuild:** `loadAuditWindow` (`src/stats/load.ts`) already parses the audit tree into
+`{ runs: {ts, run_id, iter, summary}[], decisions, escalationCount }` through
+`RunSummarySchema`/`DecisionOutcomeSchema`, including a −1-day partition guard for processes
+crossing UTC midnight. `makeMetric(num, den)` (`src/bench/metrics.ts`) returns every rate with
+a Wilson CI and `value: null` when `den === 0`.
 
 ## Traps that still hold
 
-**New this session:**
-- **A version string cannot tell you whether your binary is current.** `package.json` and the
-  built binary carry the same number, so both say `alpha.14` while one predates four slices.
-  Use the build mtime, or probe for a subcommand only the new binary has.
-- **Never `npm i -g reviewgate` on this machine.** npm's global prefix here is `~/.local`, so
-  a global install overwrites `~/.local/bin/reviewgate` — the symlink into this repo's `dist/`.
-  Smoke-test in a `mktemp` prefix instead (the runbook says this; it is easy to skip).
-- **`build:npm` is safe, `build` is not.** `scripts/build-npm-packages.ts` writes only into
-  `npm-dist/` (explicit comment at :115). Plain `bun run build` deploys everywhere via symlink.
-- **CI green ≠ a usable artifact.** The propagation lag makes optional deps fail *silently*
-  (`added 1 package` + "unsupported platform"), which looks like a broken release and isn't.
-  Check `added 2 packages` and `--version`.
-- **`doctor` reports a codex quota cooldown until 2026-08-05T11:24Z** — a week out, with no
-  plausible cause. Same suspicion as the S2 session, still unverified. A too-long cooldown
-  silently drops the strongest reviewer from the panel; worth its own small investigation.
+**New, and the two that would have made the rig lie:**
+
+- **A clean-PASS re-arm WIPES `state.json` and `decisions/`.** After a turn ends green the
+  state reads `iteration: 0`, empty stats, no decisions dir. Harvesting those would silently
+  report zero for exactly the turns that worked. The durable record is the hash-chained
+  `.reviewgate/audit/<Y>/<M>/<D>/*.jsonl` — several files per turn, one per gate process.
+- **The finding signature is SHA-256** over `[file, ruleId, category, symbol, offset]`, so the
+  rule id is NOT recoverable from it, and the audit log carries no finding text. That is why
+  `src/rig/driver.ts` archives every `pending.{json,md}` version that appears *during* a turn
+  into `<turn>/reports/`. **Do not remove that archiver as redundant** — without it recall
+  (M3) cannot be computed at all.
+- **`Bun.spawn` does NOT deadlock on undrained pipes.** Measured: 128MB in 1.1s. Two reviewers
+  reported the opposite as CRITICAL at confidence 0.97, reasoning from Node `child_process`.
+  The driver writes to an fd for two *different* reasons (per-turn transcript; keeping
+  multi-MB turns out of parent memory). Do not re-add a deadlock rationale — it is false.
+  Draft lore entry: `.reviewgate/lore/bun-spawn-pipes-do-not-deadlock.md`.
+- **Never run the full suite concurrently with an agentic CLI.** Four load incidents in one
+  night, once **72** "failures" — all exactly 5000ms timeouts, all green in isolation. Twice
+  the load came from other projects entirely (`playwright install`, `next-server` at 178% CPU).
+  Check `uptime` before trusting a red suite.
+- **`agy` needs an ABSOLUTE findings path.** With a relative one it writes to
+  `~/.gemini/antigravity-cli/scratch/<path>` — or claims success and writes nothing at all
+  (seen once). Also feed the prompt INLINE; otherwise agy enters its agentic ReadFile crawl
+  and times out.
+- **`init --user` turned this repo's own suite red** — `worktree-gating.test.ts` read the real
+  `~/.claude/settings.json`. Fixed with a temp home. If a doctor check takes a `home`
+  argument, tests must pass one.
 
 **Carried forward:**
-- **`lore verify --all` WRITES** — it refreshes `verified_tree`/`verified_at`, i.e. asserts a
-  re-verification you did not perform. To *read* state use `loadLore` + `classifyEntry`.
-- **`init` writes `.reviewgate/bin/` HOST-INDEPENDENTLY**, so an executable gate shim exists
-  after `init --host codex` with no Claude hook at all — never read the shim's existence as
-  evidence that a Claude hook fires. This is why `repoClaudeHookActive` is structural.
-- **The source fingerprint hashes the config PATH** (`global.ts` `layerSourceHash`), so it can
-  never match across two checkouts. Effective-config comparison is not a preference.
-- **Backticks in `git commit -m` are executed** (the tool wraps commands in `eval`). Use
-  `git commit -F <file>`.
-- **A comment-only config edit is NOT effective drift** — the literal parser ignores it, so it
-  is useless as a negative test input.
-- **`PATH=/nonexistent` breaks the shims' shebang** (`#!/usr/bin/env bash` → exit 127 before
-  their own logic). Use `/usr/bin:/bin` for missing-binary cases.
-- **Never hand-write a `control-plane.json` fixture** — use `tests/helpers/arm.ts`.
-- **Tests must never touch the real `~/.claude/settings.json`** — always a temp home.
-- **The arming branch in `gate.ts` is an ALLOWLIST on purpose.**
+
+- **`lore verify --all` WRITES** (refreshes `verified_tree`/`verified_at`, i.e. asserts a
+  re-verification you did not perform). To read state use `reviewgate lore status`.
+- **Backticks in `git commit -m` are executed** — always `git commit -F <file>`.
 - **Never `git add -A` at the repo root** (stages `.reviewgate/` runtime state); the one
-  exception is `git add -A .reviewgate/lore/`, the committed lore dir.
-- **Suite flakes under load:** `sandbox-audit-fixes` and `cassette-pipeline` can fail in a full
-  parallel run and pass isolated.
-- **The pre-push hook is warn-only** (`exit 0` unconditionally) — its "not the last reviewed
-  HEAD" warning is expected when you push a commit the gate has not reviewed yet, and it does
-  not block.
+  exception is `git add -A .reviewgate/lore/`.
+- **Never `npm i -g reviewgate` on this machine** — npm's global prefix is `~/.local`, which
+  would overwrite the symlink into `dist/`. Smoke-test in a `mktemp` prefix.
+- **`bun run build` deploys everywhere** via that symlink. `build:npm` is the safe one.
+- **codex is genuinely out of quota until `2026-08-05T11:24Z`.** Not a bug — do not
+  re-investigate. Use `agy` as the external reviewer until then.
+- **Tests must never touch the real `~/.claude/settings.json`** — always a temp home.
+- **The pre-push hook is warn-only** (`exit 0` unconditionally).
+
+## Open decisions for Markus
+
+1. **Push?** Everything since `3eb8507` — all gate-passed and green.
+2. **Canon promotion** for `bun-spawn-pipes-do-not-deadlock` (draft). Never self-promoted.
+3. **Small fix, not yet done:** the gate's block message does not name its state directory.
+   Observed in dealbarg, which has two `.reviewgate/` dirs in one git repo (the subdir was
+   separately `init`ed on 16.07.) — the agent read the wrong report and nearly reported a
+   contradiction that did not exist. Same class as the `doctor` provenance fix.
 
 ## Read-first order
+
 1. This file.
-2. `docs/dev/2026-06-23-npm-publish-runbook.md` — the release path, incl. the isolated-prefix
-   smoke test and the propagation-lag behaviour.
-3. `docs/superpowers/specs/2026-07-29-user-scoped-hooks-s4-design.md` §3.1–3.2 — what
-   `init --user` writes and the two deliberate shim differences, before activating it here.
-4. `src/hosts/user-hooks.ts` (`repoClaudeHookActive` is the predicate everything hangs off)
-   and `bin-templates/user-gate.sh`.
+2. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Task 4, plus the
+   "Revision after Task 1 execution" table at the end (8 findings that changed the plan).
+3. `docs/dev/2026-07-29-headless-gate-spike.md` — what a real turn actually produces.
+4. `src/rig/driver.ts` (`startReportArchiver`, `awaitQuiescent`) and `src/stats/load.ts`
+   (`loadAuditWindow`) before writing the harvester.
