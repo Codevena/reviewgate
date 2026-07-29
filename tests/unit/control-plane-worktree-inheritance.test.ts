@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { inheritedWorktreeApproval } from "../../src/config/control-plane.ts";
-import { controlPlaneStatePath } from "../../src/utils/paths.ts";
+import { dirname, join } from "node:path";
+import { inheritedWorktreeApproval, probeArming } from "../../src/config/control-plane.ts";
+import { controlPlaneStatePath, managedHookPath } from "../../src/utils/paths.ts";
 import { armCheckout } from "../helpers/arm.ts";
 import { addWorktree, addWorktreeOfBare, makeMainRepo } from "../helpers/worktree.ts";
 
@@ -124,5 +124,38 @@ describe("inheritedWorktreeApproval", () => {
     await inheritedWorktreeApproval(input(wt));
     expect(existsSync(join(wt, ".reviewgate"))).toBe(false);
     expect(readFileSync(controlPlaneStatePath(main), "utf8")).toBe(before);
+  });
+});
+
+describe("probeArming + worktree inheritance", () => {
+  test("worktree of an armed main → armed", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    expect(await probeArming(input(wt))).toEqual({ armed: true });
+  });
+
+  test("worktree with effective drift → unarmed-with-config (loud), not armed", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    writeFileSync(
+      join(wt, "reviewgate.config.ts"),
+      "export default { loop: { maxIterations: 6 } };\n",
+    );
+    expect(await probeArming(input(wt))).toEqual({ armed: false, kind: "unarmed-with-config" });
+  });
+
+  test("a DELETED approval in a worktree is not rescued by inheritance", async () => {
+    // The ordering guard: this worktree has a managed hook (init armed it here) but no
+    // local state, and its config still matches the main checkout's approval. If the
+    // inheritance check ran before managedHookExists, `rm control-plane.json` inside a
+    // worktree would become a way to disarm the deletion block.
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    mkdirSync(dirname(managedHookPath(wt)), { recursive: true });
+    writeFileSync(managedHookPath(wt), "#!/bin/sh\n");
+    expect(await probeArming(input(wt))).toEqual({ armed: false, kind: "state-missing" });
   });
 });

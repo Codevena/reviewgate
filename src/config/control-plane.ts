@@ -406,7 +406,10 @@ export async function inheritedWorktreeApproval(
 // (raw bytes), so the gate.ts invariant "triggering must not depend on a VALID config"
 // survives an edit that makes reviewgate.config.ts unparseable.
 //
-// S3 extends ONLY this function, with the worktree-inheritance branch.
+// `armed: true` now has TWO sources: an approved LKG for this checkout, and (S3) a linked
+// worktree whose effective config still equals the main checkout's approval. The second is
+// materialized into a local LKG by resolveControlPlaneConfig — the probe itself still only
+// reads.
 export type ArmingProbe =
   | { armed: true }
   | { armed: false; kind: "state-missing" | "unarmed-with-config" | "unarmed-bare" };
@@ -416,6 +419,11 @@ export type ArmingProbe =
 export async function probeArming(input: EffectiveConfigInput): Promise<ArmingProbe> {
   if (readState(input.cwd)) return { armed: true };
   if (managedHookExists(input.cwd)) return { armed: false, kind: "state-missing" };
+  // S3: a linked worktree may run under the main checkout's approval while its own
+  // EFFECTIVE config still equals that approval. Deliberately AFTER the managed-hook
+  // check — a worktree that init armed and whose control-plane.json was deleted must keep
+  // blocking, and inheritance must never be the thing that rescues it.
+  if (await inheritedWorktreeApproval(input)) return { armed: true };
   return {
     armed: false,
     kind: inspectConfigSources(input).hasProjectSource ? "unarmed-with-config" : "unarmed-bare",
