@@ -3,8 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runGate, runGateSafe } from "../../src/cli/commands/gate.ts";
-import { controlPlaneFlagPath, managedHookPath, reviewgateDir } from "../../src/utils/paths.ts";
+import {
+  controlPlaneFlagPath,
+  controlPlaneStatePath,
+  dirtyFlagPath,
+  managedHookPath,
+  reviewgateDir,
+} from "../../src/utils/paths.ts";
 import { armCheckout } from "../helpers/arm.ts";
+import { addWorktree, makeMainRepo } from "../helpers/worktree.ts";
 
 function repo(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -93,5 +100,64 @@ describe("gate arming probe (S2)", () => {
     });
     expect(out.exitCode).toBe(0);
     expect(existsSync(controlPlaneFlagPath(cwd))).toBe(true);
+  });
+});
+
+describe("gate + worktree trust inheritance (S3)", () => {
+  const POLICY = "export default { loop: { maxIterations: 5 } };\n";
+
+  it("trigger in an INHERITING worktree marks the diff dirty", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    const out = await runGate({
+      repoRoot: wt,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(wt, "a.ts") },
+      }),
+    });
+    expect(out.exitCode).toBe(0);
+    expect(existsSync(dirtyFlagPath(wt))).toBe(true);
+  });
+
+  it("trigger in a DRIFTED worktree still writes nothing", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    writeFileSync(
+      join(wt, "reviewgate.config.ts"),
+      "export default { loop: { maxIterations: 6 } };\n",
+    );
+    const out = await runGate({
+      repoRoot: wt,
+      hook: "trigger",
+      hookStdinRaw: JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: join(wt, "a.ts") },
+      }),
+    });
+    expect(out.exitCode).toBe(0);
+    expect(existsSync(reviewgateDir(wt))).toBe(false);
+  });
+
+  it("stop in a CLEAN inheriting worktree REVIEWS under the inherited approval", async () => {
+    // Deliberately clean: with an empty diff triage returns runReview:false
+    // (src/triage/matrix.ts:63) and NO reviewer is spawned, so this exercises
+    // probe → resolve → materialize end-to-end without a panel. Do not add uncommitted
+    // changes to this case — that would spawn the real panel.
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    const out = await runGateSafe({ repoRoot: wt, hook: "stop", hookStdinRaw: "" });
+    // The two DRIVERS. Before S3 this worktree is unarmed, so the gate early-returns with
+    // the loud NOT ARMED notice and writes nothing at all — both are red without Task 3.
+    expect(out.stderr).not.toContain("NOT ARMED");
+    expect(existsSync(controlPlaneStatePath(wt))).toBe(true);
+    // A GUARD, not a driver: already green before S3 (S2 allows, it does not block). It
+    // catches the Task-2-without-Task-3 intermediate state, in which probeArming arms the
+    // worktree and resolveControlPlaneConfig then fail-closed blocks it.
+    expect(out.stdout).not.toContain('"block"');
   });
 });
