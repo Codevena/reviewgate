@@ -325,6 +325,21 @@ does nothing and, importantly, **writes nothing**: no `.reviewgate/` directory, 
 The managed hook is still present, so the gate fails closed and blocks until the approval is
 restored. Removing state is not a way out of the gate.
 
+### Linked worktrees inherit the approval (S3)
+
+A linked `git worktree` is the one unarmed case that can arm itself: it runs under the main
+checkout's approval when its own **effective** config (defaults ← global ← project) still
+equals that approval, so no second `reviewgate config approve` is needed there. On the first
+such run it materializes its own `control-plane.json` and behaves like any armed checkout
+afterwards — a later policy edit becomes a normal approval-required candidate.
+
+Inheritance is refused, and the unarmed notice returned instead, when the main checkout is
+not armed, when the effective config drifts (including an edit to the *global* config), when
+the worktree's config cannot be parsed, when the parent repo is bare, and when a directory
+merely points a hand-written `.git` file at an armed repo. It never makes hooks fire in a
+worktree — without hooks nothing runs there at all, which is still `reviewgate init` inside
+the worktree.
+
 ## Rules
 
 - **Never** edit, delete, or game `.reviewgate/` to escape the gate.
