@@ -2,7 +2,9 @@
 
 Status: DECIDED — consent model **A** (TOFU + worktree inheritance), scope
 **S1–S3** this pass; S4–S5 (user-scoped hooks + plugin) deferred until
-distribution becomes the active priority. Pending Plan-Gate review (Codex).
+distribution becomes the active priority. S1 and S2 are implemented and shipped
+(each through its own plan-gate); **S3's design is decided 2026-07-29** — see the
+"S3 design" subsection below — and awaits its own plan + plan-gate.
 
 ## 1. Problem
 
@@ -191,9 +193,38 @@ project configs). The stop-probe becomes read-only until armed.
 
 Resolve common gitdir (`git rev-parse --git-common-dir`), read the main
 checkout's `control-plane.json` read-only, inherit approval iff fingerprints
-match. Doctor: worktree FAIL becomes "armed via main checkout" PASS when
-inheritance holds. Closes the worktree blind spot wherever hooks fire there
-(user-scoped hooks, or a future per-worktree init).
+match. Closes the worktree blind spot wherever hooks fire there (user-scoped
+hooks, or a future per-worktree init).
+
+**Two corrections to this paragraph, found while designing it (2026-07-29):**
+
+1. **`probeArming` alone does NOT deliver S3 — it makes the target case worse.**
+   A probe returning `{armed:true}` only lets `runGate` fall through to
+   `resolveControlPlaneConfig` (`gate.ts:387`), which for the very case S3 exists
+   for — a checkout shipping a committed policy — finds no local LKG, no managed
+   hook, `hasProjectSource: true`, and throws `ControlPlaneBootstrapRequiredError`
+   (`control-plane.ts:394-398`). `runGateSafe` turns that into a fail-closed
+   block. An "inherited" worktree would therefore BLOCK every turn instead of
+   reviewing — strictly worse than today's allow-with-notice. S3 must change the
+   resolve path too. (The defaults-only / global-only case does work probe-only,
+   because that branch auto-baselines; the committed-policy case does not.)
+2. **The doctor promise ("worktree FAIL becomes PASS when inheritance holds") is
+   struck.** `worktreeGatedCheck` (`doctor.ts:557`) measures whether the
+   Reviewgate *hooks* are installed here, not whether the checkout is armed.
+   Without hooks the gate does not fire no matter how cleanly trust was
+   inherited, so flipping that FAIL to PASS would report a gated checkout that
+   is in fact ungated — exactly the trap the check exists to catch. S3 makes no
+   `doctor` code change.
+
+**Honest value statement.** S3 has no observable effect until S4. In a linked
+worktree no hooks fire (`.claude/settings.json` and `.reviewgate/bin/` are
+per-checkout and gitignored), and the one supported way to make them fire —
+`reviewgate init` inside the worktree — already arms it by calling
+`bootstrapControlPlane` directly (`init.ts:388`, `approvedVia: "init"`), with no
+TTY approval. So the "second TTY approval" S3 removes does not arise today. S3 is
+build-ahead for S4, on the critical path, and verifiable in isolation — the same
+honesty category as S2's trigger task, and it is recorded here rather than
+oversold.
 
 **Fingerprint = the EFFECTIVE merged config, not the project file (F-007).**
 Inheritance compares `effectiveConfigFingerprint(loadEffectiveConfigSnapshot)`
@@ -208,6 +239,85 @@ own effective fingerprint from its own layer stack; inheritance holds only when
 that equals the main checkout's approved effective fingerprint. A global-config
 edit changes both sides identically only if the main checkout is re-approved;
 until then the worktree drifts to unarmed — which is the correct fail-safe.
+
+#### S3 design (decided 2026-07-29, Markus)
+
+**One predicate, two call sites.** New in `src/config/control-plane.ts`:
+
+```ts
+export async function inheritedWorktreeApproval(
+  input: EffectiveConfigInput,
+): Promise<ControlPlaneState | null>
+```
+
+It returns the state to adopt, or `null`. It **never throws** — every error path
+(git failure, unreadable or corrupt main state, unparseable worktree config)
+degrades to `null`, i.e. "not armed". Steps:
+
+1. `.git` in `input.cwd` is a **file** — a pure `stat`, so no git subprocess is
+   spawned in the common (main-checkout) case. Verified: a linked worktree's
+   `.git` is a file containing `gitdir: …`; a main checkout's is a directory.
+2. `worktreeInfo(cwd)` (`src/utils/git.ts:147`, already exists) → require
+   `isLinkedWorktree`.
+3. Main root = `dirname(resolve(cwd, commonDir))`, **only if that basename is
+   exactly `.git`**. Verified: a worktree of a *bare* repo has
+   `commonDir = …/bare.git`, whose basename is not `.git`, so a bare parent
+   yields no main root and inheritance fails safe.
+4. `readState(mainRoot)` — read-only; it also verifies the main state's
+   config↔fingerprint integrity, and its throw is caught.
+5. Load the **worktree's own** effective snapshot
+   (`loadEffectiveConfigSnapshot({cwd, env, home})`).
+6. Inherit iff `effectiveConfigFingerprint(snapshot.config) ===
+   main.approved_effective_fingerprint` (F-007).
+7. Return `baseState(snapshot.config, snapshot.sourceFingerprint,
+   "inherited-worktree")` — built from the WORKTREE's snapshot, not copied from
+   the main state. Source fingerprints may legitimately differ (comments,
+   formatting, a different-but-equivalent project layer); the effective one may
+   not.
+
+**Call site 1 — `probeArming`:** after `managedHookExists`, before
+`inspectConfigSources` → `{armed: true}` on a hit.
+
+**Call site 2 — `resolveControlPlaneConfig`,** in the `!approved` branch, after
+the `managedHookExists` throw and **before** the `hasProjectSource` throw: on a
+hit, persist that state locally (mkdir + `flock` + `readState` re-check +
+`writeState`), then continue on the normal path.
+
+**The ordering is load-bearing and identical in both:** local LKG > managed hook
+(a deleted approval keeps blocking) > inheritance > unarmed. Inheritance must
+never rescue a deleted approval, or `rm .reviewgate/control-plane.json` in a
+worktree becomes a bypass.
+
+**Materialize, not read-through.** After the first inheriting run the worktree
+holds its own LKG and is an ordinary armed checkout: later config drift there
+becomes a normal pending candidate (`approval-required`) instead of silently
+unarming. This deviates from this section's "only while the fingerprints match"
+phrasing in the STRICTER direction, and keeps the change surface at two call
+sites instead of threading a borrowed baseline through the pending/persist path.
+Consequence accepted: revoking the main checkout's approval does not retroactively
+disarm a worktree that already materialized — the same property `reviewgate init`
+has, and the policy it holds was human-approved at materialization time.
+
+**Schema:** `approved_via` gains `"inherited-worktree"`
+(`src/schemas/control-plane.ts:31`). An older binary reading such a state fails
+the enum parse → `readState` throws → fail-closed block. Safe direction, noted
+here because it is a forward-incompatible addition inside
+`reviewgate.control-plane.v1`.
+
+**Fail-safety matrix** (every row → allow-stop under today's S2 behavior, never a
+new block): main not armed · effective drift (worktree config **or** the global
+layer edited) · unparseable worktree config · bare parent · not a git repo · git
+error · corrupt main state. The single row that blocks is managed-hook-here +
+deleted local state, and it blocks because inheritance is never consulted there.
+
+**Testing.** Real `git worktree` checkouts, never hand-written
+`control-plane.json` fixtures; main checkouts armed via `tests/helpers/arm.ts`
+(`process.env` + `homedir()`). The red test is `resolveControlPlaneConfig` in an
+inheriting worktree — today it throws `ControlPlaneBootstrapRequiredError`. The
+gate is asserted through `--hook trigger`, which returns before the config load;
+a stop-path assertion would spawn the real reviewer panel, so full-stop coverage
+is one **manual** dogfood run (worktree of this repo, compiled gate, Stop hook)
+rather than a suite test that would either hang or fake the panel.
 
 ### S4 — `init --user`: user-scoped hooks
 
