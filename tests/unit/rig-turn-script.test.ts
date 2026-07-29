@@ -46,6 +46,35 @@ describe("rig turn script schema", () => {
       }),
     ).toThrow();
   });
+
+  test("rejects a script id that could become a path component", () => {
+    // The id flows into runId and the persisted manifest; any later code that derives a
+    // directory from it (one per run is the obvious design) would inherit a traversal from
+    // a user-supplied JSON file. Constrained at the schema so every consumer is covered.
+    for (const id of ["../escape", "a/b", "with space", "semi;colon"]) {
+      expect(() =>
+        RigTurnScriptSchema.parse({
+          schema: "reviewgate.rig.turn-script.v1",
+          id,
+          turns: [{ index: 1, prompt: "x", seeded: null }],
+        }),
+      ).toThrow();
+    }
+  });
+
+  test("still accepts ordinary ids", () => {
+    // Guards the over-correction: a charset rule that also rejected `pilot-01` would make
+    // the rule look like it works while breaking every real script.
+    for (const id of ["pilot-01", "run_2", "v1.2"]) {
+      expect(
+        RigTurnScriptSchema.parse({
+          schema: "reviewgate.rig.turn-script.v1",
+          id,
+          turns: [{ index: 1, prompt: "x", seeded: null }],
+        }).id,
+      ).toBe(id);
+    }
+  });
 });
 
 describe("the shipped pilot-01 script", () => {

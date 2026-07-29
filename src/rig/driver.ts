@@ -3,7 +3,7 @@
 // snapshotting the gate's artifacts after each turn. The driver only ever READS the repo's
 // .reviewgate/ and copies it out — it must never write there, or the rig would be measuring
 // its own interference.
-import { cpSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { gateLockPath, reviewgateDir } from "../utils/paths.ts";
@@ -122,15 +122,34 @@ async function copyWithRetry(src: string, dest: string, turnIndex: number): Prom
   }
 }
 
-async function runAgent(argv: string[], cwd: string): Promise<number> {
-  const proc = Bun.spawn(argv, {
-    cwd,
-    // stdin closed: an agent CLI left with an open stdin waits for input that never comes.
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  return await proc.exited;
+/**
+ * Run one agent turn, sending its output straight to a FILE DESCRIPTOR.
+ *
+ * Two reasons, and NOT the one you may expect. The gate flagged the previous
+ * `stdout: "pipe"` as a pipe-buffer deadlock (F-003, two reviewers, confidence 0.97). That
+ * is true of Node's `child_process`, but it is NOT true here: measured directly,
+ * `Bun.spawn` pushes 128MB through an undrained pipe in ~1.1s and the child never blocks,
+ * because Bun drains into its own buffer. Do not "restore" the pipe on the strength of that
+ * finding, and do not re-add a deadlock comment — both were checked.
+ *
+ * The real reasons are: an fd keeps the per-turn transcript, which the interview stage
+ * wants, and it keeps a multi-megabyte agent turn out of the parent's memory, which the
+ * pipe version would have accumulated there for the whole run.
+ */
+async function runAgent(argv: string[], cwd: string, logPath: string): Promise<number> {
+  const fd = openSync(logPath, "a");
+  try {
+    const proc = Bun.spawn(argv, {
+      cwd,
+      // stdin closed: an agent CLI left with an open stdin waits for input that never comes.
+      stdin: "ignore",
+      stdout: fd,
+      stderr: fd,
+    });
+    return await proc.exited;
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
@@ -151,7 +170,15 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
 
   for (const turn of script.turns.slice(0, maxTurns)) {
     const startedAt = Date.now();
-    const agentExitCode = await runAgent(opts.agentCmd(turn.prompt), opts.repoRoot);
+    // The turn directory is created BEFORE the agent runs, because the agent's transcript
+    // is written into it live (see runAgent). The .reviewgate/ snapshot still happens after.
+    const snapshotDir = join(opts.outDir, "turns", String(turn.index));
+    mkdirSync(snapshotDir, { recursive: true });
+    const agentExitCode = await runAgent(
+      opts.agentCmd(turn.prompt),
+      opts.repoRoot,
+      join(snapshotDir, "agent.log"),
+    );
     await awaitQuiescent(opts.repoRoot, quiesceTimeoutMs);
 
     // Snapshot AFTER the agent exits and the workspace settles. Laid out as a repo root
@@ -159,8 +186,6 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     // it unchanged — the audit tree is the load-bearing part, because a clean-PASS re-arm
     // wipes state.json and decisions/ and leaves the audit log as the only surviving
     // per-iteration record.
-    const snapshotDir = join(opts.outDir, "turns", String(turn.index));
-    mkdirSync(snapshotDir, { recursive: true });
     const src = reviewgateDir(opts.repoRoot);
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 

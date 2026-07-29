@@ -30,10 +30,20 @@ function sandbox(turns: number): { root: string; scriptPath: string } {
 
 // Fake agent: append the prompt to a file INSIDE .reviewgate/, so a snapshot taken before
 // the agent ran is distinguishable from one taken after.
+//
+// The prompt is passed as a POSITIONAL ARGUMENT, never interpolated into the script text.
+// JSON.stringify quotes for JSON, not for the shell: `$`, `$(...)` and backticks are not
+// JSON-special and survive into a bash double-quoted string, where they still expand. A
+// prompt containing `$HOME` would therefore be silently rewritten before printf saw it,
+// and the ordering test that compares the snapshot against the prompt would pass while
+// comparing the wrong thing (gate findings F-003/F-004).
 const appendingAgent = (root: string) => (prompt: string) => [
   "bash",
   "-c",
-  `printf '%s\\n' ${JSON.stringify(prompt)} >> ${JSON.stringify(join(root, ".reviewgate", "agent.log"))}`,
+  'printf "%s\\n" "$1" >> "$2"',
+  "fake-agent",
+  prompt,
+  join(root, ".reviewgate", "agent.log"),
 ];
 
 describe("rig driver", () => {
@@ -159,6 +169,73 @@ describe("rig driver", () => {
     expect(manifest.turns).toHaveLength(1);
   });
 
+  test("captures a high-volume agent turn without buffering it in the parent", async () => {
+    // NOT a deadlock regression, and it must not be renamed into one. The gate flagged
+    // undrained `stdout: "pipe"` as a pipe-buffer deadlock (F-003, two reviewers, 0.97),
+    // but that is Node `child_process` semantics: measured directly, Bun.spawn pushes 128MB
+    // through an undrained pipe in 1.1s without blocking. This test was written as a
+    // deadlock guard, then mutation-checked — it passed with the "pipe" version restored,
+    // i.e. it was vacuous as a deadlock test. What it does guard is real and cheaper to
+    // state honestly: a high-volume turn completes, and its output goes to the turn's
+    // transcript file rather than into the parent's memory.
+    const { root, scriptPath } = sandbox(1);
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: () => ["bash", "-c", "yes 0123456789012345678901234567890123456789 | head -50000"],
+      maxTurns: 1,
+    });
+    expect(manifest.turns[0]?.agentExitCode).toBe(0);
+    const log = readFileSync(join(manifest.turns[0]?.snapshotDir ?? "", "agent.log"), "utf8");
+    expect(log.length).toBeGreaterThan(1_000_000);
+  }, 30_000);
+
+  test("keeps the agent transcript per turn instead of discarding it", async () => {
+    const { root, scriptPath } = sandbox(1);
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: () => ["bash", "-c", "echo hello-from-agent; echo oops >&2"],
+      maxTurns: 1,
+    });
+    const log = readFileSync(join(manifest.turns[0]?.snapshotDir ?? "", "agent.log"), "utf8");
+    expect(log).toContain("hello-from-agent");
+    expect(log).toContain("oops"); // stderr must land in the same transcript
+  });
+
+  test("passes a prompt containing shell metacharacters through literally", async () => {
+    // Guards the test helper itself. If the prompt were interpolated into the bash script
+    // text, `$HOME` and `$(...)` would expand and the ordering assertions elsewhere in this
+    // file would compare against a silently rewritten prompt.
+    const root = mkdtempSync(join(tmpdir(), "rg-rig-"));
+    mkdirSync(join(root, ".reviewgate"), { recursive: true });
+    const nasty = "turn $HOME and $(echo pwned) and `echo also`";
+    const scriptPath = join(root, "script.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "shell-meta",
+        turns: [{ index: 1, prompt: nasty, seeded: null }],
+      }),
+    );
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: appendingAgent(root),
+      maxTurns: 1,
+    });
+    const written = readFileSync(
+      join(manifest.turns[0]?.snapshotDir ?? "", ".reviewgate", "agent.log"),
+      "utf8",
+    );
+    expect(written).toContain(nasty);
+    expect(written).not.toContain("pwned\n"); // the substitution must not have run
+  });
+
   test("records the agent's exit code instead of swallowing a failed turn", async () => {
     const { root, scriptPath } = sandbox(1);
     const manifest = await runDriver({
@@ -206,5 +283,45 @@ describe("rig run cassette destination", () => {
     await expect(runRigRun(base("record:/nonexistent-dir-xyz/c.jsonl"))).rejects.toThrow(
       /does not exist/,
     );
+  });
+});
+
+describe("rig run repo guards", () => {
+  function gitRepo(dirty: boolean): string {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rig-git-"));
+    Bun.spawnSync(["git", "init", "-q", "."], { cwd: repo });
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    Bun.spawnSync(["git", "add", "-A"], { cwd: repo });
+    Bun.spawnSync(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"], {
+      cwd: repo,
+    });
+    if (dirty) writeFileSync(join(repo, "a.txt"), "two\n");
+    return repo;
+  }
+  const cassette = () => `record:${join(mkdtempSync(join(tmpdir(), "rg-cass-")), "c.jsonl")}`;
+  const script = join(import.meta.dir, "..", "..", "rig", "scripts", "pilot-01.json");
+
+  test("refuses a relative cassette path, which would land in the AGENT's cwd", async () => {
+    await expect(
+      runRigRun({
+        scriptPath: script,
+        outDir: mkdtempSync(join(tmpdir(), "rg-out-")),
+        repoRoot: gitRepo(false),
+        cassetteEnv: "record:cassette.jsonl",
+      }),
+    ).rejects.toThrow(/ABSOLUTE path/);
+  });
+
+  test("refuses to point an acceptEdits agent at a repo with uncommitted work", async () => {
+    // The pilot script deliberately contains prompts like "put the API token directly in
+    // the source". Harmless in a throwaway repo; not harmless in one somebody is using.
+    await expect(
+      runRigRun({
+        scriptPath: script,
+        outDir: mkdtempSync(join(tmpdir(), "rg-out-")),
+        repoRoot: gitRepo(true),
+        cassetteEnv: cassette(),
+      }),
+    ).rejects.toThrow(/uncommitted change/);
   });
 });

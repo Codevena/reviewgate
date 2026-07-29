@@ -27,7 +27,18 @@ export const RigTurnSchema = z
 export const RigTurnScriptSchema = z
   .object({
     schema: z.literal("reviewgate.rig.turn-script.v1"),
-    id: z.string().min(1),
+    // Charset-constrained, not just non-empty: the id is interpolated into the run id and
+    // persisted in the manifest, and any later code that derives a path from it (an obvious
+    // thing to do — one directory per run) would inherit a traversal from a `../` in a
+    // user-supplied JSON file. Constraining it HERE fixes it for every consumer at once,
+    // rather than asking each one to sanitise (gate finding F-004).
+    id: z
+      .string()
+      .min(1)
+      .regex(
+        /^[A-Za-z0-9._-]+$/,
+        "id must contain only letters, digits, dot, underscore or hyphen",
+      ),
     turns: z.array(RigTurnSchema).min(1),
   })
   .strict()
