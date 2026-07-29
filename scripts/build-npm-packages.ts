@@ -119,7 +119,7 @@ if (import.meta.main) {
       .cwd(root)
       .env({ ...process.env, NODE_ENV: "production" });
     for (const g of grammars) copyFileSync(g, join(dir, "grammars", basename(g)));
-    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"]) {
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh", "user-gate.sh", "user-trigger.sh", "user-reset.sh"]) {
       copyFileSync(join(root, "bin-templates", sh), join(dir, "bin-templates", sh));
     }
     writeFileSync(

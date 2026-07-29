@@ -41,7 +41,15 @@ function scaffold(
     for (const g of GRAMMARS)
       if (!(opts.dropGrammar && g === "web-tree-sitter.wasm"))
         writeFileSync(join(dir, "grammars", g), "");
-    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
+    for (const sh of [
+      "gate.sh",
+      "trigger.sh",
+      "reset.sh",
+      "pre-push.sh",
+      "user-gate.sh",
+      "user-trigger.sh",
+      "user-reset.sh",
+    ])
       writeFileSync(join(dir, "bin-templates", sh), "");
     writeFileSync(
       join(dir, "package.json"),

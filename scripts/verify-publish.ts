@@ -62,7 +62,7 @@ export function verifyNpmDist(
       errors.push(`${name}: binary is too small (${statSync(bin).size} < ${minBinaryBytes}) — empty/failed compile?`);
     for (const g of GRAMMARS)
       if (!existsSync(join(dir, "grammars", g))) errors.push(`${name}: grammars/${g} missing`);
-    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh"])
+    for (const sh of ["gate.sh", "trigger.sh", "reset.sh", "pre-push.sh", "user-gate.sh", "user-trigger.sh", "user-reset.sh"])
       if (!existsSync(join(dir, "bin-templates", sh))) errors.push(`${name}: bin-templates/${sh} missing`);
     const pin = main.optionalDependencies?.[name];
     if (pin !== version) errors.push(`${name}: main must pin it EXACTLY at ${version} (got ${pin ?? "nothing"})`);
