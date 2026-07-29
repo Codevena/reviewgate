@@ -845,7 +845,13 @@ Implementer note on the last assertion: macOS reports `/var/…` and `/private/v
 Run: `bun test tests/unit/user-shim-behavior.test.ts`
 Expected: FAIL — `bin-templates/user-gate.sh` does not exist, so `installUserHooks` throws.
 
-- [ ] **Step 3: Write the shims**
+- [ ] **Step 3: Write the shims** — *(landed in Task 2, see note)*
+
+**Moved to Task 2 while implementing:** `installUserHooks` writes the shims, so the three
+templates are a dependency of Task 2's own install tests — leaving them here would make
+those tests unrunnable. Task 3 keeps what is genuinely its own: the shim BEHAVIOUR tests
+(real subprocesses), the mutation checks, and Step 3b's packaging lists. The template
+bodies below are the ones that landed.
 
 ```sh
 #!/usr/bin/env bash
