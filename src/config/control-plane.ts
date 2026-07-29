@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   type ControlPlanePending,
   type ControlPlaneState,
@@ -10,6 +10,7 @@ import {
 } from "../schemas/control-plane.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { flock } from "../utils/flock.ts";
+import { worktreeInfo } from "../utils/git.ts";
 import {
   controlPlaneFlagPath,
   controlPlaneLockPath,
@@ -336,6 +337,55 @@ export async function bootstrapControlPlane(
 
 function managedHookExists(repoRoot: string): boolean {
   return existsSync(managedHookPath(repoRoot));
+}
+
+// S3 worktree trust inheritance. A linked `git worktree` shares only `.git`: it has no
+// .reviewgate/ and no host hooks of its own, so it is UNARMED even though a human already
+// approved this repo's policy in the main checkout. This predicate answers "may this
+// worktree run under that approval?" and returns the state to ADOPT, or null.
+//
+// It NEVER throws. Every failure — git error, missing/corrupt main state, unparseable
+// worktree config — degrades to null (= not armed), because its first caller is
+// probeArming, whose whole contract is a zero-writes, non-crashing answer.
+//
+// The comparison is over the EFFECTIVE merged config (defaults <- global <- project),
+// never a hash of the committed project file (spec F-007). The global layer is
+// per-machine and NOT committed, so keying on the project file alone would let an edit of
+// ~/.config/reviewgate/reviewgate.config.ts silently change the policy — including which
+// checks.commands shell out — in every inheriting worktree.
+export async function inheritedWorktreeApproval(
+  input: EffectiveConfigInput,
+): Promise<ControlPlaneState | null> {
+  try {
+    // Cheap discriminator first: a linked worktree's `.git` is a FILE ("gitdir: …"), a
+    // main checkout's is a directory. Under S4's user-scoped hooks this predicate runs in
+    // every repo the user touches, so ordinary checkouts must not pay for a git
+    // subprocess. (`throwIfNoEntry: false` returns undefined for a missing path; even if
+    // it were unsupported the outer catch would uphold the never-throw contract.)
+    if (!statSync(join(input.cwd, ".git"), { throwIfNoEntry: false })?.isFile()) return null;
+    const info = await worktreeInfo(input.cwd);
+    if (!info.isLinkedWorktree || !info.commonDir) return null;
+    // <main>/.git -> <main>. A worktree of a BARE repo has commonDir = <…>/x.git, whose
+    // basename is not ".git", so it correctly resolves to no main checkout at all.
+    const common = resolve(input.cwd, info.commonDir);
+    if (basename(common) !== ".git") return null;
+    // readState also verifies the main state's config <-> fingerprint integrity and
+    // throws when they disagree, so a tampered main state can never be inherited.
+    const main = readState(dirname(common));
+    if (!main) return null;
+    const snapshot = await loadEffectiveConfigSnapshot(input);
+    if (effectiveConfigFingerprint(snapshot.config) !== main.approved_effective_fingerprint) {
+      return null;
+    }
+    // Built from the WORKTREE's own snapshot, never copied from the main state: source
+    // bytes may legitimately differ (comments, formatting, an equivalent project layer)
+    // while the effective policy — the thing the human actually approved — is identical.
+    // Copying the main state's source fingerprint instead would make the very next
+    // resolve see a phantom source-only policy change.
+    return baseState(snapshot.config, snapshot.sourceFingerprint, "inherited-worktree");
+  } catch {
+    return null;
+  }
 }
 
 // S2 arming probe. `armed` answers exactly one question: may this checkout run the

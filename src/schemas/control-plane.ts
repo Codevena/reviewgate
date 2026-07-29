@@ -28,12 +28,17 @@ export const ControlPlaneStateSchema = z.object({
   // "automatic-global": auto-baselined a defaults+GLOBAL-config tree on first
   // contact (no init, no human approval). Distinct from "defaults" so an auditor
   // sees that a user-authored global policy — not pure built-ins — was captured.
+  // "inherited-worktree": a linked git worktree adopted the main checkout's
+  // approved policy (S3) after its OWN effective config fingerprint matched that
+  // approval. Distinct from "human"/"init" so an auditor sees the approval was
+  // inherited, not typed here.
   approved_via: z.enum([
     "defaults",
     "init",
     "human",
     "automatic-strengthening",
     "automatic-global",
+    "inherited-worktree",
   ]),
   pending: ControlPlanePendingSchema.nullable().default(null),
 });
