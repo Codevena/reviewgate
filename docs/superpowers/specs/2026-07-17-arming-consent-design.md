@@ -321,6 +321,14 @@ rather than a suite test that would either hang or fake the panel.
 
 ### S4 — `init --user`: user-scoped hooks
 
+> **Superseded in detail by `docs/superpowers/specs/2026-07-29-user-scoped-hooks-s4-design.md`**
+> (decided 2026-07-29, Claude Code only). The paragraph below remains the original sketch;
+> where the two differ, the newer document wins. Its most important correction: user and
+> project hooks MERGE and run in parallel, but a Stop hook has no "allow" value — so the
+> dedup rule below is a COST measure (duplicate lock contention and reviewer quota), not a
+> safety boundary, and the real safety gap turned out to be the Stop-hook timeout clamp
+> (`installedGateStopTimeoutS` reads only the checkout's settings).
+
 Writes Stop/PostToolUse/SessionStart hooks into `~/.claude/settings.json`
 calling a small shim (`~/.reviewgate/bin/…`) that: resolves `reviewgate` from
 PATH (baked path first), applies the §4 failure asymmetry, and exits 0 fast
