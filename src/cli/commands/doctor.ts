@@ -715,13 +715,21 @@ export function quotaCooldownCheck(repoRoot: string, now: Date): Check | null {
   // codex usage limit cost two sessions of investigation on 2026-07-29 while
   // `source:"parsed"` sat in the cooldown file. `cooldownReasonLabel` is reused rather
   // than re-worded here so this line and the degradation note cannot drift apart.
+  //
+  // Both interpolated values are stripped of control characters first. They come from
+  // .reviewgate/quota-cooldowns.json, whose schema keys the providers map with
+  // `z.record(z.string(), …)` and types `reset_at` as a bare `z.string()` — so neither is
+  // a closed enum, and a crafted file could smuggle ANSI escapes into this line and blank
+  // out the real warnings doctor prints around it. Doctor output is what an operator makes
+  // a trust decision on. (The exposure predates the provenance wording — the old
+  // "<p> → <t>" rendering interpolated exactly the same two values.)
   return {
     name: "provider quota cooldown",
     status: "warn",
     detail: `skipping to fallback: ${entries
       .map(
         ([p, e]) =>
-          `${p} ${cooldownReasonLabel(e.reason)} ${e.resetAt} (${
+          `${plainText(p)} ${cooldownReasonLabel(e.reason)} ${plainText(e.resetAt)} (${
             e.source === "parsed"
               ? "reset time reported by the provider"
               : "reviewgate's own backoff, not provider-reported"
@@ -729,6 +737,12 @@ export function quotaCooldownCheck(repoRoot: string, now: Date): Check | null {
       )
       .join(", ")} — auto-resumes after; no config change`,
   };
+}
+
+/** Drop C0/C1 control characters (ESC included) from a value before it reaches a terminal. */
+function plainText(s: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  return s.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
 }
 
 export function checkBinary(bin: string, name: string, timeoutMs = 5_000): Check {
