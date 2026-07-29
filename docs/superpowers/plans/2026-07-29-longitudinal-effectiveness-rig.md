@@ -497,7 +497,23 @@ git commit -F .commit-msg.txt
 
 ---
 
-### Task 3: Driver — run the script, snapshot every turn
+### Task 3: Driver — run the script, snapshot every turn ✅ DONE 2026-07-30
+
+Shipped as `src/rig/driver.ts`, `src/cli/commands/rig.ts`, the `rig run` subcommand and
+`tests/unit/rig-driver.test.ts` (11 tests). Review: agy round 1 **FAIL** (1 CRITICAL,
+3 WARN, 2 INFO) → round 2 **PASS**.
+
+Two round-1 findings were **rejected with reasons**, and the delta review confirmed both:
+the claimed unhandled `ENOENT` is already inside the `try`, and `runId` is deliberately
+deterministic (script id + start time) so a manifest stays traceable without a side lookup —
+two runs sharing a millisecond would collide on the user-specified `outDir` first, loudly.
+
+The accepted CRITICAL was **relocated while fixing it**: the quiescence check now validates
+the *audit log's* trailing line, not just `state.json`/`pending.json`, because the audit log
+is what the harvester actually reads once a clean-PASS re-arm has wiped the rest. Also added:
+one `cpSync` retry then a loud throw (a silently incomplete snapshot reads downstream as
+"this turn had no iterations", not as an error), and a cassette-destination check that fails
+*before* any agent spawns rather than after a multi-turn run has spent its quota.
 
 **Files:**
 - Create: `src/rig/driver.ts`

@@ -27,6 +27,7 @@ import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
+import { runRigRun } from "./commands/rig.ts";
 import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
@@ -898,6 +899,53 @@ const bench = defineCommand({
   },
 });
 
+const rig = defineCommand({
+  meta: {
+    name: "rig",
+    description:
+      "Longitudinal effectiveness rig: drive a headless agent through a scripted, defect-seeded run and measure the gate as a loop (what bench, running each case fresh, structurally cannot)",
+  },
+  subCommands: {
+    run: defineCommand({
+      meta: {
+        name: "run",
+        description:
+          "Drive the turn script against this repo, snapshotting .reviewgate/ after every turn. Requires REVIEWGATE_CASSETTE=record:<path>. COSTS REAL AGENT QUOTA.",
+      },
+      args: {
+        script: { type: "string", required: true, description: "Turn-script JSON path" },
+        out: { type: "string", required: true, description: "Output directory for snapshots" },
+        "max-turns": {
+          type: "string",
+          description: "Stop after N turns (default: every turn in the script)",
+        },
+      },
+      async run({ args }) {
+        const maxTurnsRaw = args["max-turns"];
+        const maxTurns = maxTurnsRaw === undefined ? undefined : Number(maxTurnsRaw);
+        if (maxTurns !== undefined && (!Number.isInteger(maxTurns) || maxTurns < 1)) {
+          console.error("reviewgate rig run: --max-turns must be a positive integer");
+          process.exit(2);
+        }
+        const manifest = await runRigRun({
+          // `as string` matches the existing bench commands: citty types every arg widely
+          // even when `required: true`, and it enforces presence at parse time.
+          scriptPath: args.script as string,
+          outDir: args.out as string,
+          repoRoot: process.cwd(),
+          // Conditional spread, not `maxTurns`: exactOptionalPropertyTypes rejects an
+          // explicit undefined on an optional property.
+          ...(maxTurns === undefined ? {} : { maxTurns }),
+          cassetteEnv: process.env.REVIEWGATE_CASSETTE,
+        });
+        process.stdout.write(
+          `rig run complete: ${manifest.turns.length} turn(s) → ${manifest.outDir}/manifest.json\n`,
+        );
+      },
+    }),
+  },
+});
+
 const main = defineCommand({
   meta: {
     name: "reviewgate",
@@ -922,6 +970,7 @@ const main = defineCommand({
     setup,
     learn,
     bench,
+    rig,
   },
 });
 
