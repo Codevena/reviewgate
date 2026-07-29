@@ -15,6 +15,15 @@
 - **Never write to the real `~/.claude/settings.json` from tests.** Every test passes a temp `home`. A broken global Stop hook breaks every Claude Code session on this machine, including the one running the tests.
 - **Merge, never overwrite.** `~/.claude/settings.json` is the user's global config for every project. An earlier audit logged "init wipes settings" as a HIGH finding; re-introducing it at global scope would be strictly worse.
 - **The user shim must never print to stdout** except to pass the gate's own output through. stdout is the decision channel, and per the hook protocol a Stop hook cannot express "allow" — so anything Reviewgate prints there can only ever *add* a block.
+- **ONE predicate, implemented in TypeScript, shared by all three consumers.** The
+  stand-down, the Stop-timeout selection and `doctor` must agree exactly; two independent
+  formulations drift, and a drift in either direction re-opens a silent fail-open
+  (plan-gate round 2, CRITICAL #1/#2). A raw `grep` over `.claude/settings.json` is NOT
+  acceptable evidence: the marker can appear in a PostToolUse entry, an env value or any
+  unrelated setting, producing a FALSE stand-down. The shim therefore asks the binary
+  (`reviewgate hooks repo-gate-active`, exit 0 = a repo-local Claude Stop gate will fire)
+  instead of parsing JSON in bash. When the binary is unresolvable the shim is already in
+  its fail-open branch, so nothing is lost.
 - **The stand-down requires POSITIVE evidence; any doubt means RUN.** Standing down when nothing else fires is a silent fail-open (the turn ends un-reviewed); running twice merely costs a lock wait and reviewer quota. `.reviewgate/bin/` shims are written **host-independently** (`src/cli/commands/init.ts:271`, before any host document is installed), so an executable `.reviewgate/bin/gate` proves nothing about Claude Code — a `reviewgate init --host codex` repo has that shim and NO Claude hook at all. The evidence required is the repo's `.claude/settings.json` naming a Reviewgate Stop command **and** the shim being executable. (Plan-gate round 1, CRITICAL #3.)
 - **The user shim must never emit `continue:false`.** It is the one field documented to take precedence over another hook's decision, and a globally installed hook must not do that to tools it knows nothing about. (`formatAllowStopJson` in `src/hooks/handlers.ts:363` still contains that pattern but has zero callers — do not call it, do not copy it, and do not delete it here either; unrelated cleanup.)
 - **Fail direction is INVERTED versus repo-local.** `bin-templates/gate.sh` fails CLOSED on an unresolvable binary; the user shim must fail OPEN with a stderr warning (spec §3.2, arming spec §4).
@@ -112,6 +121,10 @@ export function writeShims(
 In `scripts/build-npm-packages.ts:122` and `scripts/verify-publish.ts:65`, extend both
 hard-coded arrays to include `user-gate.sh`, `user-trigger.sh`, `user-reset.sh`. Both lists
 must stay in sync; a template that ships but is unverified is the same silent gap.
+
+There is a THIRD hard-coded list: `tests/unit/verify-publish.test.ts:44` builds a
+valid-package fixture from the same four names, so extending the verifier without it makes
+that existing test fail. Update all three in this step (plan-gate round 2, INFO).
 
 - [ ] **Step 4: Add the quoting regression test**
 
@@ -268,7 +281,7 @@ git commit -m "refactor(hosts): extract the path-keyed hook-document core"
 
 **Interfaces:**
 - Consumes: `readHookDocumentAt`, `installHookDocumentAt`, `stripManagedEntries`, `HookDocument`, `HookEvents` (Task 1).
-- Produces: `userClaudeSettingsPath(home)`, `userShimDir(home)`, `userShimPath(home, shim)`, `installUserHooks(home, binPath)`, `removeUserHooks(home)`, `userHooksInstalled(home)` — consumed by Tasks 3 and 5.
+- Produces (all SYNCHRONOUS): `userClaudeSettingsPath(home)`, `userShimDir(home)`, `userShimPath(home, shim)`, `installUserHooks(home, binPath, tplDir)`, `removeUserHooks(home)`, `userHooksInstalled(home)`, `userStopGateInstalled(home)`, `repoClaudeStopGateActive(repoRoot)` — consumed by Tasks 3, 4 and 5. `tplDir` is the CALLER's responsibility (`resolveTemplateDir()` from Task 0), so a compiled binary resolves templates the same way `init` does.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -387,9 +400,11 @@ Expected: FAIL — `src/hosts/user-hooks.ts` does not exist.
 
 ```ts
 // src/hosts/user-hooks.ts
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { resolveTemplateDir, writeShims } from "../cli/commands/init.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
+import { managedHookPath } from "../utils/paths.ts";
 import {
   type HookDocument,
   type HookEvents,
@@ -478,6 +493,55 @@ export function removeUserHooks(home: string): void {
   rmSync(userShimDir(home), { recursive: true, force: true });
 }
 
+// THE shared predicate (plan-gate round 2, CRITICAL #1/#2/#3). Structural, not a text
+// match: the Stop event must name THIS repo's managed gate command, and that shim must be
+// EXECUTABLE — `existsSync` is not enough, a non-executable shim cannot fire. Exposed to
+// the shim via `reviewgate hooks repo-gate-active` and reused by the Stop-timeout
+// selection, so the two can never drift apart.
+function stopCommandsFor(settingsPath: string): string[] {
+  if (!existsSync(settingsPath)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      hooks?: { Stop?: Array<{ hooks?: Array<{ command?: string }> }> };
+    };
+    return (parsed.hooks?.Stop ?? [])
+      .flatMap((g) => g.hooks ?? [])
+      .map((h) => h.command ?? "")
+      .filter(Boolean);
+  } catch {
+    return []; // unreadable settings must never be read as evidence
+  }
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function repoClaudeStopGateActive(repoRoot: string): boolean {
+  const shim = managedHookPath(repoRoot);
+  if (!isExecutable(shim)) return false;
+  // The command may be written as "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate", so compare
+  // on the repo-relative suffix rather than the absolute path.
+  return stopCommandsFor(join(repoRoot, ".claude", "settings.json")).some((c) =>
+    c.includes(".reviewgate/bin/gate"),
+  );
+}
+
+// Positive evidence that a USER-scoped Stop gate will run: the Stop command must target
+// THIS home's gate shim (not a stale path from an older install), and that shim must be
+// executable. `userHooksInstalled` stays the broader install-health signal (any managed
+// entry in any event) and must NOT be used to answer "is this gated?".
+export function userStopGateInstalled(home: string): boolean {
+  const shim = userShimPath(home, "gate");
+  if (!isExecutable(shim)) return false;
+  return stopCommandsFor(userClaudeSettingsPath(home)).some((c) => c.includes(shim));
+}
+
 export function userHooksInstalled(home: string): boolean {
   const path = userClaudeSettingsPath(home);
   if (!existsSync(path)) return false;
@@ -508,6 +572,17 @@ Note for the implementer: the `--remove` test asserts `doc.hooks` equals the ORI
 
 Run: `bun test tests/unit/user-hooks-install.test.ts`
 Expected: PASS (5 tests).
+
+- [ ] **Step 4b: Test the predicate directly, not only through the shim**
+
+The shim tests use a fake binary, so they prove the shim *uses* the query — not that the
+query is right. `repoClaudeStopGateActive` and `userStopGateInstalled` therefore need their
+own cases in this file: a codex-only repo (shared shim, no Claude settings) → false; a
+settings document naming the gate only under **PostToolUse** → false; an unrelated setting
+whose value merely contains `.reviewgate/bin/gate` → false; a non-executable shim → false;
+for the user twin, a Stop command pointing at a **stale** shim path → false; and the fully
+wired shapes → true. These are the cases the round-2 review showed a raw text match would
+get wrong.
 
 - [ ] **Step 5: Mutation-check the merge guarantee**
 
@@ -574,9 +649,15 @@ async function runShim(shim: string, cwd: string, env: Record<string, string> = 
   return { code: await p.exited, stdout, stderr };
 }
 
-function fakeBinary(dir: string, body: string): string {
+// The shim now asks the binary whether a repo-local Claude Stop gate is active
+// (`hooks repo-gate-active`), so the fake must answer that query as well as the gate call.
+// `active` decides the query's exit code; `body` is what the real gate invocation does.
+function fakeBinary(dir: string, body: string, active = false): string {
   const path = join(dir, "fake-reviewgate");
-  writeFileSync(path, `#!/bin/sh\n${body}\n`);
+  writeFileSync(
+    path,
+    `#!/bin/sh\nif [ "$1" = "hooks" ]; then exit ${active ? 0 : 1}; fi\n${body}\n`,
+  );
   chmodSync(path, 0o755);
   return path;
 }
@@ -601,7 +682,7 @@ describe("user-scoped gate shim", () => {
   test("stands down when a repo-local CLAUDE Stop hook is genuinely installed", async () => {
     const h = home();
     const r = await repoWithClaudeHooks();
-    const bin = fakeBinary(h, 'echo "{\\"decision\\":\\"block\\"}"; exit 3');
+    const bin = fakeBinary(h, 'echo "{\\"decision\\":\\"block\\"}"; exit 3', true);
     installUserHooks(h, bin, resolveTemplateDir());
     const out = await runShim(userShimPath(h, "gate"), r);
     expect(out.code).toBe(0);
@@ -736,17 +817,19 @@ set -u
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
 
-# Stand down ONLY on positive evidence that a repo-local Claude Stop hook will fire:
-# the settings document must name the gate shim AND that shim must be runnable. Either
-# missing (Codex-only init, orphaned shim, hand-removed hook) => RUN.
-if [ -x "$ROOT/.reviewgate/bin/gate" ] &&
-   grep -q '\.reviewgate/bin/gate' "$ROOT/.claude/settings.json" 2>/dev/null; then
-  exit 0
-fi
-
 RG_BIN='__REVIEWGATE_BIN__'
 if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
+fi
+
+# Stand down ONLY on positive evidence that a repo-local Claude Stop gate will fire. The
+# check is STRUCTURAL and lives in TypeScript (`hooks repo-gate-active` exits 0 only when
+# the Stop event names this repo's managed gate command AND that shim is executable) —
+# a bash grep over settings.json would also match a PostToolUse entry or an unrelated
+# value and stand down while nothing fires. Binary missing => skip the query and fall
+# through to the fail-open branch below; never stand down on a failed query.
+if [ -n "$RG_BIN" ] && "$RG_BIN" hooks repo-gate-active >/dev/null 2>&1; then
+  exit 0
 fi
 if [ -z "$RG_BIN" ]; then
   printf '%s\n' 'Reviewgate: user-scoped gate SKIPPED — the reviewgate binary is not on PATH and no baked path resolved, so this turn was NOT reviewed. Fix: reinstall the binary, run `reviewgate init --user`, then `reviewgate doctor`.' >&2
@@ -773,16 +856,13 @@ exit "$rc"
 # warning here would be noise. The Stop shim is where a missing binary is reported.
 set -u
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-# Same positive-evidence rule as the gate shim, for this event's own command.
-if [ -x "$ROOT/.reviewgate/bin/trigger" ] &&
-   grep -q '\.reviewgate/bin/trigger' "$ROOT/.claude/settings.json" 2>/dev/null; then
-  exit 0
-fi
 RG_BIN='__REVIEWGATE_BIN__'
 if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
 fi
 [ -n "$RG_BIN" ] || exit 0
+# Same structural rule as the gate shim, scoped to THIS event's command.
+"$RG_BIN" hooks repo-hook-active --event PostToolUse >/dev/null 2>&1 && exit 0
 cd "$ROOT" || exit 0
 "$RG_BIN" gate --hook trigger
 exit 0
@@ -929,19 +1009,10 @@ function readGateStopTimeout(settingsPath: string): number | null {
   return typeof t === "number" && Number.isFinite(t) && t > 0 ? t : null;
 }
 
-// The repo timeout counts only when the repo-local Claude gate will ACTUALLY fire —
-// the identical positive-evidence rule the user shim stands down on (bin-templates/
-// user-gate.sh). A settings file that still names a gate whose shim is gone means the
-// USER hook is the one the OS is timing, so its timeout is the one to clamp to. Keeping
-// these two predicates in sync is load-bearing; a mismatch silently reintroduces the
-// unclamped mid-review kill (plan-gate round 1, CRITICAL #4).
-function repoClaudeGateEffective(repoRoot: string): boolean {
-  return (
-    existsSync(managedHookPath(repoRoot)) &&
-    readGateStopTimeout(join(repoRoot, ".claude", "settings.json")) !== null
-  );
-}
-
+// The repo timeout counts only when the repo-local Claude gate will ACTUALLY fire. This
+// imports the SAME predicate the shim queries rather than restating it — a second
+// formulation is what round 2 flagged, and any drift silently reintroduces the unclamped
+// mid-review kill (plan-gate round 1 CRITICAL #4, round 2 CRITICAL #2).
 // S4: a repo can now be gated by USER-scoped hooks (~/.claude/settings.json) with no
 // repo-local hook at all. Reading only the checkout would return null there, leaving the
 // loop's deadline unclamped against whatever timeout the global hook carries — the exact
@@ -949,7 +1020,7 @@ function repoClaudeGateEffective(repoRoot: string): boolean {
 // unchanged: user shims live at ~/.reviewgate/bin/gate and carry the same marker.
 export function installedGateStopTimeoutS(repoRoot: string, home: string = homedir()): number | null {
   return (
-    (repoClaudeGateEffective(repoRoot)
+    (repoClaudeStopGateActive(repoRoot)
       ? readGateStopTimeout(join(repoRoot, ".claude", "settings.json"))
       : null) ?? readGateStopTimeout(join(home, ".claude", "settings.json"))
   );
@@ -965,8 +1036,8 @@ Expected: PASS (4 tests).
 
 In a **copy**: drop the `?? readGateStopTimeout(join(home, …))` arm → both fallback tests
 must go RED. Restore, then REVERSE the order (user first) → "repo-local hook wins" must go
-RED. Restore, then drop `repoClaudeGateEffective`'s `existsSync(managedHookPath(...))`
-condition → the stale-repo-timeout test must go RED. Discard the copy; `git diff` unchanged.
+RED. Restore, then weaken `repoClaudeStopGateActive` to `existsSync` instead of an
+executable check → the non-executable-shim test must go RED. Discard the copy; `git diff` unchanged.
 
 - [ ] **Step 6: Verify no existing caller broke**
 
@@ -994,7 +1065,32 @@ git commit -m "fix(loop): clamp to the user-scoped Stop-hook timeout too (S4)"
 
 - [ ] **Step 1: Wire the CLI**
 
-`--user` is a distinct mode, not a modifier of the repo install: it must not touch any repo, must not create `.reviewgate/`, and must not arm anything. Route it before the repo-init work in `runInit`, and add `--remove` (only meaningful together with `--user`; reject the combination otherwise with a clear message). The binary path baked into the shims is the one `init` already resolves for repo-local shims — reuse that resolution, do not re-implement it.
+`--user` is a distinct mode, not a modifier of the repo install: it must not touch any repo, must not create `.reviewgate/`, and must not arm anything. Route it before the repo-init work in `runInit`, and add `--remove` (only meaningful together with `--user`; reject the combination otherwise with a clear message).
+
+`installUserHooks` is SYNCHRONOUS and takes three arguments, so the call site owns both
+resolutions — reuse `init`'s existing ones, do not re-implement them (plan-gate round 2,
+CRITICAL #5):
+
+```ts
+if (input.user) {
+  if (input.remove) {
+    removeUserHooks(homedir());
+    return 0;
+  }
+  const { bakedBin, warning } = resolveBakedBin(process.execPath);
+  if (warning) console.error(`reviewgate init: WARNING — ${warning}`);
+  installUserHooks(homedir(), bakedBin, resolveTemplateDir());
+  return 0;
+}
+```
+
+Both branches return BEFORE any repo-local work, so nothing is written into the CWD.
+
+**Also add the query the shims use** (`src/cli/index.ts`): a `hooks repo-gate-active`
+subcommand that exits 0 when `repoClaudeStopGateActive(process.cwd())` is true and 1
+otherwise, printing nothing. It is the only supported way for a shell shim to ask the
+question, and keeping it in TypeScript is what stops the predicate from being restated in
+bash. Give it a unit test for both exit codes.
 
 - [ ] **Step 2: Add the doctor checks**
 
@@ -1022,27 +1118,10 @@ It currently FAILs inside any linked worktree without repo-local hooks. With use
   }
 ```
 
-Add that stricter detector to `src/hosts/user-hooks.ts` alongside the existing one:
-
-```ts
-// Positive evidence that a user-scoped STOP gate will run: a managed Stop command AND a
-// runnable gate shim. `userHooksInstalled` stays as the broader install-health signal
-// (any managed entry in any event) and must NOT be used to answer "is this gated?".
-export function userStopGateInstalled(home: string): boolean {
-  const path = userClaudeSettingsPath(home);
-  if (!existsSync(path) || !existsSync(userShimPath(home, "gate"))) return false;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
-      hooks?: { Stop?: Array<{ hooks?: Array<{ command?: string }> }> };
-    };
-    return (parsed.hooks?.Stop ?? [])
-      .flatMap((g) => g.hooks ?? [])
-      .some((h) => h.command?.includes(".reviewgate/bin/gate"));
-  } catch {
-    return false;
-  }
-}
-```
+`userStopGateInstalled` is defined in Task 2 and already requires executable access plus
+a Stop command targeting **this home's** shim path, so a stale command from an older
+install does not count. Test it with a PostToolUse-only document, a non-executable shim
+and a stale command path — all three must report NOT gated.
 
 This is the one place where S3's deliberate "no doctor change" is superseded, and only because S4 makes the claim true. Do NOT extend it to "arming would be inherited" — inheritance without hooks still means nothing fires.
 
@@ -1125,3 +1204,20 @@ shim paths do carry the existing `MANAGED_COMMAND_MARKER`; and `installedGateSto
 has exactly one call site (`LoopDriver.run`), which stays source-compatible.
 
 **Round count: 1 of 3.**
+
+## Plan-Gate findings mapping — round 2 delta (codex, 2026-07-29)
+
+Verdict: **FAIL**, 5 CRITICAL + 1 INFO. Three of the five are defects in round 1's own
+fixes. All verified; none rejected.
+
+| # | Finding | Fix | Task |
+|---|---------|-----|------|
+| C1 | Round 1's `grep` over `.claude/settings.json` is not positive evidence: the marker can sit in a PostToolUse entry, an env value or any unrelated setting → FALSE stand-down, i.e. the exact fail-open round 1 set out to close. None of the three new tests covered a wrong-event or unrelated-string match | **Design change:** the predicate moves into TypeScript as `repoClaudeStopGateActive()` — structural (Stop event only) plus an executable-shim check — and the shim asks for it via a new `reviewgate hooks repo-gate-active` query instead of parsing JSON in bash | Global Constraints, Tasks 2, 3, 5 |
+| C2 | Round 1's `repoClaudeGateEffective()` was still a SECOND formulation (existsSync + a valid timeout) and so not equivalent to the shim's; it also omitted the `managedHookPath` import, and the test fixture's shim was never `chmod`ed | Task 4 imports the one shared predicate; the fixture is made executable; non-executable and wrong-event regressions added | Task 4 |
+| C3 | `userStopGateInstalled` claimed "runnable" but only checked `existsSync`, and accepted any Stop command containing the marker — including one pointing at a stale path | Requires `X_OK` on `userShimPath(home,"gate")` and a Stop command targeting that exact path; PostToolUse-only, non-executable and stale-path cases added | Tasks 2, 5 |
+| C4 | The supplied `user-hooks.ts` could not compile: it called `writeShims` without importing it and imported an unused `chmodSync` | Imports corrected (`writeShims`, `resolveTemplateDir`, `managedHookPath`, `accessSync`/`constants`) | Task 2 |
+| C5 | The 3-argument synchronous `installUserHooks` contract was not carried through: the Interfaces block still advertised two arguments and Task 5's CLI wiring never resolved or passed `tplDir` | Interfaces updated; Task 5 now shows the explicit synchronous call with `resolveBakedBin` + `resolveTemplateDir`, returning before any repo-local work | Tasks 2, 5 |
+| I1 | A THIRD hard-coded template list exists at `tests/unit/verify-publish.test.ts:44`; extending only the two production lists would break it | Added to Task 0 Step 3 | Task 0 |
+
+**Round count: 2 of 3.** Per the plan-gate calibration rule, a third FAIL goes to Markus for
+an accept/fix decision per open finding rather than a fourth round.
