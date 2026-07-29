@@ -18,8 +18,8 @@ interface HookGroup {
   hooks: HookCommand[];
 }
 
-type HookEvents = Record<string, HookGroup[]>;
-type HookDocument = Record<string, unknown> & { hooks?: Record<string, unknown[]> };
+export type HookEvents = Record<string, HookGroup[]>;
+export type HookDocument = Record<string, unknown> & { hooks?: Record<string, unknown[]> };
 
 const MANAGED_COMMAND_MARKER = ".reviewgate/bin/";
 
@@ -179,50 +179,53 @@ function withoutManagedCommands(value: unknown): unknown | null {
   return hooks.length === value.hooks.length ? value : { ...value, hooks };
 }
 
-function invalidHookFile(path: string, host: AgentHost, detail: string): never {
+function productLabel(host: AgentHost): string {
+  return host === "claude" ? "Claude Code" : "Codex";
+}
+
+function invalidHookFile(path: string, product: string, detail: string): never {
   const backupPath = `${path}.bak`;
   try {
     renameSync(path, backupPath);
   } catch {
     /* best effort; refusing to write is the important invariant */
   }
-  const product = host === "claude" ? "Claude Code" : "Codex";
   throw new Error(
     `Reviewgate init aborted: ${path} exists but is not a valid ${product} hook document (${detail}). It has been backed up to ${backupPath} so nothing is lost. Fix or restore it, then re-run \`reviewgate init\`. Reviewgate refuses to overwrite foreign hooks or settings.`,
   );
 }
 
-// Read every selected host document before any host document is written. This
-// lets a `--host both` install fail without partially updating one host first.
-export function readHookDocument(repoRoot: string, host: AgentHost): HookDocument {
-  const path = hookConfigPath(repoRoot, host);
+// Path-keyed core. Extracted so the S4 user-scope installer can reuse the exact same
+// validate/merge semantics against ~/.claude/settings.json instead of forking them —
+// the "preserve foreign entries" behaviour below is the part that must never drift
+// (an earlier audit logged "init wipes settings" as a HIGH finding).
+export function readHookDocumentAt(path: string, product: string): HookDocument {
   if (!existsSync(path)) return {};
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch (err) {
-    invalidHookFile(path, host, err instanceof Error ? err.message : String(err));
+    invalidHookFile(path, product, err instanceof Error ? err.message : String(err));
   }
-  if (!isRecord(parsed)) invalidHookFile(path, host, "top-level JSON value must be an object");
+  if (!isRecord(parsed)) invalidHookFile(path, product, "top-level JSON value must be an object");
   if (parsed.hooks !== undefined && parsed.hooks !== null && !isRecord(parsed.hooks)) {
-    invalidHookFile(path, host, "hooks must be an object");
+    invalidHookFile(path, product, "hooks must be an object");
   }
   const hooks = isRecord(parsed.hooks) ? parsed.hooks : {};
   for (const [event, groups] of Object.entries(hooks)) {
-    if (!Array.isArray(groups)) invalidHookFile(path, host, `hooks.${event} must be an array`);
+    if (!Array.isArray(groups)) invalidHookFile(path, product, `hooks.${event} must be an array`);
   }
   return parsed as HookDocument;
 }
 
-export function installHostHookDocument(
-  repoRoot: string,
-  host: AgentHost,
+export function installHookDocumentAt(
+  path: string,
   document: HookDocument,
+  desired: HookEvents,
 ): string {
-  const path = hookConfigPath(repoRoot, host);
   const current = isRecord(document.hooks) ? document.hooks : {};
   const next: Record<string, unknown[]> = { ...current };
-  for (const [event, wanted] of Object.entries(desiredHooks(repoRoot, host))) {
+  for (const [event, wanted] of Object.entries(desired)) {
     const existing = Array.isArray(current[event]) ? current[event] : [];
     const preserved = existing
       .map((entry) => withoutManagedCommands(entry))
@@ -233,6 +236,38 @@ export function installHostHookDocument(
   mkdirSync(dirname(path), { recursive: true });
   writeFileAtomic(path, JSON.stringify(output, null, 2));
   return path;
+}
+
+// Remove every Reviewgate-managed entry, dropping events left empty so an uninstall
+// restores the document to its pre-install shape rather than leaving `Stop: []` behind.
+export function stripManagedEntries(document: HookDocument): HookDocument {
+  const current = isRecord(document.hooks) ? document.hooks : {};
+  const next: Record<string, unknown[]> = {};
+  for (const [event, groups] of Object.entries(current)) {
+    const kept = (Array.isArray(groups) ? groups : [])
+      .map((entry) => withoutManagedCommands(entry))
+      .filter((entry): entry is unknown => entry !== null);
+    if (kept.length > 0) next[event] = kept;
+  }
+  return { ...document, hooks: next };
+}
+
+// Read every selected host document before any host document is written. This
+// lets a `--host both` install fail without partially updating one host first.
+export function readHookDocument(repoRoot: string, host: AgentHost): HookDocument {
+  return readHookDocumentAt(hookConfigPath(repoRoot, host), productLabel(host));
+}
+
+export function installHostHookDocument(
+  repoRoot: string,
+  host: AgentHost,
+  document: HookDocument,
+): string {
+  return installHookDocumentAt(
+    hookConfigPath(repoRoot, host),
+    document,
+    desiredHooks(repoRoot, host),
+  );
 }
 
 export function hooksInstalled(repoRoot: string, host: AgentHost = "claude"): boolean {
