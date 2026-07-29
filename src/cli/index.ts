@@ -1,7 +1,9 @@
 // src/cli/index.ts
+import { homedir } from "node:os";
 import { defineCommand, runMain } from "citty";
 import { controlPlaneStatus } from "../config/control-plane.ts";
 import type { AgentHostSelection } from "../hosts/hooks.ts";
+import { repoClaudeHookActive } from "../hosts/user-hooks.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
@@ -18,7 +20,7 @@ import {
   runFpUnpin,
 } from "./commands/fp.ts";
 import { runGate, runGateSafe } from "./commands/gate.ts";
-import { runInit } from "./commands/init.ts";
+import { runInit, runInitUser } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
 import { runLoreStatus, runLoreVerify } from "./commands/lore.ts";
 import { runPrePush } from "./commands/pre-push.ts";
@@ -36,6 +38,37 @@ function failArg(message: string): never {
   process.stderr.write(`Error: ${message}\n`);
   process.exit(1);
 }
+
+// The activity query the user-scoped shims call. Exit 0 = a repo-local Claude hook for
+// this event will really fire here, so the user shim stands down; 1 = it will not; 2 = the
+// event is missing or unrecognised. Nothing is ever printed: the shims treat every
+// non-zero code as "not active", so a bad invocation can only cause a RUN, never a silent
+// stand-down. It lives here rather than in bash because the check is structural — a text
+// match over settings.json would also accept a foreign command or the wrong event.
+const hooks = defineCommand({
+  meta: { name: "hooks", description: "Query the installed hook wiring (used by the shims)" },
+  subCommands: {
+    "repo-hook-active": defineCommand({
+      meta: {
+        name: "repo-hook-active",
+        description: "Exit 0 if a repo-local Claude hook for --event fires in this checkout",
+      },
+      args: {
+        event: {
+          type: "string",
+          description: "Stop | PostToolUse | SessionStart",
+        },
+      },
+      run({ args }) {
+        const event = typeof args.event === "string" ? args.event : "";
+        if (event !== "Stop" && event !== "PostToolUse" && event !== "SessionStart") {
+          process.exit(2);
+        }
+        process.exit(repoClaudeHookActive(process.cwd(), event) ? 0 : 1);
+      },
+    }),
+  },
+});
 
 const init = defineCommand({
   meta: {
@@ -56,12 +89,27 @@ const init = defineCommand({
       type: "boolean",
       description: "Repair/reinstall host hooks without changing configuration",
     },
+    user: {
+      type: "boolean",
+      description:
+        "Install USER-scoped hooks in ~/.claude/settings.json (fire in every repo; repo-local hooks win where present)",
+    },
+    remove: {
+      type: "boolean",
+      description: "With --user: remove the user-scoped hooks and shims again",
+    },
     "skip-doctor": {
       type: "boolean",
       description: "Skip the final health check",
     },
   },
   async run({ args }) {
+    // S4: user scope is its own mode and returns BEFORE any repository work — it must not
+    // create .reviewgate/, arm anything, or touch the CWD.
+    if (args.user === true) {
+      process.exit(runInitUser({ home: homedir(), remove: args.remove === true }));
+    }
+    if (args.remove === true) failArg("--remove is only meaningful together with --user");
     const rawHost = typeof args.host === "string" ? args.host : undefined;
     if (rawHost && rawHost !== "claude" && rawHost !== "codex" && rawHost !== "both") {
       failArg(`invalid --host "${rawHost}": expected claude, codex, or both`);
@@ -858,6 +906,7 @@ const main = defineCommand({
   },
   subCommands: {
     init,
+    hooks,
     gate,
     "pre-push": prePush,
     "review-plan": reviewPlan,

@@ -18,6 +18,7 @@ import { loadLore } from "../../core/lore/store.ts";
 import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
 import { ReputationStore } from "../../core/reputation/store.ts";
 import { installedHosts } from "../../hosts/hooks.ts";
+import { userHooksInstalled, userShimPath, userStopGateInstalled } from "../../hosts/user-hooks.ts";
 import { isProviderAvailable } from "../../providers/availability.ts";
 import type { ProviderId } from "../../providers/registry.ts";
 import { resolveGrammarWasm } from "../../research/grammars.ts";
@@ -554,9 +555,24 @@ export function panelBudgetCheck(cfg: ReviewgateConfig): Check {
 // main checkout's hooks do NOT propagate into a linked worktree. When `doctor` is run INSIDE
 // a linked worktree that lacks the reviewgate hooks, FAIL loudly — a silent-OK doctor here
 // is exactly the trap. Returns null outside a linked worktree (nothing to check).
-export async function worktreeGatedCheck(repoRoot: string): Promise<Check | null> {
+export async function worktreeGatedCheck(
+  repoRoot: string,
+  home: string = homedir(),
+): Promise<Check | null> {
   const info = await worktreeInfo(repoRoot);
   if (!info.isLinkedWorktree) return null;
+  // S4: user-scoped hooks DO fire here, so this worktree really is gated — but only when a
+  // Stop GATE will run. userHooksInstalled() is true for any managed entry in any event,
+  // so a leftover PostToolUse entry would otherwise let doctor report a worktree as gated
+  // while nothing reviews the turn.
+  if (!anyHooksInstalled(repoRoot) && userStopGateInstalled(home)) {
+    return {
+      name: "worktree gating",
+      status: "ok",
+      detail:
+        "inside a git worktree with no repo-local hooks, but gated by user-scoped Reviewgate hooks (~/.claude/settings.json)",
+    };
+  }
   if (anyHooksInstalled(repoRoot)) {
     return {
       name: "worktree gating",
@@ -570,6 +586,37 @@ export async function worktreeGatedCheck(repoRoot: string): Promise<Check | null
     detail:
       "you are inside a git WORKTREE with NO Reviewgate hooks — the gate is OFF here, so worktree edits end UN-reviewed (fail-open). A worktree shares only .git; the main checkout's hooks do not propagate.",
     hint: "Run `reviewgate init` in this worktree to gate it, or do the work in (or merge to) the gated main checkout.",
+  };
+}
+
+// Reports on the user-scoped install only when there is something to report: silence when
+// the user never opted in, because most machines never will.
+export function userScopeCheck(home: string): Check | null {
+  if (!userHooksInstalled(home)) return null;
+  const missing = (["gate", "trigger", "reset"] as const).filter(
+    (shim) => !existsSync(userShimPath(home, shim)),
+  );
+  if (missing.length > 0) {
+    return {
+      name: "user-scoped hooks",
+      status: "fail",
+      detail: `~/.claude/settings.json has Reviewgate hooks but these shims are missing: ${missing.join(", ")}. They fire in every repo and skip the review each time.`,
+      hint: "Re-run `reviewgate init --user` (or `reviewgate init --user --remove` to uninstall).",
+    };
+  }
+  if (!userStopGateInstalled(home)) {
+    return {
+      name: "user-scoped hooks",
+      status: "warn",
+      detail:
+        "user-scoped Reviewgate hooks are installed, but no runnable Stop GATE is among them — turns are not reviewed through this scope.",
+      hint: "Re-run `reviewgate init --user`.",
+    };
+  }
+  return {
+    name: "user-scoped hooks",
+    status: "ok",
+    detail: "installed in ~/.claude/settings.json with a runnable Stop gate",
   };
 }
 
@@ -693,6 +740,9 @@ export function checkBinary(bin: string, name: string, timeoutMs = 5_000): Check
 export interface DoctorInput {
   repoRoot: string;
   capture?: boolean;
+  /** Injectable for tests; production reads the real home. Never point this at a real
+   *  home in a test — the user-scope checks read ~/.claude/settings.json. */
+  home?: string;
 }
 
 export async function runDoctor(input: DoctorInput): Promise<number> {
@@ -860,9 +910,14 @@ export async function runDoctor(input: DoctorInput): Promise<number> {
     // ignore — quota hint is advisory
   }
 
+  // S4 user-scoped hooks: absent is INFO-level (opt-in), installed-but-broken is a FAIL —
+  // a hook pointing at a missing shim fires in every repo and skips the review each time.
+  const us = userScopeCheck(input.home ?? homedir());
+  if (us) checks.push(us);
+
   // Worktree blindness (P8): loud FAIL when run inside an un-gated linked worktree.
   // Outside the config try so it surfaces even when reviewgate.config.ts fails to load.
-  const wt = await worktreeGatedCheck(input.repoRoot);
+  const wt = await worktreeGatedCheck(input.repoRoot, input.home ?? homedir());
   if (wt) checks.push(wt);
 
   // Active quota cooldowns (remembered reset time → auto-skip to fallback).

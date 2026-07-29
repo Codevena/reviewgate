@@ -12,6 +12,11 @@ import {
   installHostHookDocument,
   readHookDocument,
 } from "../../hosts/hooks.ts";
+import {
+  installUserHooks,
+  removeUserHooks,
+  userClaudeSettingsPath,
+} from "../../hosts/user-hooks.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { controlPlaneStatePath } from "../../utils/paths.ts";
 
@@ -56,6 +61,27 @@ export function resolveBakedBin(execPath: string): { bakedBin: string; warning: 
     };
   }
   return { bakedBin: execPath, warning: null };
+}
+
+// S4: user-scoped install/uninstall. Kept OUT of runInit on purpose — runInit returns a
+// result OBJECT that src/cli/index.ts and setup.ts dereference immediately, so widening it
+// to also carry an exit code would break those callers. This mode touches no repository:
+// no .reviewgate/, no arming, nothing written into the CWD.
+export function runInitUser(input: { home: string; remove?: boolean }): number {
+  if (input.remove) {
+    removeUserHooks(input.home);
+    process.stdout.write(
+      `Reviewgate user-scoped hooks removed from ${userClaudeSettingsPath(input.home)}.\n`,
+    );
+    return 0;
+  }
+  const { bakedBin, warning } = resolveBakedBin(process.execPath);
+  if (warning) console.error(`reviewgate init: WARNING — ${warning}`);
+  const settingsPath = installUserHooks(input.home, bakedBin, resolveTemplateDir());
+  process.stdout.write(
+    `Reviewgate user-scoped hooks installed in ${settingsPath}.\nThey fire in every repo you open. Repos with their own Reviewgate hooks are left to those; repos that are not armed are a silent no-op. Run \`reviewgate doctor\` to verify.\n`,
+  );
+  return 0;
 }
 
 // Resolve bin-templates across all run modes:
