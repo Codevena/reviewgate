@@ -116,15 +116,15 @@ export function writeShims(
 }
 ```
 
-- [ ] **Step 3: Add the three user templates to the packaging lists**
+- [ ] **Step 3: (moved to Task 3 — see note)**
 
-In `scripts/build-npm-packages.ts:122` and `scripts/verify-publish.ts:65`, extend both
-hard-coded arrays to include `user-gate.sh`, `user-trigger.sh`, `user-reset.sh`. Both lists
-must stay in sync; a template that ships but is unverified is the same silent gap.
-
-There is a THIRD hard-coded list: `tests/unit/verify-publish.test.ts:44` builds a
-valid-package fixture from the same four names, so extending the verifier without it makes
-that existing test fail. Update all three in this step (plan-gate round 2, INFO).
+**Moved to Task 3 Step 3b, discovered while implementing Task 0.** Extending the packaging
+lists here would name `user-*.sh` files that do not exist until Task 3, so every build and
+`verify-publish` run in between would fail on missing templates. The list update has to land
+in the same task as the templates themselves. What must happen there is unchanged: extend
+`scripts/build-npm-packages.ts:122`, `scripts/verify-publish.ts:65` **and**
+`tests/unit/verify-publish.test.ts:44` (a third hard-coded list, plan-gate round 2 INFO) —
+all three together, or a template ships unverified.
 
 - [ ] **Step 4: Add the quoting regression test**
 
@@ -933,10 +933,18 @@ cd "$ROOT" || exit 0
 exit 0
 ```
 
+- [ ] **Step 3b: Add the three templates to all THREE packaging lists**
+
+Now that the files exist, extend `scripts/build-npm-packages.ts:122`,
+`scripts/verify-publish.ts:65` and `tests/unit/verify-publish.test.ts:44` to include
+`user-gate.sh`, `user-trigger.sh`, `user-reset.sh`. All three or none: a template that
+ships but is unverified is the same silent gap, and the test fixture must match the
+verifier or the existing packaging test fails.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bun test tests/unit/user-shim-behavior.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS.
 
 - [ ] **Step 5: Mutation-check both deliberate differences**
 

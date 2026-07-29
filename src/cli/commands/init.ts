@@ -58,13 +58,48 @@ export function resolveBakedBin(execPath: string): { bakedBin: string; warning: 
   return { bakedBin: execPath, warning: null };
 }
 
-// Render the 4 hook shims with the baked path. Extracted from runInit so a stale→new
-// re-bake (e.g. user moves from curl|sh to npm) is unit-testable; each call fully
-// overwrites the shim, so the previous RG_BIN can never linger.
-export function writeShims(binDir: string, tplDir: string, bakedBin: string): void {
-  for (const name of ["trigger", "gate", "reset", "pre-push"]) {
-    const tpl = readFileSync(join(tplDir, `${name}.sh`), "utf8");
-    const dst = join(binDir, name);
+// Resolve bin-templates across all run modes:
+//  - `bun run dev`: ../../../../bin-templates lands at the repo root.
+//  - compiled binary: `bun build --compile` does NOT bundle them, so the build
+//    copies them to dist/bin-templates next to the executable → resolve via
+//    dirname(process.execPath).
+//  - running from the repo root: process.cwd()/bin-templates.
+// Exported because the user-scope installer (S4) must resolve them the SAME way; a
+// caller that derives the directory from import.meta.url alone works under `bun run dev`
+// and breaks in every shipped binary.
+export function resolveTemplateDir(): string {
+  const here = fileURLToPath(import.meta.url);
+  const candidates = [
+    join(dirname(process.execPath), "bin-templates"),
+    join(here, "..", "..", "..", "..", "bin-templates"),
+    join(process.cwd(), "bin-templates"),
+  ];
+  const tplDir = candidates.find((c) => existsSync(c));
+  if (!tplDir) throw new Error(`bin-templates not found in: ${candidates.join(", ")}`);
+  return tplDir;
+}
+
+const REPO_SHIMS: Array<{ template: string; dest: string }> = [
+  { template: "trigger", dest: "trigger" },
+  { template: "gate", dest: "gate" },
+  { template: "reset", dest: "reset" },
+  { template: "pre-push", dest: "pre-push" },
+];
+
+// Render hook shims with the baked path. Extracted from runInit so a stale→new re-bake
+// (e.g. user moves from curl|sh to npm) is unit-testable; each call fully overwrites the
+// shim, so the previous RG_BIN can never linger. `shims` defaults to the four repo-local
+// ones; S4's user-scope installer passes its own template→destination pairs so the baked
+// path always goes through shSingleQuote here rather than a second, unquoted renderer.
+export function writeShims(
+  binDir: string,
+  tplDir: string,
+  bakedBin: string,
+  shims: Array<{ template: string; dest: string }> = REPO_SHIMS,
+): void {
+  for (const { template, dest } of shims) {
+    const tpl = readFileSync(join(tplDir, `${template}.sh`), "utf8");
+    const dst = join(binDir, dest);
     writeFileSync(dst, tpl.split("__REVIEWGATE_BIN__").join(shSingleQuote(bakedBin)));
     chmodSync(dst, 0o755);
   }
@@ -244,20 +279,7 @@ export async function runInit(input: InitInput): Promise<{
   // 1. Create .reviewgate/bin/ and copy templates
   const binDir = join(input.repoRoot, ".reviewgate", "bin");
   if (!existsSync(binDir)) mkdirSync(binDir, { recursive: true });
-  const here = fileURLToPath(import.meta.url);
-  // Resolve bin-templates across all run modes:
-  //  - `bun run dev`: ../../../../bin-templates lands at the repo root.
-  //  - compiled binary: `bun build --compile` does NOT bundle them, so the build
-  //    copies them to dist/bin-templates next to the executable → resolve via
-  //    dirname(process.execPath).
-  //  - running from the repo root: process.cwd()/bin-templates.
-  const candidates = [
-    join(dirname(process.execPath), "bin-templates"),
-    join(here, "..", "..", "..", "..", "bin-templates"),
-    join(process.cwd(), "bin-templates"),
-  ];
-  const tplDir = candidates.find((c) => existsSync(c));
-  if (!tplDir) throw new Error(`bin-templates not found in: ${candidates.join(", ")}`);
+  const tplDir = resolveTemplateDir();
 
   // Bake the absolute path of the binary that ran `init` into each shim, so the
   // hooks work even when `reviewgate` is NOT on the (non-login) PATH the agent

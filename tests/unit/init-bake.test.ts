@@ -1,9 +1,9 @@
 // tests/unit/init-bake.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveBakedBin, writeShims } from "../../src/cli/commands/init.ts";
+import { resolveBakedBin, resolveTemplateDir, writeShims } from "../../src/cli/commands/init.ts";
 
 const REPO_TPL = join(import.meta.dir, "..", "..", "bin-templates");
 
@@ -54,5 +54,28 @@ describe("writeShims re-bake (stale path is replaced)", () => {
     const gate = readFileSync(join(binDir, "gate"), "utf8");
     expect(gate).toContain("RG_BIN='/new/reviewgate'");
     expect(gate).not.toContain("/old/reviewgate");
+  });
+});
+
+describe("writeShims — shared rendering for repo and user scope (S4)", () => {
+  it("single-quote-escapes a baked path containing a quote", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "rg-shim-quote-"));
+    writeShims(binDir, resolveTemplateDir(), "/opt/we're/reviewgate");
+    // POSIX escaping is ' -> '\''. A raw substitution would terminate the quoted
+    // assignment and let the rest of the path EXECUTE at hook time — which is why the
+    // S4 user-scope installer reuses this function instead of rendering its own.
+    expect(readFileSync(join(binDir, "gate"), "utf8")).toContain(
+      "RG_BIN='/opt/we'\\''re/reviewgate'",
+    );
+  });
+
+  it("renders an explicit template→destination list (the S4 user-scope shape)", () => {
+    const binDir = mkdtempSync(join(tmpdir(), "rg-shim-explicit-"));
+    writeShims(binDir, resolveTemplateDir(), "/opt/rg/reviewgate", [
+      { template: "gate", dest: "user-gate-probe" },
+    ]);
+    expect(existsSync(join(binDir, "user-gate-probe"))).toBe(true);
+    expect(existsSync(join(binDir, "trigger"))).toBe(false); // only what was asked for
+    expect(statSync(join(binDir, "user-gate-probe")).mode & 0o111).not.toBe(0);
   });
 });
