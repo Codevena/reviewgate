@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { inheritedWorktreeApproval, probeArming } from "../../src/config/control-plane.ts";
+import {
+  inheritedWorktreeApproval,
+  probeArming,
+  resolveControlPlaneConfig,
+} from "../../src/config/control-plane.ts";
 import { controlPlaneStatePath, managedHookPath } from "../../src/utils/paths.ts";
 import { armCheckout } from "../helpers/arm.ts";
 import { addWorktree, addWorktreeOfBare, makeMainRepo } from "../helpers/worktree.ts";
@@ -157,5 +161,60 @@ describe("probeArming + worktree inheritance", () => {
     mkdirSync(dirname(managedHookPath(wt)), { recursive: true });
     writeFileSync(managedHookPath(wt), "#!/bin/sh\n");
     expect(await probeArming(input(wt))).toEqual({ armed: false, kind: "state-missing" });
+  });
+});
+
+describe("resolveControlPlaneConfig + worktree inheritance", () => {
+  test("an inheriting worktree resolves instead of throwing, and materializes its LKG", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    // Before S3 this REJECTS with ControlPlaneBootstrapRequiredError.
+    const resolution = await resolveControlPlaneConfig(input(wt));
+    expect(resolution.change).toBeNull();
+    expect(resolution.config.loop.maxIterations).toBe(5);
+    const written = JSON.parse(readFileSync(controlPlaneStatePath(wt), "utf8"));
+    expect(written.approved_via).toBe("inherited-worktree");
+    const mainState = JSON.parse(readFileSync(controlPlaneStatePath(main), "utf8"));
+    expect(written.approved_effective_fingerprint).toBe(mainState.approved_effective_fingerprint);
+  });
+
+  test("after materialization the worktree is an ORDINARY armed checkout", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    await resolveControlPlaneConfig(input(wt));
+    // A later policy edit in the worktree is a normal pending candidate needing human
+    // approval — NOT a silent re-inheritance and NOT a silent disarm.
+    writeFileSync(
+      join(wt, "reviewgate.config.ts"),
+      "export default { loop: { maxIterations: 9 } };\n",
+    );
+    const second = await resolveControlPlaneConfig(input(wt));
+    expect(second.change?.classification).toBe("approval-required");
+    expect(second.config.loop.maxIterations).toBe(5); // still reviewed under the LKG
+  });
+
+  test("materializing never writes to the main checkout", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const before = readFileSync(controlPlaneStatePath(main), "utf8");
+    const wt = await addWorktree(main);
+    await resolveControlPlaneConfig(input(wt));
+    expect(readFileSync(controlPlaneStatePath(main), "utf8")).toBe(before);
+  });
+
+  test("a NON-inheriting worktree still refuses to self-bless", async () => {
+    const main = await makeMainRepo(POLICY);
+    await armCheckout(main);
+    const wt = await addWorktree(main);
+    writeFileSync(
+      join(wt, "reviewgate.config.ts"),
+      "export default { loop: { maxIterations: 6 } };\n",
+    );
+    await expect(resolveControlPlaneConfig(input(wt))).rejects.toThrow(
+      /has not been approved here/,
+    );
+    expect(existsSync(controlPlaneStatePath(wt))).toBe(false);
   });
 });

@@ -335,6 +335,31 @@ export async function bootstrapControlPlane(
   }
 }
 
+// S3: persist an INHERITED approval as this worktree's own last-known-good. The state was
+// built from this checkout's verified snapshot, so writing it blesses exactly what was
+// compared against the main checkout's approval — a config that changed in the meantime is
+// not blessed, it simply becomes an ordinary pending candidate on the next read.
+//
+// Deliberately mirrors bootstrapControlPlane's mkdir -> lock -> re-check -> write -> clear
+// shape rather than reusing it: that function derives the state itself, and here the state
+// is already decided.
+async function adoptInheritedBaseline(
+  repoRoot: string,
+  state: ControlPlaneState,
+): Promise<ControlPlaneState> {
+  mkdirSync(reviewgateDir(repoRoot), { recursive: true });
+  const lock = await flock(controlPlaneLockPath(repoRoot));
+  try {
+    const existing = readState(repoRoot);
+    if (existing) return existing; // a concurrent gate won the race; its state wins
+    writeState(repoRoot, state);
+    clearPolicyArtifacts(repoRoot);
+    return state;
+  } finally {
+    await lock.release();
+  }
+}
+
 function managedHookExists(repoRoot: string): boolean {
   return existsSync(managedHookPath(repoRoot));
 }
@@ -449,18 +474,27 @@ export async function resolveControlPlaneConfig(
     // vector, so a defaults-only OR global-only tree may auto-baseline; only a
     // repo-committed project config gates first contact.
     if (managedHookExists(input.cwd)) throw new ControlPlaneBootstrapRequiredError();
-    if (source.hasProjectSource) {
+    // S3: a linked worktree whose EFFECTIVE config still equals the main checkout's
+    // approval runs under that approval — the human approved this policy for this repo
+    // once, and the shared gitdir is local-filesystem proof of the same repo. Checked
+    // AFTER the managed-hook throw (a deleted approval is never rescued) and BEFORE the
+    // first-contact refusal, which it is a narrow, verified exception to.
+    const inherited = await inheritedWorktreeApproval(input);
+    if (inherited) {
+      approved = await adoptInheritedBaseline(input.cwd, inherited);
+    } else if (source.hasProjectSource) {
       throw new ControlPlaneBootstrapRequiredError(
         "This checkout ships a committed Reviewgate policy (reviewgate.config.ts) that has not been approved here, and no last-known-good baseline exists. Reviewgate will NOT self-approve a repo's config on first contact — a cloned repo's config could run arbitrary shell checks or exfiltrate secrets. Run `reviewgate init`, or `reviewgate config approve` from an interactive terminal, to arm this checkout.",
       );
+    } else {
+      // Reached only for a defaults-only OR global-only tree (project configs threw
+      // above). Label the global-only case distinctly so `control-plane.json` does
+      // not misrepresent a captured user global policy as pure built-in defaults.
+      approved = await bootstrapControlPlane({
+        ...input,
+        approvedVia: source.hasCustomSource ? "automatic-global" : "defaults",
+      });
     }
-    // Reached only for a defaults-only OR global-only tree (project configs threw
-    // above). Label the global-only case distinctly so `control-plane.json` does
-    // not misrepresent a captured user global policy as pure built-in defaults.
-    approved = await bootstrapControlPlane({
-      ...input,
-      approvedVia: source.hasCustomSource ? "automatic-global" : "defaults",
-    });
   }
 
   const now = new Date().toISOString();
