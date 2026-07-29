@@ -4,15 +4,7 @@
 // .reviewgate/ and copies it out — it must never write there, or the rig would be measuring
 // its own interference.
 import { createHash } from "node:crypto";
-import {
-  closeSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { gateLockPath, reviewgateDir } from "../utils/paths.ts";
@@ -148,7 +140,11 @@ async function copyWithRetry(src: string, dest: string, turnIndex: number): Prom
  */
 function startReportArchiver(repoRoot: string, destDir: string): () => void {
   mkdirSync(destDir, { recursive: true });
-  let seq = 0;
+  // One counter PER FILE. A shared counter that only advanced on pending.json meant a
+  // pending.md version arriving between two json rewrites was written under the previous
+  // number and clobbered its predecessor — silently losing exactly the intermediate report
+  // this archiver exists to keep (gate finding F-001).
+  const seq = new Map<string, number>();
   const seen = new Set<string>();
   const capture = () => {
     for (const name of ["pending.json", "pending.md"]) {
@@ -159,8 +155,12 @@ function startReportArchiver(repoRoot: string, destDir: string): () => void {
         const key = `${name}:${createHash("sha256").update(body).digest("hex")}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        if (name === "pending.json") seq += 1;
-        writeFileSync(join(destDir, `${seq}-${name}`), body);
+        const n = (seq.get(name) ?? 0) + 1;
+        seq.set(name, n);
+        // Atomic, like every other write in this driver: a process killed mid-write would
+        // otherwise leave a torn archived report, and a torn report reads downstream as a
+        // MISSED defect rather than as an error.
+        writeFileAtomic(join(destDir, `${n}-${name}`), body);
       } catch {
         /* mid-rename read → try again on the next tick */
       }

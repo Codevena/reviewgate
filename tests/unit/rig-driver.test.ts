@@ -243,11 +243,26 @@ describe("rig driver", () => {
     expect(written).not.toContain("pwned\n"); // the substitution must not have run
   });
 
+  // Writes the way the real gate does — temp file then mv — and takes every path as a
+  // POSITIONAL argument. Both matter: the archiver's contract assumes atomic writes, so a
+  // helper using `>` (truncate-then-write) could be caught mid-write and archive an empty
+  // report; and interpolating a path into a bash string via JSON.stringify is the exact
+  // anti-pattern this file documents two helpers above (gate findings F-003/F-004).
+  const gateLikeWriter = (steps: Array<{ file: string; body: string }>) => () => {
+    const script = steps
+      .map(
+        (_, i) =>
+          `printf '%s' "$${i * 2 + 2}" > "$${i * 2 + 1}.tmp"; mv "$${i * 2 + 1}.tmp" "$${i * 2 + 1}"; sleep 0.4`,
+      )
+      .join("; ");
+    return ["bash", "-c", script, "fake-agent", ...steps.flatMap((s2) => [s2.file, s2.body])];
+  };
+
   test("archives an intermediate pending.json that the turn later overwrites", async () => {
-    // The whole point of the archiver. The gate rewrites pending.json every iteration, so after
-    // a turn ends green it holds a PASS report with zero findings — and the iteration that
-    // actually caught the seeded defect is gone. Recall would then read as "missed" for a
-    // defect the gate did catch. The audit log cannot substitute: its signatures are
+    // The whole point of the archiver. The gate rewrites pending.json every iteration, so
+    // after a turn ends green it holds a PASS report with zero findings — and the iteration
+    // that actually caught the seeded defect is gone. Recall would then read as "missed"
+    // for a defect the gate did catch. The audit log cannot substitute: its signatures are
     // SHA-256 of [file, ruleId, ...], so no rule id or finding text survives in them.
     const { root, scriptPath } = sandbox(1);
     const pending = join(root, ".reviewgate", "pending.json");
@@ -255,13 +270,10 @@ describe("rig driver", () => {
       scriptPath,
       outDir: join(root, "out"),
       repoRoot: root,
-      // Fake agent that mimics a FAIL iteration followed by a PASS one, overwriting the
-      // report exactly as the real gate does.
-      agentCmd: () => [
-        "bash",
-        "-c",
-        `printf '%s' '{"verdict":"FAIL","findings":[{"rule_id":"path-traversal"}]}' > ${JSON.stringify(pending)}; sleep 0.7; printf '%s' '{"verdict":"PASS","findings":[]}' > ${JSON.stringify(pending)}`,
-      ],
+      agentCmd: gateLikeWriter([
+        { file: pending, body: '{"verdict":"FAIL","findings":[{"rule_id":"path-traversal"}]}' },
+        { file: pending, body: '{"verdict":"PASS","findings":[]}' },
+      ]),
       maxTurns: 1,
     });
     const reportsDir = join(manifest.turns[0]?.snapshotDir ?? "", "reports");
@@ -271,6 +283,32 @@ describe("rig driver", () => {
     // The FAIL report must be recoverable even though the live file now says PASS.
     expect(archived.some((c) => c.includes("path-traversal"))).toBe(true);
     expect(readFileSync(pending, "utf8")).toContain("PASS");
+    // And nothing torn or empty may have been archived along the way.
+    expect(archived.every((c) => c.trim().length > 0)).toBe(true);
+  }, 20_000);
+
+  test("keeps every pending.md version, even when pending.json does not change", async () => {
+    // Guards the clobber: with a single shared counter that only advanced on pending.json,
+    // a second pending.md landing between two json rewrites was written under the previous
+    // number and silently replaced its predecessor (gate finding F-001).
+    const { root, scriptPath } = sandbox(1);
+    const md = join(root, ".reviewgate", "pending.md");
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: gateLikeWriter([
+        { file: md, body: "# iteration 1 report" },
+        { file: md, body: "# iteration 2 report" },
+      ]),
+      maxTurns: 1,
+    });
+    const reportsDir = join(manifest.turns[0]?.snapshotDir ?? "", "reports");
+    const mds = readdirSync(reportsDir)
+      .filter((f) => f.endsWith("pending.md"))
+      .map((f) => readFileSync(join(reportsDir, f), "utf8"));
+    expect(mds.some((c) => c.includes("iteration 1"))).toBe(true);
+    expect(mds.some((c) => c.includes("iteration 2"))).toBe(true);
   }, 20_000);
 
   test("records the agent's exit code instead of swallowing a failed turn", async () => {
