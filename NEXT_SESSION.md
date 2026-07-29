@@ -4,7 +4,7 @@ _Last updated: 2026-07-29 (nach S3 + S4). Supersedes all earlier content in this
 
 ## One-line state
 **The whole arming/consent chain S1–S4 is implemented, pushed and CI-green**
-(`origin/master` = `5c9dbbe`, plus one unpushed lore commit `f1b7969`). `reviewgate init
+(everything up to `origin/master` = `5c9dbbe`; the documentation commits AFTER it — lore + this handoff — are local only, check with `git log --oneline origin/master..master`). `reviewgate init
 --user` exists, so the gate can finally fire in repos nobody initialised — which is what
 made S1–S3 worth building. **Nothing of this is released:** npm `latest` is still
 `0.1.0-alpha.14`, which predates S2.
@@ -34,8 +34,8 @@ Verified, not asserted:
 ## Current metrics
 | | |
 |---|---|
-| HEAD | `f1b7969`; `origin/master` = `5c9dbbe` (1 unpushed lore commit) |
-| Suite | 3022 pass / 12 skip / **0 fail** |
+| HEAD | ahead of `origin/master` = `5c9dbbe` by the doc commits listed in `git log --oneline origin/master..master`; working tree clean |
+| Suite | 3022 pass / 12 skip / **0 fail** — last full run at `5c9dbbe`; only markdown changed after it, tsc + biome re-verified since |
 | Static | tsc clean · biome clean |
 | CI | green (run 30476654931) |
 | npm | `0.1.0-alpha.14` — **S2, S3 and S4 are all unreleased** |
