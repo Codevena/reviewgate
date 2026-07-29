@@ -336,9 +336,19 @@ afterwards — a later policy edit becomes a normal approval-required candidate.
 Inheritance is refused, and the unarmed notice returned instead, when the main checkout is
 not armed, when the effective config drifts (including an edit to the *global* config), when
 the worktree's config cannot be parsed, when the parent repo is bare, and when a directory
-merely points a hand-written `.git` file at an armed repo. It never makes hooks fire in a
-worktree — without hooks nothing runs there at all, which is still `reviewgate init` inside
-the worktree.
+merely points a hand-written `.git` file at an armed repo. Inheritance alone does not make
+hooks fire in a worktree; what makes them exist there is `reviewgate init` inside it, or
+user-scoped hooks.
+
+### User-scoped hooks (S4)
+
+`reviewgate init --user` installs Claude Code hooks in `~/.claude/settings.json`, so the
+gate can fire in repos nobody initialised. That does not make those repos gated: an unarmed
+checkout stays a silent no-op with zero writes, exactly as above. Where repo-local
+Reviewgate hooks already exist the user-scoped shim stands down, so only one gate runs.
+When the binary cannot be resolved, the user-scoped Stop hook allows the turn and warns on
+stderr rather than blocking — the opposite of the repo-local hook, because a globally
+installed hook must not block every turn in every repo over a missing binary.
 
 ## Rules
 

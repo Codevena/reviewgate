@@ -62,6 +62,8 @@ Reviewgate when it tries to finish a changed turn.
 reviewgate init --host both          # Claude Code + Codex
 reviewgate init --host codex         # Codex only
 reviewgate init --quick --host both  # scripted recommended preset
+reviewgate init --user               # Claude Code hooks for EVERY repo (see below)
+reviewgate init --user --remove      # take them back out
 ```
 
 Host selection installs or refreshes the selected host definitions; it never
@@ -70,6 +72,31 @@ silently removes an already-installed other host or any foreign hook.
 Host hooks and shims are installed per checkout. Do not copy the generated Codex
 hook between clones or worktrees; run `reviewgate init` in each checkout so its
 fallback root and hash trust match that checkout.
+
+### User-scoped hooks (`init --user`, Claude Code only)
+
+`reviewgate init --user` installs the Claude Code hooks into `~/.claude/settings.json`
+and shims into `~/.reviewgate/bin/`, so the gate exists in repos where nobody ran
+`init`. It writes nothing into any repository — it does not create `.reviewgate/`
+and it does not arm anything.
+
+What happens where:
+
+- **A repo with its own Reviewgate hooks:** the user-scoped shim stands down. Both
+  scopes fire for the same event (Claude Code merges hook entries rather than
+  replacing them), so this avoids two gates contending for the same lock and
+  burning double reviewer quota.
+- **An armed repo without repo-local hooks** (for example a linked worktree that
+  inherits the main checkout's approval): the gate runs normally.
+- **An unarmed repo:** nothing happens and nothing is written — loudly when the
+  repo ships a `reviewgate.config.ts` nobody approved there, silently otherwise.
+
+If the binary cannot be resolved, the user-scoped Stop hook **allows the turn** and
+warns on stderr, unlike the repo-local hook which fails closed. A globally installed
+hook that blocked every turn everywhere because of a missing binary would be
+unusable; the trade-off is deliberate, and `reviewgate doctor` reports the broken
+install. Uninstall with `reviewgate init --user --remove`, which removes only
+Reviewgate's own entries and leaves foreign hooks and other settings untouched.
 
 Codex project hooks are hash-trusted by Codex itself. After installation, start or
 restart Codex inside the trusted project, open `/hooks`, inspect the three
