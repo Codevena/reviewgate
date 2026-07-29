@@ -400,9 +400,17 @@ Expected: FAIL — `src/hosts/user-hooks.ts` does not exist.
 
 ```ts
 // src/hosts/user-hooks.ts
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { resolveTemplateDir, writeShims } from "../cli/commands/init.ts";
+import { writeShims } from "../cli/commands/init.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { managedHookPath } from "../utils/paths.ts";
 import {
@@ -434,6 +442,8 @@ export function userClaudeSettingsPath(home: string): string {
 // Mirrors the repo-local events and timeouts (src/hosts/hooks.ts). The Stop timeout
 // must satisfy the fail-open invariant: 120s setup + loop.runTimeoutMs + 30s settle
 // < this value (budgets.ts). Task 4 makes the loop clamp itself to it.
+// Commands come from userCommand(), the same helper the locator matches on, so the
+// emitted string and the expected string can never drift (plan-gate round 3, CRITICAL #1).
 function userHooks(home: string): HookEvents {
   return {
     PostToolUse: [
@@ -442,7 +452,7 @@ function userHooks(home: string): HookEvents {
         hooks: [
           {
             type: "command",
-            command: `"${userShimPath(home, "trigger")}"`,
+            command: userCommand(home, "trigger"),
             timeout: 5,
             async: true,
             statusMessage: "Reviewgate: analyzing…",
@@ -453,12 +463,12 @@ function userHooks(home: string): HookEvents {
     Stop: [
       {
         matcher: "*",
-        hooks: [{ type: "command", command: `"${userShimPath(home, "gate")}"`, timeout: 2400 }],
+        hooks: [{ type: "command", command: userCommand(home, "gate"), timeout: 2400 }],
       },
     ],
     SessionStart: [
       {
-        hooks: [{ type: "command", command: `"${userShimPath(home, "reset")}"`, timeout: 30 }],
+        hooks: [{ type: "command", command: userCommand(home, "reset"), timeout: 30 }],
       },
     ],
   };
@@ -498,23 +508,47 @@ export function removeUserHooks(home: string): void {
 // EXECUTABLE — `existsSync` is not enough, a non-executable shim cannot fire. Exposed to
 // the shim via `reviewgate hooks repo-gate-active` and reused by the Stop-timeout
 // selection, so the two can never drift apart.
-function stopCommandsFor(settingsPath: string): string[] {
+export type HookEventName = "Stop" | "PostToolUse" | "SessionStart";
+
+// The exact commands each installer emits. Single source of truth: the installer writes
+// these and the locator matches them, so the two cannot drift into a loose text rule.
+export const REPO_CLAUDE_COMMANDS: Record<HookEventName, string> = {
+  Stop: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
+  PostToolUse: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger"',
+  SessionStart: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset"',
+};
+
+const EVENT_SHIM: Record<HookEventName, UserShim> = {
+  Stop: "gate",
+  PostToolUse: "trigger",
+  SessionStart: "reset",
+};
+
+export function userCommand(home: string, shim: UserShim): string {
+  return `"${userShimPath(home, shim)}"`;
+}
+
+function hookEntriesFor(
+  settingsPath: string,
+  event: HookEventName,
+): Array<{ command: string; timeout?: number }> {
   if (!existsSync(settingsPath)) return [];
   try {
     const parsed = JSON.parse(readFileSync(settingsPath, "utf8")) as {
-      hooks?: { Stop?: Array<{ hooks?: Array<{ command?: string }> }> };
+      hooks?: Record<string, Array<{ hooks?: Array<{ command?: string; timeout?: number }> }>>;
     };
-    return (parsed.hooks?.Stop ?? [])
+    return (parsed.hooks?.[event] ?? [])
       .flatMap((g) => g.hooks ?? [])
-      .map((h) => h.command ?? "")
-      .filter(Boolean);
+      .filter((h): h is { command: string; timeout?: number } => typeof h.command === "string");
   } catch {
     return []; // unreadable settings must never be read as evidence
   }
 }
 
-function isExecutable(path: string): boolean {
+// A regular file with the execute bit — a directory or a dangling entry cannot fire.
+function isRunnableFile(path: string): boolean {
   try {
+    if (!statSync(path).isFile()) return false;
     accessSync(path, constants.X_OK);
     return true;
   } catch {
@@ -522,13 +556,38 @@ function isExecutable(path: string): boolean {
   }
 }
 
+// Generic activity query behind `reviewgate hooks repo-hook-active --event <E>`
+// (plan-gate round 3, CRITICAL #3): Stop->gate, PostToolUse->trigger, SessionStart->reset.
+export function repoClaudeHookActive(repoRoot: string, event: HookEventName): boolean {
+  const shim = join(repoRoot, ".reviewgate", "bin", EVENT_SHIM[event]);
+  return (
+    isRunnableFile(shim) &&
+    findManagedHook(join(repoRoot, ".claude", "settings.json"), event, REPO_CLAUDE_COMMANDS[event]) !==
+      null
+  );
+}
+
+// EXACT command matching, not `includes` (plan-gate round 3, CRITICAL #1): a Stop command
+// such as `echo .reviewgate/bin/gate` contains the marker but is not our hook, and with a
+// substring rule a competing entry could also supply the wrong timeout. Both installers
+// therefore export the literal they emit, and the locator returns the MATCHING hook so
+// activity and timeout are always read off the same entry.
+export function findManagedHook(
+  settingsPath: string,
+  event: HookEventName,
+  command: string,
+): { command: string; timeout?: number } | null {
+  return hookEntriesFor(settingsPath, event).find((h) => h.command === command) ?? null;
+}
+
 export function repoClaudeStopGateActive(repoRoot: string): boolean {
-  const shim = managedHookPath(repoRoot);
-  if (!isExecutable(shim)) return false;
-  // The command may be written as "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate", so compare
-  // on the repo-relative suffix rather than the absolute path.
-  return stopCommandsFor(join(repoRoot, ".claude", "settings.json")).some((c) =>
-    c.includes(".reviewgate/bin/gate"),
+  return (
+    isRunnableFile(managedHookPath(repoRoot)) &&
+    findManagedHook(
+      join(repoRoot, ".claude", "settings.json"),
+      "Stop",
+      REPO_CLAUDE_COMMANDS.Stop,
+    ) !== null
   );
 }
 
@@ -537,9 +596,10 @@ export function repoClaudeStopGateActive(repoRoot: string): boolean {
 // executable. `userHooksInstalled` stays the broader install-health signal (any managed
 // entry in any event) and must NOT be used to answer "is this gated?".
 export function userStopGateInstalled(home: string): boolean {
-  const shim = userShimPath(home, "gate");
-  if (!isExecutable(shim)) return false;
-  return stopCommandsFor(userClaudeSettingsPath(home)).some((c) => c.includes(shim));
+  return (
+    isRunnableFile(userShimPath(home, "gate")) &&
+    findManagedHook(userClaudeSettingsPath(home), "Stop", userCommand(home, "gate")) !== null
+  );
 }
 
 export function userHooksInstalled(home: string): boolean {
@@ -822,21 +882,25 @@ if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
 fi
 
-# Stand down ONLY on positive evidence that a repo-local Claude Stop gate will fire. The
-# check is STRUCTURAL and lives in TypeScript (`hooks repo-gate-active` exits 0 only when
-# the Stop event names this repo's managed gate command AND that shim is executable) —
-# a bash grep over settings.json would also match a PostToolUse entry or an unrelated
-# value and stand down while nothing fires. Binary missing => skip the query and fall
-# through to the fail-open branch below; never stand down on a failed query.
-if [ -n "$RG_BIN" ] && "$RG_BIN" hooks repo-gate-active >/dev/null 2>&1; then
-  exit 0
-fi
 if [ -z "$RG_BIN" ]; then
   printf '%s\n' 'Reviewgate: user-scoped gate SKIPPED — the reviewgate binary is not on PATH and no baked path resolved, so this turn was NOT reviewed. Fix: reinstall the binary, run `reviewgate init --user`, then `reviewgate doctor`.' >&2
   exit 0
 fi
 
+# cd BEFORE the query: it answers for process.cwd(), so asking from a subdirectory would
+# miss a real repo-local hook and run a duplicate gate (plan-gate round 3, INFO #2).
 cd "$ROOT" || exit 0
+
+# Stand down ONLY on positive evidence that a repo-local Claude Stop gate will fire. The
+# check is STRUCTURAL and lives in TypeScript — `hooks repo-hook-active --event Stop`
+# exits 0 only when the Stop event carries this repo's EXACT managed gate command and that
+# shim is a runnable regular file. A bash text match would also accept a PostToolUse entry,
+# an unrelated value, or a command that merely mentions the path. A failed or unsupported
+# query is never evidence: it means RUN.
+if "$RG_BIN" hooks repo-hook-active --event Stop >/dev/null 2>&1; then
+  exit 0
+fi
+
 "$RG_BIN" gate --hook stop
 rc=$?
 if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
@@ -861,9 +925,10 @@ if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
   RG_BIN="$(command -v reviewgate 2>/dev/null || true)"
 fi
 [ -n "$RG_BIN" ] || exit 0
-# Same structural rule as the gate shim, scoped to THIS event's command.
-"$RG_BIN" hooks repo-hook-active --event PostToolUse >/dev/null 2>&1 && exit 0
 cd "$ROOT" || exit 0
+# Same structural rule as the gate shim, scoped to THIS event (user-reset.sh uses
+# --event SessionStart).
+"$RG_BIN" hooks repo-hook-active --event PostToolUse >/dev/null 2>&1 && exit 0
 "$RG_BIN" gate --hook trigger
 exit 0
 ```
@@ -909,7 +974,7 @@ git commit -m "feat(hooks): user-scoped shims — stand down for repo-local, fai
 ```ts
 // tests/unit/stop-hook-timeout-user-fallback.test.ts
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installedGateStopTimeoutS } from "../../src/utils/stop-hook-timeout.ts";
@@ -930,13 +995,18 @@ function writeSettings(root: string, command: string, timeout: number): void {
 // has to exist for the repo arm to be eligible at all.
 function addRepoShim(repo: string): void {
   mkdirSync(join(repo, ".reviewgate", "bin"), { recursive: true });
-  writeFileSync(join(repo, ".reviewgate", "bin", "gate"), "#!/bin/sh\n");
+  const shim = join(repo, ".reviewgate", "bin", "gate");
+  writeFileSync(shim, "#!/bin/sh\n");
+  // The predicate requires X_OK on a regular file — an un-chmod'ed fixture would make the
+  // positive case fail for the wrong reason (plan-gate round 3, CRITICAL #2).
+  chmodSync(shim, 0o755);
 }
 
 describe("installedGateStopTimeoutS user-scope fallback", () => {
   test("repo-local hook wins when it will actually fire", () => {
     const repo = dir("rg-tmo-repo-");
     const home = dir("rg-tmo-home-");
+    // Exactly the command the installer emits — REPO_CLAUDE_COMMANDS.Stop.
     writeSettings(repo, '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"', 2400);
     addRepoShim(repo);
     writeSettings(home, `"${join(home, ".reviewgate", "bin", "gate")}"`, 900);
@@ -991,6 +1061,7 @@ Rewrite `src/utils/stop-hook-timeout.ts`, keeping the existing doc comment and e
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { repoClaudeStopGateActive } from "../hosts/user-hooks.ts";
 
 function readGateStopTimeout(settingsPath: string): number | null {
   if (!existsSync(settingsPath)) return null;
@@ -1071,26 +1142,44 @@ git commit -m "fix(loop): clamp to the user-scoped Stop-hook timeout too (S4)"
 resolutions — reuse `init`'s existing ones, do not re-implement them (plan-gate round 2,
 CRITICAL #5):
 
+`runInit` returns an OBJECT that `src/cli/index.ts` and `src/cli/commands/setup.ts`
+dereference immediately, so user mode must NOT return an exit code from it and must not
+widen its type (plan-gate round 3, CRITICAL #4). Put user mode in its own exported
+function and route to it from the CLI *before* `runInit` is called:
+
 ```ts
-if (input.user) {
+// src/cli/commands/init.ts
+export function runInitUser(input: { home: string; remove?: boolean }): number {
   if (input.remove) {
-    removeUserHooks(homedir());
+    removeUserHooks(input.home);
     return 0;
   }
   const { bakedBin, warning } = resolveBakedBin(process.execPath);
   if (warning) console.error(`reviewgate init: WARNING — ${warning}`);
-  installUserHooks(homedir(), bakedBin, resolveTemplateDir());
+  installUserHooks(input.home, bakedBin, resolveTemplateDir());
   return 0;
 }
 ```
 
-Both branches return BEFORE any repo-local work, so nothing is written into the CWD.
+```ts
+// src/cli/index.ts — inside the init command handler, before any repo work
+if (args.user) return runInitUser({ home: homedir(), remove: args.remove });
+```
 
-**Also add the query the shims use** (`src/cli/index.ts`): a `hooks repo-gate-active`
-subcommand that exits 0 when `repoClaudeStopGateActive(process.cwd())` is true and 1
-otherwise, printing nothing. It is the only supported way for a shell shim to ask the
-question, and keeping it in TypeScript is what stops the predicate from being restated in
-bash. Give it a unit test for both exit codes.
+Nothing is written into the CWD on either branch, and `runInit`'s signature is untouched.
+Reject `--remove` without `--user` with a clear message.
+
+**Also add the query the shims use** (`src/cli/index.ts`): a `hooks repo-hook-active`
+subcommand taking `--event <Stop|PostToolUse|SessionStart>`. It exits **0** when
+`repoClaudeHookActive(process.cwd(), event)` is true, **1** otherwise, and **2** on a
+missing or unrecognised event — never printing anything. All three shims use it (Stop→gate,
+PostToolUse→trigger, SessionStart→reset), which is why it is generic rather than
+gate-only (plan-gate round 3, CRITICAL #3); the shims treat every non-zero code as "not
+active", so an unsupported event can only ever cause a RUN, never a stand-down.
+
+Test all of it directly: exit 0 for each fully wired event, exit 1 for a non-executable
+shim, for a foreign command in the right event, and for the right command in the wrong
+event; exit 2 for `--event Nope` and for a missing `--event`.
 
 - [ ] **Step 2: Add the doctor checks**
 
@@ -1221,3 +1310,32 @@ fixes. All verified; none rejected.
 
 **Round count: 2 of 3.** Per the plan-gate calibration rule, a third FAIL goes to Markus for
 an accept/fix decision per open finding rather than a fourth round.
+
+## Plan-Gate findings mapping — round 3 delta (codex, 2026-07-29)
+
+Verdict: **FAIL**, 4 CRITICAL + 2 INFO. Round limit reached; per the plan-gate calibration
+rule Markus decided per finding rather than a fourth round. His decision (2026-07-29):
+**fix all six, no fourth review round, then implement** — the remaining defects are all
+"the plan's own code does not compile or wire up", which `tsc`/lint/the suite catch in
+seconds, whereas each further prose round had been introducing new prose defects.
+
+A correction to the round-2 mapping first: it claimed C2 was fixed. It was not — the import
+landed in Task 2's module but Task 4's snippet never imported it, and `addRepoShim()` still
+left the fixture non-executable. The mapping over-claimed; this round's reviewer was right
+to flag it.
+
+| # | Finding | Fix | Task |
+|---|---------|-----|------|
+| C1 | The predicate still matched with `includes(...)`, so `echo .reviewgate/bin/gate` would count as evidence and a competing marker entry could supply the wrong timeout | One structural locator, `findManagedHook(settings, event, command)`, matching the **exact** literal each installer emits (`REPO_CLAUDE_COMMANDS`, `userCommand()`), returning the matching hook so activity and timeout are read off the same entry; runnability is now "regular file + X_OK" | Tasks 2, 4, 5 |
+| C2 | Task 4 called the shared predicate without importing it, and `addRepoShim()` left the fixture non-executable although the predicate requires `X_OK` | Import added; fixture `chmod`ed 0o755 | Task 4 |
+| C3 | The trigger shim emitted `hooks repo-hook-active --event PostToolUse` while only `repo-gate-active` was ever specified — an unsupported command, so the non-Stop shims could never stand down | The query is now generic and fully specified: `--event <Stop\|PostToolUse\|SessionStart>`, exit 0/1/2, event→shim mapping, and its own tests. Shims treat any non-zero as "not active", so an unsupported event can only cause a RUN | Tasks 3, 5 |
+| C4 | The `--user` branch returned `0` from `runInit`, whose object result is dereferenced by callers in `index.ts` and `setup.ts` | User mode moved into its own `runInitUser()`; `runInit`'s contract untouched; the CLI routes before calling it | Task 5 |
+| I1 | `user-hooks.ts` imported `resolveTemplateDir` without using it | Import removed (`tplDir` is the caller's job) | Task 2 |
+| I2 | The shims queried the predicate BEFORE `cd "$ROOT"`, while the query answers for `process.cwd()` — from a subdirectory it would miss a real repo-local hook and run a duplicate gate | Order fixed in all three shims: resolve binary → fail open → `cd "$ROOT"` → query → run | Task 3 |
+
+**Plan-gate summary:** round 1 FAIL (5 CRITICAL) → round 2 FAIL (5 CRITICAL, three of them
+defects in round 1's own fixes) → round 3 FAIL (4 CRITICAL, one of them a defect in round
+2's fix and one an over-claim in the round-2 mapping) → human decision. Two shipped-defect
+classes were caught that no later gate would have: template resolution that works only
+under `bun run dev`, and a stand-down that silences the hook in repos where nothing else
+fires. Implementation may begin; `tsc`, lint and the suite are the next gate.
