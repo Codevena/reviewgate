@@ -1,7 +1,7 @@
 ---
 schema: reviewgate.lore.v1
 id: worktree-gating
-status: draft
+status: canon
 anchors:
   - "src/config/control-plane.ts"
   - "src/hosts/user-hooks.ts"

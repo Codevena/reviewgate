@@ -1,11 +1,11 @@
 ---
 schema: reviewgate.lore.v1
 id: codex-sandbox-readonly-by-design
-status: draft
+status: canon
 anchors:
   - "src/providers/codex.ts"
-verified_at: 2026-07-10
-verified_tree: "abc8094a6889d28f0cbd335923a1b9979bc2ada16d1b11f8afca44925272d2a1"
+verified_at: 2026-07-29
+verified_tree: "bc890a0c8c85cd90a3bd4951f652377facd5a87472557396dd1a6b7eb1ebef01"
 tags: []
 ---
 Why the codex reviewer adapter pins codex to a READ-ONLY sandbox even though the
