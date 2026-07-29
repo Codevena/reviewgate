@@ -42,12 +42,20 @@ describe("worktreeInfo (P8)", () => {
 });
 
 describe("worktreeGatedCheck (P8)", () => {
+  // ALWAYS pass an empty temp home. worktreeGatedCheck's `home` defaults to homedir(),
+  // and its S4 branch reports a hook-less worktree as GATED when user-scoped hooks live
+  // in ~/.claude/settings.json. Reading the developer's real home made the no-hooks case
+  // depend on whether that machine had run `reviewgate init --user` — so dogfooding the
+  // very feature under test turned this suite red (2026-07-29). A temp home keeps the
+  // repo-local and user-scoped cases independently testable.
+  const emptyHome = () => tmp();
+
   it("returns null when not inside a linked worktree (nothing to check)", async () => {
-    expect(await worktreeGatedCheck(mainRepo())).toBeNull();
+    expect(await worktreeGatedCheck(mainRepo(), emptyHome())).toBeNull();
   });
 
   it("FAILs (exit-2 severity) inside a linked worktree with NO Reviewgate hooks", async () => {
-    const c = await worktreeGatedCheck(addWorktree(mainRepo()));
+    const c = await worktreeGatedCheck(addWorktree(mainRepo()), emptyHome());
     expect(c?.status).toBe("fail");
     expect(c?.detail.toLowerCase()).toContain("worktree");
     expect(c?.hint).toBeDefined();
@@ -56,6 +64,6 @@ describe("worktreeGatedCheck (P8)", () => {
   it("is OK when the worktree itself has Reviewgate hooks installed", async () => {
     const wt = addWorktree(mainRepo());
     await runInit({ repoRoot: wt, mode: "agent-loop" });
-    expect((await worktreeGatedCheck(wt))?.status).toBe("ok");
+    expect((await worktreeGatedCheck(wt, emptyHome()))?.status).toBe("ok");
   });
 });
