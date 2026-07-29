@@ -305,4 +305,32 @@ export class QuotaCooldownStore {
     }
     return out;
   }
+
+  /**
+   * Same set as `activeSnapshot`, but carrying WHERE the reset time came from.
+   * `activeSnapshot` returns the bare time, which makes a provider-reported reset and
+   * reviewgate's own backoff guess indistinguishable downstream — and a display built
+   * on that reads a correct week-long cap as if it might be our bug (2026-07-29: a real
+   * codex usage limit was investigated as a suspected misinference across two sessions,
+   * while `source:"parsed"` sat in the file the whole time). Added rather than widening
+   * `activeSnapshot`, whose bare-time shape has other callers.
+   */
+  activeSnapshotDetailed(
+    now: Date,
+  ): Record<string, { resetAt: string; source: "parsed" | "default"; reason?: CooldownReason }> {
+    const out: Record<
+      string,
+      { resetAt: string; source: "parsed" | "default"; reason?: CooldownReason }
+    > = {};
+    for (const [p, e] of Object.entries(this.read().providers)) {
+      if (Date.parse(e.reset_at) > now.getTime()) {
+        out[p] = {
+          resetAt: e.reset_at,
+          source: e.source,
+          ...(e.reason ? { reason: e.reason } : {}),
+        };
+      }
+    }
+    return out;
+  }
 }

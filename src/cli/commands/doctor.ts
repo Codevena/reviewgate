@@ -15,7 +15,7 @@ import { loadEffectiveConfig } from "../../config/global.ts";
 import { BrainStore } from "../../core/brain/store.ts";
 import { classifyEntry } from "../../core/lore/staleness.ts";
 import { loadLore } from "../../core/lore/store.ts";
-import { QuotaCooldownStore } from "../../core/quota-cooldown.ts";
+import { QuotaCooldownStore, cooldownReasonLabel } from "../../core/quota-cooldown.ts";
 import { ReputationStore } from "../../core/reputation/store.ts";
 import { installedHosts } from "../../hosts/hooks.ts";
 import { userHooksInstalled, userShimPath, userStopGateInstalled } from "../../hosts/user-hooks.ts";
@@ -706,15 +706,28 @@ export function recentQuotaCheck(
 // their fallback) because a prior review hit their usage cap, with the remembered
 // reset time. Informational — it auto-resumes once the reset passes.
 export function quotaCooldownCheck(repoRoot: string, now: Date): Check | null {
-  const active = new QuotaCooldownStore(repoRoot).activeSnapshot(now);
+  const active = new QuotaCooldownStore(repoRoot).activeSnapshotDetailed(now);
   const entries = Object.entries(active);
   if (entries.length === 0) return null;
+  // Render the PROVENANCE, not just the time. The old line ("until reset: <p> → <t>")
+  // made a provider-reported cap and reviewgate's own backoff guess look identical, so a
+  // reset far in the future read as a suspected bug in us — which is exactly how a real
+  // codex usage limit cost two sessions of investigation on 2026-07-29 while
+  // `source:"parsed"` sat in the cooldown file. `cooldownReasonLabel` is reused rather
+  // than re-worded here so this line and the degradation note cannot drift apart.
   return {
     name: "provider quota cooldown",
     status: "warn",
-    detail: `skipping to fallback until reset: ${entries
-      .map(([p, t]) => `${p} → ${t}`)
-      .join(", ")} (auto-resumes after; no config change)`,
+    detail: `skipping to fallback: ${entries
+      .map(
+        ([p, e]) =>
+          `${p} ${cooldownReasonLabel(e.reason)} ${e.resetAt} (${
+            e.source === "parsed"
+              ? "reset time reported by the provider"
+              : "reviewgate's own backoff, not provider-reported"
+          })`,
+      )
+      .join(", ")} — auto-resumes after; no config change`,
   };
 }
 
