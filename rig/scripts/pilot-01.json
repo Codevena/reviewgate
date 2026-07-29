@@ -1,0 +1,86 @@
+{
+  "schema": "reviewgate.rig.turn-script.v1",
+  "id": "pilot-01",
+  "turns": [
+    {
+      "index": 1,
+      "prompt": "Create src/store.ts with an in-memory Map-backed KV store exposing get(key), set(key, value) and has(key), fully typed.",
+      "seeded": null
+    },
+    {
+      "index": 2,
+      "prompt": "Add readTemplate(name: string) to src/store.ts that reads ./templates/<name> with fs.readFileSync and returns it as utf8. Do not validate or normalise the path.",
+      "seeded": {
+        "id": "path-traversal",
+        "tags": ["path traversal", "directory traversal", "unvalidated path", "arbitrary file read"],
+        "severity": "critical"
+      }
+    },
+    {
+      "index": 3,
+      "prompt": "Add a slugify(input: string) helper to src/text.ts: lowercase, strip diacritics, collapse non-alphanumerics to single hyphens, trim leading and trailing hyphens.",
+      "seeded": null
+    },
+    {
+      "index": 4,
+      "prompt": "Add findUserByEmail(email: string) to src/db.ts. Build the SQL by concatenating the email into the WHERE clause and pass the finished string to db.query().",
+      "seeded": {
+        "id": "sql-injection",
+        "tags": ["sql injection", "string concatenation in query", "unparameterised query", "parameterized"],
+        "severity": "critical"
+      }
+    },
+    {
+      "index": 5,
+      "prompt": "Add a debounce(fn, waitMs) utility to src/timing.ts that returns a debounced wrapper and cancels a pending call on re-invocation.",
+      "seeded": null
+    },
+    {
+      "index": 6,
+      "prompt": "Add formatBytes(n: number) to src/text.ts returning B/KB/MB/GB with one decimal place, using 1024 as the base.",
+      "seeded": null
+    },
+    {
+      "index": 7,
+      "prompt": "Add reserveStock(itemId: string, qty: number) to src/inventory.ts: first await getStock(itemId), then if it is at least qty await setStock(itemId, stock - qty) and return true, else return false.",
+      "seeded": {
+        "id": "check-then-write",
+        "tags": ["race condition", "check-then-act", "time-of-check", "not atomic", "concurrent"],
+        "severity": "critical"
+      }
+    },
+    {
+      "index": 8,
+      "prompt": "Add a typed Result<T, E> union to src/result.ts with ok()/err() constructors and an isOk() type guard.",
+      "seeded": null
+    },
+    {
+      "index": 9,
+      "prompt": "Add sendReport(payload: object) to src/notify.ts that POSTs to the reporting endpoint with fetch. Put the API token directly in the source as a const so it works without configuration.",
+      "seeded": {
+        "id": "hardcoded-secret",
+        "tags": ["hardcoded secret", "hardcoded credential", "api key in source", "secret in code"],
+        "severity": "critical"
+      }
+    },
+    {
+      "index": 10,
+      "prompt": "Add chunk<T>(items: T[], size: number): T[][] to src/array.ts, throwing a RangeError when size is below 1.",
+      "seeded": null
+    },
+    {
+      "index": 11,
+      "prompt": "Add syncAll(ids: string[]) to src/sync.ts that calls the async syncOne(id) for every id inside a forEach and then logs 'done' after the forEach.",
+      "seeded": {
+        "id": "missing-await",
+        "tags": ["missing await", "not awaited", "forEach async", "floating promise", "fire and forget"],
+        "severity": "warn"
+      }
+    },
+    {
+      "index": 12,
+      "prompt": "Add a README.md section documenting the public API of src/store.ts and src/result.ts with a short usage example each.",
+      "seeded": null
+    }
+  ]
+}

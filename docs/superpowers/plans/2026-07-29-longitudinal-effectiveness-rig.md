@@ -294,7 +294,17 @@ git commit -F .commit-msg.txt   # backticks in -m are executed by the tool wrapp
 
 ---
 
-### Task 2: Turn-script schema + the 12-turn pilot script
+### Task 2: Turn-script schema + the 12-turn pilot script ✅ DONE 2026-07-29
+
+Shipped as `src/schemas/rig-turn-script.ts`, `src/rig/turn-script.ts`,
+`rig/scripts/pilot-01.json` and `tests/unit/rig-turn-script.test.ts` (7 tests). Two
+deviations from the steps below, both deliberate: the shipped-script test resolves its path
+from `import.meta.dir` rather than the CWD, and it gained two guards the plan did not
+specify — seeded turns must appear in **both halves** of the run (otherwise recall describes
+a cold run and the FP slope a warm one) and seeded defect **ids must be unique** (so a catch
+maps to exactly one turn). All five design constraints were mutation-checked against
+in-memory clones: adjacency, spread, id uniqueness, index gaps and empty tag lists each go
+red when violated.
 
 **Files:**
 - Create: `src/schemas/rig-turn-script.ts`
