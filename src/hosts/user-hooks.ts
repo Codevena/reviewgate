@@ -8,9 +8,8 @@ import {
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { writeShims } from "../cli/commands/init.ts";
+import { shSingleQuote, writeShims } from "../cli/commands/init.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
-import { managedHookPath } from "../utils/paths.ts";
 import {
   type HookDocument,
   type HookEvents,
@@ -54,8 +53,14 @@ const EVENT_SHIM: Record<HookEventName, UserShim> = {
   SessionStart: "reset",
 };
 
+// SINGLE quotes with POSIX escaping, not double quotes. The host evaluates hook command
+// strings through a shell — the repo-local entries rely on that to expand
+// ${CLAUDE_PROJECT_DIR} — so a double-quoted path still expands $(...), backticks and
+// ${var}. A home containing shell metacharacters would then execute at hook time. This is
+// the same escaping the shim writer already applies to the baked binary path; the two
+// paths must not differ in strictness.
 export function userCommand(home: string, shim: UserShim): string {
-  return `"${userShimPath(home, shim)}"`;
+  return `'${shSingleQuote(userShimPath(home, shim))}'`;
 }
 
 function hookEntriesFor(
@@ -114,10 +119,11 @@ export function repoClaudeHookActive(repoRoot: string, event: HookEventName): bo
   );
 }
 
+// Stop-event convenience wrapper. It delegates rather than re-checking the shim: the Stop
+// mapping resolves to exactly managedHookPath(repoRoot), so a second stat would only widen
+// the TOCTOU window without adding information.
 export function repoClaudeStopGateActive(repoRoot: string): boolean {
-  // managedHookPath is the same ".reviewgate/bin/gate" the Stop mapping resolves to;
-  // referencing it keeps this in step with the arming probe's notion of a managed hook.
-  return isRunnableFile(managedHookPath(repoRoot)) && repoClaudeHookActive(repoRoot, "Stop");
+  return repoClaudeHookActive(repoRoot, "Stop");
 }
 
 // Positive evidence that a USER-scoped Stop gate will run: the Stop command must target

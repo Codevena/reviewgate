@@ -135,6 +135,28 @@ describe("user-scoped hook install", () => {
 // The shim tests (Task 3) use a fake binary, so they prove the shim USES the query — not
 // that the query is right. These cases test the predicates directly. Every one of them is
 // a shape a plan-gate round showed a looser rule would get wrong.
+describe("hook-command quoting", () => {
+  test("a home containing shell metacharacters cannot expand at hook time", () => {
+    // The host evaluates hook command strings through a shell (the repo-local entries
+    // rely on that to expand ${CLAUDE_PROJECT_DIR}). A double-quoted path would still
+    // expand $(...) / backticks / ${var}; single quotes with POSIX escaping do not.
+    const evil = "/tmp/rg$(id)`whoami`${HOME}";
+    const cmd = userCommand(evil, "gate");
+    expect(cmd.startsWith("'")).toBe(true);
+    expect(cmd.endsWith("'")).toBe(true);
+    // Everything dangerous sits INSIDE single quotes, where the shell does not expand it.
+    expect(cmd).toBe(`'${evil}/.reviewgate/bin/gate'`);
+  });
+
+  test("an apostrophe in the home path is POSIX-escaped, not left to break the quoting", () => {
+    const cmd = userCommand("/Users/we're", "gate");
+    // ' -> '\'' — otherwise the quote would terminate the string and the remainder
+    // would be evaluated as shell code, the exact hazard shSingleQuote exists for.
+    expect(cmd).toBe(`'/Users/we'\\''re/.reviewgate/bin/gate'`);
+    expect(cmd.includes("'\\''")).toBe(true);
+  });
+});
+
 describe("repo-local activity predicate", () => {
   test("fully wired Claude Stop hook → active", () => {
     const r = repo();
