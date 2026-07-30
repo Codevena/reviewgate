@@ -71,3 +71,7 @@ cache/
 **/.reviewgate/brain/snapshots/
 # Antigravity CLI (agy) working-tree artifact
 .antigravitycli
+
+# Rig run outputs: snapshots + cassettes hold raw reviewer prompts/responses.
+# Review before committing anything from here (plan: Global Constraints).
+rig/results/
