@@ -91,8 +91,11 @@ export function fmtMetric(m: Metric): string {
   return `${m.value.toFixed(2)} (${m.num}/${m.den}, 95% CI ${m.ci_lo.toFixed(2)}–${m.ci_hi.toFixed(2)})`;
 }
 
-/** `0.33 ± 0.47 (min 0.00, max 1.00)`; `n/a` when no repeat had a defined value. */
-function fmtSpread(s: SpreadStat): string {
+/**
+ * `0.33 ± 0.47 (min 0.00, max 1.00)`; `n/a` when no repeat had a defined value.
+ * Exported for the rig reporter — same reason as {@link fmtMetric}.
+ */
+export function fmtSpread(s: SpreadStat): string {
   if (s.mean === null || s.stddev === null || s.min === null || s.max === null) return "n/a";
   return `${s.mean.toFixed(2)} ± ${s.stddev.toFixed(2)} (min ${s.min.toFixed(2)}, max ${s.max.toFixed(2)})`;
 }
