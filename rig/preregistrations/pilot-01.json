@@ -1,0 +1,96 @@
+{
+  "schema": "reviewgate.rig.preregistration.v1",
+  "registered_at": "2026-07-30T00:40:00.000Z",
+  "release": "0.1.0-alpha.15",
+  "attempt": "pilot-01",
+  "command": [
+    "reviewgate",
+    "rig",
+    "run",
+    "--script",
+    "rig/scripts/pilot-01.json",
+    "--out",
+    "rig/results/pilot-01"
+  ],
+  "roster": {
+    "reviewers": [
+      {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v3.2",
+        "persona": "security"
+      },
+      {
+        "provider": "ollama",
+        "model": "glm-5.2:cloud",
+        "persona": "correctness"
+      }
+    ],
+    "substitution_allowed": false
+  },
+  "turn_script": {
+    "path": "rig/scripts/pilot-01.json",
+    "id": "pilot-01",
+    "sha256": "f9d88cfce5a0dc4d2a91449f43c032684b730e5daaafb954c59b6d0fb7a127cf",
+    "turns": 12,
+    "seeded": 5,
+    "clean": 7
+  },
+  "metrics": {
+    "primary": [
+      "M2 fp-burden slope",
+      "M3 seeded-defect recall"
+    ],
+    "exploratory": [
+      "M1 iterations-to-allow-stop",
+      "M4 escape rate",
+      "M5 cost",
+      "M6 suppression provenance"
+    ],
+    "expectations": [
+      {
+        "metric": "M3 seeded-defect recall",
+        "direction": "higher-is-better",
+        "prediction": "At least 3 of 5 seeded defects (0.60) caught in their own turn. The five classes are lifted from the existing bench corpus precisely because they are already known-detectable there; a recall below 0.60 would therefore be a finding about the GATE (or about the panel), not about an unfair corpus. With n=5 the resolution is 0.20 per turn, so only a gross miss is interpretable."
+      },
+      {
+        "metric": "M2 fp-burden slope",
+        "direction": "lower-is-better",
+        "prediction": "Non-positive (<= 0) if the history-dependent layers help. HONEST PRE-COMMITMENT: this run will very likely NOT report a slope at all \u2014 it needs >= 5 turns with a defined FP burden, and a turn only has one if it produced findings AND the agent dispositioned them. 7 of 12 turns are clean and passing with zero findings is the DESIRED outcome, so n < 5 is the expected case, and `insufficient data (n=k)` is a successful run, not a failed one."
+      },
+      {
+        "metric": "M1 iterations-to-allow-stop",
+        "direction": "descriptive",
+        "prediction": "Median 1-2. Seeded turns are structurally >= 2 (block -> decision -> re-review) because the prompt DIRECTS the unsafe construction, so the agent rejects rather than fixes (spike finding S-6)."
+      },
+      {
+        "metric": "M4 escape rate",
+        "direction": "lower-is-better",
+        "prediction": "<= M3's miss rate, and never above it by construction: a defect missed in its own turn can still be flagged later."
+      },
+      {
+        "metric": "M5 cost",
+        "direction": "descriptive",
+        "prediction": "Under $1 of OpenRouter spend for the whole run. NOTE: cost_usd is our own estimate from a single blended rate we choose (estimateCostUsd multiplies (input+output) by one number), NOT a billed amount. The key's usage is 0 at registration time, so the true spend will be read from OpenRouter afterwards and compared against M5."
+      },
+      {
+        "metric": "M6 suppression provenance",
+        "direction": "descriptive",
+        "prediction": "Non-zero for at least one layer. If every layer is 0 the ablation has nothing to toggle and the counterfactual is vacuous for this run \u2014 which is itself a reportable outcome, not a reason to re-run until something appears."
+      }
+    ]
+  },
+  "hard_gates": {
+    "max_turns": 12,
+    "max_failed_turns": 3,
+    "cassette_required": true
+  },
+  "known_limitations": [
+    "n = 12 turns, 5 seeded. A single turn moves recall by 0.20. This pilot detects SIGNAL; it does not establish effect size.",
+    "ONE run. Any slope from it is a hypothesis, not a result; confirming it needs a second independent run.",
+    "The panel is deepseek-v3.2 (openrouter) + glm-5.2 (ollama), with codex absent because it is genuinely quota-exhausted until 2026-08-05T11:24:00.000Z. A different panel is a different system and the numbers do not transfer.",
+    "The ablation is an AGGREGATION-LAYER counterfactual over fixed reviewer output, not a behavioural A/B: it cannot re-drive the agent, because different verdicts would produce different diffs.",
+    "fp-ledger's ablation delta is an INTERVAL, not a point: the layer overwrites severity with INFO and the pre-suppression severity is persisted nowhere.",
+    "Agent turns are driven by `claude -p`, whose model and behaviour are outside this repo's control and are not pinned by this preregistration.",
+    "Anything that fails, times out or is skipped will be reported per-turn in the result's warnings[], including in the write-up."
+  ]
+}
