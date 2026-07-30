@@ -649,7 +649,58 @@ git commit -F .commit-msg.txt
 
 ---
 
-### Task 4: Harvester — snapshots → `reviewgate.rig.result.v1`
+### Task 4: Harvester — snapshots → `reviewgate.rig.result.v1` ✅ DONE 2026-07-30
+
+Shipped as `src/schemas/rig-result.ts`, `src/schemas/rig-manifest.ts`, `src/rig/harvest.ts`,
+`reviewgate rig harvest` and `tests/unit/rig-harvest.test.ts` (22 tests). Review: agy round 1
+**PASS** (1 INFO, zero CRITICAL/WARN) → deltas → round 2. Suite 3074/12/0.
+
+**The correction that mattered, and it was not in the plan: the per-turn snapshots are
+CUMULATIVE.** The driver copies the whole `.reviewgate/` after each turn and nothing wipes
+`audit/` (`handleReset` clears state.json, decisions/ and pending.*, never the audit tree), so
+turn 5's snapshot carries turns 1–5's events. Task 4's definitions ("M1 = number of
+`run.complete` events for that turn") read naively would have made iterations and cost climb
+monotonically with the turn index — a clean-looking curve that is pure snapshot-layout
+artifact. Every per-iteration fact is therefore a **multiset delta** against the previous
+snapshot, and a snapshot that LOST events (pruned day-partition, two runs mixed) throws rather
+than reporting unattributable numbers. Mutation-checked: with the delta removed the M2 slope
+does not merely drift, it **flips sign** (+0.43 where the true fit is negative) — i.e. the bug
+would have manufactured the exact opposite of this rig's headline claim.
+
+Five further deviations, all deliberate:
+
+- **`matchCase` could not be reused for M3.** Its `ExpectedLabel` requires `file` + `line`, and
+  a rig seeded defect has only `{id, tags, severity}` (the agent chooses where to write the
+  code, so the script cannot pin a line). Instead `matchesAnyTag` was **exported** from
+  `src/bench/matcher.ts` so the rig reuses bench's exact token semantics rather than growing a
+  second copy of them. Match text is `message + details`, identical to `bench/runner.ts` —
+  `rule_id` is excluded on purpose so a rig recall number stays comparable with a bench one.
+- **M5 reads `run.complete.cost_usd`, not `iteration_stats[].cost_usd`** as this task's metric
+  list said. The two contradicted each other (the metric table at the top of the plan already
+  said `run.complete`), and `iteration_stats` lives in `state.json`, which the clean-PASS
+  re-arm wipes — the very trap S-2 exists to warn about. **Tokens are not harvestable at all**
+  through the shared loader: `RunSummary` carries cost + duration, and token usage lives in
+  `gen_ai` events that `loadAuditWindow` discards. M5 is cost + duration; say so in the write-up.
+- **A turn with zero `run.complete` events is legitimate, so it warns instead of failing.**
+  Task 3 Step 2 called it "a harvest failure, not a quiet zero", but `run.complete` is emitted
+  only on the iteration path — "not on the early allow/escalation branches" — so a turn the
+  gate skips (the README-only turn 12 is the obvious candidate) has none by design. It records
+  `iterations: 0`, is EXCLUDED from the M1 and cost-per-turn samples, and gets a line in a new
+  machine-readable `warnings[]` — which is also where a non-zero agent exit code, an unreadable
+  report, a reviewed-turn-with-no-archived-report and a sub-2-provider panel land. Task 6's
+  honesty rule ("anything that failed, timed out, or was skipped gets its own line") needs a
+  carrier the reporter cannot forget to print.
+- **The manifest got a zod schema** (`src/schemas/rig-manifest.ts`) and `driver.ts` now infers
+  its `DriverRunManifest`/`DriverTurnRecord` from it. The harvester reads that file back off
+  disk and derives ground-truth attribution from it; a hand-written interface on the writing
+  side plus structural trust on the reading side is one artifact with two definitions.
+- **`lore` in M6 is counted as findings EMITTED, not demoted.** Lore never lowers a severity —
+  it adds synthetic verdict-neutral INFO findings. Calling its count a demote count would be a
+  category error that the reporter and the write-up would inherit.
+
+Recall's denominator is **seeded turns HARVESTED**, never the script's total, so a run capped
+at 3 turns is not scored against defects it never reached. That is the mutation the plan asked
+for (Step 5) and it goes red on `den` as specified.
 
 **Files:**
 - Create: `src/schemas/rig-result.ts`

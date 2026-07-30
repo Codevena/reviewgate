@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { gateLockPath, reviewgateDir } from "../utils/paths.ts";
 import { loadTurnScript } from "./turn-script.ts";
@@ -22,20 +23,11 @@ export interface DriverOpts {
   quiesceTimeoutMs?: number;
 }
 
-export interface DriverTurnRecord {
-  index: number;
-  snapshotDir: string;
-  agentExitCode: number;
-  wallMs: number;
-}
-
-export interface DriverRunManifest {
-  schema: "reviewgate.rig.manifest.v1";
-  runId: string;
-  scriptId: string;
-  outDir: string;
-  turns: DriverTurnRecord[];
-}
+// The manifest shape lives in `src/schemas/rig-manifest.ts` — the harvester parses this file
+// back off disk, and a hand-written interface here plus a zod schema there is two definitions
+// of one artifact waiting to drift. These aliases keep the driver's public names.
+export type DriverTurnRecord = RigManifestTurn;
+export type DriverRunManifest = RigManifest;
 
 const QUIESCE_TIMEOUT_MS = 2_000;
 const QUIESCE_POLL_MS = 50;

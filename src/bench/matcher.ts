@@ -121,6 +121,19 @@ function tagMatch(text: string, tag: string | string[]): { matched: boolean; ove
   return { matched, overlap };
 }
 
+/**
+ * Tag-only match, exported for consumers that have a label's phrasings but no file:line to
+ * anchor them to — the longitudinal rig, whose turn script labels a defect by `tags` alone
+ * (the agent chooses where to write the code, so the plan cannot pin a line).
+ *
+ * It reuses `tagMatch` on purpose rather than being reimplemented there: the token semantics
+ * ("every token of SOME alternative appears in the text") are what makes a rig recall number
+ * comparable with a bench recall number, and two copies of that rule would drift.
+ */
+export function matchesAnyTag(text: string, tags: string[]): boolean {
+  return tagMatch(text, tags).matched;
+}
+
 /** Two closed intervals intersect. */
 function intervalsIntersect(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
   return aStart <= bEnd && bStart <= aEnd;

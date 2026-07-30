@@ -1,6 +1,7 @@
 // src/cli/index.ts
 import { homedir } from "node:os";
 import { defineCommand, runMain } from "citty";
+import { fmtMetric } from "../bench/report.ts";
 import { controlPlaneStatus } from "../config/control-plane.ts";
 import type { AgentHostSelection } from "../hosts/hooks.ts";
 import { repoClaudeHookActive } from "../hosts/user-hooks.ts";
@@ -27,7 +28,7 @@ import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
-import { runRigRun } from "./commands/rig.ts";
+import { runRigHarvest, runRigRun } from "./commands/rig.ts";
 import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
@@ -940,6 +941,50 @@ const rig = defineCommand({
         });
         process.stdout.write(
           `rig run complete: ${manifest.turns.length} turn(s) → ${manifest.outDir}/manifest.json\n`,
+        );
+      },
+    }),
+    harvest: defineCommand({
+      meta: {
+        name: "harvest",
+        description:
+          "Fold a run's per-turn snapshots into one reviewgate.rig.result.v1 (M1–M6). Offline and free — no agent, no quota.",
+      },
+      args: {
+        manifest: { type: "string", required: true, description: "manifest.json from `rig run`" },
+        script: {
+          type: "string",
+          required: true,
+          description: "The SAME turn script the run used (it carries the ground truth)",
+        },
+        out: { type: "string", description: "Write the result JSON here (default: stdout only)" },
+      },
+      run({ args }) {
+        const result = runRigHarvest({
+          scriptPath: args.script as string,
+          manifestPath: args.manifest as string,
+          outPath: args.out as string | undefined,
+        });
+        const p = result.provenance;
+        const slope =
+          result.metrics.fpBurdenSlope.slope === null
+            ? `insufficient data (n=${result.metrics.fpBurdenSlope.n})`
+            : `${result.metrics.fpBurdenSlope.slope.toFixed(4)}/turn (n=${result.metrics.fpBurdenSlope.n})`;
+        // Every rate with its raw denominator — a rate printed bare is the failure mode this
+        // project already guards against in bench. Full rendering is Task 5's reporter.
+        process.stdout.write(
+          [
+            `rig harvest: ${p.turn_count.harvested}/${p.turn_count.script_total} turn(s) (${p.turn_count.seeded} seeded, ${p.turn_count.clean} clean)`,
+            `  recall      ${fmtMetric(result.metrics.recall)}`,
+            `  escape rate ${fmtMetric(result.metrics.escapeRate)}`,
+            `  M2 slope    ${slope}`,
+            `  iterations  median ${result.metrics.iterations.median ?? "n/a"} over ${result.metrics.iterations.spread.samples} reviewed turn(s)`,
+            `  cost        $${result.metrics.cost.totalUsd.toFixed(4)} total`,
+            args.out === undefined ? "" : `  → ${args.out}`,
+            "",
+          ]
+            .filter((l, i, all) => l.length > 0 || i === all.length - 1)
+            .join("\n"),
         );
       },
     }),

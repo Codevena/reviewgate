@@ -4,10 +4,13 @@
 // layer (fp-ledger, reputation, region memory, lore, agent-lessons) inert. The rig measures
 // what that structurally cannot: the gate as an interactive loop, over a run whose history
 // accumulates.
-import { constants, accessSync, existsSync } from "node:fs";
+import { constants, accessSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
 import { type DriverRunManifest, runDriver } from "../../rig/driver.ts";
+import { harvest } from "../../rig/harvest.ts";
 import { loadTurnScript } from "../../rig/turn-script.ts";
+import type { RigResult } from "../../schemas/rig-result.ts";
+import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { workingTreeDirtyFiles } from "../../utils/git.ts";
 
 export interface RigRunInput {
@@ -97,4 +100,31 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
     agentCmd: claudeAgentCmd,
     maxTurns: input.maxTurns ?? script.turns.length,
   });
+}
+
+export interface RigHarvestInput {
+  manifestPath: string;
+  scriptPath: string;
+  /** Where to write the result JSON. Omitted → the result is only returned/printed. */
+  outPath?: string | undefined;
+}
+
+/**
+ * Fold a completed (or partial) run's snapshots into one `reviewgate.rig.result.v1`.
+ *
+ * Pure and offline: it reads snapshots and writes one JSON file. No agent, no network, no
+ * quota — so a run's numbers can be re-derived as often as the definitions change, which is
+ * the point of harvesting from artifacts instead of scraping a live turn.
+ */
+export function runRigHarvest(input: RigHarvestInput): RigResult {
+  const result = harvest(input.manifestPath, input.scriptPath);
+  if (input.outPath !== undefined) {
+    mkdirSync(dirname(input.outPath), { recursive: true });
+    writeFileAtomic(input.outPath, `${JSON.stringify(result, null, 2)}\n`);
+  }
+  // Warnings go to stderr, unconditionally and BEFORE any summary line: a skipped turn, an
+  // unreadable report or a sub-2-provider panel changes how every number below must be read,
+  // and Task 6's honesty rules require it to be stated in the same breath, not looked up.
+  for (const w of result.warnings) process.stderr.write(`rig harvest: ⚠ ${w}\n`);
+  return result;
 }

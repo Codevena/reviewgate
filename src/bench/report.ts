@@ -77,8 +77,14 @@ export function isAuthoritative(result: BenchResult): { ok: boolean; reasons: st
   return { ok: reasons.length === 0, reasons };
 }
 
-/** `0.85 (17/20, 95% CI 0.64–0.95)`; `n/a (0/0)` for an undefined (den=0) rate. */
-function fmtMetric(m: Metric): string {
+/**
+ * `0.85 (17/20, 95% CI 0.64–0.95)`; `n/a (0/0)` for an undefined (den=0) rate.
+ *
+ * Exported so the rig prints its rates the same way: a rate without its raw denominator is
+ * the failure mode this project guards against, and two formatters is how one of them
+ * eventually forgets.
+ */
+export function fmtMetric(m: Metric): string {
   if (m.value === null || m.ci_lo === null || m.ci_hi === null) {
     return `n/a (${m.num}/${m.den})`;
   }
