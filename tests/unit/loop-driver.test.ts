@@ -553,6 +553,45 @@ describe("LoopDriver", () => {
     expect(decision.reason).toContain("No action needed");
   });
 
+  it("acknowledgePass does NOT re-announce on a hook-forced continuation (block-loop guard)", async () => {
+    // FlashBuddy, 2026-07-30: nine identical "🟢 GATE OPEN — ✅ PASS (iteration 1)" blocks in a
+    // row, then Claude Code's own cap force-ended the turn UNREVIEWED. The acknowledge-block
+    // asks for nothing and does not advance `iteration`, so nothing counted up, nothing
+    // escalated, and no state could ever break the cycle. Identical to the test above except
+    // for stopHookActive — the ONE bit that says "the agent already saw this in this chain".
+    const repo = fakeRepo();
+    const state = new StateStore(repo);
+    await state.initialise("01HXQACK3");
+    writeFileSync(
+      dirtyFlagPath(repo),
+      JSON.stringify({ diff_hash: "h", ts: new Date().toISOString() }),
+    );
+    const audit = new AuditLogger(auditDir(repo));
+    const config = { ...defaultConfig, loop: { ...defaultConfig.loop, acknowledgePass: true } };
+    const driver = new LoopDriver({
+      repoRoot: repo,
+      config,
+      state,
+      audit,
+      orchestrator: new Orchestrator({
+        repoRoot: repo,
+        config,
+        adapters: { codex: new CodexAdapter({ binPath: FAKE_CODEX }) },
+        sandboxMode: "off",
+        hostTier: "opus",
+        diff: "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-a\n+b\n",
+        reasonOnFailEnabled: true,
+      }),
+      stopHookActive: true,
+      freshHeadSha: async () => null,
+    });
+    const decision = await driver.run();
+    expect(decision.kind).toBe("allow_stop");
+    // The verdict is still reported — the guard suppresses the BLOCK, never the information.
+    expect(decision.reason).toContain("PASS");
+    expect(decision.reason).toContain("acknowledgement already shown");
+  });
+
   it("acknowledgePass=false (default) allows stop silently on a passing verdict", async () => {
     const repo = fakeRepo();
     const state = new StateStore(repo);

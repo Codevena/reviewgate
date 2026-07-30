@@ -2182,8 +2182,25 @@ export class LoopDriver {
       // the open-gate message, not masked behind a WARN-only count.
       const criticalCount = result.summary.counts.critical;
       const softCounts = `${criticalCount > 0 ? `${criticalCount} CRITICAL · ` : ""}${warnCount} WARN`;
+      // Loop guard (field report 2026-07-30, FlashBuddy). An acknowledge-block asks for
+      // NOTHING — its own message says "No action needed: simply end your turn again to pass
+      // through" — and, like the decisions-gate above, it does not advance `iteration`. So
+      // nothing counts up and nothing escalates: if the next Stop re-reviews for any reason
+      // (the tree moved, a cache-served preliminary pass, a concurrent writer), it announces
+      // the same pass again, and again, until Claude Code's ~9-block cap force-ends the turn
+      // UNREVIEWED. Observed exactly that: nine identical "🟢 GATE OPEN — ✅ PASS (iteration 1)"
+      // blocks, then a forced override. `defaults.ts` already records this shape for the
+      // infra-outage path — "cap-0 bought no real security, only a punishing block-loop".
+      //
+      // On a hook-forced continuation the agent has ALREADY been shown this announcement in
+      // this same chain, so repeating it can only cost turns. Honouring stop_hook_active HERE
+      // cannot mask a finding: this branch only runs on a clean/non-blocking verdict, and the
+      // allow path still prints the verdict, so the human still sees it. The deliberate
+      // "do NOT short-circuit on stop_hook_active" rule protects the FAIL→fix→re-review loop,
+      // which must run in-chain — an acknowledgement has no such work to run.
+      const ackAlreadyShownThisChain = this.i.stopHookActive;
       decision =
-        this.i.config.loop.acknowledgePass || forceSoftAck
+        (this.i.config.loop.acknowledgePass || forceSoftAck) && !ackAlreadyShownThisChain
           ? {
               kind: "block",
               // A PASS/SOFT-PASS rendered as an acknowledge-block is still a clean
@@ -2198,9 +2215,18 @@ export class LoopDriver {
             }
           : {
               kind: "allow_stop",
-              reason: isSoft
-                ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}${preliminarySuffix}. Non-blocking — see .reviewgate/pending.md.`
-                : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}${preliminarySuffix}. Clear to finish.`,
+              // The already-shown note is not cosmetic: without it a user who configured
+              // acknowledgePass sees the gate silently stop asking and cannot tell whether
+              // the setting broke or the gate deliberately declined to repeat itself.
+              reason: `${
+                isSoft
+                  ? `🟡 Reviewgate · GATE OPEN — SOFT-PASS (iteration ${nextIter}): ${softCounts}${coverageSuffix}${preliminarySuffix}. Non-blocking — see .reviewgate/pending.md.`
+                  : `🟢 Reviewgate · GATE OPEN — ${result.verdict} (iteration ${nextIter})${coverageSuffix}${preliminarySuffix}. Clear to finish.`
+              }${
+                ackAlreadyShownThisChain && (this.i.config.loop.acknowledgePass || forceSoftAck)
+                  ? " (acknowledgement already shown earlier in this turn chain — not repeated, to avoid a block-loop that would end the turn unreviewed)"
+                  : ""
+              }`,
               policyReviewPassed: true,
             };
     } else if (result.verdict === "ERROR") {
