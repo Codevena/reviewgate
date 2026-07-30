@@ -400,3 +400,58 @@ describe("rig run repo guards", () => {
     ).rejects.toThrow(/uncommitted change/);
   });
 });
+
+describe("rig driver — unreviewed-turn guard", () => {
+  // Reproduces pilot-01 turn 1 (2026-07-30): the agent edits, PostToolUse leaves dirty.flag
+  // set, and the session ends WITHOUT its Stop hook firing, so no audit event is ever written.
+  // Exit code 0 throughout. Before this guard the driver recorded a healthy-looking turn and
+  // kept going; 11 more turns would have spent real quota producing zero measurements.
+  const editingAgentThatNeverTriggersTheGate = (root: string) => (prompt: string) => [
+    "bash",
+    "-c",
+    'printf "%s\\n" "$1" >> "$2/edit.txt"; printf "{}" > "$2/.reviewgate/dirty.flag"',
+    "fake-agent",
+    prompt,
+    root,
+  ];
+
+  test("flags a turn the gate never reviewed instead of recording it as healthy", async () => {
+    const { root, scriptPath } = sandbox(1);
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: editingAgentThatNeverTriggersTheGate(root),
+    });
+    expect(manifest.turns[0]?.agentExitCode).toBe(0); // exit 0 proves nothing
+    expect(manifest.turns[0]?.gateReviewed).toBe(false);
+  });
+
+  test("aborts the run after two consecutive unreviewed turns, keeping the partial manifest", async () => {
+    const { root, scriptPath } = sandbox(4);
+    await expect(
+      runDriver({
+        scriptPath,
+        outDir: join(root, "out"),
+        repoRoot: root,
+        agentCmd: editingAgentThatNeverTriggersTheGate(root),
+      }),
+    ).rejects.toThrow(/ABORTING after 2 consecutive turns/);
+    // The completed turns stay harvestable rather than the whole run being lost.
+    const written = JSON.parse(readFileSync(join(root, "out", "manifest.json"), "utf8"));
+    expect(written.turns).toHaveLength(2);
+  });
+
+  test("a turn that leaves NO dirty flag is not counted as unreviewed (a legitimate skip)", async () => {
+    const { root, scriptPath } = sandbox(3);
+    // Edits nothing and clears no flag: the gate had nothing to review, which is not a failure.
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: () => ["bash", "-c", "true"],
+    });
+    expect(manifest.turns).toHaveLength(3);
+    expect(manifest.turns.every((t) => t.gateReviewed === true)).toBe(true);
+  });
+});

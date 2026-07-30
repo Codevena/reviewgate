@@ -18,6 +18,13 @@ export const RigManifestTurnSchema = z
     agentExitCode: z.number().int(),
     wallMs: z.number().int().nonnegative(),
     /**
+     * Did the gate actually review this turn? `false` means the turn produced no measurement:
+     * the change was still flagged at turn end and no audit events were written. An exit code
+     * of 0 does NOT imply this — pilot-01 turn 1 exited 0 after 12 minutes with the Stop hook
+     * never having fired. Optional so manifests written before this field still parse.
+     */
+    gateReviewed: z.boolean().optional(),
+    /**
      * Byte range this turn appended to the recording cassette, `null` when the run was not
      * recording. INSURANCE, deliberately written before it has a consumer.
      *

@@ -16,7 +16,7 @@ import {
 import { join } from "node:path";
 import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
-import { gateLockPath, reviewgateDir } from "../utils/paths.ts";
+import { dirtyFlagPath, gateLockPath, reviewgateDir } from "../utils/paths.ts";
 import { loadTurnScript } from "./turn-script.ts";
 
 export interface DriverOpts {
@@ -48,6 +48,41 @@ function recordingCassettePath(): string | null {
   return path.length > 0 ? path : null;
 }
 
+/**
+ * Did the gate actually REVIEW this turn?
+ *
+ * Two independent signals, because neither alone is conclusive:
+ *   * new `.reviewgate/audit/**\/*.jsonl` content since the turn started — the gate writes
+ *     there on every iteration it runs; and
+ *   * `dirty.flag` still present — PostToolUse marks a change, and a completed review clears
+ *     it. A change still flagged at turn end means nothing reviewed it.
+ *
+ * A turn the gate deliberately SKIPPED (a docs-only diff, or no reviewable change) writes no
+ * audit events either, and that is legitimate — but it also leaves no dirty flag. So the
+ * failure signature is specifically "flag still set AND no new audit events": the gate had
+ * work to do and never did it.
+ */
+function gateReviewedTurn(repoRoot: string, auditBytesBefore: number): boolean {
+  if (auditBytes(repoRoot) > auditBytesBefore) return true;
+  // No new audit content. Legitimate only if nothing was left waiting to be reviewed.
+  return !existsSync(dirtyFlagPath(repoRoot));
+}
+
+/** Total bytes across the audit tree — grows monotonically, so a delta means "the gate ran". */
+function auditBytes(repoRoot: string): number {
+  const auditRoot = join(reviewgateDir(repoRoot), "audit");
+  if (!existsSync(auditRoot)) return 0;
+  let total = 0;
+  for (const rel of new Bun.Glob("**/*.jsonl").scanSync({ cwd: auditRoot })) {
+    try {
+      total += statSync(join(auditRoot, rel)).size;
+    } catch {
+      /* raced away mid-scan — it cannot have shrunk the total meaningfully */
+    }
+  }
+  return total;
+}
+
 /** Current cassette size in bytes; 0 before the first entry is written. */
 function cassetteSize(path: string | null): number | null {
   if (path === null) return null;
@@ -60,6 +95,19 @@ function cassetteSize(path: string | null): number | null {
     return 0;
   }
 }
+
+/**
+ * How many CONSECUTIVE turns may end without the gate reviewing them before the run aborts.
+ *
+ * Not a style preference — this is the guard whose absence cost a pilot. On 2026-07-30 turn 1
+ * of pilot-01 ended with `agentExitCode: 0` after 12 minutes having emitted a single newline:
+ * the agent had made its edits, but the `claude -p` session terminated without a normal turn
+ * end, so its Stop hook never fired and the gate never ran. The driver recorded a healthy-
+ * looking turn and moved on, and the remaining 11 turns would have burned ~2 hours of real
+ * quota producing an artifact with no audit events in it at all. Two consecutive unreviewed
+ * turns is not a flake, it is a broken run — stop and say so while the quota is still unspent.
+ */
+const MAX_CONSECUTIVE_UNREVIEWED_TURNS = 2;
 
 const QUIESCE_TIMEOUT_MS = 2_000;
 const QUIESCE_POLL_MS = 50;
@@ -243,12 +291,14 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     turns: [],
   };
   mkdirSync(opts.outDir, { recursive: true });
+  let consecutiveUnreviewed = 0;
 
   for (const turn of script.turns.slice(0, maxTurns)) {
     const startedAt = Date.now();
     // Sampled BEFORE the agent runs: everything the cassette grows by during this turn is
     // this turn's reviewer traffic, which is what makes the entries addressable per turn.
     const cassetteBefore = cassetteSize(manifest.cassettePath ?? null);
+    const auditBytesBefore = auditBytes(opts.repoRoot);
     // The turn directory is created BEFORE the agent runs, because the agent's transcript
     // is written into it live (see runAgent). The .reviewgate/ snapshot still happens after.
     const snapshotDir = join(opts.outDir, "turns", String(turn.index));
@@ -278,16 +328,34 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 
     const cassetteAfter = cassetteSize(manifest.cassettePath ?? null);
+    // Checked BEFORE the snapshot is declared good: an unreviewed turn is not a slow turn, it
+    // is a turn that produced no measurement, and the run must not quietly accumulate them.
+    const gateReviewed = gateReviewedTurn(opts.repoRoot, auditBytesBefore);
     manifest.turns.push({
       index: turn.index,
       snapshotDir,
       agentExitCode,
       wallMs: Date.now() - startedAt,
+      gateReviewed,
       cassetteBytes:
         cassetteBefore === null || cassetteAfter === null
           ? null
           : { before: cassetteBefore, after: cassetteAfter },
     });
+    if (gateReviewed) {
+      consecutiveUnreviewed = 0;
+    } else {
+      consecutiveUnreviewed++;
+      process.stderr.write(
+        `rig driver: ⚠ turn ${turn.index} ended with the change still flagged and NO new audit events — the gate did not review it (the agent's Stop hook never ran, or it terminated abnormally). This turn contributes no measurement.\n`,
+      );
+      if (consecutiveUnreviewed >= MAX_CONSECUTIVE_UNREVIEWED_TURNS) {
+        writeFileAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        throw new Error(
+          `rig driver: ABORTING after ${consecutiveUnreviewed} consecutive turns the gate never reviewed. Continuing would spend real agent quota on turns that produce no audit events and therefore no metrics. Common cause: another process was driving the same agent CLI concurrently. The manifest for the completed turns has been written and stays harvestable.`,
+        );
+      }
+    }
     // Written after EVERY turn: a run killed at turn 9 of 12 stays harvestable for the
     // turns it did complete, instead of losing the whole (expensive) run.
     writeFileAtomic(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
