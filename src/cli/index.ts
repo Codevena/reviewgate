@@ -6,6 +6,7 @@ import { controlPlaneStatus } from "../config/control-plane.ts";
 import type { AgentHostSelection } from "../hosts/hooks.ts";
 import { repoClaudeHookActive } from "../hosts/user-hooks.ts";
 import type { ProviderId } from "../providers/registry.ts";
+import { SUPPRESSION_LAYERS, type SuppressionLayer, isSuppressionLayer } from "../rig/ablate.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
 import { runBenchMatrix, runBenchReport, runBenchRun } from "./commands/bench.ts";
@@ -28,7 +29,7 @@ import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
-import { runRigHarvest, runRigRun } from "./commands/rig.ts";
+import { runRigAblate, runRigHarvest, runRigReport, runRigRun } from "./commands/rig.ts";
 import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
@@ -985,6 +986,64 @@ const rig = defineCommand({
           ]
             .filter((l, i, all) => l.length > 0 || i === all.length - 1)
             .join("\n"),
+        );
+      },
+    }),
+    report: defineCommand({
+      meta: {
+        name: "report",
+        description:
+          "Render a harvested rig result as a terminal table, or as a paste-ready markdown block with --markdown.",
+      },
+      args: {
+        result: {
+          type: "positional",
+          required: true,
+          description: "result.json from `rig harvest`",
+        },
+        markdown: { type: "boolean", description: "Emit the markdown block instead of the table" },
+      },
+      run({ args }) {
+        process.stdout.write(
+          runRigReport({
+            resultPath: args.result as string,
+            markdown: args.markdown === true,
+          }),
+        );
+      },
+    }),
+    ablate: defineCommand({
+      meta: {
+        name: "ablate",
+        description:
+          "Re-derive the metrics with one suppression layer switched off (default: all four, as a Δ matrix). Offline, free, and a pure function of the result — it never re-drives the agent.",
+      },
+      args: {
+        result: { type: "string", required: true, description: "result.json from `rig harvest`" },
+        script: {
+          type: "string",
+          required: true,
+          description: "The turn script the run used (its seeded tags are the ground truth)",
+        },
+        layer: {
+          type: "string",
+          description: `One of ${SUPPRESSION_LAYERS.join(" | ")} (default: all)`,
+        },
+      },
+      run({ args }) {
+        const layer = args.layer as string | undefined;
+        if (layer !== undefined && !isSuppressionLayer(layer)) {
+          console.error(
+            `reviewgate rig ablate: --layer must be one of ${SUPPRESSION_LAYERS.join(", ")}`,
+          );
+          process.exit(2);
+        }
+        process.stdout.write(
+          runRigAblate({
+            resultPath: args.result as string,
+            scriptPath: args.script as string,
+            ...(layer === undefined ? {} : { layer: layer as SuppressionLayer }),
+          }),
         );
       },
     }),

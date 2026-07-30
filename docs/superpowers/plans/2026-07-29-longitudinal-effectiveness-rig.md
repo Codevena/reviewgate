@@ -824,7 +824,52 @@ git commit -F .commit-msg.txt
 
 ---
 
-### Task 5: Reporter + re-aggregation counterfactual
+### Task 5: Reporter + re-aggregation counterfactual — PARTLY DONE 2026-07-30
+
+Shipped: `src/rig/report.ts` + `reviewgate rig report` (10 tests), `src/rig/ablate.ts` +
+`reviewgate rig ablate` (12 tests). **Step 4 (`rig replay` determinism check) is NOT done and
+cannot be** until Task 6 has produced a real cassette — its acceptance criterion is "run it
+twice against a recorded pilot and assert the two `RigResult`s match", and there is no pilot
+yet. Building the command without being able to run that check would ship an unverified
+self-check, which is worse than an absent one.
+
+**The ablation cannot be equally honest about all four layers, and the plan assumed it could.**
+Checked against `src/core/aggregator.ts`:
+
+| Layer | What it does to a finding | Recoverable from the artifact? |
+|---|---|---|
+| `critic` | demotes ONE STEP + stamps `critic_verdict:"likely_fp"` | **Exactly.** A finding at INFO with the marker was a blocking WARN. The severity LABEL is ambiguous in one case (a WARN carrying `demoted_from_critical` was either a CRITICAL or an unchanged WARN) but both are BLOCKING, and blocking status is what every metric here rests on. Findings the critic DROPPED are absent from the artifact and cost nothing — the drop path only fires on INFO, which was already non-blocking. |
+| `reputation` | same one-step demote + `reputation_demoted` | **Exactly**, same argument. |
+| `fp-ledger` | assigns `severity:"INFO"` **outright** | **No.** The pre-suppression severity is persisted nowhere, so the Δ is an INTERVAL. |
+| `lore` | never demotes; ADDS verdict-neutral INFO findings | Blocking Δ is zero **by construction**; the real cost is agent decision load, which is what gets reported. |
+
+So `ablate()` returns a `lower` and an `upper` counterfactual plus `exact`. They are identical
+where the layer is exactly recoverable and the matrix prints a point; where they differ it
+prints `+0…+1`. Collapsing an interval to its midpoint would invent precision the artifact does
+not contain. A finding carrying a SECOND suppressor is treated as unrecoverable and widens the
+interval, rather than re-modelling the aggregator's pass ordering and getting it subtly wrong.
+
+Three deliberate deviations:
+
+- **`RigResult` now carries the per-turn `findings`.** Task 4's locked interface had counts
+  only, which made Task 5's "pure function of `(result, layer)`, no `.reviewgate/` reads"
+  literally unimplementable. Carrying them also makes a published run re-analysable under a
+  definition that did not exist when it was harvested.
+- **`ablate()` takes the seeded tags as a third argument** (read from the turn script, which is
+  ground truth rather than run state) so recall can be recomputed: a finding restored to
+  blocking may newly catch its turn's defect, which is the entire point of asking what the
+  layer cost. It stays pure.
+- **Iterations, cost and FP burden are NOT recomputed** under ablation, and every ablated
+  result says so in `warnings[]`. Changing a suppression layer would really change verdicts →
+  iteration counts → cost, but no recording of one run can say what an agent would have done in
+  a run that never happened. Rewriting them would fabricate exactly that.
+
+**The driver now records per-turn cassette byte offsets** (`cassetteBytes` in the manifest;
+`statSync` per turn, no behaviour change). Nothing consumes them yet. They are insurance,
+decided with Markus on 2026-07-30: the cassette holds the RAW pre-aggregation reviewer
+findings, so a future re-aggregation could turn fp-ledger's interval into a point estimate —
+but only if entries can be addressed per turn. Recording them is free **only until the pilot
+runs**; afterwards it costs a re-run at real quota.
 
 **Files:**
 - Create: `src/rig/report.ts`

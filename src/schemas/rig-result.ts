@@ -12,6 +12,7 @@
 //     claim. 7 of the 12 pilot turns are clean, so this is the common case.
 import { z } from "zod";
 import { MetricSchema, SpreadStatSchema } from "./bench-result.ts";
+import { FindingSchema } from "./finding.ts";
 
 /**
  * M6 — which suppression layer removed or demoted how many findings.
@@ -63,6 +64,19 @@ export const RigTurnRecordSchema = z
     agentExitCode: z.number().int(),
     wallMs: z.number().int().nonnegative(),
     suppressed: RigSuppressionCountsSchema,
+    /**
+     * The distinct findings the gate showed the agent during this turn, deduped by signature.
+     *
+     * Carried in the artifact — not merely counted — so `ablate()` can be a PURE function of
+     * `(result, layer)` with no `.reviewgate/` reads, which is what makes its Δ attributable
+     * to the layer and nothing else. It also makes the result self-contained: a published run
+     * can be re-analysed under a definition that did not exist when it was harvested, without
+     * the snapshots and without re-spending agent quota.
+     *
+     * These are POST-aggregation findings. What that costs is stated precisely in
+     * `src/rig/ablate.ts` — it is the reason two of the four layers can only be bounded.
+     */
+    findings: z.array(FindingSchema),
   })
   .strict()
   // The two null contracts, enforced rather than documented: a future edit that computes

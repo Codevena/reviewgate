@@ -4,7 +4,15 @@
 // .reviewgate/ and copies it out — it must never write there, or the rig would be measuring
 // its own interference.
 import { createHash } from "node:crypto";
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
@@ -28,6 +36,30 @@ export interface DriverOpts {
 // of one artifact waiting to drift. These aliases keep the driver's public names.
 export type DriverTurnRecord = RigManifestTurn;
 export type DriverRunManifest = RigManifest;
+
+/**
+ * Where this run is recording, from the inherited `REVIEWGATE_CASSETTE=record:<path>`.
+ * `null` when not recording (the unit tests, and any replay-mode run).
+ */
+function recordingCassettePath(): string | null {
+  const env = process.env.REVIEWGATE_CASSETTE;
+  if (env === undefined || !env.startsWith("record:")) return null;
+  const path = env.slice("record:".length);
+  return path.length > 0 ? path : null;
+}
+
+/** Current cassette size in bytes; 0 before the first entry is written. */
+function cassetteSize(path: string | null): number | null {
+  if (path === null) return null;
+  try {
+    return statSync(path).size;
+  } catch {
+    // Not created yet (turn 1, before any reviewer ran) — that is a zero-length prefix,
+    // not an error. A genuinely unreadable path yields the same 0 and the range is then
+    // empty, which reads downstream as "no entries", never as a wrong range.
+    return 0;
+  }
+}
 
 const QUIESCE_TIMEOUT_MS = 2_000;
 const QUIESCE_POLL_MS = 50;
@@ -207,12 +239,16 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     runId: `${script.id}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
     scriptId: script.id,
     outDir: opts.outDir,
+    cassettePath: recordingCassettePath(),
     turns: [],
   };
   mkdirSync(opts.outDir, { recursive: true });
 
   for (const turn of script.turns.slice(0, maxTurns)) {
     const startedAt = Date.now();
+    // Sampled BEFORE the agent runs: everything the cassette grows by during this turn is
+    // this turn's reviewer traffic, which is what makes the entries addressable per turn.
+    const cassetteBefore = cassetteSize(manifest.cassettePath ?? null);
     // The turn directory is created BEFORE the agent runs, because the agent's transcript
     // is written into it live (see runAgent). The .reviewgate/ snapshot still happens after.
     const snapshotDir = join(opts.outDir, "turns", String(turn.index));
@@ -241,11 +277,16 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     const src = reviewgateDir(opts.repoRoot);
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 
+    const cassetteAfter = cassetteSize(manifest.cassettePath ?? null);
     manifest.turns.push({
       index: turn.index,
       snapshotDir,
       agentExitCode,
       wallMs: Date.now() - startedAt,
+      cassetteBytes:
+        cassetteBefore === null || cassetteAfter === null
+          ? null
+          : { before: cassetteBefore, after: cassetteAfter },
     });
     // Written after EVERY turn: a run killed at turn 9 of 12 stays harvestable for the
     // turns it did complete, instead of losing the whole (expensive) run.

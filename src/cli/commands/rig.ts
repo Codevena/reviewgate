@@ -4,12 +4,20 @@
 // layer (fp-ledger, reputation, region memory, lore, agent-lessons) inert. The rig measures
 // what that structurally cannot: the gate as an interactive loop, over a run whose history
 // accumulates.
-import { constants, accessSync, existsSync, mkdirSync } from "node:fs";
+import { constants, accessSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute } from "node:path";
+import {
+  SUPPRESSION_LAYERS,
+  type SuppressionLayer,
+  ablate,
+  renderAblationMatrix,
+  seededTagsFromScript,
+} from "../../rig/ablate.ts";
 import { type DriverRunManifest, runDriver } from "../../rig/driver.ts";
 import { harvest } from "../../rig/harvest.ts";
+import { renderRigReport } from "../../rig/report.ts";
 import { loadTurnScript } from "../../rig/turn-script.ts";
-import type { RigResult } from "../../schemas/rig-result.ts";
+import { type RigResult, RigResultSchema } from "../../schemas/rig-result.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { workingTreeDirtyFiles } from "../../utils/git.ts";
 
@@ -100,6 +108,44 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
     agentCmd: claudeAgentCmd,
     maxTurns: input.maxTurns ?? script.turns.length,
   });
+}
+
+/** Read a harvested result off disk, validated — never structurally trusted. */
+function loadResult(path: string): RigResult {
+  return RigResultSchema.parse(JSON.parse(readFileSync(path, "utf8")) as unknown);
+}
+
+export interface RigReportInput {
+  resultPath: string;
+  markdown?: boolean;
+}
+
+export function runRigReport(input: RigReportInput): string {
+  const rendered = renderRigReport(loadResult(input.resultPath));
+  return input.markdown === true ? rendered.markdown : rendered.table;
+}
+
+export interface RigAblateInput {
+  resultPath: string;
+  scriptPath: string;
+  /** Omitted → every layer, as a matrix. */
+  layer?: SuppressionLayer | undefined;
+}
+
+/**
+ * Re-derive the metrics with one suppression layer switched off (or all four, as a matrix).
+ *
+ * Offline and pure — it reads two files and computes. No agent, no network, no `.reviewgate/`,
+ * so the Δ is attributable to the layer and to nothing else.
+ */
+export function runRigAblate(input: RigAblateInput): string {
+  const base = loadResult(input.resultPath);
+  const tags = seededTagsFromScript(input.scriptPath);
+  const layers = input.layer === undefined ? [...SUPPRESSION_LAYERS] : [input.layer];
+  return renderAblationMatrix(
+    base,
+    layers.map((l) => ablate(base, l, tags)),
+  );
 }
 
 export interface RigHarvestInput {

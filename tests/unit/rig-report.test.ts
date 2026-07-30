@@ -23,6 +23,7 @@ function turn(over: Partial<RigTurnRecord> & { index: number }): RigTurnRecord {
     agentExitCode: 0,
     wallMs: 60_000,
     suppressed: ZERO_SUPPRESSION,
+    findings: [],
     ...over,
   };
 }

@@ -17,6 +17,24 @@ export const RigManifestTurnSchema = z
     snapshotDir: z.string().min(1),
     agentExitCode: z.number().int(),
     wallMs: z.number().int().nonnegative(),
+    /**
+     * Byte range this turn appended to the recording cassette, `null` when the run was not
+     * recording. INSURANCE, deliberately written before it has a consumer.
+     *
+     * The harvested result carries POST-aggregation findings, so an ablation over it can only
+     * bound the layers that overwrite a severity outright (fp-ledger sets INFO directly and
+     * the original is persisted nowhere). The cassette holds the RAW pre-aggregation reviewer
+     * findings, which would turn those bounds into point estimates — but only if the entries
+     * can be addressed PER TURN, which needs exactly these offsets. Recording them costs one
+     * `statSync` per turn and is free only until the pilot runs; afterwards recovering them
+     * means re-driving the agent at real quota cost. Optional in the schema so manifests
+     * written before this field still parse.
+     */
+    cassetteBytes: z
+      .object({ before: z.number().int().nonnegative(), after: z.number().int().nonnegative() })
+      .strict()
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -26,6 +44,8 @@ export const RigManifestSchema = z
     runId: z.string().min(1),
     scriptId: z.string().min(1),
     outDir: z.string().min(1),
+    /** Cassette the run recorded into, or null when it was not recording. */
+    cassettePath: z.string().nullable().optional(),
     turns: z.array(RigManifestTurnSchema),
   })
   .strict();

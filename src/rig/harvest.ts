@@ -339,6 +339,7 @@ function harvestTurn(
     agentExitCode: manifestTurn.agentExitCode,
     wallMs: manifestTurn.wallMs,
     suppressed: countSuppression(findings),
+    findings,
   };
 
   return { turn: { record, blockingTexts, seeded }, cumulative, panel };
