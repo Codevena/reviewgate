@@ -575,6 +575,20 @@ export async function workingTreeDirtyFiles(repoRoot: string): Promise<string[]>
   return [...out];
 }
 
+// Prose extensions for the file-context budget ranking below. Deliberately
+// extension-only: a name-based list ("LICENSE", "CHANGELOG") would have to guess,
+// and mis-ranking an extensionless file as prose could hide a real script from
+// the reviewer. Unknown/absent extension therefore ranks as CODE — the safe side.
+const PROSE_EXTENSIONS = new Set(["md", "mdx", "markdown", "txt", "rst", "adoc", "asciidoc"]);
+
+function contextRank(file: string): number {
+  const dot = file.lastIndexOf(".");
+  const slash = file.lastIndexOf("/");
+  // A dot before the last slash belongs to a directory name, not this file.
+  if (dot <= slash) return 0;
+  return PROSE_EXTENSIONS.has(file.slice(dot + 1).toLowerCase()) ? 1 : 0;
+}
+
 // The full current content of every changed (non-reviewgate, non-deleted) file,
 // labeled per file and capped by a total byte budget. Reviewers get this ALONGSIDE
 // the diff so they can verify a symbol exists before reporting it as missing — the
@@ -639,7 +653,24 @@ export async function collectChangedFileContents(
   } catch {
     repoReal = undefined;
   }
-  for (const f of [...names].sort()) {
+  // Budget order is by REVIEW VALUE, not alphabetical. This context exists for
+  // one job (see orchestrator.ts): let a reviewer confirm a SYMBOL exists before
+  // reporting it missing — a code concern that prose cannot serve. Plain .sort()
+  // made that job losable: in a real dogfood round a change touching README.md
+  // (uppercase → sorts ahead of every src/ path) plus docs/ spent the entire
+  // 32 KB on those two, so EVERY source file came back "(omitted — context
+  // budget exceeded)", including the new file the round was reviewing. Reviewers
+  // hedged ("source not provided") into low-confidence WARNs, and WARN-only
+  // soft-passes silently — the coverage loss never reached a human.
+  // Code first, prose last, alphabetical within each rank: deterministic (the
+  // review cache key depends on this output), and prose still gets whatever
+  // budget survives.
+  const ordered = [...names].sort((a, b) => {
+    const rankDelta = contextRank(a) - contextRank(b);
+    if (rankDelta !== 0) return rankDelta;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  for (const f of ordered) {
     if (used >= maxBytes) break;
     if (isExcludedFromReview(f)) continue;
     const abs = join(repoRoot, f);

@@ -117,3 +117,46 @@ describe("collectChangedFileContents", () => {
     expect(result).toContain("(omitted — context budget exceeded)");
   });
 });
+
+describe("collectChangedFileContents budget order", () => {
+  // Regression, from a real dogfood round: README.md (uppercase → sorts first
+  // under a plain .sort()) plus docs/ spent the whole 32 KB budget, so EVERY
+  // source file in the change — including the new file the review was about —
+  // came back "(omitted — context budget exceeded)". Reviewers then hedged
+  // ("source not provided") into low-confidence WARNs, and WARN-only soft-passes
+  // silently. Prose must never crowd out code: the context exists so a reviewer
+  // can confirm a SYMBOL exists before calling it missing.
+  it("spends the budget on code before prose, however the names sort", async () => {
+    const dir = repo();
+    writeFileSync(join(dir, "seed.ts"), "export const seed = 1;\n");
+    commit(dir);
+    // Sized so the prose ALONE very nearly exhausts the budget while still
+    // fitting (the incident's shape — a prose file bigger than the whole budget
+    // is merely marked and costs nothing, which is NOT what happened).
+    const budget = 1500;
+    writeFileSync(join(dir, "README.md"), "x".repeat(budget - 60));
+    writeFileSync(join(dir, "src.ts"), "export const reviewedSymbol = 42;\n");
+
+    const result = await collectChangedFileContents(dir, budget);
+
+    // Alphabetically README.md wins; by review value src.ts must.
+    expect(result).toContain("export const reviewedSymbol = 42;");
+    expect(result).toContain("### README.md\n(omitted — context budget exceeded)");
+  });
+
+  it("still includes prose when the budget is ample, and stays alphabetical within code", async () => {
+    const dir = repo();
+    writeFileSync(join(dir, "seed.ts"), "export const seed = 1;\n");
+    commit(dir);
+    writeFileSync(join(dir, "NOTES.md"), "# notes\nshort prose\n");
+    writeFileSync(join(dir, "b.ts"), "export const b = 2;\n");
+    writeFileSync(join(dir, "a.ts"), "export const a = 1;\n");
+
+    const result = await collectChangedFileContents(dir, 32_000);
+
+    expect(result).toContain("### NOTES.md");
+    expect(result.indexOf("### a.ts")).toBeLessThan(result.indexOf("### b.ts"));
+    // Code outranks prose regardless of name.
+    expect(result.indexOf("### b.ts")).toBeLessThan(result.indexOf("### NOTES.md"));
+  });
+});
