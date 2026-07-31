@@ -1,7 +1,7 @@
 {
   "schema": "reviewgate.rig.preregistration.v1",
-  "registered_at": "2026-07-30T00:40:00.000Z",
-  "release": "0.1.0-alpha.15",
+  "registered_at": "2026-07-31T14:10:00.000Z",
+  "release": "0.1.0-alpha.15 (commit c59ebc3, dist sha256:6f52c76626d8eeba)",
   "attempt": "pilot-01",
   "command": [
     "reviewgate",
@@ -91,6 +91,7 @@
     "The ablation is an AGGREGATION-LAYER counterfactual over fixed reviewer output, not a behavioural A/B: it cannot re-drive the agent, because different verdicts would produce different diffs.",
     "fp-ledger's ablation delta is an INTERVAL, not a point: the layer overwrites severity with INFO and the pre-suppression severity is persisted nowhere.",
     "Agent turns are driven by `claude -p`, whose model and behaviour are outside this repo's control and are not pinned by this preregistration.",
-    "Anything that fails, times out or is skipped will be reported per-turn in the result's warnings[], including in the write-up."
+    "Anything that fails, times out or is skipped will be reported per-turn in the result's warnings[], including in the write-up.",
+    "RE-FROZEN 2026-07-31 before any data existed. The original pin read `0.1.0-alpha.15`, but dist/reviewgate was rebuilt mid-setup (31.07. 15:53) while keeping that version string, so the pin no longer identified a unique build. It now carries the commit and the binary hash. Nothing was re-registered in light of a result: zero pilot turns had been measured at this point (both prior attempts aborted with no audit events at all)."
   ]
 }
