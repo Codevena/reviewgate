@@ -3,6 +3,7 @@ import {
   approveControlPlane,
   controlPlaneStatus,
 } from "../../config/control-plane.ts";
+import type { EffectiveConfigInput } from "../../config/global.ts";
 
 function short(hash: string | null | undefined): string {
   return hash ? hash.slice(0, 12) : "none";
@@ -50,13 +51,33 @@ export async function runConfigStatus(
   return { exitCode: 0, stdout: `${formatControlPlaneStatus(status)}\n` };
 }
 
+// Exit code 0 must mean "the policy baseline was written" and nothing else.
+// Two ways it used to lie: EOF at the prompt left rl.question() unsettled, so
+// the process drained its event loop and exited 0 having approved nothing; and
+// a rejected confirmation threw out of here into the CLI framework, which
+// printed an ERROR banner and still exited 0. Any script gating on
+// `reviewgate config approve` would have read either as an approval.
 export async function runConfigApprove(
   repoRoot: string,
-  confirmation: string,
+  // `null` = the prompt was closed without an answer (EOF / Ctrl-D).
+  confirmation: string | null,
+  input?: Omit<EffectiveConfigInput, "cwd">,
 ): Promise<{ exitCode: number; stdout: string }> {
-  const state = await approveControlPlane(repoRoot, confirmation);
-  return {
-    exitCode: 0,
-    stdout: `Gate policy approved: ${state.approved_effective_fingerprint.slice(0, 12)}\n`,
-  };
+  if (confirmation === null) {
+    return { exitCode: 1, stdout: "Aborted: no confirmation read — nothing was approved.\n" };
+  }
+  try {
+    const state = input
+      ? await approveControlPlane(repoRoot, confirmation, input)
+      : await approveControlPlane(repoRoot, confirmation);
+    return {
+      exitCode: 0,
+      stdout: `Gate policy approved: ${state.approved_effective_fingerprint.slice(0, 12)}\n`,
+    };
+  } catch (err) {
+    // approveControlPlane throws for every refusal (mismatch, not yet reviewed
+    // under LKG, invalid config, concurrent change). None of those wrote a
+    // baseline, so all of them are exit 1.
+    return { exitCode: 1, stdout: `${(err as Error).message}\n` };
+  }
 }

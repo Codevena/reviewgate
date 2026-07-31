@@ -89,6 +89,9 @@ Address each in `decisions/<iter>.jsonl` the same way (fix, or reject with a
   knowledge reviewer-visible? If yes, record `action: "fixed"` — that appends the
   approval line to `.reviewgate/lore/approvals.jsonl` (only an approved canon entry
   is ever injected). If not, revert the entry's frontmatter to `status: draft`.
+  **Never write `approvals.jsonl` yourself** — the `fixed` decision is your only
+  path to it. The maintainer's direct path is `reviewgate lore approve <id>`, which
+  is TTY-only precisely so you cannot run it; point them at it, don't attempt it.
 
 ## Adaptive pipeline (M3)
 

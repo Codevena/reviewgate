@@ -24,7 +24,13 @@ import {
 import { runGate, runGateSafe } from "./commands/gate.ts";
 import { runInit, runInitUser } from "./commands/init.ts";
 import { runLearnStatus } from "./commands/learn-status.ts";
-import { runLoreStatus, runLoreVerify } from "./commands/lore.ts";
+import {
+  formatLoreApprovePreflight,
+  loreApprovePreflight,
+  runLoreApprove,
+  runLoreStatus,
+  runLoreVerify,
+} from "./commands/lore.ts";
 import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
@@ -264,14 +270,30 @@ const config = defineCommand({
         }
         const { createInterface } = await import("node:readline/promises");
         const rl = createInterface({ input: process.stdin, output: process.stdout });
-        try {
-          const answer = await rl.question(`Type exactly \"${status.challenge}\" to approve: `);
-          const result = await runConfigApprove(process.cwd(), answer.trim());
-          process.stdout.write(result.stdout);
-          process.exit(result.exitCode);
-        } finally {
-          rl.close();
-        }
+        // Race the answer against the interface closing: rl.question() never
+        // settles on EOF (Ctrl-D / closed stdin), so awaiting it bare would drain
+        // the event loop and exit 0 without approving anything. `null` = no
+        // answer, which runConfigApprove turns into an explicit exit 1.
+        const answer = await new Promise<string | null>((resolve) => {
+          let settled = false;
+          const finish = (v: string | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(v);
+          };
+          rl.on("close", () => finish(null));
+          rl.question(`Type exactly "${status.challenge}" to approve: `).then(
+            (a) => finish(a),
+            () => finish(null),
+          );
+        });
+        rl.close();
+        const result = await runConfigApprove(
+          process.cwd(),
+          answer === null ? null : answer.trim(),
+        );
+        (result.exitCode === 0 ? process.stdout : process.stderr).write(result.stdout);
+        process.exit(result.exitCode);
       },
     }),
   },
@@ -412,6 +434,66 @@ const lore = defineCommand({
             repoRoot: process.cwd(),
             all,
             slugs,
+          }),
+        );
+      },
+    }),
+    approve: defineCommand({
+      meta: {
+        name: "approve",
+        description:
+          "Approve a canon lore entry so reviewers may trust it (interactive; writes .reviewgate/lore/approvals.jsonl)",
+      },
+      args: {
+        slug: {
+          type: "positional",
+          required: true,
+          description: "Lore entry id to approve",
+        },
+      },
+      async run({ args }) {
+        // TTY-only, no --yes escape hatch — same procedural checkpoint as
+        // `config approve`: no agent can run this, which is the entire point of
+        // the canon trust boundary. Not a cryptographic identity boundary
+        // against same-user shell access; SECURITY.md documents that limit.
+        if (!process.stdin.isTTY || !process.stdout.isTTY) {
+          process.stderr.write(
+            "Error: lore approval requires a real interactive terminal (TTY); no non-interactive override exists.\n",
+          );
+          process.exit(1);
+        }
+        const slug = String(args.slug);
+        const pre = loreApprovePreflight(process.cwd(), slug);
+        process.stdout.write(formatLoreApprovePreflight(pre));
+        if (!pre.eligible || !pre.challenge) {
+          // Already-approved is a no-op, not a failure; everything else is.
+          process.exit(pre.alreadyApproved ? 0 : 1);
+        }
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        // Race the answer against the interface closing: rl.question() never
+        // settles on EOF (Ctrl-D / closed stdin), so awaiting it bare would drain
+        // the event loop and exit 0 with nothing written. `null` = no answer,
+        // which runLoreApprove turns into an explicit exit 1.
+        const answer = await new Promise<string | null>((resolve) => {
+          let settled = false;
+          const finish = (v: string | null) => {
+            if (settled) return;
+            settled = true;
+            resolve(v);
+          };
+          rl.on("close", () => finish(null));
+          rl.question(`Type exactly "${pre.challenge}" to approve: `).then(
+            (a) => finish(a),
+            () => finish(null),
+          );
+        });
+        rl.close();
+        process.exit(
+          runLoreApprove({
+            repoRoot: process.cwd(),
+            slug,
+            confirmation: answer === null ? null : answer.trim(),
           }),
         );
       },

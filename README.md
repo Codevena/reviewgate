@@ -646,12 +646,18 @@ Write the WHY — never restate what the code already says.
 How it behaves (all fail-safe — a broken lore file never blocks a review):
 
 - **Draft → canon, with approval.** New notes start as `status: draft`
-  (never injected). A maintainer promotes one to `status: canon`; the gate then
-  raises a one-time, **verdict-neutral** "did a human approve this promotion?"
-  finding. Approving it records a line in the committed
-  `.reviewgate/lore/approvals.jsonl` — and **only an approved canon note is ever
-  injected**. This keeps a compromised or careless commit from silently feeding
-  the reviewer instructions.
+  (never injected). A maintainer promotes one to `status: canon` — and that alone
+  is *not* enough: the promotion only takes effect once a line lands in the
+  committed `.reviewgate/lore/approvals.jsonl`, and **only an approved canon note
+  is ever injected**. This keeps a compromised or careless commit from silently
+  feeding the reviewer instructions. Two ways to record that approval:
+  **`reviewgate lore approve <id>`** does it directly — it prints the note's full
+  body, asks you to type back a challenge bound to the entry's exact bytes, and
+  writes the line. It is TTY-only with no `--yes`, so no agent can run it, and it
+  refuses a `draft` (approval is permanent for that id, so a draft must never be
+  pre-authorized). Or leave it to the gate: on the next run it raises a one-time,
+  **verdict-neutral** "did a human approve this promotion?" finding, and the
+  agent's `fixed` decision writes the same line once you say yes.
 - **Relevant-only injection.** A note is injected only when its `anchors`
   overlap the files in the current diff — so reviews stay focused and cheap.
 - **Freshness, enforced.** When the anchored files change, the note goes *stale*
@@ -663,8 +669,9 @@ How it behaves (all fail-safe — a broken lore file never blocks a review):
 - **`reviewgate lore status`** lists every note with its status and freshness;
   **`reviewgate lore verify <slug>`** (or `--all`) recomputes `verified_tree`/
   `verified_at` for the named entries and writes them back, so you never have to
-  hand-compute the hash; **`reviewgate doctor`** flags broken, un-anchored, or
-  too-broad notes.
+  hand-compute the hash; **`reviewgate lore approve <id>`** records the canon
+  approval above (interactive, human-only); **`reviewgate doctor`** flags broken,
+  un-anchored, or too-broad notes.
 
 ### Completion signal
 
