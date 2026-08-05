@@ -4,6 +4,12 @@ _2026-08-05. Task (b) from `NEXT_SESSION.md`, following
 `docs/dev/2026-08-05-pilot-02-result.md` and the measurement fixes in
 `docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md` (task (a), `5a1f94f`)._
 
+> **Revision note.** A first version of this spec proposed a new anchor-validation pass in
+> `aggregator.ts`. That was wrong: `src/core/fact-check.ts` already validates line anchors, it
+> already fired on the finding in question, and the new pass would have silently reversed a
+> deliberate, documented policy. The design below replaces it. What survives from the first
+> version is Slice B, unchanged.
+
 ## The evidence this design starts from
 
 pilot-02's turn 2 seeded a path traversal. The panel **detected it twice**. Both detections
@@ -13,128 +19,163 @@ Read the recorded findings yourself:
 
 ```bash
 bun -e 'const j = JSON.parse(await Bun.file("rig/results/pilot-02/turns/2/.reviewgate/pending.json").text());
-for (const f of j.findings) console.log(f.id, f.rule_id, f.severity, f.category, f.file, f.line_start, f.confidence, f.consensus, f.critic_verdict ?? "", f.scope_demoted ?? "")'
+for (const f of j.findings) console.log(f.id, f.rule_id, f.severity, f.line_start, f.confidence, f.consensus, f.critic_verdict ?? "-", f.fact_invalid ?? "-", f.scope_demoted ?? "-")'
 sed -n '1,10p' rig/results/pilot-02/turns/2/diff.patch
 ```
 
 | | rule_id | line_start | conf | consensus | what demoted it |
 |---|---|---|---:|---|---|
 | F-001 | `path-traversal-readtemplate` | **25** | 0.55 | singleton | critic → `likely_fp` |
-| F-002 | `path-traversal` | **67** | 0.90 | singleton | `scope_demoted` |
+| F-002 | `path-traversal` | **67** | 0.90 | singleton | **`fact_invalid`**, then `scope_demoted` |
 
-`src/store.ts` is a **brand-new 27-line file** in that turn's diff (`@@ -0,0 +1,27 @@`), so
-every line of it is inside the changed ranges. **F-002 is anchored at line 67 — past EOF of a
-file that is entirely in-diff.** Nothing in `src/providers/review-output.ts` or
-`src/schemas/finding.ts` validates a line anchor against the file it names; `FindingSchema` only
-requires `z.number().int().positive()`.
+`src/store.ts` is a **brand-new 27-line file** in that turn's diff (`@@ -0,0 +1,27 @@`).
+F-002 is anchored at **line 67 — past EOF**.
 
-That single bad anchor produced all three of the failures the pilot-02 write-up attributes to
-independent mechanisms:
+### The gate caught the bad anchor, and drew the wrong conclusion
 
-1. **F-002 was scope-demoted** (`aggregator.ts:352`) as "outside the changed lines". It was never
-   out-of-diff — it was mis-anchored.
+`validateFindingFacts` (`src/core/fact-check.ts`, called at `orchestrator.ts:2226`, before
+aggregation) detected it exactly and demoted the finding, writing this into its details:
+
+```
+[reviewgate fact-check] cited location src/store.ts:67 does not exist in the working tree
+(file has 27 lines) — almost certainly hallucinated; demoted to advisory.
+```
+
+That pass exists for good reason — two production field reports where a lone reviewer emitted a
+0.97 CRITICAL citing content in an **empty** file. Its stated premise is:
+
+> _"if a file has 3 lines, a finding on line 99 is unambiguously fabricated"_ (`fact-check.ts:18`)
+
+**F-002 falsifies that premise.** It carries the reviewer's own quoted evidence:
+
+```
+evidence_line: "  return readFileSync(`./templates/${name}`, 'utf8')"
+```
+
+which is **verbatim line 26** of that 27-line file. The reviewer read the real code, quoted it
+correctly, and mis-numbered the line. The finding was **mis-anchored, not fabricated** — and the
+gate told the agent the opposite, at 0.90 confidence, about a real path traversal.
+
+The discriminator already exists **in the same file**: `attestEvidence:154` computes
+`lines.some((l) => normalizeLine(l) === evN)` — "does this quote match any line of the file". It
+runs at `orchestrator.ts:2573`, render-only, *after* aggregation, and never feeds the demote.
+
+### Scale, measured across both pilots
+
+```bash
+bun -e 'let tot=0,ev=0,fi=0; const g=new Bun.Glob("rig/results/pilot-0*/turns/*/reports/*-pending.json");
+for await (const p of g.scan(".")) { const j=JSON.parse(await Bun.file(p).text());
+for (const f of j.findings ?? []) { tot++; if (f.evidence_line) ev++; if (f.fact_invalid) fi++; } }
+console.log({tot, ev, fi})'
+```
+
+| | |
+|---|---|
+| findings across both pilots | 68 |
+| carrying `evidence_line` | **55 (81 %)** |
+| distinct findings `fact_invalid` fired on, in 24 turns | **1** |
+| ...whose evidence line matched a real line of the cited file | **1 of 1** |
+
+The one time this pass fired, it labelled a real security finding a hallucination. **n = 1**: the
+change below is justified by the mechanism, not by that sample size.
+
+### Why this one anchor cost the whole turn
+
+The bad anchor caused all three failures the pilot-02 write-up attributes to independent layers:
+
+1. **`fact_invalid`** demoted F-002 to INFO as fabricated (above).
 2. **The two findings never merged.** 25 and 67 are 42 lines apart, past both `REGION_WINDOW`
-   (5, `:192`) and `WORDING_MERGE_MAX_LINE_DISTANCE` (25, `:229`).
-3. **No merge meant no corroboration.** `computeConsensus(1, 2)` is `"singleton"`; merged, it
-   would be `computeConsensus(2, 2)` → `"majority"` → `isCorroborated` at `:610` → **the critic
+   (5, `aggregator.ts:192`) and `WORDING_MERGE_MAX_LINE_DISTANCE` (25, `:229`).
+3. **No merge meant no corroboration.** `computeConsensus(1, 2)` is `"singleton"`; merged it
+   would be `computeConsensus(2, 2)` → `"majority"` → `isCorroborated` (`:610`) → **the critic
    could not have demoted F-001 at all.**
 
 So the handoff's candidate (2) — "merge same-file/same-category detections before the critic" —
-addresses a symptom. These two findings did not need a broader merge rule; they needed one
-reviewer not to invent a line number.
+targets a symptom. These findings did not need a broader merge rule; they needed the anchor
+repaired, after which they are **one line apart** and merge under the existing window.
 
-The handoff's candidate (1) remains a real defect on its own merit, independent of turn 2: the
-critic's exemption is keyed to CRITICAL (`:604`), while the sibling `deltaScoped` pass exempts
-`touchesSecurityOrCorrectness` at **any** severity (`:664`). A WARN-severity security finding is
-demotable by a single adversarial critic, and that demote crosses the blocking boundary.
+The handoff's candidate (1) is a real defect independent of turn 2: the critic's exemption is
+keyed to CRITICAL (`:604`) while the sibling `deltaScoped` pass exempts
+`touchesSecurityOrCorrectness` at **any** severity (`:664`). That is Slice B.
 
 ## Scope
 
-Two independent slices, both in `src/core/aggregator.ts`, neither touching the reviewer or
-provider layer. Both are **always-on** — they are defect corrections, and the sibling
-protections they mirror (G0's clamp at `:155`, `isCriticalSecurity` at `:604`, delta-scope's
-exemption at `:664`) are all unflagged. Observability comes from markers a pilot can count, not
-from config toggles; no new config key, and therefore no second TTY control-plane approval.
+Two slices. Both **always-on** — they are defect corrections, and the sibling protections they
+sit beside are all unflagged. Observability comes from markers a pilot can count, not from config
+toggles; no new config key, and so no second TTY control-plane approval.
 
 ### Explicitly out of scope
 
 - **Merge/clustering changes.** Widening the merge to same-file/same-category would bundle
   genuinely separate security bugs under one decision, which `isHighStakesCategory` (`:279`)
-  exists to prevent.
-- **An invalid anchor still participates in region clustering**, so a bogus line 67 could merge
-  with a real finding at line 65. This risk exists today, did not fire in turn 2, and removing
-  it means changing merge behaviour — a third change with its own blast radius.
+  exists to prevent. Slice A reaches the merge by fixing the input, not the rule.
 - **M5 critic cost attribution** (`orchestrator.ts:2300`) stays scoped out; it is a
   provider-contract change, as recorded in the task-(a) plan.
+- **Findings with no `evidence_line`** (19 % of the corpus) get no new protection. Their
+  behaviour is unchanged.
 
-## Slice A — anchor integrity
+## Slice A — distinguish mis-anchored from fabricated
 
-Policy, chosen deliberately: **an out-of-range anchor is treated exactly like a missing one.**
-`scopeFindings` already carries that precedent in the same function —
-`if (!f.line_start) return f; // no usable line → keep (conservative)` (`:330`). A reviewer that
-cites line 67 of a 27-line file has given us no usable location, and the fail-safe direction in
-this codebase is that a suppressor must never silently soften a finding it cannot place.
-
-The rejected alternative is re-anchoring the finding into the nearest changed range. It would
-additionally recover the merge path, but the gate would then be asserting a location the
-reviewer never gave — the gate would be lying about where the bug is.
-
-### Detect
-
-A new pass immediately after the path-normalize / `demoteRedaction` map (`:429-432`), before the
-deterministic sort and clustering. For each finding whose file has a **known** line count:
+The whole change is inside `validateFindingFacts`, at the point where it has already read the
+file and decided the line is out of range (`fact-check.ts:116-119`):
 
 ```ts
-if (lineCount !== undefined && f.line_start > lineCount) → { ...f, anchor_invalid: true }
+const lines = lineCount(text);
+if (f.line_start <= lines) return f;        // cited line exists → untouched (unchanged)
+// Out of range. Before calling it a fabrication, consult the reviewer's OWN quoted evidence:
+// if evidence_line matches a real line of THIS file, the reviewer read real code and
+// mis-numbered it. That is mis-anchored, not fabricated, and demoting it as a hallucination
+// is a false accusation against a finding we can prove is grounded.
+const repaired = reanchorByEvidence(f, text);
+if (repaired) return repaired;
+return demote(f, note);                      // no quote, or quote matches nothing → unchanged
 ```
 
-Stamp only. No severity change here, so the pass is inert on its own and its effect is entirely
-attributable to the consumer below.
+`reanchorByEvidence(f, text)` returns `null` unless **all** of these hold:
 
-The pass runs **unconditionally**, not inside `scopeFindings` — that function returns early when
-`scopeToDiff` is false or `changedRanges` is absent (`:317`). Detecting separately means a
-mis-anchoring reviewer is still visible in `pending.md` on a repo that has diff-scoping turned
-off, where the flag changes nothing else.
+1. `f.evidence_line` is a non-empty string, and non-empty after `normalizeLine` (`:129`, already
+   in this file — defangs injection markers, collapses whitespace);
+2. at least one line of `text` equals it under the same normalization.
 
-**`line_end` does not participate.** Reviewers routinely over-estimate `line_end` as a sloppy
-range hint; if `line_start` names a real line the finding *is* anchored somewhere real, and
-`rangeOverlapsChanged` (`src/diff/hunks.ts:116`) already handles the range. Stamping on
-`line_end` would fire on ordinary findings and switch off scope-demoting broadly — a fail-open,
-which is the exact direction this slice exists to close. Guard test 2 pins this.
+On a match it returns the finding re-anchored to that line, with `line_end` collapsed to it, a
+`anchor_repaired: true` marker, and a details note recording the original number.
 
-### Act
+**Disambiguation, stated as a rule rather than left to chance:** when the quote matches several
+lines, re-anchor to the occurrence **nearest the cited line**; ties break to the **lower** line
+number. Both candidates are real occurrences of the reviewer's own quote, so this chooses among
+facts rather than inventing one, and it is fully deterministic — which the aggregator's clustering
+requires (`:433-444` sorts precisely to keep clustering order-independent).
 
-`scopeFindings:330` becomes:
+**This is not the gate inventing a location.** It re-anchors to a line the reviewer itself
+quoted. The rejected alternative — clamping to the nearest changed hunk — would have been.
 
-```ts
-if (!f.line_start || f.anchor_invalid) return f; // no usable line → keep (conservative)
-```
+**Cost: zero extra I/O.** The re-anchor reuses the `text` the pass already read under its
+existing O_NOFOLLOW-contained, 5 MB-capped reader. No new file access, no new pass, no new
+`AggregateInput` field, and **no orchestrator change at all**.
 
-### Input
+### Why placing it here makes the rest fall out
 
-`AggregateInput` gains:
+`validateFindingFacts` runs **pre-aggregation** (`orchestrator.ts:2226`), so the repaired line is
+what clustering sees. For turn 2 that means 67 → 26, one line from F-001's anchor at 25, inside
+`REGION_WINDOW` → the two merge → `"majority"` → `isCorroborated` → the critic is barred, and the
+finding is in-diff so nothing scope-demotes it.
 
-```ts
-/** Line counts of the files this diff changed, for anchor validation. An entry is present
- *  ONLY when the file was read successfully. Absent map, or an absent entry, means UNKNOWN —
- *  no anchor on that file is ever stamped, and behaviour is byte-identical to before this
- *  field existed. Same optional-input compatibility rule `seedLanded` and `criticRuns` follow. */
-fileLineCounts?: Map<string, number>;
-```
-
-The orchestrator builds it at the `aggregate()` call site (`orchestrator.ts:2451`) from the
-changed-file set, using `readFileSync` under `this.input.repoRoot` (already imported at
-`orchestrator.ts:7`). Keys are `normalizeRepoPath`-canonical, matching `changedRanges`.
+It also makes the two evidence passes agree: `attestEvidence` (`:2573`) reads
+`lines[line_start - 1]`, which after the repair is the quoted line, so it stops treating the
+finding as ambiguous.
 
 ### Schema and rendering
 
-`FindingSchema` gains `anchor_invalid: z.boolean().optional()`, alongside `scope_demoted`
-(`finding.ts:81`) and `protected_high_precision` (`:191`).
+`FindingSchema` gains `anchor_repaired: z.boolean().optional()`, alongside `fact_invalid`
+(`finding.ts:234`) and `scope_demoted` (`:81`).
 
-`report-writer.ts` gains one badge next to the existing `📍 outside changed lines` (`:57`), e.g.
-`⚑ the reviewer cited a line that does not exist in this file — location unverified, kept
-blocking`. The badge is the diagnostic that made this whole slice findable; without it a
-mis-anchoring reviewer is invisible.
+`report-writer.ts` gains one badge beside the existing `🔎 cited location not found` (`:43`):
+
+```
+⚑ reviewer cited a line that does not exist — re-anchored to the source line it quoted
+```
+
+The badge is what makes a mis-anchoring reviewer visible instead of silently corrected.
 
 ## Slice B — critic severity floor
 
@@ -152,81 +193,94 @@ Both feed the same two branches at `:615` and `:619`. A protected finding theref
 existing `survivors.push({ ...f, critic_verdict: "keep" })` path at `:635`, which already renders
 honestly — no new marker needed.
 
-**Why the floor stops at WARN and not lower.** The stated harm is a demote that crosses the
-blocking boundary (`isBlocking` is `CRITICAL || WARN`). WARN → INFO crosses it; INFO → drop does
-not, and low-confidence INFO security chatter is the noisiest thing the critic filters. Making
-security wholly critic-immune would re-inflate FP burden in a way pilot-02 has **zero data** on
-(`rejectedAsFp` was 0 on every turn, `known_fp.jsonl` ended the run empty). Guard test 5 pins
-that the floor does not over-apply.
+**Why the floor stops at WARN.** The stated harm is a demote crossing the blocking boundary
+(`isBlocking` is `CRITICAL || WARN`). WARN → INFO crosses it; INFO → drop does not, and
+low-confidence INFO security chatter is the noisiest thing the critic filters. Making security
+wholly critic-immune would re-inflate FP burden in a way pilot-02 has **zero data** on
+(`rejectedAsFp` was 0 on every turn; `known_fp.jsonl` ended the run empty).
 
-**Blast radius.** `demoteOneStep` (`:155`) is unchanged — a WARN security finding simply never
-reaches it from the critic pass. The reputation and confidence-floor passes are untouched; they
-already carry their own hard security veto (`touchesSecurity`, `:285`).
+**Kept even though Slice A alone rescues turn 2.** Slice A works through the merge, which needs
+two detections. A lone WARN security finding — the common case — still faces a critic whose
+exemption is keyed to a severity it does not have. The two slices protect different populations.
+
+**Blast radius.** `demoteOneStep` (`:155`) is unchanged — a WARN security finding never reaches
+it from the critic pass. The reputation and confidence-floor passes are untouched; they already
+carry their own hard security veto (`touchesSecurity`, `:285`).
 
 ## Data flow
 
 ```
-reviewers  →  findings (line_start unvalidated)
-orchestrator:2451   changedRanges  = parseChangedRanges(diff)
-                    fileLineCounts = line counts of changed files      ← new
-aggregate():   normalize paths + demoteRedaction
-               markInvalidAnchors                                      ← Slice A detect
-               sort → cluster → dedupe → consensus
-               critic pass                                             ← Slice B floor
-               scopeFindings                                           ← Slice A act
-               deltaScope → fp-ledger → reputation → verdict
-report-writer: anchor_invalid badge
+reviewers  →  findings (line_start unvalidated, evidence_line usually present)
+orchestrator:2226   validateFindingFacts
+                      ├─ line in range                → untouched
+                      ├─ out of range, quote matches  → RE-ANCHOR + anchor_repaired   ← Slice A
+                      └─ out of range, no match/quote → demote INFO + fact_invalid    (unchanged)
+orchestrator:2451   aggregate()
+                      cluster (now sees the repaired line → the two findings merge)
+                      consensus → "majority"
+                      critic pass (isCorroborated bars it; Slice B bars WARN+security too)
+                      scopeFindings → deltaScope → fp-ledger → reputation → verdict
+orchestrator:2573   attestEvidence  (now agrees; no evidence_mismatch)
+report-writer:      anchor_repaired badge
 ```
 
 ## Fail-safety
 
-Each row states its failure direction, not just its behaviour.
+Each row states its failure direction, not merely its behaviour.
 
 | Condition | Behaviour | Why |
 |---|---|---|
-| `fileLineCounts` absent entirely | Both slices inert; output byte-identical to today | Optional-input compatibility, as `seedLanded`/`criticRuns` |
-| File missing, unreadable, binary, or over a byte cap | **No entry** → anchors on that file never stamped | Unknown must stay unknown; never guess a line count |
-| Finding on a file the diff did not change | No entry → demotes on the file-absent branch (`:332`) as today | Anchor validation must not rescue findings on unchanged files |
-| `line_start` valid, `line_end` past EOF | **Not stamped** | Stamping here would fail open; see Slice A |
-| Anchor invalid **and** severity already INFO | Kept and flagged, and **`scope_demoted` is no longer stamped** on it | `demote()` (`:325`) stamps the marker even on INFO, and `report-writer.ts:498` buckets on it. Such a finding moves from the "outside changed lines" list to the in-scope advisory list — correct, since we do not know it is outside. A deliberate, visible consequence, not an oversight |
+| No `evidence_line` on the finding | Demoted exactly as today | 19 % of the corpus; the empty-file fabrication case that motivated the pass is untouched |
+| `evidence_line` present, matches **no** line | Demoted exactly as today | A quote that is in no line of the file is the fabrication signal, now positively established rather than inferred from a number |
+| `evidence_line` empty after `normalizeLine` | Treated as absent → demoted | A whitespace/marker-only quote carries no signal |
+| Quote matches **several** lines | Re-anchor to the nearest, ties → lower line | Deterministic; clustering must not depend on iteration order |
+| File unreadable, oversize, symlinked, absent | Untouched, as today | The existing reader already fails safe here; Slice A adds no new access |
+| Finding on a path in `deletedPaths` | Skipped, as today | Commentary on removed code, not a fabrication |
+| Cited line **in** range | Untouched — re-anchor never runs | The pass stays demote-or-repair-only on out-of-range findings; it can never move a valid anchor |
 
 ## Measurability, stated honestly
 
-`SUPPRESSION_LAYERS` (`src/rig/ablate.ts:44`) is `["critic","reputation","fp-ledger","lore"]` —
-there is no `scope` or `anchor` layer, and the ablation reconstructs a layer's counterfactual by
-reading the demotion markers it left behind.
+`SUPPRESSION_LAYERS` (`src/rig/ablate.ts:44`) is `["critic","reputation","fp-ledger","lore"]`, and
+`ablate.ts:88` already treats `fact_invalid` as a non-ablatable other-suppressor.
 
 - **Slice B stays fully ablatable.** A protected finding carries `critic_verdict: "keep"`, and
   `−critic` shows no recall delta where the floor held.
-- **Slice A is observable, not ablatable.** pilot-03 can count `anchor_invalid` findings and how
-  many stayed blocking; it cannot produce a counterfactual matrix row for the slice. The pilot-03
-  write-up must say this rather than let the matrix imply coverage it does not have.
+- **Slice A is observable, not ablatable.** pilot-03 can count `anchor_repaired` findings and how
+  many stayed blocking; it cannot produce a counterfactual matrix row. The write-up must say so
+  rather than let the matrix imply coverage it does not have.
+- **Expect a small count.** The pass fired once in 24 turns. A pilot-03 that shows 0
+  `anchor_repaired` findings has not refuted the fix — it has not exercised it, and the write-up
+  must say that instead of reporting a null result.
 
 ## Testing
 
 Every guard test carries the two numbers of the quantity it guards. A test whose two values match
-is vacuous **on paper** and is rewritten before it is written.
+is vacuous **on paper** and gets rewritten before it is written.
 
 | # | Guards | WITHOUT the mechanism | WITH it |
 |---|---|---|---|
-| 1 | Invalid anchor is not scope-demoted (turn-2 shape: 27-line new file, finding at line 67) | INFO + `scope_demoted` → **0 blocking** | WARN + `anchor_invalid` → **1 blocking** |
-| 2 | Does not over-apply — a *valid* out-of-diff anchor still demotes. Mutation: stamp on `line_end > lineCount` | over-broad predicate → **1 blocking** | correct predicate → **0 blocking** |
-| 3 | Inert without `fileLineCounts` — one fixture, map present vs absent | map absent → **0 blocking** | map present → **1 blocking** |
-| 4 | WARN + security + `likely_fp` survives the critic | INFO + `critic_verdict: likely_fp` → **0 blocking** | WARN + `critic_verdict: keep` → **1 blocking** |
-| 5 | Floor does not over-apply — INFO + security + `likely_fp` is still dropped | "exempt at every severity" variant → `criticDropped` **0** | correct floor → `criticDropped` **1** |
-| 6 | Floor is category-keyed, not severity-keyed — WARN + *quality* still demotes | severity-only variant → **1 blocking** | correct floor → **0 blocking** |
+| 1 | Out-of-range + quote matches → re-anchored, not demoted | INFO + `fact_invalid` → **0 blocking** | CRITICAL kept, `line_start` = matched line, `anchor_repaired` → **1 blocking** |
+| 2 | No `evidence_line` → still demoted (the empty-file case). Mutation: re-anchor unconditionally | unconditional repair → `fact_invalid` **absent** | correct gate → `fact_invalid` **true** |
+| 3 | Quote matching **no** line → still demoted. Mutation: skip the match test | skipped test → `fact_invalid` **absent** | correct gate → `fact_invalid` **true** |
+| 4 | Multiple matches → nearest-to-cited wins, deterministic | first-match rule → `line_start` **2** | nearest rule → `line_start` **8** |
+| 5 | In-range finding is never moved. Mutation: run the repair before the range check | repair-first → `line_start` **moves** | correct order → `line_start` **unchanged** |
+| 6 | Cascade, reconstructed from turn 2: repair → merge → majority → blocking | 2 findings, consensus `singleton`, **0 blocking** | 1 merged finding, consensus `majority`, **1 blocking** |
+| 7 | WARN + security + `likely_fp` survives the critic | INFO + `critic_verdict: likely_fp` → **0 blocking** | WARN + `critic_verdict: keep` → **1 blocking** |
+| 8 | Floor does not over-apply — INFO + security + `likely_fp` still dropped | "exempt at every severity" variant → `criticDropped` **0** | correct floor → `criticDropped` **1** |
+| 9 | Floor is category-keyed, not severity-keyed — WARN + *quality* still demotes | severity-only variant → **1 blocking** | correct floor → **0 blocking** |
 
 Each is seen **red** first, in a copy of the repo; the original is confirmed unmodified with
 `git diff` after each copy is discarded.
 
-**Acceptance on real data, labelled honestly.** A fixture reconstructed from turn 2's recorded
-`pending.json` — both findings, their actual lines, categories, confidences and consensus —
-showing the turn flip from 0 blocking to blocking. This is a **reconstruction, not a replay**:
-the archived findings are post-aggregation, so the pre-aggregation input is inferred from the
-demotion markers, exactly as `ablate.ts` does. The write-up must not call it a replay.
+**Test 6 is the acceptance test, and it is a reconstruction, not a replay.** It is built from
+turn 2's recorded `pending.json` — both findings, their real lines, categories, confidences,
+messages and the actual `evidence_line` — plus a temp-dir copy of the 27-line `src/store.ts` from
+`turns/2/diff.patch`. The archived findings are post-aggregation, so the pre-aggregation input is
+inferred from the demotion markers, exactly as `ablate.ts` does. The write-up must not call it a
+replay.
 
-**Static gates.** `bunx tsc --noEmit`, `bun run lint`, and the full `bun test` — `FindingSchema`
-changes, so the persisted-artifact suite runs whole.
+**Static gates.** `bunx tsc --noEmit`, `bun run lint`, and the full `bun test` —
+`FindingSchema` changes, so the persisted-artifact suite runs whole.
 
 **Reviews.** A plan gate with an **executing** reviewer before implementation, then the
 post-implementation pipeline with two independent slots. Codex is quota-blocked until
@@ -255,9 +309,10 @@ not part of this spec.
 
 | Risk | Handling |
 |---|---|
-| Slice A rescues findings it should not, weakening diff-scoping generally | Only `line_start` past a **known** EOF stamps; unknown stays unknown. Guard tests 2 and 3 pin both over-application modes |
-| Slice B re-inflates FP burden | Floor stops at WARN; already-INFO security stays droppable (guard 5). pilot-03 reports FP burden, though pilot-02 showed M2 has no signal in this rig |
-| `fileLineCounts` costs I/O on every gate run | Bounded to the changed-file set, one `readFileSync` each, byte-capped; the research phase already reads these files |
-| `FindingSchema` change breaks older persisted artifacts | Field is `.optional()`, mirroring `scope_demoted`/`protected_high_precision` |
-| pilot-03 conflates the two slices | Slice B is isolated by the existing `−critic` ablation; Slice A is reported as a count of `anchor_invalid`. Stated as a limitation, not papered over |
-| n = 3 landed seeds cannot establish an effect size | Same limit as pilot-02, restated in the write-up. This detects signal, not magnitude |
+| Re-anchoring rescues a genuinely fabricated finding | Only when the reviewer's quote is **found verbatim in the cited file**. A model that fabricates a line number *and* quotes real source has still read the file — that is the definition of mis-anchored. Guards 2 and 3 pin both no-quote and no-match paths |
+| The repair moves a finding onto unrelated code | It moves it onto a line the reviewer quoted; multi-match resolves to the nearest occurrence, deterministically. Guard 4 pins the rule |
+| Weakening the empty-file protection the pass was built for | An empty file has no lines, so no quote can match → the motivating case can never be re-anchored. Guard 2 uses exactly that fixture |
+| Slice B re-inflates FP burden | Floor stops at WARN; already-INFO security stays droppable (guard 8). pilot-03 reports FP burden, though pilot-02 showed M2 has no signal in this rig |
+| `FindingSchema` change breaks older persisted artifacts | Field is `.optional()`, mirroring `fact_invalid`/`scope_demoted` |
+| pilot-03 conflates the two slices | Slice B is isolated by the existing `−critic` ablation; Slice A is reported as a count of `anchor_repaired`. Stated as a limitation, not papered over |
+| n = 1 observed mis-anchor, n = 3 landed seeds | The fix is justified by mechanism, not sample size, and the write-up says so. A pilot-03 with 0 repairs is an unexercised path, not a refutation |
