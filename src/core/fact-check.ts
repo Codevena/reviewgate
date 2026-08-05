@@ -53,6 +53,11 @@ function demote(f: Finding, note: string): Finding {
  * traversal, quote verbatim at line 26, cited at 67, demoted with "almost certainly
  * hallucinated").
  *
+ * `f.evidence_line` is UNTRUSTED reviewer-supplied input — it is never executed or taken on
+ * trust by itself. It only ever earns a repair by matching, byte-for-byte after normalization,
+ * real content already read from the working tree; a caller relaxing that normalization or the
+ * match/identifier-token guards below would let the reviewer's own text decide the outcome.
+ *
  * Returns the finding re-anchored to the quoted line, or null when nothing can be proven — in
  * which case the caller demotes exactly as before. This can only ever be reached for an
  * out-of-range anchor, so it can never move a valid one.
@@ -69,10 +74,15 @@ function reanchorByEvidence(f: Finding, text: string): Finding | null {
   if (ev === null || ev.length === 0) return null;
   const evN = normalizeLine(ev);
   if (evN.length === 0) return null; // quote was only whitespace/markers → no signal
-  // A quote with no identifier-like token ("}", "},", "});") names no code: it matches dozens of
-  // lines and proves nothing about WHICH line the reviewer read. Falling through to the demote is
-  // fail-safe — it restores exactly the pre-repair behaviour for a quote that carries no signal.
-  if (!/[A-Za-z_$][A-Za-z0-9_$]{2,}/.test(evN)) return null;
+  // A quote with no identifier-like token at all ("}", "},", "});" — zero [A-Za-z_$] characters
+  // present) names no code: it matches dozens of lines and proves nothing about WHICH line the
+  // reviewer read. That rejection holds at ANY length bound, since these quotes contain no
+  // identifier character to begin with. The {1,} bound (2-character minimum) exists on top of
+  // that only to exclude a bare single-letter quote ("x", "a") — it still accepts a genuine
+  // 2-char token, including common JS keywords ("if", "do", "in", "of", "as"). Falling through to
+  // the demote is fail-safe — it restores exactly the pre-repair behaviour for a quote that
+  // carries no signal.
+  if (!/[A-Za-z_$][A-Za-z0-9_$]{1,}/.test(evN)) return null;
   const lines = text.split("\n");
   const cited = f.line_start - 1;
   let best = -1;
@@ -168,9 +178,11 @@ export function validateFindingFacts(
     }
     const lines = lineCount(text);
     if (f.line_start <= lines) return f; // cited line exists → real finding, untouched
-    // Out of range. Before calling it a fabrication, consult the reviewer's OWN quoted evidence:
-    // a quote that matches a real line of THIS file proves the reviewer read the code and
-    // mis-numbered it, which is not what this pass exists to catch.
+    // Out of range. Before calling it a fabrication, consult the reviewer's OWN quoted evidence —
+    // f.evidence_line is UNTRUSTED reviewer-supplied input, so this is a match against real file
+    // content already read above, never a trust decision made from the quote alone: a quote that
+    // matches a real line of THIS file proves the reviewer read the code and mis-numbered it,
+    // which is not what this pass exists to catch.
     const repaired = reanchorByEvidence(f, text);
     if (repaired !== null) return repaired;
     const note = `\n\n[reviewgate fact-check] cited location ${file}:${f.line_start} does not exist in the working tree (file has ${lines} line${lines === 1 ? "" : "s"}) — almost certainly hallucinated; demoted to advisory. Verify before treating as real.`;

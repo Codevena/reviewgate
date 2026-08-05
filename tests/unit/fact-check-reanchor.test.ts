@@ -165,4 +165,28 @@ describe("validateFindingFacts — mis-anchored vs fabricated", () => {
     expect(out[0]?.fact_invalid).toBe(true);
     expect(out[0]?.anchor_repaired).toBeUndefined();
   });
+
+  // GUARD 7 (F-001, gate finding on this branch). The identifier bound must not be so strict that
+  // a genuine 2-character token — a JS keyword ("if", "do", "in", "of", "as") or any 2-char
+  // identifier — fails to qualify as a repair key, even though no individual token in the quoted
+  // line reaches 3 characters.
+  // WITHOUT the {1,} bound (the old {2,}, a 3-char minimum): "if (a || b) {" contains no token of
+  // 3+ chars, so the guard rejects it and the out-of-range CRITICAL falls through to the demote
+  // -> severity INFO, fact_invalid true, anchor_repaired undefined.
+  // WITH it: "if" (2 chars) qualifies as an identifier-like token, so the finding repairs ->
+  // severity CRITICAL, line_start moved to the matched line, anchor_repaired true.
+  it("repairs on a genuine 2-character identifier token, not just 3+", () => {
+    const twoCharLine = "if (a || b) {";
+    const content = `${["const a = 1", "const b = 2", twoCharLine, "const d = 4", "const e = 5"].join("\n")}\n`;
+    const dir = repo(content);
+    const out = validateFindingFacts(
+      [mkFinding({ line_start: 999, line_end: 999, evidence_line: twoCharLine })],
+      dir,
+      new Set(),
+    );
+    expect(out[0]?.severity).toBe("CRITICAL");
+    expect(out[0]?.line_start).toBe(3);
+    expect(out[0]?.anchor_repaired).toBe(true);
+    expect(out[0]?.fact_invalid).toBeUndefined();
+  });
 });
