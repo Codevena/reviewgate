@@ -1,6 +1,7 @@
 // tests/unit/anchor-repair-cascade.test.ts
 import { describe, expect, it } from "bun:test";
 import { aggregate } from "../../src/core/aggregator.ts";
+import { findingBadges } from "../../src/core/report-writer.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 function fin(over: Partial<Finding>): Finding {
@@ -55,5 +56,19 @@ describe("anchor_repaired survives a dedup merge", () => {
     expect(r.dedupedFindings.length).toBe(1);
     expect(r.dedupedFindings[0]?.anchor_repaired).toBe(true);
     expect(r.dedupedFindings[0]?.consensus).toBe("majority");
+  });
+});
+
+describe("anchor_repaired badge", () => {
+  // WITHOUT the badge: findingBadges returns null for a repaired finding -> the agent sees a
+  // silently corrected line number and no signal that a reviewer mis-anchored.
+  // WITH it: the badge text is present.
+  it("renders a badge naming the repair", () => {
+    const out = findingBadges(fin({ anchor_repaired: true }));
+    expect(out).toContain("re-anchored");
+  });
+
+  it("renders no such badge for an ordinary finding", () => {
+    expect(findingBadges(fin({}))).toBeNull();
   });
 });
