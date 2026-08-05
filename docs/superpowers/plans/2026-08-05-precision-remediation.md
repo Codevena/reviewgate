@@ -81,17 +81,23 @@ Add to `tests/unit/fp-ledger-store.test.ts`, inside the existing `describe("FpLe
     expect((await s.snapshot()).entries[0]?.stage).toBe("active");
   });
 
-  it("4 distinct runs is active, not yet sticky; 5 distinct runs is sticky", async () => {
+  it("5 rejects spread over only 4 runs is active, not sticky; a 5th run makes it sticky", async () => {
     const t = "2026-05-21T00:00:00Z";
+    // 5 reject EVENTS but only 4 distinct runs (r1 carries two providers).
+    // Old rule: 5 events >= STICKY_REJECTS -> sticky. New rule: 4 runs < 5 -> active.
+    // The two values differ, so this test is non-vacuous on paper.
     const four = new FpLedgerStore(repo());
     for (const [run_id, provider] of [
       ["r1", "codex"],
+      ["r1", "gemini"],
       ["r2", "codex"],
       ["r3", "gemini"],
-      ["r4", "gemini"],
+      ["r4", "codex"],
     ] as const)
       await four.recordReject(sig, meta, { run_id, provider, reason: "x" }, t);
-    expect((await four.snapshot()).entries[0]?.stage).toBe("active");
+    const e = (await four.snapshot()).entries[0];
+    expect(e?.rejects).toHaveLength(5);
+    expect(e?.stage).toBe("active");
 
     const five = new FpLedgerStore(repo());
     for (const [run_id, provider] of [
@@ -110,7 +116,12 @@ Add to `tests/unit/fp-ledger-store.test.ts`, inside the existing `describe("FpLe
 
 Run: `bun test tests/unit/fp-ledger-store.test.ts`
 
-Expected: the first test FAILS (`expected "candidate", received "active"`) — that failure IS the fail-open this task closes. The second and third PASS already (they use distinct run_ids); they are regression guards, and their passing now is expected, not a problem.
+Expected, per test:
+- Test 1 (3 rejects / 1 run) **FAILS**: `expected "candidate", received "active"`. That failure IS the fail-open this task closes.
+- Test 2 (3 rejects / 3 runs) **PASSES** already — a pure regression guard; its passing now is expected.
+- Test 3 **FAILS** on its first half: `expected "active", received "sticky"`, because 5 reject events clear the old `STICKY_REJECTS` bar while only 4 distinct runs miss the new one. Its second half passes both before and after.
+
+If test 3's first half passes before the implementation, the fixture is wrong — the two providers must share `r1` — and the test is vacuous. Fix the fixture, do not proceed.
 
 - [ ] **Step 3: Change the thresholds to count distinct runs**
 
