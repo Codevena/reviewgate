@@ -1,5 +1,5 @@
 // src/cli/commands/fp.ts
-import { computeFpClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
+import { computeFpSemanticClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
 
 export interface FpListInput {
@@ -125,25 +125,31 @@ export interface FpClustersInput {
 export async function runFpClusters(input: FpClustersInput): Promise<number> {
   const out = input.write ?? ((s: string) => process.stdout.write(s));
   const snap = await new FpLedgerStore(input.repoRoot).snapshot();
-  const clusters = computeFpClusters(snap.entries, input.nowIso ?? new Date().toISOString());
+  const clusters = computeFpSemanticClusters(
+    snap.entries,
+    input.nowIso ?? new Date().toISOString(),
+  );
   const fileNeedle = input.file?.toLowerCase();
   const filtered = fileNeedle
     ? clusters.filter((c) => c.file.toLowerCase().includes(fileNeedle))
     : clusters;
   if (filtered.length === 0) {
     out(
-      "No multi-entry FP clusters found (a cluster requires ≥2 entries sharing rule_id_token0 + file).\n",
+      "No multi-entry FP clusters found (a cluster requires ≥2 entries in the same file and category sharing ≥2 canonical rule_id tokens).\n",
     );
     return 0;
   }
   out(
-    `FP clusters — derived view, no schema change (key = <rule_id_token0>@<file>; ${filtered.length} of ${clusters.length} shown):\n\n`,
+    `FP clusters — derived view, no schema change (same file+category, ≥2 shared canonical rule_id tokens; ${filtered.length} of ${clusters.length} shown):\n\n`,
   );
   for (const c of filtered) {
     const near = isNearActive(c) ? "  ⚡ near-active" : "";
     out(`[${c.stage}] ${c.key}${near}\n`);
     out(
       `  rejects: ${c.reject_count_total} total, ${c.reject_count_active_window} in active-window (60d), ${c.reject_count_sticky_window} in sticky-window (90d)\n`,
+    );
+    out(
+      `  runs: ${c.distinct_runs_active_window} distinct in active-window (60d), ${c.distinct_runs_sticky_window} in sticky-window (90d)\n`,
     );
     out(`  providers: ${c.distinct_providers.join(", ") || "(none)"}\n`);
     out(`  members: ${c.member_ids.join(", ")}\n`);

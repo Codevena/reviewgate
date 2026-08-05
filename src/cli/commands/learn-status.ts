@@ -23,7 +23,7 @@ import { AgentLessonsStore } from "../../core/agent-lessons/store.ts";
 import { CandidateStore } from "../../core/brain/candidate-store.ts";
 import { ProposalStore } from "../../core/brain/proposal-store.ts";
 import { BrainStore } from "../../core/brain/store.ts";
-import { computeFpClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
+import { computeFpSemanticClusters, isNearActive } from "../../core/fp-ledger/clusters.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
 import { ImplicitOutcomeStore } from "../../core/learnings/implicit-outcomes.ts";
 import { decayedCount, trustScore } from "../../core/reputation/score.ts";
@@ -252,7 +252,7 @@ async function buildReport(input: LearnStatusInput): Promise<LearnStatusReport> 
       rejects: e.rejects.length,
       providers: e.distinct_providers,
     }));
-  const clusters = computeFpClusters(fpSnap.entries, now.toISOString());
+  const clusters = computeFpSemanticClusters(fpSnap.entries, now.toISOString());
   const nearOrPromoted = clusters
     .filter((c) => c.stage !== "candidate" || isNearActive(c))
     .map((c) => ({

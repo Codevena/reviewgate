@@ -338,7 +338,13 @@ describe("learn status — FP ledger + cluster view", () => {
     // of near_or_promoted entirely and silently delete the key assertion below —
     // the only test anywhere on the derived cluster key.
     expect(rep.fp_ledger.clusters.near_active).toBe(1);
-    expect(rep.fp_ledger.clusters.near_or_promoted[0]?.key).toBe("prisma@prisma/schema.prisma");
+    // Key comes from the SEMANTIC view's labelFor — the most-shared canonical
+    // STEM, not the first hyphen segment. `prisma-attribute-*` share {prisma,
+    // attribut}; `attribut` wins the lexicographic tie-break. Stems rather than
+    // dictionary words are expected output. Do NOT restore the old key by giving
+    // labelFor a ruleIdToken0 fallback — that would silently undo the semantic
+    // clustering while leaving every new test green.
+    expect(rep.fp_ledger.clusters.near_or_promoted[0]?.key).toBe("attribut@prisma/schema.prisma");
   });
 });
 

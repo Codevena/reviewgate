@@ -70,6 +70,36 @@ export function normalizeRuleId(raw: string): string {
   return canonical.length > 0 ? canonical : raw.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 }
 
+// Light suffix folding on top of the noise-filtered tokeniser: reviewers phrase the
+// same concept as `pipe`/`piped` and `defang`/`defanged`, which normalizeRuleId's
+// exact token-set equality treats as different rules. Strip one inflection, then a
+// trailing `e`, so both sides land on the same stem (`pip`, `defang`). Deliberately
+// cruder than a real stemmer — it only has to make paraphrases of one rule collide,
+// and it emits stems rather than words (`delet`, `spac`), which is expected output.
+function foldSuffix(token: string): string {
+  let s = token;
+  for (const suf of ["ing", "ed", "s"]) {
+    if (s.length - suf.length >= 3 && s.endsWith(suf) && !s.endsWith("ss")) {
+      s = s.slice(0, -suf.length);
+      break;
+    }
+  }
+  return s.length > 3 && s.endsWith("e") ? s.slice(0, -1) : s;
+}
+
+/** Canonical token SET for a rule_id: the normalizeRuleId tokeniser and its
+ *  RULE_ID_NOISE filter, plus suffix folding. Used for semantic FP clustering
+ *  (`computeFpSemanticClusters`); deliberately NOT part of computeSignature,
+ *  whose identity must stay exact. */
+export function canonicalRuleTokens(raw: string): Set<string> {
+  const out = new Set<string>();
+  for (const t of raw.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (t.length === 0 || RULE_ID_NOISE.has(t)) continue;
+    out.add(foldSuffix(t));
+  }
+  return out;
+}
+
 function lineBucket(lineStart: number, bucketSize: number): number {
   return Math.floor((lineStart - 1) / bucketSize) * bucketSize;
 }
