@@ -93,8 +93,9 @@ result.
 
 ## Scope
 
-Four changes. One is expected to move the metric; three are correctness fixes with no expected
-metric movement, stated as such in advance so pilot-02 cannot be read ambiguously.
+Four changes were specified. **C3 was withdrawn before implementation** (see below), so three
+shipped: one expected to move the metric, two correctness fixes with no expected metric movement,
+stated as such in advance so pilot-02 cannot be read ambiguously.
 
 ### C1 — Enable `phases.critic` in this repo (config only)
 
@@ -189,7 +190,45 @@ Note `recordReject`'s existing dedup key is `(run_id, provider)`, so one provide
 contribute two rejects to one signature in one run. C2 extends that same intent from the
 per-signature level to the threshold level.
 
-### C3 — Reputation eligibility uses the raw sample count
+### C3 — WITHDRAWN before implementation (2026-08-05)
+
+**This section is kept, not deleted, so the reasoning survives. No code from it shipped —
+`src/core/reputation/` is byte-identical to before this milestone.**
+
+The plan gate flagged that C3 would flip `newsletter-buddy`'s `claude-code:security` to
+demoting. Checking *why* revealed the defect: that reviewer's 8 events are **2 review rounds on
+a single day**, 60 days ago (2 correct / 6 wrong). Scanning every repo with reputation state
+showed the pattern is systemic:
+
+| Repo / reviewer | events | **rounds** | days |
+|---|---:|---:|---:|
+| `newsletter-buddy claude-code:security` | 8 | **2** | 1 |
+| `reviewgate openrouter:security` | 13 | **4** | 4 |
+| `flashbuddy opencode:plan` | 21 | **1** | 1 |
+| `dealbarg codex:plan` | 6 | **1** | 1 |
+
+Reputation's sample count measures **findings judged**, not **times the reviewer was tested**.
+C3's raw count therefore inherits precisely the event-vs-round inflation that C2 removes from
+the FP-ledger — it would have demoted a reviewer on two stale rounds, inside the milestone whose
+thesis is *count occasions, not events*.
+
+Switching the unit to rounds is the principled fix, but it forces re-calibrating
+`minSamples: 8`: `openrouter:security` has 4 rounds, so an 8-round bar leaves the original bug
+unfixed while a 3-round bar fixes it. Choosing between them on two data points is fitting noise
+— which this document's own "out of scope" section rejects for `trustFloor`.
+
+**The original bug is real and still open**, and is recorded as a follow-up: `minSamples` is
+compared against a decayed sum while trust is also decayed, so an intermittently-used reviewer
+can sit below the floor indefinitely without qualifying. The honest fix gives eligibility *and*
+trust one shared unit — a per-round outcome rather than a per-finding one.
+
+Withdrawing cost the experiment nothing: C3 was registered as having no expected effect, and C1
+is the measured lever.
+
+<details>
+<summary>Original C3 specification (withdrawn, not implemented)</summary>
+
+#### C3 (withdrawn) — Reputation eligibility uses the raw sample count
 
 `src/core/reputation/store.ts:143` derives `samples` as
 `decayedCount(correct) + decayedCount(wrong)` and `isUnreliable` compares it to `minSamples`.
@@ -239,6 +278,8 @@ because its trust is 0.86. None of this repo's three panel keys (`codex:security
 Honest statement: **widens demote-eligibility everywhere; verified a no-op for this repo's
 panel.** The verification is mandatory, and it must read `demoting` from `forDoctor` —
 `learn status` does not print that field, so it cannot show this effect.
+
+</details>
 
 ### C4 — Cluster key: canonical token matching, diagnosis only
 

@@ -8,6 +8,24 @@
 
 **Tech Stack:** Bun, TypeScript, zod schemas, `bun test` (bun:test `describe`/`it`/`expect`), biome.
 
+## Implementation status (2026-08-05)
+
+| Task | State | Commit |
+|---|---|---|
+| 1 — C2, per-signature evidence unit | ✅ done | `9808169` |
+| 2 — C2, per-cluster evidence unit | ✅ done | `3cf3258` |
+| 3 — C3, reputation eligibility | ⛔ **withdrawn before implementation** | — |
+| 4 — C4, semantic cluster view | ✅ done | `6bce17b` |
+| 5 — C1, critic on + build | ✅ config + build done (`a584020`, binary `7f92445b…`); human approval landed 16:36 | `a584020` |
+
+Suite at completion: **3163 pass / 12 skip / 0 fail**; `bunx tsc --noEmit` and `bun run lint`
+clean. Rollback target `dist/reviewgate.prev` = `879a87e5…` (untracked, ~65 MB — delete once
+pilot-02 concludes).
+
+**Still open:** verify `critic.status: "ran"` in a `pending.json` from a round that produced ≥1
+finding. The critic only runs when the panel produced findings, so a zero-finding PASS legitimately
+writes no `critic` key — that is not a failure, and it is not evidence either.
+
 ## Global Constraints
 
 - Runtime is **Bun**. Use `bun`/`bunx`, never `npm`/`node`/`npx`. Tests are `bun test`, never jest/vitest.
