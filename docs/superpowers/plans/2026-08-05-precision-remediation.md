@@ -544,7 +544,7 @@ Run: `bun test tests/unit/reputation-quarantine.test.ts tests/unit/reputation-co
 
 Expected: PASS. Any other test constructing a `RepDerived` literal needs the new `evidence` field, set consistently with that test's intent.
 
-Note: `src/core/reputation/quarantine.ts` does **not** import `isUnreliable` — it is a pure filter. Quarantine eligibility lives at `src/core/reputation/store.ts:167-170` (`quarantinedReviewers`), which calls `reviewersBelow` with the quarantine floor and therefore *does* inherit the new eligibility rule. That is the path Step 6 measures.
+Note: `src/core/reputation/quarantine.ts` does **not** import `isUnreliable` — it is a pure filter. Quarantine eligibility lives at `src/core/reputation/store.ts:167-170` (`quarantinedReviewers`), which calls `reviewersBelow` with the quarantine floor and therefore *does* inherit the new eligibility rule — but `quarantine.enabled` is **false** by default and in every repo on this machine, so `forDoctor`'s `quarantined` field is hard-false and that widening is inert today. Step 6 measures the `demoting` path, which is the one that is live.
 
 - [ ] **Step 6: Measure the eligibility change — do not assert it**
 
@@ -582,8 +582,8 @@ def dc(evs):
         except Exception: continue
         s+=0.5**(abs((now-ts).total_seconds()/86400)/HL)
     return s
-for p in sorted(glob.glob(os.path.expanduser('~/Developer/*/.reviewgate/reputation.json'))):
-    repo=p.split('/Developer/')[1].split('/')[0]
+for p in sorted(glob.glob(os.path.expanduser('~/Developer/**/.reviewgate/reputation.json'), recursive=True)):
+    repo=p.split('/Developer/')[1].rsplit('/.reviewgate/',1)[0]
     try: d=json.load(open(p))
     except Exception: continue
     for k,v in d.get('reviewers',{}).items():
@@ -607,7 +607,9 @@ Measured 2026-08-05, this prints exactly two lines:
 
 The second one matters: `newsletter-buddy`'s config declares `{ provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] }`, so `claude-code` is a live fallback there — and codex is quota-capped. C3 would start demoting findings from a reviewer that repo actually depends on.
 
-**For every flip, check that repo's `phases.review.reviewers` including `fallback` arrays. If the flipped key appears there, stop and hand the decision to Markus** — the options are to accept the demote (the reviewer really is at trust 0.35), raise that repo's `trustFloor`, or delay the build. Do not silently proceed; a reviewer removed from a panel produces no findings at all, so the loss is invisible afterwards.
+**For every flip, check that repo's `phases.review.reviewers` including `fallback` arrays — and note that a repo with NO `reviewgate.config.ts` inherits the default panel, so "grep found nothing" is not the same as "not on the panel". If the flipped key is on that repo's panel, stop and hand the decision to Markus** — the options are to accept the demote (the reviewer really is at trust 0.35), raise that repo's `trustFloor`, or delay the build.
+
+**Magnitude, so the decision is made on the real premise:** this flip does **not** remove a reviewer from a panel. That is the `quarantine` path, which is `{ enabled: false, floor: 0.15 }` by default (`src/config/defaults.ts:225`), is enabled in **zero** repos on this machine, and would not fire at trust 0.348 anyway. The actual effect is narrower: that reviewer's **lone, uncorroborated non-security findings demote to INFO**. Security-category findings are never demoted by the reputation pass (`aggregator.ts:856-869`), and a from-CRITICAL demote is clamped at WARN with `demoted_from_critical: true`, which stays decision-required.
 
 Then run `bun run dev learn status` and confirm the reputation block shows both counts, e.g. `openrouter:security  trust 0.30  samples   5.6 decayed /  13 raw  (3c/10w)`. Both commands are read-only.
 
@@ -1035,6 +1037,8 @@ Expected: all green. `reviewgate.config.ts` is data-parsed, never imported, so a
 
 `bun run build` rewrites `dist/reviewgate` **in place**, and `~/.local/bin/reviewgate` symlinks to that exact path. A Stop hook firing in any other repo during the build would exec a partially-written binary. Confirm no other Claude Code or Codex session is running a gate right now before proceeding. If one is, wait for it.
 
+**Also re-run the all-repo reputation flip scan from Task 3 Step 6 here, and do not build until every flip whose key is on that repo's panel carries a recorded decision from Markus.** The scan lives in Task 3, but the build it guards is this task — and under this plan's task-by-task execution model a Task-5 agent never sees Task 3's escalation. Re-running it costs seconds; skipping it ships a demote-only change into another repo without the sign-off Task 3 asked for.
+
 - [ ] **Step 4: Build and verify the build actually took**
 
 ```bash
@@ -1046,17 +1050,31 @@ Expected: a hash **different** from `/tmp/reviewgate-prev.sha256`. An unchanged 
 
 Note this deploys to every repo on this machine via the `~/.local/bin/reviewgate` symlink.
 
-- [ ] **Step 5: Approve the policy change on a TTY**
+- [ ] **Step 5: End ONE turn so a gate pass completes under the critic-off policy**
+
+**The approval cannot be given yet, and this is the step that makes it possible.** `approveControlPlane` (`src/config/control-plane.ts:759`) throws *"This policy has not yet passed a gate run under the last-known-good configuration"* until a Stop-hook pass has set `reviewed_under_lkg_at`, and `controlPlaneStatus` returns `challenge: null` until then — so before this step the human has no `APPROVE <12-hex>` string to type and the command simply cannot succeed.
+
+End a turn in this repo so the Stop hook fires, and resolve any code findings it raises. This pass runs under the **critic-off** last-known-good policy; that is expected.
+
+- [ ] **Step 6: Read the approval challenge**
+
+```bash
+reviewgate config status
+```
+
+Expected: a `Approval challenge: APPROVE <12-hex>` line, and `Reviewed under last-known-good policy: yes (<timestamp>)`. If the challenge is still absent, Step 5's gate pass did not complete — go back, do not proceed.
+
+- [ ] **Step 7: Approve the policy change on a TTY**
 
 ```bash
 reviewgate config approve
 ```
 
-Adding a phase is a control-plane change and **no agent can run this** — it is TTY-only. Until it is approved, the gate keeps reviewing under the last-known-good policy and will not adopt the critic. If the agent is driving this plan, stop here and hand the command to the human.
+It will demand the exact challenge string from Step 6. Adding a phase is a control-plane change and **no agent can run this** — it is TTY-only. Until it is approved the gate keeps reviewing under the critic-off policy. If an agent is driving this plan, stop here and hand the command to the human.
 
-- [ ] **Step 6: Verify the critic actually runs**
+- [ ] **Step 8: Verify the critic actually runs**
 
-End a turn in this repo so the Stop hook fires, then:
+End a *second* turn so the Stop hook fires under the now-approved policy, then:
 
 ```bash
 python3 -c "import json;d=json.load(open('.reviewgate/pending.json'));print(d.get('critic'))"
@@ -1064,11 +1082,11 @@ python3 -c "import json;d=json.load(open('.reviewgate/pending.json'));print(d.ge
 
 Expected: a `critic` object whose `status` is `"ran"` — **not** `"skipped-budget"`, `"misconfigured"`, `"error"` or `"empty"`. `"misconfigured"` means the adapter has no `complete()`; `"error"` most often means `OPENROUTER_API_KEY` is not reaching the hook environment.
 
+**The critic only runs when the panel produced ≥1 finding** (`orchestrator.ts:2302`: `if (criticCfg && groundedFindings.length > 0)`). A zero-finding PASS therefore writes `pending.json` with **no `critic` key at all** — that is correct behaviour, not a misconfiguration, and it is *not* the `OPENROUTER_API_KEY` problem above. Keep working the repo until a round produces findings.
+
 **There is no fallback check — `critic.status: "ran"` is the only acceptable evidence.** An earlier draft said "if the gate PASSes without findings there may be no `pending.json`; in that case run `learn status` and confirm no new errors". That was wrong twice over: `pending.json` **is** written on a zero-finding PASS (one is on disk right now with `"findings": []`), and `learn status` never mentions the critic at all. Accepting it as proof would let C1 be ticked off without the critic ever having run — reproducing pilot-01's "zero by construction" exactly, in the one task whose entire purpose is to stop that.
 
-If `pending.json` is genuinely absent or carries no `critic` key, C1 is **not** verified. Keep working the repo until a round produces one.
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add reviewgate.config.ts
@@ -1100,7 +1118,7 @@ Consequences to plan around:
 
 So once approved, the two rollbacks are asymmetric rather than independent: the binary reverts in seconds by anyone, the critic does not revert without Markus at a terminal.
 
-**Pilot-02 must not start until Step 5's enabling approval has landed.** An earlier draft said "if pilot-02 must start before that approval is available, run it with the critic and record that as the registered configuration". That is unsound: until the approval lands, the gate keeps executing the **critic-off** last-known-good policy while `reviewgate.config.ts` says otherwise — so the preregistration would name a critic that is not actually running, and pilot-02 would measure the same critic-off system as pilot-01 while claiming to measure a different one. Verify with `reviewgate config status` (expect `APPROVED`, `pending: None`) plus a `critic.status: "ran"` in a real `pending.json` **before** freezing the preregistration.
+**Pilot-02 must not start until Step 5's enabling approval has landed.** An earlier draft said "if pilot-02 must start before that approval is available, run it with the critic and record that as the registered configuration". That is unsound: until the approval lands, the gate keeps executing the **critic-off** last-known-good policy while `reviewgate.config.ts` says otherwise — so the preregistration would name a critic that is not actually running, and pilot-02 would measure the same critic-off system as pilot-01 while claiming to measure a different one. Verify with `reviewgate config status` — expect the first line `Gate policy: APPROVED` and **no** `Candidate effective fingerprint:` block (there is no literal `pending: None` line) — plus a `critic.status: "ran"` in a real `pending.json`, **before** freezing the preregistration.
 
 **Housekeeping:** `dist/reviewgate.prev` is ~65 MB and untracked. Delete it once pilot-02 concludes and the change is settled — not before, since it is the only rollback target.
 
@@ -1166,3 +1184,34 @@ reproduce including the `runs: 0` windowing detail; the tightened property oracl
 necessary condition (0 violations in 400 generated runs); step renumbering and all cited line
 references are consistent; the spec's summary and cluster tables agree once unwindowed-vs-60d is
 accounted for.
+
+## Plan-gate findings mapping — round 3 (delta, FINAL round)
+
+**Slot B: PASS** (0 CRITICAL, 0 WARN, 6 INFO). **Slot A: FAIL** on a single WARN — an
+executability defect that had been sitting in Task 5 since before round 1 and that neither
+earlier round caught, because both were looking at the deltas.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| A1 | WARN | `reviewgate config approve` **cannot succeed where the plan put it**. `approveControlPlane` (`control-plane.ts:759`) throws until a Stop-hook pass has set `reviewed_under_lkg_at`, and `controlPlaneStatus` returns `challenge: null` until then — so the human has no `APPROVE <12-hex>` to type. Verified end to end in a temp repo. It compounded with round 2's B2 hardening: an engineer stepping past the error would end turns forever, never see a `critic` key, and be told only "C1 is not verified". | Task 5 reordered: build → **end one turn under the critic-off LKG** → `config status` to read the challenge → `config approve` → end a second turn → verify `critic.status: "ran"`. |
+| A2 | INFO | The critic only runs `if (criticCfg && groundedFindings.length > 0)` (`orchestrator.ts:2302`), so a zero-finding PASS legitimately writes **no `critic` key** — inviting exactly the `OPENROUTER_API_KEY` misdiagnosis the same step suggests. | Stated as correct behaviour, distinguished from the error case. |
+| A3 | INFO | `config status` prints no `pending: None` line. | Quoted the real strings. |
+| A4/B1 | INFO | The all-repo scan globbed depth-1 only, missing 5 stores (`Archiv/*`, `dealbarg/dealbarg`, two `capypad/.worktrees/*`) while the prose claimed "every repo". Both reviewers ran the exhaustive version: **same two flips, no near-boundary case.** | Glob made recursive. |
+| A5 | INFO | The escalation rationale ("a reviewer removed from a panel produces no findings at all") describes the **quarantine** path, which is default-off, enabled in zero repos, and would not fire at trust 0.348. The real effect is that lone non-security findings demote to INFO. The overstatement erred safe, but it was the premise Markus would decide on. | Replaced with the actual magnitude. |
+| A6 | INFO | Task 3 said quarantine "is the path Step 6 measures"; `quarantined` is hard-false while `quarantine.enabled` is false, so it cannot appear in that diff. | Stated inert; Step 6 measures `demoting`. |
+| A7 | INFO | The pre-build flip gate lived only in Task 3 Step 6, but the build is Task 5 Step 4 — under task-by-task execution a Task-5 agent never sees it. | Re-run requirement added to Task 5 Step 3.5. |
+| B2 | INFO | The stop condition greps the config *file*; a repo with no `reviewgate.config.ts` (e.g. `dealbarg/dealbarg`) inherits the default panel, so "grep found nothing" ≠ "not on the panel". Cannot fire today — both real flips are in repos with explicit `reviewers` blocks. | Noted in the stop condition. |
+
+**Slot B's independent safety verdict, recorded because it is the load-bearing one:** C2 can only
+lower a stage (`runs ≤ events`), so suppression strictly narrows; C4 leaves both ends of the
+suppression key untouched; C1 and C3 widen demotion in the same deploy but `demoteOneStep` clamps
+any from-CRITICAL finding at WARN with `demoted_from_critical: true` (decision-required),
+security-category findings are never demoted by the reputation pass, and lore INFO findings are
+appended after `aggregate()` so the critic cannot drop them. Quarantine — the only path that
+actually removes a reviewer — is off everywhere. On irreversibility: C2's `decayPass` could in
+principle demote-then-reap a promoted entry out of a gitignored, unbacked ledger, but **all 17
+ledgers on this machine hold 162 entries, every one `candidate`** — nothing can demote, so "code
+rollback is cheap" holds in fact, not just in theory.
+
+**Round limit reached (3 of 3).** Remaining open: nothing blocking. A1 is fixed; every INFO above
+is applied. Per the calibration rule, further rounds would be asymptotic polish.
