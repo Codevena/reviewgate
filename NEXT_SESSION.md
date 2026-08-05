@@ -1,121 +1,108 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-07-30, nach der Rig-Session (Tasks 1–3). Supersedes all earlier content._
+_Last updated: 2026-08-05. Supersedes all earlier content._
 
 ## One-line state
 
-The local toolchain is finally current (alpha.15 binary built, user-scoped hooks active) and
-**Phase 1 — the longitudinal effectiveness rig — is three tasks in**: turn-script schema,
-12-turn pilot script, and a driver that snapshots each turn. **Everything since `3eb8507` is UNPUSHED.**
+The longitudinal effectiveness rig is **fully built, reviewed and pushed** (Tasks 1–5 minus one
+step) — but the **baseline still does not exist**: the 12-turn pilot failed three times without
+producing a single audit event, and today's session found and fixed the cause without yet
+re-running it.
 
-## What got done — and how it was verified
+## What got done this session — and how it was verified
 
-**The local binary was the blocker and is fixed.** `bun run build` — verified by probe, not
-by version string: `hooks` now appears in the usage line (the version alone cannot tell you,
-`package.json` and a stale build say the same thing). `~/.local/bin/reviewgate` resolves to it.
+**Task 4 (harvester) and Task 5 (reporter + ablation) shipped.** The load-bearing correction the
+plan did not anticipate: **the per-turn snapshots are CUMULATIVE** (the audit tree is append-only
+and `handleReset` never clears it), so every per-iteration fact is a multiset delta against the
+previous snapshot. Mutation-checked — with the delta removed the M2 slope does not merely drift,
+it **flips sign** (+0.43 where the true fit is negative), i.e. the bug would have manufactured the
+exact opposite of the rig's headline claim.
 
-**`reviewgate init --user` is active here.** Verified live, all four cases: merge into
-`~/.claude/settings.json` left `brain-reminder.sh` and PreToolUse untouched; in this (armed)
-repo the shim stands down instantly with no output; in an unarmed repo it wrote **nothing**
-(no `.reviewgate/`); with an unapproved config present it printed the loud 🟠 notice and still
-wrote nothing. `doctor` reports `✓ user-scoped hooks … with a runnable Stop gate`.
+**The pilot's root cause, found by stepwise isolation.** Same prompt + default config, direct →
+gate fires. Same prompt + **pilot config**, direct → gate fires (850 B output, audit written).
+That eliminated prompt, config, hooks and contention. The remaining variable was
+`REVIEWGATE_CASSETTE`, absent from those isolation runs.
 
-**The codex cooldown was never a bug.** Live probe: `ERROR: You've hit your usage limit …
-try again at Aug 5th, 2026 1:24 PM` — to the minute the stored `reset_at`, with
-`source: "parsed"`. Two sessions of suspicion refuted. What was actually wrong was the
-*display*: `doctor` showed the time but not its provenance, so a provider-reported cap and
-our own backoff guess looked identical. Fixed, reusing the existing `cooldownReasonLabel`.
+> **A/B, same sandbox, back to back:** with the cassette → setup fails, no audit.
+> Without it → **PASS in 5.2 s** with the audit event.
 
-**Phase-1 plan is plan-gated** (agy round 1 FAIL with 2 CRITICAL → fixed → round 2 PASS) and
-**Tasks 1–3 are built**: the feasibility spike (hooks DO fire under `claude -p`, and the
-FAIL → decision → re-review loop runs in-chain in ONE invocation), the turn-script schema +
-`rig/scripts/pilot-01.json`, and `src/rig/driver.ts` + `reviewgate rig run`.
+The cassette recorder refuses paths **outside the repo under review** (traversal/symlink guard),
+and refuses them during the gate's **setup** phase. The cassette sat in `rig/results/`, but the
+repo under review is the *sandbox*. So the gate never ran, never wrote an audit event, and every
+turn completed with the agent's edits made and no review at all.
+
+**Why that took three runs:** `gate.ts` wrapped the whole setup phase in a bare `catch` that
+reported **every** exception as `did not complete within 120s (likely git index-lock contention)`.
+The real error threw in **0.1 s** and its message was discarded. The message actively pointed the
+wrong way — two wrong causes were named before the exception was allowed to speak.
+
+Both fixed in `52fdb70`: a timeout and a throw now read differently and the real message is never
+swallowed; and `rig run`'s pre-flight now mirrors the recorder's containment rule, where being
+wrong is still free instead of costing twelve turns of quota.
+
+**Also shipped:** `acknowledgePass` block-loop fix (`4aabc09`, from the FlashBuddy field report),
+the driver's unreviewed-turn guard (`26a4f5c`), and the preregistration + its integrity schema.
 
 ## Current metrics
 
 | | |
 |---|---|
-| HEAD | last CODE commit is `3e24fdb`; this handoff's own commit sits on top of it. Working tree clean |
-| Push state | **NOT pushed.** `origin/master` is `3eb8507`; everything after it is local. Read the LIVE count with `git rev-parse HEAD @{u} \| uniq -c` — one line/count 2 = in sync — because this file's own commit changes the number the moment it is written |
-| Suite | **3054 pass / 12 skip / 0 fail** (3066 across 428 files), run on exactly this content |
-| Static | `bunx tsc --noEmit` clean · biome clean (627 files) |
-| Gate | ran on HEAD and returned **PASS** (0 CRITICAL, 0 WARN, 4 INFO) |
-| Local binary | `0.1.0-alpha.15`, current (built 29.07. 22:40) |
+| HEAD | `52fdb70`, **pushed** — `git rev-parse HEAD @{u} \| uniq -c` shows one line, count 2. Tree clean |
+| Suite | **3136 pass / 12 skip / 0 fail** on exactly this content |
+| Static | `bunx tsc --noEmit` clean · biome clean (640 files) |
+| `dist/reviewgate` | **deliberately NOT rebuilt** — still the 31.07 build, `0.1.0-alpha.15`, `sha256:6f52c766…` |
+| Pilot | 0 of 12 turns ever measured. OpenRouter actual spend so far: **$0.001180** |
 
-## THE NEXT TASK — Task 4, the harvester
+## THE NEXT TASK — run the pilot, with the cassette inside the sandbox
 
-`docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md`, Task 4. It is next
-because everything before it only *collects*; Task 4 is where snapshots become numbers, and
-until it exists there is no baseline — which is the whole reason Phase 1 comes before the
-aggregator refactor (a behaviour-neutral refactor you cannot measure is a refactor you can
-only hope about).
+Task 6 of `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md`. It is next
+because everything upstream only *collects*; without the baseline the planned aggregator refactor
+is a behaviour-neutral change nobody can prove is behaviour-neutral.
 
-Entry points: create `src/rig/harvest.ts` and `src/schemas/rig-result.ts`. **Reuse, do not
-rebuild:** `loadAuditWindow` (`src/stats/load.ts`) already parses the audit tree into
-`{ runs: {ts, run_id, iter, summary}[], decisions, escalationCount }` through
-`RunSummarySchema`/`DecisionOutcomeSchema`, including a −1-day partition guard for processes
-crossing UTC midnight. `makeMetric(num, den)` (`src/bench/metrics.ts`) returns every rate with
-a Wilson CI and `value: null` when `den === 0`.
+The only change from the last attempt is **where the cassette lives**:
+
+```bash
+SB=$(mktemp -d /tmp/rig-pilot01-XXXXXX)   # arm it: git init + commit, copy the pilot config,
+                                          # `dist/reviewgate init --host claude`, commit again
+cd "$SB"
+export OPENROUTER_API_KEY='<fresh key>'
+export REVIEWGATE_CASSETTE="record:$SB/cassette.jsonl"   # INSIDE the sandbox — this is the fix
+bun /Users/markus/Developer/reviewgate/src/cli/index.ts rig run \
+  --script /Users/markus/Developer/reviewgate/rig/scripts/pilot-01.json \
+  --out /Users/markus/Developer/reviewgate/rig/results/pilot-01
+# afterwards: cp "$SB/cassette.jsonl" rig/results/pilot-01/
+```
+
+The pre-flight guard now refuses the old (broken) layout before spawning anything, so this cannot
+silently regress. Then: `rig harvest` → `rig report` → `rig ablate`, then the write-up.
 
 ## Traps that still hold
 
-**New, and the two that would have made the rig lie:**
-
-- **A clean-PASS re-arm WIPES `state.json` and `decisions/`.** After a turn ends green the
-  state reads `iteration: 0`, empty stats, no decisions dir. Harvesting those would silently
-  report zero for exactly the turns that worked. The durable record is the hash-chained
-  `.reviewgate/audit/<Y>/<M>/<D>/*.jsonl` — several files per turn, one per gate process.
-- **The finding signature is SHA-256** over `[file, ruleId, category, symbol, offset]`, so the
-  rule id is NOT recoverable from it, and the audit log carries no finding text. That is why
-  `src/rig/driver.ts` archives every `pending.{json,md}` version that appears *during* a turn
-  into `<turn>/reports/`. **Do not remove that archiver as redundant** — without it recall
-  (M3) cannot be computed at all.
-- **`Bun.spawn` does NOT deadlock on undrained pipes.** Measured: 128MB in 1.1s. Two reviewers
-  reported the opposite as CRITICAL at confidence 0.97, reasoning from Node `child_process`.
-  The driver writes to an fd for two *different* reasons (per-turn transcript; keeping
-  multi-MB turns out of parent memory). Do not re-add a deadlock rationale — it is false.
-  Draft lore entry: `.reviewgate/lore/bun-spawn-pipes-do-not-deadlock.md`.
-- **Never run the full suite concurrently with an agentic CLI.** Four load incidents in one
-  night, once **72** "failures" — all exactly 5000ms timeouts, all green in isolation. Twice
-  the load came from other projects entirely (`playwright install`, `next-server` at 178% CPU).
-  Check `uptime` before trusting a red suite.
-- **`agy` needs an ABSOLUTE findings path.** With a relative one it writes to
-  `~/.gemini/antigravity-cli/scratch/<path>` — or claims success and writes nothing at all
-  (seen once). Also feed the prompt INLINE; otherwise agy enters its agentic ReadFile crawl
-  and times out.
-- **`init --user` turned this repo's own suite red** — `worktree-gating.test.ts` read the real
-  `~/.claude/settings.json`. Fixed with a temp home. If a doctor check takes a `home`
-  argument, tests must pass one.
-
-**Carried forward:**
-
-- **`lore verify --all` WRITES** (refreshes `verified_tree`/`verified_at`, i.e. asserts a
-  re-verification you did not perform). To read state use `reviewgate lore status`.
-- **Backticks in `git commit -m` are executed** — always `git commit -F <file>`.
-- **Never `git add -A` at the repo root** (stages `.reviewgate/` runtime state); the one
-  exception is `git add -A .reviewgate/lore/`.
-- **Never `npm i -g reviewgate` on this machine** — npm's global prefix is `~/.local`, which
-  would overwrite the symlink into `dist/`. Smoke-test in a `mktemp` prefix.
-- **`bun run build` deploys everywhere** via that symlink. `build:npm` is the safe one.
-- **codex is genuinely out of quota until `2026-08-05T11:24Z`.** Not a bug — do not
-  re-investigate. Use `agy` as the external reviewer until then.
-- **Tests must never touch the real `~/.claude/settings.json`** — always a temp home.
-- **The pre-push hook is warn-only** (`exit 0` unconditionally).
-
-## Open decisions for Markus
-
-1. **Push?** Everything since `3eb8507` — all gate-passed and green.
-2. **Canon promotion** for `bun-spawn-pipes-do-not-deadlock` (draft). Never self-promoted.
-3. **Small fix, not yet done:** the gate's block message does not name its state directory.
-   Observed in dealbarg, which has two `.reviewgate/` dirs in one git repo (the subdir was
-   separately `init`ed on 16.07.) — the agent read the wrong report and nearly reported a
-   contradiction that did not exist. Same class as the `doctor` provenance fix.
+- **Do NOT `bun run build` before the pilot.** The preregistration pins the binary by hash
+  (`sha256:6f52c766…`); rebuilding changes the measured system and forces another re-pin. The rig
+  runs from source, so the new cassette guard is active anyway. Rebuild *after* the run.
+- **The cassette must live inside the sandbox.** Anywhere else and the gate dies in setup with no
+  audit events — which looks exactly like "the agent's Stop hook never fired".
+- **`exit = 0` proves nothing about a turn.** A turn can complete with edits made and no review.
+  The driver's `gateReviewed` flag (audit growth + `dirty.flag`) is the real signal; two
+  consecutive unreviewed turns abort the run.
+- **Never run the full suite, or a second Claude session, beside a pilot run.** Contention is real
+  — but note it was NOT the cause here; do not let it become the default explanation again.
+- **A preregistration may only be re-frozen while zero numbers exist**, and the change goes into
+  `known_limitations`. That was done once (31.07 → binary re-pin) and is documented in the file.
+- **`rig replay` (Task 5 Step 4) is deliberately unbuilt** — its acceptance criterion needs a
+  recorded pilot that does not exist yet.
+- **fp-ledger's ablation Δ is an INTERVAL, not a point**, and that is correct: the layer
+  overwrites severity with INFO and the original is persisted nowhere. Do not "fix" it into a
+  point estimate. `lore` never demotes at all (additive INFO findings).
+- **Never `git add -A` at the repo root** (stages `.reviewgate/` state). `rig/results/` is
+  gitignored because cassettes contain raw reviewer prompts and output — review before committing.
+- **codex quota** reset was `2026-08-05T11:24Z`; verify before assuming it is available.
 
 ## Read-first order
 
 1. This file.
-2. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Task 4, plus the
-   "Revision after Task 1 execution" table at the end (8 findings that changed the plan).
-3. `docs/dev/2026-07-29-headless-gate-spike.md` — what a real turn actually produces.
-4. `src/rig/driver.ts` (`startReportArchiver`, `awaitQuiescent`) and `src/stats/load.ts`
-   (`loadAuditWindow`) before writing the harvester.
+2. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Task 6, plus the
+   two "DONE" write-ups on Tasks 4 and 5 (they record the deviations from the original plan).
+3. `src/cli/commands/rig.ts:runRigRun` — the pre-flight guards, including the new containment rule.
+4. `rig/preregistrations/pilot-01.json` — what the run is committed to in advance.
