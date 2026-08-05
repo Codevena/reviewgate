@@ -232,6 +232,12 @@ export const FindingSchema = z.object({
   // a fabrication regardless of category, and demoting (vs blocking on a phantom) is
   // strictly safer. Fail-safe: any fs uncertainty leaves the finding untouched.
   fact_invalid: z.boolean().optional(),
+  // Slice A (pilot-02 turn 2): set true when the fact-check found the cited line OUT OF RANGE
+  // but the reviewer's own evidence_line matched a real line of that file — the finding was
+  // MIS-ANCHORED, not fabricated, so it is re-anchored to the quoted line instead of demoted.
+  // Severity is untouched; this is a provenance/render marker. Mutually exclusive with
+  // fact_invalid by construction (the repair returns before the demote).
+  anchor_repaired: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base

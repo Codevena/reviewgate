@@ -46,6 +46,51 @@ function demote(f: Finding, note: string): Finding {
 }
 
 /**
+ * A cited line that does not exist is NOT automatically a fabrication. When the reviewer quoted
+ * its own evidence and that quote is a real line of the cited file, the reviewer read real code
+ * and mis-numbered it — mis-anchored, not hallucinated. Demoting that as a hallucination is a
+ * false accusation against a finding we can PROVE is grounded (pilot-02 turn 2: a 0.90 path
+ * traversal, quote verbatim at line 26, cited at 67, demoted with "almost certainly
+ * hallucinated").
+ *
+ * Returns the finding re-anchored to the quoted line, or null when nothing can be proven — in
+ * which case the caller demotes exactly as before. This can only ever be reached for an
+ * out-of-range anchor, so it can never move a valid one.
+ *
+ * Multiple matches resolve to the occurrence NEAREST the cited line, ties to the LOWER line
+ * number. Both are real occurrences of the reviewer's own quote, so this chooses among facts
+ * rather than inventing one — and it must be deterministic, because the aggregator's clustering
+ * is deliberately order-independent and keys on line_start.
+ */
+function reanchorByEvidence(f: Finding, text: string): Finding | null {
+  const ev = typeof f.evidence_line === "string" ? f.evidence_line : null;
+  if (ev === null || ev.length === 0) return null;
+  const evN = normalizeLine(ev);
+  if (evN.length === 0) return null; // quote was only whitespace/markers → no signal
+  const lines = text.split("\n");
+  const cited = f.line_start - 1;
+  let best = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    if (raw === undefined) continue;
+    if (normalizeLine(raw) !== evN) continue;
+    // Strict `<` with an ascending scan makes ties keep the LOWER line number.
+    if (best === -1 || Math.abs(i - cited) < Math.abs(best - cited)) best = i;
+  }
+  if (best === -1) return null; // quote matches no line → the fabrication signal stands
+  const line = best + 1;
+  const total = lineCount(text);
+  const note = `\n\n[reviewgate fact-check] the reviewer cited ${f.file}:${f.line_start}, which does not exist (the file has ${total} line${total === 1 ? "" : "s"}), but the evidence it quoted matches line ${line} verbatim — MIS-ANCHORED, not fabricated, so it has been re-anchored there. Treat the defect as real and check line ${line}.`;
+  return {
+    ...f,
+    line_start: line,
+    line_end: line,
+    anchor_repaired: true,
+    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+  };
+}
+
+/**
  * Demote findings whose cited file:line provably does not exist (file present but the
  * line is out of range / the file is empty). Pure, synchronous, fail-safe.
  *
@@ -115,6 +160,11 @@ export function validateFindingFacts(
     }
     const lines = lineCount(text);
     if (f.line_start <= lines) return f; // cited line exists → real finding, untouched
+    // Out of range. Before calling it a fabrication, consult the reviewer's OWN quoted evidence:
+    // a quote that matches a real line of THIS file proves the reviewer read the code and
+    // mis-numbered it, which is not what this pass exists to catch.
+    const repaired = reanchorByEvidence(f, text);
+    if (repaired !== null) return repaired;
     const note = `\n\n[reviewgate fact-check] cited location ${file}:${f.line_start} does not exist in the working tree (file has ${lines} line${lines === 1 ? "" : "s"}) — almost certainly hallucinated; demoted to advisory. Verify before treating as real.`;
     return demote(f, note);
   });
