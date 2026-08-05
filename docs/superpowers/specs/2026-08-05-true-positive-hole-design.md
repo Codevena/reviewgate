@@ -177,6 +177,15 @@ finding as ambiguous.
 
 The badge is what makes a mis-anchoring reviewer visible instead of silently corrected.
 
+**The marker must survive the merge it enables.** Found while planning, and load-bearing: the
+repair's whole purpose is to let two detections cluster, but `memberOf` (`aggregator.ts:295`)
+projects a member down to six fields, and the representative is chosen by severity with **ties
+keeping the first**. In the turn-2 shape both findings are WARN and the repaired one sorts second,
+so it becomes a *member* — and the marker, the badge and the pilot count would all vanish in
+exactly the case the slice was built for. `anchor_repaired` is therefore carried in `members[]`
+and OR-propagated to the representative, mirroring what `demoted_from_critical` already does at
+`:524-531` for precisely the same reason.
+
 ## Slice B — critic severity floor
 
 `aggregator.ts:604` gains a sibling to `isCriticalSecurity`:
