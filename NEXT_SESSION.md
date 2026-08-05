@@ -1,12 +1,13 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-05 (afternoon). Supersedes all earlier content._
+_Last updated: 2026-08-05 12:16. Supersedes all earlier content._
 
 ## One-line state
 
-**The pilot-01 baseline exists.** 12/12 turns reviewed, 61 min, $0.0166 billed; harvested,
-reported, ablated, written up, and verified reproducible. Two bugs the run itself exposed are
-fixed, plus the duplicate-gate bug from the field.
+**The pilot-01 baseline exists and is reproducible; the next task is an open choice between
+precision work and the aggregator detangle.** 12/12 turns reviewed, 61 min, $0.0166 billed;
+harvested, reported, ablated, written up, and re-derived identically by `rig replay`. Three
+bugs fixed along the way — two the run exposed, one from the field (duplicate gates).
 
 ## What landed this session
 
@@ -16,11 +17,20 @@ fixed, plus the duplicate-gate bug from the field.
 | `f4b6761` | per-turn `diff.patch` recording; `reviewgate rig replay` |
 | `bc4cc6a` | seed-landing verification (`landedPattern` → `seedLanded`) + the 2/3 correction |
 | `0f71051` | gate findings F-002/F-003: added-line matching, 200-char cap, TOCTOU + warning fixes |
+| `04563ee` + the HEAD commit | handoff docs |
 
-Suite **3150 pass / 12 skip / 0 fail** · `tsc` + biome clean · `dist/reviewgate` rebuilt
-(`sha256:879a87e5…`) and deployed via the `~/.local/bin/reviewgate` symlink — note that build
-PREDATES `bc4cc6a`/`0f71051`, so rebuild before relying on seed-landing from the binary.
-**Everything pushed: `origin/master` = `0f71051`.**
+Verified at session end (2026-08-05 12:16, re-run on this exact tree, not recalled):
+Suite **3150 pass / 12 skip / 0 fail** · `bunx tsc --noEmit` clean · biome clean (642 files) ·
+working tree clean apart from this handoff · `origin/master` = **`04563ee`** (everything through
+that commit is pushed and verified identical). ⚠️ **The HEAD commit (this handoff) is NOT pushed** — it is the only
+local-only commit; `git push` it or carry it forward. Verify with
+`git rev-parse HEAD @{u} | uniq -c` (one line, count 2 = pushed).
+
+⚠️ **`dist/reviewgate` is STALE relative to HEAD.** It is `sha256:879a87e5…`, built 11:08, which
+predates `bc4cc6a` and `0f71051`. The duplicate-gate fix IS in it (that is why the two Stop
+messages stopped); **seed-landing is NOT**. Run `bun run build` before relying on `landedPattern`
+from the binary — and remember the build deploys to every repo via the
+`~/.local/bin/reviewgate` symlink.
 
 ## The pilot's results, and what they actually say
 
@@ -64,14 +74,33 @@ been credited for a finding about a hypothetical `Db` implementation.
 too. My path-traversal pattern (`readFileSync\(`) gave the right answer by luck — it would
 match a properly-validated implementation just as happily.
 
-## THE NEXT TASK — the aggregator detangle
+## THE NEXT TASK — deliberately UNDECIDED; Markus picks at session start
 
-`rig replay` is its acceptance test and reports DETERMINISTIC against pilot-01 today, so a
-refactor that changes a number cannot hide. Markus' earlier analysis named the aggregator's
-~8 suppression passes as the cleanest first cut; the pilot adds evidence, since two of those
-layers never fired in 12 turns and their behaviour is currently asserted rather than observed.
+Do not just start (b) because the previous handoff said so. The two candidates:
 
-A second pilot run is worth doing **after** that, with `landedPattern`s on all five seeds.
+**(a) Precision / FP-fragmentation — the recommendation.** The pilot produced evidence for this
+on the same day, from two independent directions:
+- **fp-ledger promotion is effectively unreachable on a 2-reviewer panel.** 14 candidates after
+  12 turns, every one at exactly ONE distinct provider; promotion needs ≥2 providers on the
+  SAME signature, and the reviewers fragment their `rule_id`s so no signature ever gets there.
+- The gate's own round on this repo flagged three files (`src/core/lore/approve.ts`,
+  `src/rig/driver.ts`, `src/diff/sanitizer.ts`) each carrying 3–4 distinct rejected-FP
+  signatures that never promote — the same failure from the other side.
+- **Reputation missed its demote threshold by 0.026** (trust 0.476 vs `trustFloor` 0.45) after
+  21 samples for `openrouter:security`.
+Entry points: `src/core/brain/fp-coupling.ts`, the ledger's promotion rule (`stage: candidate`
+→ active, `distinct_providers`), `phases.reputation` in `src/config/defaults.ts`. The rig can
+now measure whether a fix moves the M2 slope — that is what it is for.
+
+**(b) The aggregator detangle.** `rig replay` is its acceptance test and reports DETERMINISTIC
+against pilot-01 today, so a refactor that changes a number cannot hide. Entry point
+`src/core/aggregator.ts` (~8 suppression passes → explicit pipeline stages).
+**But by Markus' own ranking from 2026-07-04 this is THIRD** (*Präzision > Distribution >
+Entflechtung*), and he explicitly wanted it to sit. The baseline makes it **safe**, not
+**urgent**. Choosing it is defensible — bank the acceptance test while it is fresh — but it is
+not the higher-impact option.
+
+A second pilot run belongs **after** either, with `landedPattern`s on all five seeds.
 
 ## Traps that still hold
 
@@ -88,6 +117,30 @@ A second pilot run is worth doing **after** that, with `landedPattern`s on all f
 - **Never `git add -A` at the repo root** (stages `.reviewgate/` state). `rig/results/` is
   gitignored: cassettes contain raw reviewer prompts and output.
 - **A preregistration may only be re-frozen while zero numbers exist.**
+- **NEVER put `*.test.ts` under `rig/results/`** (or anywhere in the repo you don't want run).
+  `bun test` executes every test file in the tree **regardless of `.gitignore`** — copying the
+  pilot sandbox's source in cost 10 phantom suite failures that look like real regressions.
+  Store evidence as a `.diff`, which is inert. This is why `final-tree/` holds a patch, not code.
+- **To capture what an agent wrote, use `collectDiff()` — NOT `git diff HEAD`.** The rig sandbox
+  never commits, so every new file is UNTRACKED and a plain `git diff HEAD` omits all of it. The
+  first evidence file produced that way was nearly empty and made two landed seeds look unlanded.
+  `src/utils/git.ts:collectDiff` synthesizes untracked files via `--no-index`; the driver already
+  uses it (`src/rig/driver.ts:captureTurnDiff`).
+- **`landedPattern` must match the DEFECT, not the topic.** `API_TOKEN` matches the safe
+  `process.env` version too. Matching is against ADDED lines only — a hit in a context or
+  removed line is not evidence the agent wrote anything.
+
+## Read-first order
+
+1. This file.
+2. `docs/dev/2026-08-05-pilot-01-result.md` — the baseline, its limitations, and the correction
+   block (it carries a strikethrough correction of a number this session published and then
+   disproved; read it as an example of the honesty rules this project runs on).
+3. For (a): `src/core/brain/fp-coupling.ts` + the FP-ledger promotion rule; the live evidence is
+   `.reviewgate/learnings/known_fp.jsonl` in any dogfooded repo (`stage`, `distinct_providers`).
+   For (b): `src/core/aggregator.ts`, then `src/rig/replay.ts` for how the acceptance test works.
+4. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Tasks 4–6 DONE
+   write-ups, which record every deviation from the original plan and why.
 
 ## Open, deliberately not done
 
