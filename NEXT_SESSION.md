@@ -1,12 +1,15 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-05 20:05. Supersedes all earlier content._
+_Last updated: 2026-08-05 21:35. Supersedes all earlier content._
 
 ## One-line state
 
-**pilot-02 ran clean (12/12 turns, 39.8 min, zero failures). Both registered primary outcomes
-were met — the critic runs on every eligible turn and suppresses — and the run's real finding is
-that its first measured act was to demote a true positive.**
+**pilot-02 ran clean and both registered primary outcomes were met — the critic runs on every
+eligible turn and suppresses — but its first measured act was to demote a TRUE positive; the
+three measurement bugs the run exposed are now fixed, so the next cut is closing that
+true-positive hole and scoring it with a pilot-03.**
+
+Everything is committed and pushed (`origin/master` = `7a05c0e`); the suite is green at HEAD.
 
 ## What got done this session — and how it was verified
 
@@ -83,12 +86,14 @@ caught one vacuous case (an inline `Bearer <literal>` header).
 
 ## Current metrics (measured, not recalled)
 
-- Suite **0 fail** (3180 tests, 12 skip) · `bunx tsc --noEmit` clean · biome clean (643 files)
-- Working tree **clean** · HEAD **`5a1f94f`**
-- **origin/master = `33bc02f`** → **4 commits unpushed**: `ac2f5d5` (preregistration),
-  `dd21408` (pilot-02 result), `0989ae5` (handoff), `5a1f94f` (rig measurement fixes).
-  The 15 that were pending last session **were pushed** this session with Markus's OK
-  (`04563ee..33bc02f`, verified `git rev-list --count` = 15).
+- Suite **3168 pass / 12 skip / 0 fail** (3180 tests) · `bunx tsc --noEmit` clean · biome clean
+  (643 files). **Re-run at HEAD**, not carried over from an earlier commit.
+- Working tree **clean** · HEAD **`7a05c0e`**
+- **Everything is PUSHED.** `origin/master` = `7a05c0e`, **0 unpushed** — verified with
+  `git rev-parse HEAD @{u} | uniq -c` (one line, count 2). Two pushes this session:
+  `04563ee..33bc02f` (15 commits carried over from the previous session) and
+  `33bc02f..7a05c0e` (this session's 5: `ac2f5d5` preregistration, `dd21408` pilot-02 result,
+  `0989ae5` + `7a05c0e` handoffs, `5a1f94f` rig measurement fixes).
 - Binary **unchanged**: `sha256:7f92445b…` — pinned by the preregistration and deliberately not
   rebuilt. `dist/reviewgate.prev` (`879a87e5…`) is still the rollback target.
 - Control plane approved, `pending: None`
@@ -151,8 +156,7 @@ measurable FP reduction. It is also not on its own a reason to turn it off here 
 
 ## Open, needs Markus
 
-1. **4 commits unpushed** (`ac2f5d5` prereg, `dd21408` pilot-02 result, `0989ae5` handoff,
-   `5a1f94f` rig fixes) + this handoff update. Push?
+1. ~~Commits unpushed~~ → **DONE.** Everything is on `origin/master` (`7a05c0e`).
 2. **Two `~/Developer` fixes**, diagnosed but still not applied (outside this repo):
    `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at
    `${CLAUDE_PROJECT_DIR}/.reviewgate/bin/…` while `~/Developer/.reviewgate/bin/` does not exist
@@ -169,6 +173,8 @@ measurable FP reduction. It is also not on its own a reason to turn it off here 
 1. This file.
 2. `docs/dev/2026-08-05-pilot-02-result.md` — the full run, its limits, and the three tooling bugs.
 3. `docs/dev/2026-08-05-pilot-01-result.md` — the baseline it is compared against.
-4. `rig/preregistrations/pilot-02.json` — what was committed to before any number existed.
-5. `docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md` — the design of record
+4. `docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md` — what was fixed afterwards and
+   why the third bug was scoped out; its review section records what each round caught.
+5. `rig/preregistrations/pilot-02.json` — what was committed to before any number existed.
+6. `docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md` — the design of record
    (C1's "enable the critic" is the change pilot-02 measured; C3 is withdrawn).
