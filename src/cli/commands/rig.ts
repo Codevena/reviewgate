@@ -15,6 +15,7 @@ import {
 } from "../../rig/ablate.ts";
 import { type DriverRunManifest, runDriver } from "../../rig/driver.ts";
 import { harvest } from "../../rig/harvest.ts";
+import { renderReplayReport, replay } from "../../rig/replay.ts";
 import { renderRigReport } from "../../rig/report.ts";
 import { loadTurnScript } from "../../rig/turn-script.ts";
 import { type RigResult, RigResultSchema } from "../../schemas/rig-result.ts";
@@ -159,6 +160,21 @@ export function runRigAblate(input: RigAblateInput): string {
     base,
     layers.map((l) => ablate(base, l, tags)),
   );
+}
+
+export interface RigReplayInput {
+  manifestPath: string;
+  scriptPath: string;
+  cassettePath?: string | undefined;
+}
+
+/**
+ * Harness self-check. Returns the rendered report plus whether it PASSED, so the CLI can
+ * exit non-zero — a determinism check that always exits 0 cannot gate anything.
+ */
+export function runRigReplay(input: RigReplayInput): { text: string; ok: boolean } {
+  const report = replay(input);
+  return { text: renderReplayReport(report), ok: report.deterministic };
 }
 
 export interface RigHarvestInput {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -458,6 +459,40 @@ describe("rig driver — unreviewed-turn guard", () => {
     // The completed turns stay harvestable rather than the whole run being lost.
     const written = JSON.parse(readFileSync(join(root, "out", "manifest.json"), "utf8"));
     expect(written.turns).toHaveLength(2);
+  });
+
+  test("records the code the agent actually wrote, so seed landing stays checkable", async () => {
+    // pilot-01's turn 9 is the reason: the script directed a hardcoded token, the agent wrote
+    // the env-var version instead, and NOTHING in the recorded artifacts could show that the
+    // seeded defect never landed — so the miss was charged to the reviewer. The source has to
+    // be recorded for a later `seed_landed` check to be possible at all.
+    const { root, scriptPath } = sandbox(1);
+    execFileSync("git", ["init", "-q", "."], { cwd: root });
+    execFileSync("git", ["config", "user.email", "rig@example.invalid"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "rig"], { cwd: root });
+    writeFileSync(join(root, "seed.ts"), "export const x = 1\n");
+    execFileSync("git", ["add", "seed.ts"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "init"], { cwd: root });
+
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      // Stands in for the agent writing source: the defect (or its refusal) lives HERE, in
+      // the code, not in anything .reviewgate/ records.
+      agentCmd: () => [
+        "bash",
+        "-c",
+        `printf 'const API_TOKEN = process.env.REPORT_API_TOKEN\\n' > ${JSON.stringify(join(root, "notify.ts"))}`,
+      ],
+    });
+
+    const patchPath = join(manifest.turns[0]?.snapshotDir ?? "", "diff.patch");
+    expect(existsSync(patchPath)).toBe(true);
+    const patch = readFileSync(patchPath, "utf8");
+    expect(patch).toContain("notify.ts");
+    expect(patch).toContain("process.env.REPORT_API_TOKEN");
+    expect(manifest.turns[0]?.diffBytes).toBe(Buffer.byteLength(patch, "utf8"));
   });
 
   test("a turn that leaves NO dirty flag is not counted as unreviewed (a legitimate skip)", async () => {

@@ -35,7 +35,13 @@ import { runPrePush } from "./commands/pre-push.ts";
 import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
-import { runRigAblate, runRigHarvest, runRigReport, runRigRun } from "./commands/rig.ts";
+import {
+  runRigAblate,
+  runRigHarvest,
+  runRigReplay,
+  runRigReport,
+  runRigRun,
+} from "./commands/rig.ts";
 import { runSetup } from "./commands/setup.ts";
 import { runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
@@ -1127,6 +1133,32 @@ const rig = defineCommand({
             ...(layer === undefined ? {} : { layer: layer as SuppressionLayer }),
           }),
         );
+      },
+    }),
+    replay: defineCommand({
+      meta: {
+        name: "replay",
+        description:
+          "Self-check of the HARNESS: re-derive a recorded run's metrics twice and assert they match (the acceptance test an aggregator refactor needs). Never a counterfactual, never re-drives the agent.",
+      },
+      args: {
+        manifest: { type: "string", required: true, description: "manifest.json from `rig run`" },
+        script: { type: "string", required: true, description: "The turn script the run used" },
+        cassette: {
+          type: "string",
+          description: "Also check the recording's integrity (entry count, FIFO keys, bodies)",
+        },
+      },
+      run({ args }) {
+        const report = runRigReplay({
+          manifestPath: args.manifest as string,
+          scriptPath: args.script as string,
+          cassettePath: args.cassette as string | undefined,
+        });
+        process.stdout.write(`${report.text}\n`);
+        // Non-zero on nondeterminism: this is a CHECK, and a check that always exits 0 is a
+        // report. CI (or a refactor's acceptance step) must be able to gate on it.
+        if (!report.ok) process.exit(1);
       },
     }),
   },

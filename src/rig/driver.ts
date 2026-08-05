@@ -16,6 +16,7 @@ import {
 import { join } from "node:path";
 import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
+import { collectDiff } from "../utils/git.ts";
 import { dirtyFlagPath, gateLockPath, reviewgateDir } from "../utils/paths.ts";
 import { loadTurnScript } from "./turn-script.ts";
 
@@ -275,6 +276,36 @@ async function runAgent(argv: string[], cwd: string, logPath: string): Promise<n
   }
 }
 
+/**
+ * Persist WHAT THE AGENT ACTUALLY WROTE this turn, as `<snapshotDir>/diff.patch`.
+ *
+ * pilot-01 (2026-08-05) is the argument for this. Turn 9's prompt directed a hardcoded API
+ * token; the agent declined and wrote `process.env.REPORT_API_TOKEN` instead. No defect ever
+ * reached the code — and the harvester, which only ever sees the gate's output, scored it as
+ * a recall MISS and as the run's only escape. The rig charged the reviewer for the agent's
+ * good judgment, and nothing in the recorded artifacts could have revealed that: the run
+ * captured `.reviewgate/` and the cassette, but never the code. Verifying that a seeded
+ * defect LANDED needs the source, so the source gets recorded.
+ *
+ * CUMULATIVE, like the audit snapshots: the rig sandbox never commits between turns, so this
+ * is the whole working tree against HEAD. A per-turn delta is the difference between
+ * consecutive captures — the same multiset-delta discipline the harvester already applies to
+ * the append-only audit tree (Task 4).
+ *
+ * FAIL-SAFE and deliberately so: a turn that produced a real measurement must never be lost
+ * because an auxiliary artifact could not be written (a non-git sandbox, a git that timed
+ * out). Returns null and the run continues.
+ */
+async function captureTurnDiff(repoRoot: string, snapshotDir: string): Promise<number | null> {
+  try {
+    const patch = await collectDiff(repoRoot);
+    writeFileAtomic(join(snapshotDir, "diff.patch"), patch);
+    return Buffer.byteLength(patch, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
   const script = loadTurnScript(opts.scriptPath);
   const maxTurns = Math.max(1, Math.min(opts.maxTurns ?? script.turns.length, script.turns.length));
@@ -328,6 +359,7 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 
     const cassetteAfter = cassetteSize(manifest.cassettePath ?? null);
+    const diffBytes = await captureTurnDiff(opts.repoRoot, snapshotDir);
     // Checked BEFORE the snapshot is declared good: an unreviewed turn is not a slow turn, it
     // is a turn that produced no measurement, and the run must not quietly accumulate them.
     const gateReviewed = gateReviewedTurn(opts.repoRoot, auditBytesBefore);
@@ -341,6 +373,7 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
         cassetteBefore === null || cassetteAfter === null
           ? null
           : { before: cassetteBefore, after: cassetteAfter },
+      diffBytes,
     });
     if (gateReviewed) {
       consecutiveUnreviewed = 0;

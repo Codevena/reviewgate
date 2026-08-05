@@ -824,6 +824,48 @@ git commit -F .commit-msg.txt
 
 ---
 
+### Task 5 Step 4 (`rig replay`) — DONE 2026-08-05, and NOT as specified
+
+**The literal spec is not implementable, and the reason is structural rather than a missing
+piece of work.** Step 4 called for re-running the pipeline under `REVIEWGATE_CASSETTE=replay:…`
+with `ReplayAdapter` in strict mode. A pipeline re-run must BUILD each reviewer prompt, which
+needs the diff the gate reviewed at that iteration; the run records `.reviewgate/` snapshots
+and the cassette, and the cassette stores only `promptSha256`, never the prompt text (by
+design — it is already a secret-leak-at-rest surface). The prompts strict mode compares
+against therefore cannot be reconstructed, and strict mode would report drift on all 40
+entries: a loud failure signifying nothing. Recording pilot-01 did not unblock this, contrary
+to what this plan assumed.
+
+**What shipped instead is the acceptance test the aggregator refactor actually needs.**
+`reviewgate rig replay --manifest <m> --script <s> [--cassette <c>]` re-derives a recorded
+run's metrics TWICE — `harvest()` over the snapshots and `ablate()` over the harvested
+findings, both pure functions of on-disk artifacts — and asserts the two agree, exiting
+non-zero when they do not. Any difference is nondeterminism in our own code (Map/readdir
+ordering, a stray `Date`, a mutated input), which is exactly what would make a refactor's
+"behaviour-neutral" claim unfalsifiable. With `--cassette` it also reports recording
+integrity: entries per reviewer key (the FIFO a replay would serve), malformed lines, and
+how many recorded reviews carried findings.
+
+Verified against pilot-01: **DETERMINISTIC**, 12 turns, 40 cassette entries
+(18 per reviewer + 4 embeddings), 0 malformed.
+
+Two notes for whoever revisits this:
+
+- **The check's ability to FAIL is observed, not assumed.** On first contact with the real
+  pilot it reported NON-DETERMINISTIC for all four layers — an ablation embeds two full
+  `RigResult`s and inherited their `harvested_at`. `stripAblationVolatile` exists because of
+  that, and the episode is the evidence the comparison is sensitive rather than vacuous. A
+  unit test forcing the negative case would have to stub `harvest`/`ablate` and would then
+  only prove a stub differs from itself, so there deliberately isn't one.
+- **A true pipeline replay needs per-ITERATION reviewer prompts recorded.** Per-turn
+  `diff.patch` capture (driver, 2026-08-05) is the first half; the second is out of scope
+  here and should be weighed against the cassette's leak surface before anyone builds it.
+
+The scope limit from the original step stands: `rig replay` is a self-check of the harness,
+is NOT the mechanism for any counterfactual, and must never grow an `--ablate` flag.
+
+---
+
 ### Task 5: Reporter + re-aggregation counterfactual — PARTLY DONE 2026-07-30
 
 Shipped: `src/rig/report.ts` + `reviewgate rig report` (10 tests), `src/rig/ablate.ts` +

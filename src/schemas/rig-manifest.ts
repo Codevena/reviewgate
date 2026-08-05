@@ -42,6 +42,16 @@ export const RigManifestTurnSchema = z
       .strict()
       .nullable()
       .optional(),
+    /**
+     * Size of `<snapshotDir>/diff.patch` — the code the agent actually wrote this turn —
+     * or `null` when it could not be captured (non-git sandbox, git failure). The artifact
+     * itself is the point; this field is how a reader knows whether to expect one.
+     *
+     * Recorded because pilot-01 could not answer "did the seeded defect ever LAND?": turn 9's
+     * agent declined the unsafe instruction the script directed, so there was nothing to
+     * catch, and the run scored it as a reviewer miss. Optional so older manifests parse.
+     */
+    diffBytes: z.number().int().nonnegative().nullable().optional(),
   })
   .strict();
 
