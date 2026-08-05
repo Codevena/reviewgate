@@ -26,19 +26,29 @@ values independently.
 | Brain curator | 122 of 139 decisions failed quorum, **every one exactly 1 provider short** |
 | `openrouter:security` reputation | trust **0.30** vs floor 0.45 — not demoted (decayed samples 5.6 < `minSamples` 8) |
 
-The decisive row is **"distinct runs per cluster"**. Grouping the ledger by file + category shows
-five clusters whose rejects are *plausibly* one FP class each — but their reject timestamps are
-identical:
+The decisive row is **"distinct runs per cluster"**. Clustering the ledger under C4's rule (same
+file, same category, ≥2 shared canonical tokens) yields **five** clusters — every one of them
+sourced from a single gate run:
 
-| Cluster | Rejects | Distinct sessions | Distinct run_ids |
-|---|---|---|---|
-| `src/rig/driver.ts` (pipe/deadlock) | 3 | 1 | 1 |
-| `src/core/lore/approve.ts` | 4 | 1 | 1 |
-| `src/core/fact-check.ts` | 3 | 1 | 1 |
-| `src/diff/sanitizer.ts` | 3 | 2 | 2 |
+| Cluster | Members | Rejects | Distinct sessions | Distinct run_ids | Providers |
+|---|---|---:|---:|---:|---|
+| `src/rig/driver.ts` (pipe/deadlock) | 3 | 3 | 1 | **1** | claude-code, ollama |
+| `src/core/fact-check.ts` | 2 | 2 | 1 | **1** | openrouter |
+| `src/diff/sanitizer.ts` | 2 | 2 | 1 | **1** | codex |
+| `bin-templates/user-gate.sh` | 2 | 2 | 1 | **1** | claude-code, ollama |
+| `src/core/lore/approve.ts` (tty-guard) | 2 | 2 | 1 | **1** | claude-code |
 
 **These are not repetitions. They are one review round emitting several differently-phrased
 findings about the same thing, rejected by the agent in one batch.**
+
+> **Correction.** An earlier draft of this table listed four rows and reported reject counts of
+> 3–4 with `sanitizer.ts` at 2 sessions / 2 runs. Those were the **file+category** groups from
+> the exploratory pass, not the C4 clusters, and `bin-templates/user-gate.sh` was missing
+> entirely. Re-derived from the ledger under the actual C4 predicate, `sanitizer.ts`'s cluster is
+> `FP-014`+`FP-015` (both codex, one run) — `FP-009` is a singleton. The one apparent
+> counterexample to "every cluster is a single run" was an artefact of mixing the two groupings.
+> The corrected data makes the argument stronger, not weaker. Found by the gate's own review of
+> this spec (F-001).
 
 ### What that invalidates
 
@@ -104,6 +114,15 @@ reviewers here, and a critic drawn from the panel is not independent; `gemini`/a
 hang modes on non-agentic calls. `openrouter` is a subprocess-free HTTP adapter, already wired
 for `grounding` in this repo, and is **not** a panel reviewer.
 
+**`model` is deliberately omitted from the snippet, and that resolves correctly — verified.**
+`phases.critic.model` is optional (`defaults.ts:159-163`) and `orchestrator.ts:2328` resolves it
+as `criticCfg.model ?? cProviderCfg.model`. This repo's `providers.openrouter.model` is
+`"deepseek/deepseek-v4-flash"`, so omitting it yields exactly the bench model. Pinning it
+inline would duplicate the value and let the two drift; the argument that "a different model
+invalidates the cited figures" is why this must be *checked*, not why it must be *restated*.
+Re-verify this resolution if `providers.openrouter.model` is ever changed for grounding's sake —
+that would silently re-model the critic too.
+
 The provider block already pins `openrouterProvider: { only: ["alibaba"] }`, which the bench run
 also used — leave it alone. Note this repo's own comment calls deepseek-flash "low-precision" and
 excludes it as a *reviewer*; that is consistent, because the critic is a demote-only keep/likely_fp
@@ -138,6 +157,29 @@ The provider requirement is unchanged. `pinned_by` still forces `sticky`. The pr
 guard in `recordReject` and the demotion ownership in `decayPass` / `activeSnapshot` are
 unchanged.
 
+**Concrete change, per file.** The two files threshold independently on different inputs and must
+both be edited; neither calls the other:
+
+- `store.ts:recompute` — operates on **one entry's** `e.rejects`. `win90.length >= STICKY_REJECTS`
+  becomes `new Set(win90.map(r => r.run_id)).size >= STICKY_RUNS`, and likewise for
+  `win60`/`ACTIVE_RUNS`. The `distinct(...)` provider helper is untouched.
+- `clusters.ts:computeFpClusters` — operates on the **union of all member entries'** rejects
+  (already deduped by `(signature, provider, ts)`). `win60.length`/`win90.length` become the
+  same distinct-`run_id` set sizes. Its `reject_count_*` fields stay as they are (they are
+  reported to the CLI); add `distinct_runs_active_window` / `_sticky_window` alongside them
+  rather than redefining an existing field, and update `isNearActive` to test the run count.
+
+**Window semantics are unchanged and stay on `reject.ts`.** The 60d/90d filter continues to use
+each reject event's own `ts` (`store.ts:60-61`); the run_id is used *only* for the distinctness
+count after filtering. It is never parsed for a timestamp. Stated explicitly because a run_id is
+an opaque `<ulid>:<iter>:<seq>` string here and must not be confused with the rig driver's
+ISO-stamped run ids.
+
+`run_id` is `z.string()` and **required** in `FpRejectSchema` (`src/schemas/fp-ledger.ts:4-9`),
+and every load goes through `FpLedgerIndexSchema.parse`. A reject without a run_id therefore
+cannot exist in a valid ledger — no defaulting or back-fill path is needed. Rename constants to
+`ACTIVE_RUNS`/`STICKY_RUNS` so no reader mistakes them for event counts.
+
 **Expected effect on today's data: nothing promotes — before or after.** The change removes a
 latent fail-open rather than altering current behaviour. It becomes load-bearing if a future
 change ever wires cluster-level evidence into suppression (explicitly *not* C4, see below), or
@@ -160,6 +202,14 @@ Self-correcting: as evidence ages, `decayedCount → 0` and `trustScore → (0+1
 which is above the 0.45 floor — an old-bad reviewer drifts back to neutral and stops being
 demoted, without the raw count ever needing to shrink.
 
+**`RepDerived` is never persisted — verified, not assumed.** `grep -rn "RepDerived" src` returns
+exactly four hits, all in-memory: the interface declaration (`score.ts:38`), the `isUnreliable`
+parameter (`score.ts:43`), the import and the private `derive()` return type
+(`store.ts:7,140`). It is computed per call from the persisted `Reputation` object and never
+serialised, so adding a field cannot leave stale objects on disk whose missing `evidence` would
+compare as `NaN >= minSamples` (false) and silently suppress every future demotion. That failure
+mode is real for persisted types; it does not reach this one.
+
 `RepDerived.samples` has exactly two consumers, verified: `score.ts:44` (`isUnreliable`) and
 `cli/commands/learn-status.ts:463` (display, `.toFixed(1)`). The displayed value must stay
 interpretable, so `RepDerived` gains a second field rather than having `samples` silently change
@@ -177,9 +227,25 @@ finding changes. The fix matters for repos where a weak reviewer *is* on the pan
 cluster, `piped-stdout-undrained-deadlock` — one character apart — does not.
 
 Replace with: same `file`, same `category`, and **≥2 shared canonical tokens**, transitively
-closed. Canonicalisation reuses `normalizeRuleId`'s tokeniser and noise list, plus light suffix
-folding (`ing`/`ed`/`s`, then a trailing `e`) so `pipe`/`piped` → `pip` and
+closed via union-find (named so the closure is reproducible — a different closure strategy over
+the same pairwise predicate can yield different clusters). Canonicalisation reuses
+`normalizeRuleId`'s tokeniser and its `RULE_ID_NOISE` set (`src/diff/signature.ts:29-60` — 25
+connectors and generic finding nouns: `via`, `with`, `risk`, `issue`, `potential`, `unsafe`, …),
+plus light suffix folding (`ing`/`ed`/`s`, then a trailing `e`) so `pipe`/`piped` → `pip` and
 `defang`/`defanged` → `defang`.
+
+**The noise list does not carry the safety burden — the conjunction does.** Domain nouns like
+`buffer`, `race` or `write` are deliberately *not* noise, so two unrelated rules sharing two such
+tokens could merge. Three conditions bound that: same file, same category, and ≥2 shared tokens
+simultaneously. On the 29 real entries no such false merge occurs, and the surface is
+diagnosis-only.
+
+**Transitive closure is the residual risk, and it is accepted rather than solved.** A–B sharing
+two tokens and B–C sharing two *different* tokens forces A–C into one cluster even with zero
+tokens in common. That is exactly how the rejected `≥1 shared token` variant chain-merged all
+four `approve.ts` entries. At `≥2` it does not occur on today's data, but the structure permits
+it, so the test suite must include a synthetic transitive chain (below) and the surface stays out
+of the suppression path.
 
 Measured on the real 29 entries: **5 clusters, zero false merges.** `approve.ts` splits
 correctly — the TTY-guard pair merges, while `toctou-challenge-verify-to-write` and
@@ -207,10 +273,21 @@ suppression before that evidence exists is precisely the fail-open C2 removes.
 
 Per change, plus the mutation requirement (every guard test seen red once, in a copy):
 
-- **C2** — a fixture with 3 rejects, 2 providers, **one** `run_id` must stay `candidate`; the
-  same fixture spread over 3 `run_id`s must reach `active`. Guarded quantity with/without the
-  mechanism: **1 distinct run → candidate; 3 distinct runs → active.** Both values differ, so
-  the test is non-vacuous on paper. Mirror at cluster level in `clusters.ts`.
+- **C2 / `store.ts` active tier** — a fixture with 3 rejects, 2 providers, **one** `run_id` must
+  stay `candidate`; the same 3 rejects spread over 3 `run_id`s must reach `active`. Guarded
+  quantity: **1 distinct run → candidate; 3 distinct runs → active.** Values differ, so
+  non-vacuous on paper.
+- **C2 / `store.ts` sticky tier** — separate fixture, since the boundary is not the active one:
+  5 rejects, 2 providers, **4** distinct run_ids within 90d → `active` (meets 3-run active, not
+  5-run sticky); the same 5 rejects over **5** distinct run_ids → `sticky`. Guarded quantity:
+  **4 distinct runs → active; 5 distinct runs → sticky.**
+- **C2 / `clusters.ts` mirror** — the cluster path aggregates across members, so it needs its own
+  fixture rather than a re-run of the above: two entries with distinct signatures in the same
+  file+category, contributing 3 rejects total from 2 providers within **one** run_id →
+  `computeFpClusters` reports `stage: "candidate"` and `isNearActive` false-on-run-count; the
+  same two entries with those 3 rejects across 3 run_ids → `stage: "active"`. Guarded quantity:
+  **cluster with 3 rejects / 1 run → candidate; 3 rejects / 3 runs → active.** This is the test
+  that would have caught the fail-open in the rejected first draft.
 - **C3** — a reviewer with 13 raw events decayed to 5.6 samples and trust 0.30 must be
   `isUnreliable` after the change and must **not** be before it (with `minSamples: 8`). Values:
   **raw 13 ≥ 8 → demote; decayed 5.6 < 8 → no demote.**
@@ -220,6 +297,13 @@ Per change, plus the mutation requirement (every guard test seen red once, in a 
   variant would chain-merge all four and must fail the test. **Do not copy
   `.reviewgate/learnings/known_fp.jsonl` into `tests/`** — it is gitignored runtime state and its
   `rejects[].reason` fields carry verbatim reviewer output. Hand-write the rule_ids instead.
+- **C4 / transitive chain** — an explicit adversarial fixture, since today's data does not
+  contain one: `alpha-beta-guard`, `beta-guard-gamma`, `gamma-delta-epsilon` in one file+category.
+  A–B share `{beta, guard}`, B–C share `{gamma}` only (1 token) → the chain must **not** close,
+  yielding one 2-member cluster plus a singleton. Then `beta-guard-gamma` → `gamma-delta-guard`
+  so B–C share `{gamma, guard}` → all three merge despite A–C sharing only `{guard}`. Assert the
+  second shape explicitly: it documents the accepted transitive behaviour rather than pretending
+  it cannot happen.
 - **C1** — no new test; covered by the existing critic suite. Verify by running the gate once
   and confirming `critic.status` in `pending.json` is not `skipped-*`.
 
@@ -243,6 +327,14 @@ Registered expectation, in advance:
 > lowered FP burden. Registering this in advance so a lucky number cannot be promoted to a
 > finding after the fact.
 
+**Codex returns 2026-08-08, before pilot-02 plausibly runs.** The panel it rejoins is a
+*different system* from pilot-01's, which measured a codex-free panel. Ruling, registered now
+rather than after seeing a number: pilot-02 runs with the **same panel composition as pilot-01**
+(codex excluded via the pilot config, not via its quota state), so the critic is the only
+deliberate change. If codex is instead allowed back in, the run measures two changes at once and
+must not be compared to pilot-01 on M2 or M3 at all. The critic-independence argument is
+unaffected either way — `openrouter` is not a panel member in either configuration.
+
 The preregistration must re-pin the binary hash (`bun run build` is required for C1–C4 to reach
 the gate, so the pilot-01 pin `sha256:6f52c766…` no longer applies). Note the build deploys to
 every repo via the `~/.local/bin/reviewgate` symlink.
@@ -254,5 +346,26 @@ every repo via the `~/.local/bin/reviewgate` symlink.
 | C2 makes a suppression layer that already never fires fire even less | Accepted and stated. Correctness over reach — the alternative is manufacturing evidence. |
 | C1 costs an extra LLM call per round | Repo-local only; the whole pilot cost $0.0166. Critic clamps to the remaining deadline budget and is skipped below its floor. |
 | C1's critic demotes a true positive | Pre-existing exemptions (CRITICAL+security/correctness, corroborated, protected reviewers) are unchanged. Demote-only, never drop, except INFO+likely_fp. |
-| C4's canonicalisation over-merges on data not seen here | Only diagnosis surfaces consume it; no suppression path. |
+| C4's canonicalisation over-merges on data not seen here | Only diagnosis surfaces consume it; no suppression path. Transitive closure is possible by construction and is covered by an explicit adversarial fixture. |
 | Config edit blocks the agent on control-plane approval | Expected — a phase addition needs `reviewgate config approve` on a TTY, once. |
+| **A C2/C3 logic error ships to EVERY repo the moment `bun run build` runs** | The build overwrites `~/.local/bin/reviewgate` via symlink; there is no per-repo staging. C2 touches the promotion path and C3 the demote-eligibility path, so a granularity error (counting run_ids at entry level where cluster level was meant, or eligibility reading the wrong field) changes suppression everywhere at once, silently — both changes are expected to be no-ops on current data, so nothing visibly breaks. Mitigated by the rollback procedure below, which is mandatory to have in place *before* the build. |
+| C2/C3/C4 land without their own failure being observable | Each carries a stated expected-effect of "nothing changes on today's data". That makes them unfalsifiable by observation alone, so the mutation tests are the only evidence they work — they are not optional here. |
+
+## Rollback
+
+Required before `bun run build`, because the build is global:
+
+1. **Record the current binary first:** `shasum -a 256 dist/reviewgate` and copy the file to
+   `dist/reviewgate.prev` (untracked). This is the restore target — *not* the pilot-01 pin
+   `sha256:6f52c766…`, which predates several shipped fixes and would reintroduce them.
+2. **Verify what landed:** `shasum -a 256 dist/reviewgate` after the build, and confirm the value
+   differs from step 1. An unchanged hash means the build did not take — the exact silent failure
+   that cost three pilot attempts (`docs/dev/2026-08-05-pilot-01-result.md`).
+3. **Roll back** by restoring `dist/reviewgate.prev` over `dist/reviewgate`. The symlink needs no
+   change; it points at the path, not the content.
+4. **C1 rolls back independently** of the binary: revert the `phases.critic` line in
+   `reviewgate.config.ts`. Reverting a config to its last-known-good value does not require a new
+   TTY approval, and it touches no `.reviewgate/` state.
+
+Code and config roll back separately by design, so a bad C2–C4 build does not force the critic
+back off (or vice versa) and confound pilot-02's attribution.
