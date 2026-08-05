@@ -51,6 +51,7 @@ import {
 import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
+import { NO_PANEL_REVIEWER_ID } from "../schemas/pending-report.ts";
 import type { PassLedger, ReviewedSnapshot } from "../schemas/state.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
@@ -3192,11 +3193,22 @@ export class Orchestrator {
             ...(r.res.statusDetail ? { status_detail: r.res.statusDetail } : {}),
           }))
         : [
+            // NO reviewer ran. This row is a placeholder for "the gate produced a report
+            // without a panel" — it must not name a real provider. It used to carry
+            // `provider: "codex"` plus codex's configured model, which is a review attributed
+            // to a provider that never ran (and, when codex is disabled, one that could not
+            // have run): pilot-01 published a phantom codex reviewer in the provenance of a
+            // study whose premise was codex's absence. `provider` is a free-form string in
+            // the schema, so the honest value costs nothing.
             {
-              id: "reviewgate",
-              provider: "codex" as ProviderId,
-              model: this.input.config.providers.codex.model,
-              persona: "security",
+              id: NO_PANEL_REVIEWER_ID,
+              provider: NO_PANEL_REVIEWER_ID,
+              model: "n/a",
+              // "n/a" for the same reason as provider/model: no persona reviewed this diff.
+              // A hardcoded "security" here reads as "a security review ran and found
+              // nothing", which is the strongest possible misreading of a report that ran
+              // no reviewers at all.
+              persona: "n/a",
               status: "ok" as const,
               cost_usd: 0,
               duration_ms: Date.now() - start,

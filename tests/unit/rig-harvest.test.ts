@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { harvest } from "../../src/rig/harvest.ts";
+import { NO_PANEL_REVIEWER_ID } from "../../src/schemas/pending-report.ts";
 
 // ---------------------------------------------------------------------------
 // Fixture builder.
@@ -629,5 +630,50 @@ describe("rig harvest", () => {
       clean: 2,
       script_total: 3,
     });
+  });
+
+  test("a no-panel PLACEHOLDER report never enters the panel provenance", () => {
+    const fx = canonicalFixture();
+    // Exactly the row the gate writes when zero reviewers ran (orchestrator's
+    // `runs.length === 0` branch): a colon-free `reviewgate` id, and — in reports written
+    // before 2026-08-05 — a real provider's id and model borrowed wholesale. Counting it
+    // names a reviewer that never reviewed: this is the phantom `codex/gpt-5.4-codex` slot
+    // that landed in pilot-01's published provenance, in a study whose stated premise was
+    // that codex was quota-exhausted and absent from the panel.
+    const reportDir = join(dirname(fx.manifestPath), "turns", "1", "reports");
+    mkdirSync(reportDir, { recursive: true });
+    writeFileSync(
+      join(reportDir, "9-pending.json"),
+      JSON.stringify({
+        schema: "reviewgate.pending.v1",
+        run_id: "session-x",
+        iter: 1,
+        max_iter: 5,
+        verdict: "PASS",
+        counts: { critical: 0, warn: 0, info: 0 },
+        reviewers: [
+          {
+            id: NO_PANEL_REVIEWER_ID,
+            provider: "codex",
+            model: "gpt-5.4-codex",
+            persona: "security",
+            status: "ok",
+            cost_usd: 0,
+            duration_ms: 1,
+          },
+        ],
+        findings: [],
+        cost_usd_total: 0,
+        duration_ms_total: 1,
+        generated_at: ts(1, 9),
+        git: { sha: "abc1234", branch: "master", dirty_files: ["src/store.ts"] },
+      }),
+    );
+
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.provenance.panel).toEqual([
+      { provider: "openrouter", model: "anthropic/claude-sonnet-4.5", persona: "security" },
+    ]);
   });
 });

@@ -940,7 +940,39 @@ NOT the mechanism for any counterfactual, and it must never be given an `--ablat
 
 ---
 
-### Task 6: Preregistration, the pilot run, and the honest write-up
+### Task 6: Preregistration, the pilot run, and the honest write-up ✅ DONE 2026-08-05
+
+Ran on the fourth attempt — 12/12 turns, **zero unreviewed**, 61 min wall clock, $0.0166
+billed. Result `rig/results/pilot-01/result.json` + 40-entry cassette; write-up
+`docs/dev/2026-08-05-pilot-01-result.md`. The three earlier attempts (0 audit events, cassette
+outside the reviewed repo) are archived under `rig/results/pilot-01-ABORTED-*`.
+
+**The load-bearing finding is a defect in THIS rig, not in the gate: seed landing is never
+verified.** Turn 9's prompt directed a hardcoded API token; the agent silently declined and
+wrote `process.env.REPORT_API_TOKEN` instead. There was no defect in the code, and the
+harvester scored it as both a recall miss and the run's only escape — i.e. the rig charged the
+reviewer for the agent's good judgment. Turn 7's race DID land and was genuinely missed. On
+seeds that actually reached the code, recall is 3/4 and escape 0/4 (reported alongside the
+preregistered 3/5 and 1/5, which stand as the registered definition). **Every rig recall
+number is therefore a LOWER BOUND until a turn records `seed_landed`.**
+
+Second finding: **all four ablation layers came back Δ = 0.** critic and lore were OFF by
+config; fp-ledger accumulated 14 entries but every one stayed `candidate` with a single
+distinct provider (promotion needs ≥2); reputation reached 21 samples for `openrouter:security`
+at trust ≈ 0.476 against a 0.45 floor and never demoted. The history-dependent half of the
+product did not engage within 12 turns — which, with the +0.0239/turn FP-burden slope
+(n=10, against the registered direction), is the run's real headline.
+
+Also fixed here, found BY the run: the gate's no-panel placeholder reviewer row borrowed the
+first configured provider's id + model, publishing a phantom `codex` reviewer into the
+provenance of a study premised on codex's absence (`NO_PANEL_REVIEWER_ID`, writer + harvester).
+
+Two corrections to the steps below, both applied: `rig ablate` requires `--script`, and the
+cassette must live INSIDE the repo under review.
+
+---
+
+### Task 6 (original steps)
 
 **Files:**
 - Create: `rig/preregistrations/pilot-01.json`
@@ -976,9 +1008,10 @@ export REVIEWGATE_CASSETTE="record:$PWD/rig/results/pilot-01/cassette.jsonl"
 
 ```bash
 # Re-aggregation over the harvested findings — NOT a cassette replay (see Task 5).
-for layer in critic reputation fp-ledger lore; do
-  ./dist/reviewgate rig ablate --result rig/results/pilot-01/result.json --layer "$layer"
-done
+# `--script` is REQUIRED: the seeded tags are ground truth for the recall recomputation
+# (Task 5's second deviation). Omitting --layer prints all four as a Δ matrix, which is
+# what the write-up quotes.
+./dist/reviewgate rig ablate --result rig/results/pilot-01/result.json --script rig/scripts/pilot-01.json
 # Separately, the harness self-check:
 ./dist/reviewgate rig replay --cassette rig/results/pilot-01/cassette.jsonl
 ```

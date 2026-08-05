@@ -4,6 +4,17 @@ import { FindingSchema } from "./finding.ts";
 export const ReviewerStatus = z.enum(["ok", "error", "abstain", "timeout", "quota-exhausted"]);
 export type ReviewerStatus = z.infer<typeof ReviewerStatus>;
 
+// The reviewer `id` the gate writes when NO reviewer ran at all (the skip / no-panel path in
+// orchestrator.writeReport). Real slots are keyed `<provider>:<persona>`, so this colon-free
+// id is an unambiguous marker for "this row is a placeholder, not a review".
+//
+// It exists as a shared constant because the WRITER and every READER must agree: a consumer
+// that treats the placeholder as a review attributes work to a provider that never ran. That
+// is not hypothetical — the slot used to carry `provider: "codex"` plus codex's configured
+// model, which put a phantom codex reviewer into the provenance of the pilot-01 study whose
+// entire premise was that codex was ABSENT (2026-08-05).
+export const NO_PANEL_REVIEWER_ID = "reviewgate";
+
 // pending.json is NOT written on ESCALATE — ESCALATION.md is authoritative there.
 // See spec §5.5 schemas section.
 export const Verdict = z.enum(["PASS", "SOFT-PASS", "FAIL"]);

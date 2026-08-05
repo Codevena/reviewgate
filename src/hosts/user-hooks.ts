@@ -41,10 +41,31 @@ export function userClaudeSettingsPath(home: string): string {
 // these and the locator matches them, so the two cannot drift into a loose text rule —
 // a command such as `echo .reviewgate/bin/gate` merely CONTAINS the marker and must not
 // count as evidence that our hook will fire.
-export const REPO_CLAUDE_COMMANDS: Record<HookEventName, string> = {
-  Stop: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
-  PostToolUse: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger"',
-  SessionStart: '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset"',
+// Every spelling this project's repo-local installer has EVER emitted, current first. Exact
+// strings, never a substring rule — see the paragraph above; `echo .reviewgate/bin/gate` must
+// still not count. Widening to a CLOSED, versioned set keeps that guarantee while fixing the
+// upgrade path the single-spelling version broke.
+//
+// Why both are needed (field regression, 2026-08-05): `init` wrote the UNQUOTED form for 17
+// commits before switching to the double-quoted one. The writer identifies managed entries by
+// a loose marker, so it kept replacing them correctly — but this predicate knew only the new
+// spelling, so every repo armed before the switch answered "no repo-local Stop hook". The
+// user-scoped shim then declined to stand down and ran a SECOND gate on every turn: two
+// identical Stop messages (the second served from the review cache) and double reviewer quota.
+// 7 of 15 local repos were affected. A new spelling MUST be prepended here, never substituted.
+export const REPO_CLAUDE_COMMANDS: Record<HookEventName, readonly string[]> = {
+  Stop: [
+    '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate"',
+    "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate",
+  ],
+  PostToolUse: [
+    '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger"',
+    "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/trigger",
+  ],
+  SessionStart: [
+    '"${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset"',
+    "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/reset",
+  ],
 };
 
 const EVENT_SHIM: Record<HookEventName, UserShim> = {
@@ -98,9 +119,11 @@ function isRunnableFile(path: string): boolean {
 export function findManagedHook(
   settingsPath: string,
   event: HookEventName,
-  command: string,
+  command: string | readonly string[],
 ): { command: string; timeout?: number } | null {
-  return hookEntriesFor(settingsPath, event).find((h) => h.command === command) ?? null;
+  // Still EXACT equality per candidate — the accepted set widened, the matching rule did not.
+  const accepted = typeof command === "string" ? [command] : command;
+  return hookEntriesFor(settingsPath, event).find((h) => accepted.includes(h.command)) ?? null;
 }
 
 // Will a repo-local CLAUDE hook for `event` actually fire in this checkout? This is the

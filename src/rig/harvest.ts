@@ -36,7 +36,7 @@ import { makeMetric, summarizeSpread } from "../bench/metrics.ts";
 import type { DecisionOutcome } from "../schemas/audit-event.ts";
 import type { Metric } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
-import { PendingReportSchema } from "../schemas/pending-report.ts";
+import { NO_PANEL_REVIEWER_ID, PendingReportSchema } from "../schemas/pending-report.ts";
 import { type RigManifest, RigManifestSchema } from "../schemas/rig-manifest.ts";
 import {
   type RigResult,
@@ -174,6 +174,12 @@ function collectTurnFindings(
     reportsRead++;
     for (const f of parsed.data.findings) bySignature.set(f.signature, f);
     for (const r of parsed.data.reviewers) {
+      // Skip the no-panel PLACEHOLDER row: it records that zero reviewers ran, not that one
+      // did. Reports written before 2026-08-05 gave it a real provider id + model, so counting
+      // it publishes a reviewer that never reviewed — pilot-01's provenance named codex on the
+      // strength of one such row, in a study whose premise was that codex was absent. Filtered
+      // on READ (not only fixed at the writer) so already-archived runs harvest honestly too.
+      if (r.id === NO_PANEL_REVIEWER_ID) continue;
       panel.set(`${r.provider}|${r.model}|${r.persona}`, {
         provider: r.provider,
         model: r.model,

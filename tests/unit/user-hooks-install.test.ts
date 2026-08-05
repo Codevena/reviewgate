@@ -195,6 +195,20 @@ describe("repo-local activity predicate", () => {
     expect(repoClaudeStopGateActive(r)).toBe(false);
   });
 
+  test("the LEGACY unquoted spelling an older init wrote → active", () => {
+    // Field regression, 2026-08-05: `init` emitted this exact value for 17 commits before
+    // switching to the double-quoted form. The predicate only knew the NEW spelling, so in
+    // every repo armed before that switch it answered "no repo-local hook" — and the
+    // user-scoped shim then ran a SECOND gate on every turn: duplicate Stop messages (the
+    // second served from the review cache) and double reviewer quota. 7 of 15 local repos
+    // were in this state. The writer already recognises both (it strips by marker), so only
+    // the reader was wrong.
+    const r = repo();
+    addRepoShim(r);
+    writeStopSettings(r, "${CLAUDE_PROJECT_DIR}/.reviewgate/bin/gate");
+    expect(repoClaudeStopGateActive(r)).toBe(true);
+  });
+
   test("the right command in the WRONG event → NOT active for Stop", () => {
     const r = repo();
     addRepoShim(r);
