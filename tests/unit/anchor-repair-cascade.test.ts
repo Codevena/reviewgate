@@ -1,12 +1,18 @@
 // tests/unit/anchor-repair-cascade.test.ts
-import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aggregate } from "../../src/core/aggregator.ts";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
 import { findingBadges } from "../../src/core/report-writer.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
+
+// Temp dirs created by this file's tests, removed after the run whether tests pass or fail.
+const createdDirs: string[] = [];
+afterAll(() => {
+  for (const dir of createdDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 function fin(over: Partial<Finding>): Finding {
   return {
@@ -116,6 +122,7 @@ describe("pilot-02 turn 2 — the full cascade", () => {
   // `majority`, the critic is barred -> 1 finding, blocking WARN.
   it("repairs the anchor, merges, corroborates, and stays blocking", () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-turn2-"));
+    createdDirs.push(dir);
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "src", "store.ts"), STORE_TS);
 

@@ -5,12 +5,18 @@
 // evidence_line matched line 26 of that file verbatim. Mis-anchored, not fabricated. These
 // guards pin the distinction, and pin that the fabrication protection the pass was built for
 // (a CRITICAL citing a line in an EMPTY file) is untouched.
-import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
+
+// Temp dirs created by repo(), removed after the run whether tests pass or fail.
+const createdDirs: string[] = [];
+afterAll(() => {
+  for (const dir of createdDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 const EVIDENCE = "  return readFileSync(`./templates/${name}`, 'utf8')";
 
@@ -35,6 +41,7 @@ function mkFinding(over: Partial<Finding> = {}): Finding {
 
 function repo(content: string): string {
   const dir = mkdtempSync(join(tmpdir(), "rg-reanchor-"));
+  createdDirs.push(dir);
   mkdirSync(join(dir, "src"), { recursive: true });
   writeFileSync(join(dir, "store.ts"), content);
   writeFileSync(join(dir, "empty.yaml"), "");
