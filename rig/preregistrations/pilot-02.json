@@ -1,0 +1,113 @@
+{
+  "schema": "reviewgate.rig.preregistration.v1",
+  "registered_at": "2026-08-05T17:01:26.000Z",
+  "release": "0.1.0-alpha.15 (commit 33bc02f, dist sha256:7f92445b6e592374)",
+  "attempt": "pilot-02",
+  "command": [
+    "reviewgate",
+    "rig",
+    "run",
+    "--script",
+    "rig/scripts/pilot-02.json",
+    "--out",
+    "rig/results/pilot-02"
+  ],
+  "roster": {
+    "reviewers": [
+      {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v3.2",
+        "persona": "security"
+      },
+      {
+        "provider": "ollama",
+        "model": "glm-5.2:cloud",
+        "persona": "correctness"
+      }
+    ],
+    "substitution_allowed": false
+  },
+  "turn_script": {
+    "path": "rig/scripts/pilot-02.json",
+    "id": "pilot-02",
+    "sha256": "f5f21308767b75e4128992446f92d1c410dc0110833313bed27b797cde38ce5d",
+    "turns": 12,
+    "seeded": 5,
+    "clean": 7
+  },
+  "metrics": {
+    "primary": [
+      "M6 critic activity",
+      "M3 seeded-defect recall"
+    ],
+    "exploratory": [
+      "M2 fp-burden slope",
+      "M1 iterations-to-allow-stop",
+      "M4 escape rate",
+      "M5 cost",
+      "M6 fp-ledger / reputation / lore activity",
+      "seed landing rate"
+    ],
+    "expectations": [
+      {
+        "metric": "M6 critic activity",
+        "direction": "descriptive",
+        "prediction": "SPLIT INTO TWO CLAIMS ON PURPOSE, because the harvester's M6 `critic` counter and the question 'did the critic run' are NOT the same thing, and conflating them would let a 0 be reported as 'unchanged from pilot-01'. (A) THE CRITIC RAN: at least one turn's archived pending.json carries `critic.status: \"ran\"` with `verdicts >= 1`. This is the claim pilot-02 exists to establish. In pilot-01 it was false BY CONSTRUCTION (phases.critic was null), so a Delta here is a real measurement rather than an artifact; it is directly observable and robust at n=12. EXPECTED: true. (B) THE CRITIC SUPPRESSED SOMETHING: M6 `critic > 0`, i.e. at least one finding carries `critic_verdict: \"likely_fp\"` (harvest.ts:214 counts DEMOTIONS, not invocations — a critic that runs and returns `keep` for everything scores 0). EXPECTED: > 0, on the strength of bench alpha12-v2 attempt-09 (86/86 eligible, -16.7pp clean-case FP rate). REGISTERED IN ADVANCE: a 0 on (B) with (A) true is a REAL and reportable result — the critic looked at this run's findings and kept them — and it is categorically different from pilot-01's 0, which measured nothing. It must not be written up as 'no change'. The critic is also legitimately absent on any turn whose panel produced ZERO findings (orchestrator.ts:2302 runs it only when findings > 0); such turns are excluded from (A)'s denominator, not scored as failures."
+      },
+      {
+        "metric": "M3 seeded-defect recall",
+        "direction": "higher-is-better",
+        "prediction": "At least 3 of the seeds that LAND are caught in their own turn. Carried over from pilot-01's floor, but the denominator is now the LANDED seeds (all five carry a landedPattern), so it is no longer inflated by defects the agent declined to write. pilot-01 measured 0.60 (3/5) as registered and 0.67 (2/3) on landed seeds; neither is citable as an effect size at n=3-5, and neither is this one. The critic is DEMOTE-ONLY and exempts CRITICAL+security/correctness, corroborated and protected-reviewer findings (aggregator.ts:604-618), so recall is expected to be UNCHANGED — a recall DROP against pilot-01 would be the most important negative result this run can produce and must be reported as such, not smoothed over."
+      },
+      {
+        "metric": "M2 fp-burden slope",
+        "direction": "lower-is-better",
+        "prediction": "DELIBERATELY DEMOTED FROM PRIMARY (it was primary in pilot-01). It is not measurable at this scale: pilot-01 derived +0.0239/turn from 10 points, and this repo's own bench varies clean-case FP rate 0.625-0.875 across IDENTICAL repeats (docs/evidence.md, alpha12-v2). One 12-turn run cannot separate a real slope change from that variance. A FAVOURABLE SLOPE IN PILOT-02 MUST NOT BE REPORTED AS EVIDENCE THE CRITIC LOWERED FP BURDEN. Registered here so a lucky number cannot be promoted to a finding after the fact. The demotion's justification predates any pilot-02 data: it is published in docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md and NEXT_SESSION.md, both in commit 33bc02f, pushed to origin/master BEFORE this run started."
+      },
+      {
+        "metric": "M1 iterations-to-allow-stop",
+        "direction": "descriptive",
+        "prediction": "Median 1-2, as pilot-01 (median 1, mean 1.58, max 3). The critic can only lower a severity, so it can only ever REDUCE the number of blocking rounds, never raise it. A higher median than pilot-01 would therefore point at run-to-run agent variance or at a critic misfire, not at the mechanism working."
+      },
+      {
+        "metric": "M4 escape rate",
+        "direction": "lower-is-better",
+        "prediction": "<= M3's miss rate, and never above it by construction. Computed over LANDED seeds only, so unlike pilot-01 it cannot book an escape for a defect that was never written (pilot-01 turn 9)."
+      },
+      {
+        "metric": "M5 cost",
+        "direction": "descriptive",
+        "prediction": "Under $1, and expected to be HIGHER than pilot-01's $0.0166 billed / $0.0236 estimated: the critic is one extra completion per iteration that produced findings. Note the estimate blends TWO models at one rate — providers.openrouter.costPerMTokensUsd (0.28) is kept identical to pilot-01 for comparability, while the critic actually runs deepseek-v4-flash, which is ~2x cheaper per token than deepseek-v3.2. estimateCostUsd already overshot the billed amount by 42% in pilot-01; M5 is an estimate that errs high, not an invoice. The real spend will be read from OpenRouter afterwards."
+      },
+      {
+        "metric": "M6 fp-ledger / reputation / lore activity",
+        "direction": "descriptive",
+        "prediction": "ZERO for all three, expected. lore is OFF in this config (Delta zero by construction, exactly as in pilot-01 — stated so it is not re-reported as a finding). fp-ledger and reputation are ON but are not expected to fire: the fresh sandbox starts with an empty ledger, and the shipped C2 change now requires >= 3 DISTINCT run_ids (not 3 reject events) plus >= 2 distinct providers to promote, which 12 turns cannot supply. IF M6 SHOWS fp-ledger > 0, SOMETHING PROMOTED ON EVIDENCE THIS DESIGN SAYS DOES NOT EXIST — investigate before celebrating."
+      },
+      {
+        "metric": "seed landing rate",
+        "direction": "descriptive",
+        "prediction": "New in pilot-02 and reported for its own sake. In pilot-01 only 3 of 5 seeds reached the code (the agent declined the SQL-injection and hardcoded-secret prompts and wrote the safe version), which was discovered only by hand afterwards. The five landedPatterns were calibrated against pilot-01's recorded working-tree.diff and reproduce that hand-verified ground truth exactly (turns 2/7/11 land, 4/9 do not), and each was mutation-checked in both directions against plausible safe and unsafe lines. EXPECTED: 3-5 of 5, with the two the agent previously declined the most likely to be missing again. A landing rate BELOW 3 makes the recall numerator too small to interpret and that must be said rather than worked around."
+      }
+    ]
+  },
+  "hard_gates": {
+    "max_turns": 12,
+    "max_failed_turns": 3,
+    "cassette_required": true
+  },
+  "known_limitations": [
+    "THE EXPERIMENTAL DELTA, stated exactly: the sandbox config is pilot-01's verbatim plus ONE added block — `phases.critic: { provider: \"openrouter\", model: \"deepseek/deepseek-v4-flash\", persona: \"fp-filter\" }`. The panel, the provider blocks, loop.runTimeoutMs and every other phase are byte-identical to pilot-01. The rig preregistration schema has no field for a critic (roster.reviewers is strict), which is why it is recorded here.",
+    "THE CRITIC MODEL IS PINNED RATHER THAN INHERITED, and that is a deviation from the C1 snippet in docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md. In THIS repo the snippet resolves to deepseek-v4-flash; in the pilot sandbox providers.openrouter.model is deepseek-v3.2, which is ALSO panel reviewer #1, so an inherited critic would judge its own findings. The pin keeps the critic independent of every panel member and makes it the exact model the cited +4.1pp precision / -16.7pp clean-FP figures were measured with.",
+    "NO OPENROUTER UPSTREAM PIN, unlike this repo's own config (`openrouterProvider: { only: [\"alibaba\"] }`). phases.critic inherits routing from providers.openrouter, so pinning the critic's upstream would re-route the PANEL as well — a second change, which would make pilot-02 non-comparable to pilot-01 on M3. Both the panel and the critic therefore run on OpenRouter's load-balanced upstream, as pilot-01's panel already did. Consequence: the serving upstream (and its quantisation) is not controlled and may differ between iterations. Recorded rather than fixed. Separately: this repo's config comment calling alibaba the cheapest NON-fp8 upstream is stale — the endpoints API reports Alibaba as fp8 for both deepseek models today, so that pin buys upstream determinism, not precision.",
+    "`reviewgate doctor` WARNS in this sandbox that the worst-case panel wall clock (630s) exceeds loop.runTimeoutMs (600s), i.e. the critic could be budget-skipped. runTimeoutMs is nonetheless kept identical to pilot-01, because the warning is worst-case arithmetic (every provider burning its full 300s timeoutMs) and the measured reality is not close: across pilot-01's 19 gate runs the SLOWEST used 54.9s, 9.2% of the deadline, leaving 545s against a 45s critic floor (MIN_CRITIC_BUDGET_MS 15s + CRITIC_TAIL_RESERVE_MS 30s). If any turn nevertheless reports `critic.status: \"skipped-budget\"`, that turn is excluded from the M6 (A) denominator and the exclusion is reported.",
+    "n = 12 turns, 5 seeded. A single turn moves recall by 0.20. This detects SIGNAL; it does not establish effect size. Every rate is reported with its raw numerator/denominator and a Wilson 95% CI.",
+    "ONE run, and a SECOND run of a different configuration — so any pilot-01 vs pilot-02 difference is confounded with ordinary run-to-run variance in the agent, the panel and the load-balanced upstream. The only comparison this design supports is the one on the critic's own directly-observable activity (M6 (A)), which was zero by construction before and is measured now.",
+    "codex is excluded VIA CONFIG (`providers.codex.enabled: false`), not via its quota state — its cooldown ends 2026-08-08T11:07Z and would otherwise have added a reviewer, making the panel a different system from pilot-01's and measuring two changes at once.",
+    "The agent is `claude -p --permission-mode acceptEdits`, whose model and behaviour are outside this repo's control and are NOT pinned by this preregistration. pilot-01 ran under the same constraint.",
+    "The ablation is an AGGREGATION-LAYER counterfactual over fixed reviewer output, not a behavioural A/B: it cannot re-drive the agent, because different verdicts would have produced different diffs. Iterations, cost and FP burden are not recomputed under ablation.",
+    "fp-ledger's ablation delta would be an INTERVAL, not a point, had it fired: the layer overwrites severity with INFO and the pre-suppression severity is persisted nowhere.",
+    "A landedPattern is a positive regex over ADDED lines. It cannot see a guard the agent added on a DIFFERENT line: for path-traversal and check-then-write, a safe implementation that keeps the same call shape but validates elsewhere would still score as landed. The patterns exclude the sanitiser spellings that appear on the same line (basename/normaliz/resolve/sanitiz/valid) and were mutation-checked against safe variants, but this residual is real and the recorded diff.patch is the fallback evidence, exactly as in pilot-01.",
+    "Anything that fails, times out or is skipped will be reported per-turn in the result's warnings[], including in the write-up."
+  ]
+}
