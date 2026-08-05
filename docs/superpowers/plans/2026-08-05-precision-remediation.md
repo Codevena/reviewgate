@@ -178,7 +178,9 @@ Expected: PASS. If a test fails because its fixture reached `active` via several
     expect(new Set(inWindow.map((r) => r.run_id)).size).toBeGreaterThanOrEqual(3);
 ```
 
-Still a valid necessary condition (`active` needs ≥3 runs in 60d, and 60d ⊆ 90d; `sticky` needs ≥5), and it now actually exercises C2. Include this file in the Step 6 commit.
+Still a valid necessary condition (`active` needs ≥3 runs in 60d, and 60d ⊆ 90d; `sticky` needs ≥5). Include this file in the Step 6 commit.
+
+⚠ **Corrected during implementation — do NOT credit this as a guard for C2.** Round 3's reviewer estimated it "discriminates in ~1% of generated cases". Mutation-checked in a scratch copy with the event-counting bug re-introduced: the property **stays green at the default sample count and still at `numRuns: 5000`.** The generator can in principle emit the discriminating shape (3 providers sharing one `run_id` on one signature inside the window), but never does at realistic sample counts. The tightened oracle is strictly more correct and worth keeping; it is not evidence the change works. **The guards for C2 are the two unit tests in Step 1, both seen red before the implementation landed.**
 
 - [ ] **Step 6: Typecheck, lint, commit**
 

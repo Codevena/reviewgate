@@ -9,9 +9,9 @@ import {
 import { flock } from "../../utils/flock.ts";
 import { fpLedgerLockPath, knownFpPath, learningsDir } from "../../utils/paths.ts";
 
-const ACTIVE_REJECTS = 3;
+const ACTIVE_RUNS = 3;
 const ACTIVE_DAYS = 60;
-const STICKY_REJECTS = 5;
+const STICKY_RUNS = 5;
 const STICKY_DAYS = 90;
 const DAY_MS = 86_400_000;
 
@@ -59,12 +59,20 @@ function recompute(e: FpLedgerEntry, nowMs: number): FpLedgerEntry {
   if (e.pinned_by) return { ...e, stage: "sticky" };
   const within = (days: number) =>
     e.rejects.filter((r) => nowMs - Date.parse(r.ts) <= days * DAY_MS);
-  const distinct = (rs: typeof e.rejects) => new Set(rs.map((r) => r.provider)).size;
+  const providers = (rs: typeof e.rejects) => new Set(rs.map((r) => r.provider)).size;
+  // Evidence unit = the distinct gate RUN, not the reject event. Three reviewers
+  // answering in one round is ONE observation of this FP class, not three: the
+  // threshold measures temporal recurrence, and counting events let a single
+  // verbose round promote a signature to permanent suppression through a demote
+  // pass that has no severity or category ceiling.
+  // The 60d/90d window still filters on each reject's own `ts`; run_id is only
+  // counted for distinctness afterwards and is never parsed as a timestamp.
+  const runs = (rs: typeof e.rejects) => new Set(rs.map((r) => r.run_id)).size;
   const win90 = within(STICKY_DAYS);
   const win60 = within(ACTIVE_DAYS);
   let stage: FpLedgerEntry["stage"] = "candidate";
-  if (win90.length >= STICKY_REJECTS && distinct(win90) >= 2) stage = "sticky";
-  else if (win60.length >= ACTIVE_REJECTS && distinct(win60) >= 2) stage = "active";
+  if (runs(win90) >= STICKY_RUNS && providers(win90) >= 2) stage = "sticky";
+  else if (runs(win60) >= ACTIVE_RUNS && providers(win60) >= 2) stage = "active";
   return { ...e, stage, distinct_providers: [...new Set(e.rejects.map((r) => r.provider))] };
 }
 

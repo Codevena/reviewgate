@@ -41,6 +41,58 @@ describe("FpLedgerStore lifecycle", () => {
     expect((await s.snapshot()).entries[0]?.stage).toBe("candidate");
   });
 
+  it("3 rejects from 2 providers in ONE run stay candidate (evidence unit is the run)", async () => {
+    const s = new FpLedgerStore(repo());
+    const t = "2026-05-21T00:00:00Z";
+    // One review round: three reviewers, one run_id. Under the old event-count
+    // rule this promoted to `active` off a single round of panel chatter.
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "gemini", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "claude-code", reason: "x" }, t);
+    const e = (await s.snapshot()).entries[0];
+    expect(e?.rejects).toHaveLength(3);
+    expect(e?.stage).toBe("candidate");
+  });
+
+  it("the same 3 rejects across 3 runs reach active", async () => {
+    const s = new FpLedgerStore(repo());
+    const t = "2026-05-21T00:00:00Z";
+    await s.recordReject(sig, meta, { run_id: "r1", provider: "codex", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r2", provider: "gemini", reason: "x" }, t);
+    await s.recordReject(sig, meta, { run_id: "r3", provider: "claude-code", reason: "x" }, t);
+    expect((await s.snapshot()).entries[0]?.stage).toBe("active");
+  });
+
+  it("5 rejects spread over only 4 runs is active, not sticky; a 5th run makes it sticky", async () => {
+    const t = "2026-05-21T00:00:00Z";
+    // 5 reject EVENTS but only 4 distinct runs (r1 carries two providers).
+    // Old rule: 5 events >= STICKY_REJECTS -> sticky. New rule: 4 runs < 5 -> active.
+    // The two values differ, so this test is non-vacuous on paper.
+    const four = new FpLedgerStore(repo());
+    for (const [run_id, provider] of [
+      ["r1", "codex"],
+      ["r1", "gemini"],
+      ["r2", "codex"],
+      ["r3", "gemini"],
+      ["r4", "codex"],
+    ] as const)
+      await four.recordReject(sig, meta, { run_id, provider, reason: "x" }, t);
+    const e = (await four.snapshot()).entries[0];
+    expect(e?.rejects).toHaveLength(5);
+    expect(e?.stage).toBe("active");
+
+    const five = new FpLedgerStore(repo());
+    for (const [run_id, provider] of [
+      ["r1", "codex"],
+      ["r2", "codex"],
+      ["r3", "codex"],
+      ["r4", "gemini"],
+      ["r5", "gemini"],
+    ] as const)
+      await five.recordReject(sig, meta, { run_id, provider, reason: "x" }, t);
+    expect((await five.snapshot()).entries[0]?.stage).toBe("sticky");
+  });
+
   it("recordReject is idempotent on (run_id, provider) (no double-count on absorbPriorDecisions re-fire)", async () => {
     const s = new FpLedgerStore(repo());
     const t = "2026-05-21T00:00:00Z";

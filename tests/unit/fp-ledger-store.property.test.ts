@@ -110,9 +110,14 @@ describe("FpLedgerStore — property invariants", () => {
                   (r) => nowMs - Date.parse(r.ts) <= STICKY_DAYS * DAY_MS,
                 );
                 const distinctProviders = new Set(inWindow.map((r) => r.provider)).size;
-                // Necessary condition for active(≥3/60d) OR sticky(≥5/90d), both ≥2 providers:
-                // ≥3 qualifying rejects within 90d from ≥2 distinct providers.
-                expect(inWindow.length).toBeGreaterThanOrEqual(3);
+                // Necessary condition for active(≥3 runs/60d) OR sticky(≥5 runs/90d), both
+                // ≥2 providers: ≥3 distinct RUNS within 90d from ≥2 distinct providers.
+                // Asserting on distinct runs rather than on `inWindow.length` matters — the
+                // event count is implied by the run count (runs ≤ events), so an
+                // event-based oracle would stay green while proving nothing about the rule
+                // it guards.
+                const distinctRuns = new Set(inWindow.map((r) => r.run_id)).size;
+                expect(distinctRuns).toBeGreaterThanOrEqual(3);
                 expect(distinctProviders).toBeGreaterThanOrEqual(2);
               }
             }
