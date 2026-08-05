@@ -1,170 +1,186 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-05 12:16. Supersedes all earlier content._
+_Last updated: 2026-08-05 18:45. Supersedes all earlier content._
 
 ## One-line state
 
-**The pilot-01 baseline exists and is reproducible; the next task is an open choice between
-precision work and the aggregator detangle.** 12/12 turns reviewed, 61 min, $0.0166 billed;
-harvested, reported, ablated, written up, and re-derived identically by `rig replay`. Three
-bugs fixed along the way — two the run exposed, one from the field (duplicate gates).
+**The precision remediation shipped (3 of 4 changes; one was withdrawn on evidence), the critic is
+live and verified, and the next task is `pilot-02` — the second measurement run, now finally
+legal to start.**
 
-## What landed this session
+## What got done this session — and how it was verified
 
-| Commit | What |
+The chosen task was (a) *Precision / FP-fragmentation* from the previous handoff.
+**The measurement contradicted the task's own premise**, and that is the session's main result.
+
+### The finding that turned it around
+
+The old handoff said FP-ledger promotion was unreachable because reviewers fragment their
+`rule_id`s, so better grouping would open the path. Measured against the live ledger
+(29 entries, 30 rejects, 10 sessions, two months):
+
+| Question | Answer |
 |---|---|
-| `72e717d` | pilot-01 baseline + write-up; phantom-reviewer provenance fix; hook stand-down fix |
-| `f4b6761` | per-turn `diff.patch` recording; `reviewgate rig replay` |
-| `bc4cc6a` | seed-landing verification (`landedPattern` → `seedLanded`) + the 2/3 correction |
-| `0f71051` | gate findings F-002/F-003: added-line matching, 200-char cap, TOCTOU + warning fixes |
-| `04563ee` + the HEAD commit | handoff docs |
+| Signatures rejected more than once | **1 of 29** |
+| Cross-**session** recurrence | **0 of 29** |
+| Distinct runs per cluster | **1 — all five, no exception** |
 
-Verified at session end (2026-08-05 12:16, re-run on this exact tree, not recalled):
-Suite **3150 pass / 12 skip / 0 fail** · `bunx tsc --noEmit` clean · biome clean (642 files) ·
-working tree clean apart from this handoff · `origin/master` = **`04563ee`** (everything through
-that commit is pushed and verified identical). ⚠️ **The HEAD commit (this handoff) is NOT pushed** — it is the only
-local-only commit; `git push` it or carry it forward. Verify with
-`git rev-parse HEAD @{u} | uniq -c` (one line, count 2 = pushed).
+Every cluster's rejects carry identical timestamps and one `run_id`. The panel emits several
+differently-phrased findings about one thing in a single round; the agent rejects them in one
+batch; the ledger counted that as three independent observations.
 
-⚠️ **`dist/reviewgate` is STALE relative to HEAD.** It is `sha256:879a87e5…`, built 11:08, which
-predates `bc4cc6a` and `0f71051`. The duplicate-gate fix IS in it (that is why the two Stop
-messages stopped); **seed-landing is NOT**. Run `bun run build` before relying on `landedPattern`
-from the binary — and remember the build deploys to every repo via the
-`~/.local/bin/reviewgate` symlink.
+**So the first drafted fix was a fail-open.** Better clustering alone would have promoted
+`driver.ts` to `active` — permanent suppression earned by *one review round*, through a demote
+pass (`aggregator.ts`, the `fpActive` block) that has **no severity or category ceiling**, unlike
+the `cycleRejected` pass beside it. It was dropped.
 
-## The pilot's results, and what they actually say
+### What shipped instead
 
-| Metric | Value |
-|---|---|
-| M3 recall | 0.60 (3/5, CI 0.23–0.88) |
-| M4 escape rate | 0.20 (1/5, CI 0.04–0.62) |
-| M2 FP-burden slope | **+0.0239/turn (n=10)** — against the registered direction |
-| M1 iterations | median 1, mean 1.58 ± 0.86, max 3 |
-| M6 suppression | critic 0 · reputation 0 · fp-ledger 0 · lore 0 |
+| | Change | Commit |
+|---|---|---|
+| C2 | Promotion counts **distinct runs**, not reject events — per signature and per cluster | `9808169`, `3cf3258` |
+| C4 | Semantic cluster view (same file+category, ≥2 shared canonical tokens, union-find) — **diagnosis only** | `6bce17b` |
+| C1 | `phases.critic` on (`openrouter` / deepseek-v4-flash) — the one measured precision lever | `a584020` |
+| C3 | Reputation eligibility — **withdrawn before implementation** | — |
 
-Full write-up: `docs/dev/2026-08-05-pilot-01-result.md`. Two findings dominate it:
+**Evidence on real data.** `reviewgate fp clusters` now finds **5 clusters instead of 2**. The
+`deadlock@src/rig/driver.ts` cluster unites FP-021/022/023 for the first time (`ruleIdToken0` split
+them on `pipe` vs `piped`) — 3 rejects from **2 providers**, but **1 run**. Under the old counting
+it would now be `active`. It reads `candidate`. C4 makes the cluster visible; C2 stops visibility
+from becoming suppression.
 
-1. **The rig never verified a seeded defect LANDED** (fixed below). Turn 9 directed a hardcoded
-   API token; the agent declined and wrote `process.env.REPORT_API_TOKEN`. Nothing was there to
-   catch, and the harvester scored it as a recall miss AND the run's only escape. Turn 4's SQL
-   seed likewise never landed. On the three seeds that DID land: **recall 2/3, escape 0/3**
-   (an earlier "3/4" here was wrong — it came from checking only the uncaught seeds).
-   Turn 7's race landed and was genuinely missed.
-2. **No suppression layer ever fired.** critic + lore off by config; fp-ledger held 14 entries,
-   all `candidate` with ONE distinct provider (promotion needs ≥2, and the two reviewers
-   fragment their `rule_id`s); reputation hit 21 samples for `openrouter:security` at trust
-   ≈0.476 against a 0.45 floor. The history-dependent half of the product did not engage in 12
-   turns — which is what the positive slope is consistent with.
+**C1 is verified, not merely configured:** `.reviewgate/pending.json` carries
+`critic: {"provider":"openrouter","status":"ran","verdicts":7,"demoted":0}`.
 
-## Seed-landing verification — SHIPPED (`bc4cc6a`, hardened in `0f71051`)
+### Why C3 was withdrawn
 
-`RigSeededDefect.landedPattern` (regex, ≤200 chars) is matched against the **added lines** of
-the turn's recorded `diff.patch` and drives `RigTurnRecord.seedLanded`. `false` leaves the
-recall/escape denominators and gets a `warnings[]` line; the report has a `landed` column.
-`null` = UNKNOWN (no pattern, no diff, bad regex) and counts exactly as before, so pilot-01
-harvests unchanged.
+Markus delegated a reputation-flip decision (`newsletter-buddy`). Investigating *why* the flip
+existed produced the reason to drop the change: that reviewer's 8 events are **2 review rounds on
+one day**, 60 days ago. The inflation is systemic:
 
-**It immediately corrected a published number.** Re-scoring pilot-01 with patterns showed
-turn 4's SQL seed ALSO never landed (parameterized `$1` + params instead of the directed
-concatenation). Two of five seeds never reached the code, so the earlier "3/4 on landed seeds"
-was wrong → **2/3**, which is worse for the gate. It also removed a spurious CATCH: turn 4 had
-been credited for a finding about a hypothetical `Db` implementation.
+```
+newsletter-buddy claude-code:security   8 events →  2 rounds, 1 day
+reviewgate       openrouter:security   13 events →  4 rounds, 4 days
+flashbuddy       opencode:plan         21 events →  1 round,  1 day
+dealbarg         codex:plan             6 events →  1 round,  1 day
+```
 
-**Write patterns that match the DEFECT, not the topic.** `API_TOKEN` matches the safe version
-too. My path-traversal pattern (`readFileSync\(`) gave the right answer by luck — it would
-match a properly-validated implementation just as happily.
+Reputation counts **findings judged**, not **times the reviewer was tested** — so C3's raw count
+inherits exactly the event-vs-round inflation C2 removes. Switching the unit to rounds is the
+principled fix but forces re-calibrating `minSamples: 8`, and choosing between 3 and 8 on two data
+points is fitting noise. `src/core/reputation/` is byte-identical, so the flip cannot ship.
+**The original bug is real and still open** — recorded in the spec's C3 section and the plan's
+"Not in this plan".
 
-## THE NEXT TASK — deliberately UNDECIDED; Markus picks at session start
+### Plan gate: 3 rounds × 2 executing reviewers
 
-Do not just start (b) because the previous handoff said so. The two candidates:
+| Round | Slot A (claims) | Slot B (safety) |
+|---|---|---|
+| 1 | FAIL — 6 WARN | FAIL — **1 CRITICAL**, 3 WARN |
+| 2 | FAIL — **1 CRITICAL**, 1 WARN | FAIL — 3 WARN |
+| 3 | FAIL — 1 WARN | **PASS** |
 
-**(a) Precision / FP-fragmentation — the recommendation.** The pilot produced evidence for this
-on the same day, from two independent directions:
-- **fp-ledger promotion is effectively unreachable on a 2-reviewer panel.** 14 candidates after
-  12 turns, every one at exactly ONE distinct provider; promotion needs ≥2 providers on the
-  SAME signature, and the reviewers fragment their `rule_id`s so no signature ever gets there.
-- The gate's own round on this repo flagged three files (`src/core/lore/approve.ts`,
-  `src/rig/driver.ts`, `src/diff/sanitizer.ts`) each carrying 3–4 distinct rejected-FP
-  signatures that never promote — the same failure from the other side.
-- **Reputation missed its demote threshold by 0.026** (trust 0.476 vs `trustFloor` 0.45) after
-  21 samples for `openrouter:security`.
-Entry points: `src/core/brain/fp-coupling.ts`, the ledger's promotion rule (`stage: candidate`
-→ active, `distinct_providers`), `phases.reputation` in `src/config/defaults.ts`. The rig can
-now measure whether a fix moves the M2 slope — that is what it is for.
+Both CRITICALs were mine. Round 2's was *created by round 1's fix* — which is what delta reviews
+are for. Round 3 found that `reviewgate config approve` could not have worked where the plan put
+it. All findings are mapped in the plan's three "Plan-gate findings mapping" sections.
 
-**(b) The aggregator detangle.** `rig replay` is its acceptance test and reports DETERMINISTIC
-against pilot-01 today, so a refactor that changes a number cannot hide. Entry point
-`src/core/aggregator.ts` (~8 suppression passes → explicit pipeline stages).
-**But by Markus' own ranking from 2026-07-04 this is THIRD** (*Präzision > Distribution >
-Entflechtung*), and he explicitly wanted it to sit. The baseline makes it **safe**, not
-**urgent**. Choosing it is defensible — bank the acceptance test while it is fresh — but it is
-not the higher-impact option.
+## Current metrics (measured 18:42 on this tree, not recalled)
 
-A second pilot run belongs **after** either, with `landedPattern`s on all five seeds.
+- Suite **3163 pass / 12 skip / 0 fail** · `bunx tsc --noEmit` clean · biome clean (643 files)
+- Working tree **clean**
+- HEAD **`4bda22f`** · `origin/master` = **`04563ee`** → ⚠️ **14 commits UNPUSHED**
+  (verify: `git rev-parse HEAD @{u} | uniq -c` — one line with count 2 = pushed)
+- Binary rebuilt: `879a87e5…` → **`7f92445b…`**, hash change verified; behaviour checked against
+  the **installed** binary, not just `bun test`
+- Control plane **APPROVED** 16:36 by Markus, effective fingerprint `3fe97fce9347`, `pending: None`
 
-## Traps that still hold
+## THE NEXT TASK — `pilot-02`, and why
 
-- **`rig ablate` requires `--script`** (seeded tags are ground truth). The plan's Task 6 step
-  said otherwise and has been corrected.
-- **The cassette must live INSIDE the repo under review**, and `$SB` must be the PHYSICAL path
-  (`/private/tmp/…`): `runRigRun`'s containment guard compares uncanonicalised paths while the
-  recorder canonicalises, so `/tmp/…` is falsely rejected on macOS. **Unfixed — small guard bug.**
-- **`.gitignore` the cassette inside the sandbox**, or the untracked recording enters the diff
-  being reviewed and feeds reviewer output back into reviewer input.
-- **`exit = 0` proves nothing about a turn.** `gateReviewed` in the manifest is the real signal.
-- **Do NOT rebuild `dist/` mid-study** — a preregistration pins the binary by hash. (Pilot-01 is
-  done, so the current rebuild is fine; the next preregistration must re-pin `879a87e5…`.)
-- **Never `git add -A` at the repo root** (stages `.reviewgate/` state). `rig/results/` is
-  gitignored: cassettes contain raw reviewer prompts and output.
-- **A preregistration may only be re-frozen while zero numbers exist.**
-- **NEVER put `*.test.ts` under `rig/results/`** (or anywhere in the repo you don't want run).
-  `bun test` executes every test file in the tree **regardless of `.gitignore`** — copying the
-  pilot sandbox's source in cost 10 phantom suite failures that look like real regressions.
-  Store evidence as a `.diff`, which is inert. This is why `final-tree/` holds a patch, not code.
-- **To capture what an agent wrote, use `collectDiff()` — NOT `git diff HEAD`.** The rig sandbox
-  never commits, so every new file is UNTRACKED and a plain `git diff HEAD` omits all of it. The
-  first evidence file produced that way was nearly empty and made two landed seeds look unlanded.
-  `src/utils/git.ts:collectDiff` synthesizes untracked files via `--no-index`; the driver already
-  uses it (`src/rig/driver.ts:captureTurnDiff`).
-- **`landedPattern` must match the DEFECT, not the topic.** `API_TOKEN` matches the safe
-  `process.env` version too. Matching is against ADDED lines only — a hit in a context or
-  removed line is not evidence the agent wrote anything.
+Pilot-01's headline was that **no suppression layer fired at all** and the M2 FP-burden slope came
+out *positive* (+0.0239/turn, against the registered direction). Two of the four layers were off
+**by config**, so their Δ was zero by construction rather than by measurement. `phases.critic` is
+now on and observed running. **pilot-02 is the run that turns "we switched on the measured lever"
+into "we measured what it did here."**
+
+It could not legally start before now: until the TTY approval landed, the gate kept executing the
+critic-off last-known-good policy while `reviewgate.config.ts` claimed otherwise — a preregistration
+frozen then would have named a critic that was not running.
+
+Entry points: `rig/preregistrations/` (freeze a new one), `src/rig/driver.ts`, `src/rig/harvest.ts`,
+and `docs/dev/2026-08-05-pilot-01-result.md` for the baseline it is compared against.
+
+**Registered in advance, before any number exists:**
+
+> **M6 `critic > 0` is the primary outcome, NOT the M2 slope.** Whether the critic fires is directly
+> observable and robust at n=12. The slope is not: pilot-01 derived +0.0239/turn from 10 points, and
+> the repo's own bench varies clean-FP 0.625–0.875 across *identical* repeats. A single 12-turn run
+> cannot separate a real slope change from that variance. **A favourable slope must not be reported
+> as evidence the critic lowered FP burden.**
+>
+> C2 and C4 are correctness fixes with **no expected effect** on today's data. If M6 shows
+> `fp-ledger > 0`, something promoted on evidence this design says does not exist — investigate
+> before celebrating.
+
+Preconditions: `landedPattern` on **all five** seeds (pilot-01 had none, and two of five seeds never
+landed); re-pin the binary hash to `7f92445b…`; **keep codex out of the panel via config**, not via
+its quota state — its cooldown ends 2026-08-08, and a panel that gains a reviewer measures two
+changes at once and is not comparable to pilot-01.
+
+## Traps that still hold — including things to NOT change
+
+- **`computeFpClusters` must stay on `ruleIdToken0`.** It feeds `orchestrator.ts:2364` → the
+  aggregator's **suppression** map, and `aggregator.ts:783` *independently reconstructs* the same
+  `<token0>@<file>` key to probe it. The format is frozen at both ends. `computeFpSemanticClusters`
+  is the new one and is wired **only** to `fp clusters` and `learn status`. Broadening the
+  suppression key on single-run evidence is exactly the fail-open this milestone removed.
+- **Turning the critic back OFF now needs a SECOND human TTY approval.** `safeStrengthening`
+  (`src/config/control-plane.ts`) auto-classifies only four sandbox/loop paths; everything else is
+  `approval-required` **in both directions**, and `ControlPlaneStateSchema` stores one
+  `approved_config` with **no history** — so the with-critic config *is* the last-known-good now.
+  Deleting the config line does not undo it.
+- **The critic only runs when the panel produced ≥1 finding** (`orchestrator.ts:2302`). A
+  zero-finding PASS legitimately writes **no `critic` key**. That is not a misconfiguration and
+  not an `OPENROUTER_API_KEY` problem.
+- **`dist/reviewgate.prev`** (`879a87e5…`, ~65 MB, untracked) is the code rollback target. `bun run
+  build` does not wipe `dist/`, so it survives a rebuild. Delete it only once pilot-02 concludes.
+- **A green property test proved nothing here.** The run-based oracle in
+  `fp-ledger-store.property.test.ts` was mutation-checked with the event-counting bug reintroduced:
+  **green at default sampling and still green at `numRuns: 5000`.** It is kept because it is
+  strictly more correct, but it is **not** a guard for C2 — the two unit tests in
+  `fp-ledger-store.test.ts` are, and both were seen red first.
+- **Repair test fixtures by INTENT, not by one blanket rule.** The `4× burst` fixture in
+  `fp-ledger-clusters.test.ts` deliberately keeps its shared `run_id` — a burst *is* one round;
+  giving it distinct run_ids would turn a guard into the evidence shape C2 rejects. The
+  `isNearActive` literals are cast `as Parameters<…>`, so **`tsc` stays silent** on a missing field
+  while `undefined >= 3` is quietly false.
+- **Do not restore `learn-status.test.ts`'s old cluster key** (`prisma@…` → `attribut@…`) by giving
+  `labelFor` a `ruleIdToken0` fallback. That would silently undo C4 while leaving every new test
+  green. `labelFor` emits **stems** — `delet@`, `spac@`, `defang@` are expected output.
+- Older traps that still apply: never `git add -A` at the repo root (stages `.reviewgate/` state);
+  never put `*.test.ts` under `rig/results/`; the rig cassette must live INSIDE the repo under
+  review and `$SB` must be the PHYSICAL `/private/tmp/…` path; use `collectDiff()` not
+  `git diff HEAD` to capture what an agent wrote; `exit = 0` proves nothing about a turn —
+  `gateReviewed` in the manifest is the real signal.
+
+## Open, needs Markus
+
+1. **14 commits unpushed.** Push freigeben?
+2. **Two `~/Developer` fixes** (diagnosed, not applied — outside this repo, so I asked first):
+   `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at
+   `${CLAUDE_PROJECT_DIR}/.reviewgate/bin/…`, but `~/Developer/.reviewgate/bin/` does not exist →
+   `SessionStart hook error` in every new project that is not yet its own git repo. The hooks are
+   redundant (user-scoped shims in `~/.reviewgate/bin/` cover every repo). Second, a
+   `control-plane.json` from 15.07. makes `~/Developer` count as an armed checkout.
+3. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`, `viergewinnt`,
+   `youtubeQuiz`) — unchanged from the last handoff; a policy call, not a bug.
 
 ## Read-first order
 
 1. This file.
-2. `docs/dev/2026-08-05-pilot-01-result.md` — the baseline, its limitations, and the correction
-   block (it carries a strikethrough correction of a number this session published and then
-   disproved; read it as an example of the honesty rules this project runs on).
-3. For (a): `src/core/brain/fp-coupling.ts` + the FP-ledger promotion rule; the live evidence is
-   `.reviewgate/learnings/known_fp.jsonl` in any dogfooded repo (`stage`, `distinct_providers`).
-   For (b): `src/core/aggregator.ts`, then `src/rig/replay.ts` for how the acceptance test works.
-4. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Tasks 4–6 DONE
-   write-ups, which record every deviation from the original plan and why.
-
-## Open, deliberately not done
-
-- **`rig replay` is a HARNESS self-check, not a pipeline replay.** The literal Task 5 Step 4
-  spec is not implementable: re-running the pipeline needs each iteration's reviewer prompt,
-  and the cassette stores only `promptSha256`. A true replay needs per-ITERATION prompt
-  recording — weigh that against the cassette's leak surface before building it.
-- **Four repos are armed without ever being init'ed** (`barrierefrei`, `fatemehdaily`,
-  `viergewinnt`, `youtubeQuiz` — `approved_via: human`/`init`, 13.–16.07., before user-scoped
-  hooks existed). Since 29.07. the user-scoped hook finds a valid approval there and runs the
-  full gate. Disarming them is Markus's policy call, not a bug fix. Off switch for user-scoped
-  hooks entirely: `reviewgate init --user --remove`.
-- **A transient `GATE POLICY CHANGED` reminder** appeared once mid-session in this repo while
-  `config status` said APPROVED, `pending: None`, no `POLICY_CHANGE.md`. Non-blocking by
-  design. Unexplained; worth a look if it recurs.
-- **3 INFO findings** from the gate's own review of `72e717d` were left unaddressed
-  (placeholder-filter asymmetry, id-convention not enforced, sentinel shares the product name).
-
-## The duplicate-gate bug (answered a field question)
-
-Two identical Stop messages per turn came from TWO gates running: the user-scoped shim's
-stand-down predicate matched only the CURRENT repo-hook spelling, while `init` wrote an
-unquoted form for 17 commits. 7 of 15 local repos were affected and paid double reviewer quota.
-`REPO_CLAUDE_COMMANDS` is now a closed, versioned set of exact spellings (the accepted set
-widened; the matching rule did not — mutation-checked: the loose-marker rule turns 3 guards
-red). Verified against the rebuilt binary in all 7 repos. **No `init --hooks-only` repair is
-needed** — the fix covers them.
+2. `docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md` — the design of record,
+   including the withdrawn-C3 section and two dated in-place corrections of claims this session
+   published and then disproved.
+3. `docs/superpowers/plans/2026-08-05-precision-remediation.md` — the status table at the top, then
+   the three "Plan-gate findings mapping" sections at the bottom (they record what each round found
+   and what the fix was).
+4. `docs/dev/2026-08-05-pilot-01-result.md` — the baseline pilot-02 is measured against.
