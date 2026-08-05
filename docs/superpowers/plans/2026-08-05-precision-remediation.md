@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the FP-ledger count evidence honestly (distinct runs, not reject events), split reputation eligibility from trust, add a semantic cluster view for diagnosis, and switch on the one precision layer that is actually measured (the critic).
+**Goal:** Make the FP-ledger count evidence honestly (distinct runs, not reject events), add a semantic cluster view for diagnosis, and switch on the one precision layer that is actually measured (the critic). _(C3, the reputation-eligibility change, was withdrawn before implementation — see Task 3.)_
 
 **Architecture:** Four independent changes against `docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md`. C2 and C3 are threshold-semantics fixes in two small pure modules. C4 adds a *second* clustering function rather than changing the existing one, because `computeFpClusters` feeds the aggregator's suppression path and the spec requires C4 to stay diagnosis-only. C1 is a config edit plus a global binary deploy, which is why it is last and carries a rollback.
 
@@ -27,10 +27,9 @@
 | `tests/unit/fp-ledger-store.test.ts` | Modify: active/sticky fixtures + new run-unit guards | 1 |
 | `src/core/fp-ledger/clusters.ts` | Modify: cluster stage thresholds count distinct runs; `FpCluster` gains run fields | 2 |
 | `tests/unit/fp-ledger-clusters.test.ts` | Modify: existing promotion test now needs 3 runs; new guards | 2 |
-| `src/core/reputation/score.ts` | Modify: `RepDerived.evidence` + `isUnreliable` reads it | 3 |
-| `src/core/reputation/store.ts` | Modify: `derive()` populates `evidence` | 3 |
-| `src/cli/commands/learn-status.ts` | Modify: print raw evidence alongside decayed samples | 3 |
-| `tests/unit/reputation-score.test.ts` | Modify: eligibility guards | 3 |
+| ~~`src/core/reputation/score.ts`~~ | **C3 WITHDRAWN** — see Task 3 | ~~3~~ |
+
+
 | `src/diff/signature.ts` | Modify: export `canonicalRuleTokens` (single source of truth for the noise list) | 4 |
 | `src/core/fp-ledger/clusters.ts` | Modify: add `computeFpSemanticClusters` | 4 |
 | `src/cli/commands/fp.ts` | Modify: `fp clusters` uses the semantic view | 4 |
@@ -394,7 +393,47 @@ the run count. reject_count_* stay as honest event counts for the CLI."
 
 ---
 
-### Task 3: C3 — reputation eligibility uses raw evidence, trust stays decayed
+### Task 3: C3 — WITHDRAWN 2026-08-05, before implementation
+
+**Do not implement this task.** It is kept here rather than deleted so the reasoning survives.
+
+C3 proposed making reputation eligibility read the **raw** event count while trust stayed
+decayed. Checking the one repo the plan gate flagged (`newsletter-buddy`) revealed that its
+`claude-code:security` has **8 events from 2 review rounds on a single day**, 60 days ago
+(2 correct / 6 wrong). Widening the scan showed the pattern is systemic, not incidental:
+
+| Repo / reviewer | events | **rounds** | days |
+|---|---:|---:|---:|
+| `newsletter-buddy claude-code:security` | 8 | **2** | 1 |
+| `reviewgate openrouter:security` | 13 | **4** | 4 |
+| `flashbuddy opencode:plan` | 21 | **1** | 1 |
+| `dealbarg codex:plan` | 6 | **1** | 1 |
+
+Reputation's sample count measures **findings judged**, not **times the reviewer was tested**.
+So C3's raw count inherits exactly the event-vs-round inflation that C2 removes from the
+FP-ledger — it would have demoted a reviewer on two stale rounds, in the milestone whose whole
+thesis is "count occasions, not events".
+
+Switching the unit to rounds is the principled fix, but it forces a re-calibration of
+`minSamples: 8`: `openrouter:security` has 4 rounds, so an 8-round bar leaves the original bug
+unfixed while a 3-round bar fixes it. With two data points, choosing between them is fitting
+noise — which this spec's own "out of scope" section rejects for `trustFloor`.
+
+**The original bug is real and still open:** `minSamples` is compared against a decayed sum while
+trust is also decayed, so an intermittently-used reviewer can sit below the floor indefinitely
+without qualifying. The honest fix makes eligibility *and* trust share one unit (a per-round
+outcome rather than a per-finding one), which is a redesign needing its own evidence base.
+Tracked in "Not in this plan".
+
+Dropping C3 costs the experiment nothing — it was registered as having no expected effect, and
+C1 is the measured lever. It also resolves the `newsletter-buddy` escalation: with C3 gone,
+nothing flips, so the pre-build reputation scan in Task 5 Step 3.5 is expected to print **no
+lines at all**.
+
+<details>
+<summary>Original Task 3 content (withdrawn, do not implement)</summary>
+
+### C3 (withdrawn) — reputation eligibility uses raw evidence, trust stays decayed
 
 **Files:**
 - Modify: `src/core/reputation/score.ts` (`RepDerived` + `isUnreliable`)
@@ -629,6 +668,10 @@ Eligibility ('is there evidence to judge at all') is a raw count; trust ('how
 reliable lately') stays decayed. Self-correcting: as evidence ages trust drifts
 back to the neutral 0.5 and rises above the floor. learn status now prints both."
 ```
+
+---
+
+</details>
 
 ---
 
@@ -1127,6 +1170,7 @@ So once approved, the two rollbacks are asymmetric rather than independent: the 
 ## Not in this plan
 
 - **pilot-02 itself.** It needs a fresh preregistration with `landedPattern` on all five seeds, the new binary hash pinned, and codex explicitly excluded from the panel (its quota cooldown ends 2026-08-08, and a panel that gains a reviewer measures two changes at once). Separate session.
+- **Reputation eligibility (C3, withdrawn).** `minSamples` is compared against a decayed sum while trust is also decayed, so an intermittently-used reviewer can sit below the trust floor indefinitely without ever qualifying to demote. Real bug, still open. The fix must give eligibility and trust a shared unit — a per-**round** outcome rather than a per-finding one — because reputation events inflate the same way FP-ledger rejects do (measured: 8 events / 2 rounds, 21 events / 1 round). That re-calibration needs its own evidence base; see Task 3 for the full measurement.
 - **Brain curator quorum** (122 fails, every one exactly one provider short). Shares the ≥2-provider rule with the FP-ledger but promotes knowledge rather than suppressing findings, and `phases.brain` is default-off.
 - **Wiring `computeFpSemanticClusters` into suppression.** Deliberately withheld until real cross-run recurrence exists.
 
