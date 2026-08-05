@@ -1032,9 +1032,19 @@ async function runStopGate(
       setupDeadlineAt !== null
         ? await withTimeout(setupWork, Math.max(1, setupDeadlineAt - Date.now()), "review-setup")
         : await setupWork;
-  } catch {
+  } catch (err) {
+    // A bare `catch` here used to report EVERY setup failure as "did not complete within
+    // 120s (likely git index-lock contention)". That is right for a timeout and actively
+    // misleading for anything else: a setup exception that throws in 0.1s was announced as a
+    // two-minute lock contention, and the real error was discarded. It cost three failed rig
+    // pilot runs to find a cause the exception had named all along (field, 2026-08-05).
+    // Distinguish the two, and never swallow the message.
     const secs = Math.round((input.setupBudgetMs ?? SETUP_BUDGET_MS_DEFAULT) / 1000);
-    const reason = `🔴 Reviewgate · GATE CLOSED — review setup (git/state/diff) did not complete within ${secs}s (likely git index-lock contention from a parallel session). End your turn again to retry; run \`reviewgate doctor\` if it persists.`;
+    const timedOut = err instanceof Error && /timed out|review-setup/i.test(err.message);
+    const detail = err instanceof Error ? err.message : String(err);
+    const reason = timedOut
+      ? `🔴 Reviewgate · GATE CLOSED — review setup (git/state/diff) did not complete within ${secs}s (likely git index-lock contention from a parallel session). End your turn again to retry; run \`reviewgate doctor\` if it persists.`
+      : `🔴 Reviewgate · GATE CLOSED — review setup failed: ${detail}. This is NOT a timeout — the setup phase threw. End your turn again to retry; run \`reviewgate doctor\` if it persists.`;
     return { exitCode: 0, stdout: JSON.stringify({ decision: "block", reason }), stderr: reason };
   }
   const { host, adapters, ctx, snapshotTree } = setup;

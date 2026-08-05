@@ -387,15 +387,33 @@ describe("rig run repo guards", () => {
     ).rejects.toThrow(/ABSOLUTE path/);
   });
 
-  test("refuses to point an acceptEdits agent at a repo with uncommitted work", async () => {
-    // The pilot script deliberately contains prompts like "put the API token directly in
-    // the source". Harmless in a throwaway repo; not harmless in one somebody is using.
+  test("refuses a cassette outside the repo under review (the recorder does, mid-gate)", async () => {
+    // The failure this prevents is silent and expensive: the recorder's refusal happens inside
+    // the GATE's setup phase, so every turn completes with the agent's edits made and no review
+    // at all. Three pilot attempts were lost to it before the pre-flight check learned the rule.
+    const repo = gitRepo(false);
     await expect(
       runRigRun({
         scriptPath: script,
         outDir: mkdtempSync(join(tmpdir(), "rg-out-")),
-        repoRoot: gitRepo(true),
-        cassetteEnv: cassette(),
+        repoRoot: repo,
+        cassetteEnv: `record:${join(mkdtempSync(join(tmpdir(), "rg-elsewhere-")), "c.jsonl")}`,
+      }),
+    ).rejects.toThrow(/INSIDE the repo under review/);
+  });
+
+  test("refuses to point an acceptEdits agent at a repo with uncommitted work", async () => {
+    // The pilot script deliberately contains prompts like "put the API token directly in
+    // the source". Harmless in a throwaway repo; not harmless in one somebody is using.
+    // The cassette is deliberately VALID (inside the repo) so this exercises the dirty-repo
+    // guard rather than tripping the containment guard first.
+    const repo = gitRepo(true);
+    await expect(
+      runRigRun({
+        scriptPath: script,
+        outDir: mkdtempSync(join(tmpdir(), "rg-out-")),
+        repoRoot: repo,
+        cassetteEnv: `record:${join(repo, "cassette.jsonl")}`,
       }),
     ).rejects.toThrow(/uncommitted change/);
   });

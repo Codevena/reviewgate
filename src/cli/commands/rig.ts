@@ -5,7 +5,7 @@
 // what that structurally cannot: the gate as an interactive loop, over a run whose history
 // accumulates.
 import { constants, accessSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import {
   SUPPRESSION_LAYERS,
   type SuppressionLayer,
@@ -80,6 +80,19 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
   } catch {
     throw new Error(
       `rig run: the cassette directory ${cassetteDir} is not writable, so the run would record nothing.`,
+    );
+  }
+  // The cassette must live INSIDE the repo being reviewed. The recorder refuses anything
+  // else (path-traversal/symlink guard), and it refuses it inside the GATE's setup phase —
+  // which fails the whole review before a single audit event is written. This guard checked
+  // absolute/exists/writable and missed exactly that, so a run whose cassette pointed at the
+  // rig's own results directory passed pre-flight and then produced twelve turns of nothing.
+  // Cost three pilot attempts to find (field, 2026-08-05); mirror the recorder's rule here,
+  // where it is still free to be wrong.
+  const repoPrefix = resolve(input.repoRoot) + sep;
+  if (!resolve(cassettePath).startsWith(repoPrefix)) {
+    throw new Error(
+      `rig run: REVIEWGATE_CASSETTE must point INSIDE the repo under review (${input.repoRoot}), but got "${cassettePath}". The recorder refuses to write outside it, and it refuses during the gate's SETUP phase — so every turn would complete with the agent's edits made and no review at all. Put the cassette in the sandbox and copy it out after the run.`,
     );
   }
   // Validate the script BEFORE spawning anything: a malformed script must stop the run
