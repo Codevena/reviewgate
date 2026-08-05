@@ -258,6 +258,10 @@ export const FindingSchema = z.object({
         // merge can OR-propagate it to the representative (a demoted member merged under
         // an unflagged equal-severity representative must not silently lose the flag).
         demoted_from_critical: z.boolean().optional(),
+        // Slice A: per-member mis-anchor provenance, so a repaired member merged under an
+        // unrepaired equal-severity representative (ties-keep-first) does not silently lose
+        // the marker — the badge and the pilot count both key on it.
+        anchor_repaired: z.boolean().optional(),
       }),
     )
     .optional(),

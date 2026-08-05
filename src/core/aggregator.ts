@@ -303,6 +303,7 @@ function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
     // can OR it in (a flagged member merged under an unflagged equal-severity rep must not
     // silently lose the flag). Only set when true so members[] stays minimal otherwise.
     ...(f.demoted_from_critical === true ? { demoted_from_critical: true } : {}),
+    ...(f.anchor_repaired === true ? { anchor_repaired: true } : {}),
   };
 }
 
@@ -529,6 +530,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const demotedFromCritical =
       sample.demoted_from_critical === true ||
       members.some((m) => m.demoted_from_critical === true);
+    // Slice A mirror of the G0 OR above: the repaired finding is often NOT the representative
+    // (equal severity + ties-keep-first), and losing the marker would hide the mis-anchor in
+    // exactly the merge the repair made possible.
+    const anchorRepaired =
+      sample.anchor_repaired === true || members.some((m) => m.anchor_repaired === true);
     deduped.push({
       ...sample,
       details: details.slice(0, 2000),
@@ -536,6 +542,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       consensus,
       members,
       ...(demotedFromCritical ? { demoted_from_critical: true } : {}),
+      ...(anchorRepaired ? { anchor_repaired: true } : {}),
     });
   }
 
