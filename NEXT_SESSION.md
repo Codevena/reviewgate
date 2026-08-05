@@ -41,23 +41,30 @@ reputation sample landed 17 min later.
 **Scope it honestly:** the gate passed turn 2 in *both* pilots (`softPassPolicy: "allow"`), so
 the cost is to **surfacing**, not interception. n = 3 landed seeds.
 
-### Three bugs this run found in the measurement tooling
+### Three bugs this run found in the measurement tooling — 2 FIXED, 1 scoped out (`5a1f94f`)
 
-1. **`rig ablate`'s recall denominator ignores `seedLanded`** (`ablate.ts:207` uses all 5 seeded;
-   `harvest.ts:509` uses the 3 landed). `renderAblationMatrix` then subtracts across
-   denominators and prints `+1/3` for layers that suppressed **nothing**. Every figure quoted in
-   the write-up is recomputed from the ablated turn records instead. **Fix this first — it is
-   the one that silently publishes wrong numbers.**
+None could be fixed *during* the run: harvesting goes through the binary the preregistration
+pins, and rebuilding mid-experiment would break the pin and deploy to every repo via the symlink.
+They were fixed immediately after, under
+`docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md`.
+
+1. **`rig ablate`'s recall denominator ignored `seedLanded`** — it used all 5 seeded turns while
+   `harvest.ts` uses the 3 landed, so the matrix subtracted across populations and printed
+   `+1/3` for layers that suppressed **nothing**. **FIXED**: it now uses harvest's predicate
+   verbatim. On the recorded run this reproduces what the write-up had recomputed by hand —
+   `−critic +1/3`, the no-op layers `+0/3`. pilot-01's matrix is unchanged.
 2. **M5 cannot see the critic**: `orchestrator.ts:2300` is `const criticCostUsd = 0`, never
-   reassigned (`complete()` returns no usage envelope). Enabling a critic adds real spend that
-   M5 reports as $0.
-3. **Claim (A) is not harvestable**: `RigResult` carries only `suppressed.critic`, a *demotion*
+   reassigned. **NOT FIXED, deliberately** — `complete()` returns a bare `string` in all six
+   adapters, so there is no usage envelope to attribute and a real fix is a provider-contract
+   change (its own slice). Instead `rig report` now **states** the omission whenever the critic
+   actually reached a provider.
+3. **Claim (A) was not harvestable**: `RigResult` carried only `suppressed.critic`, a *demotion*
    count — a critic that ran and kept everything is indistinguishable from one never configured.
-   **FIXED** — `RigTurnRecord.criticRuns` + an `M6 critic invocation` report line; the
-   stopgap `rig/scripts/critic-activity.ts` is deleted, one source of truth again.
-
-None were fixed during the run: harvesting goes through the binary the preregistration pins, and
-rebuilding mid-experiment would break the pin and deploy to every repo via the symlink.
+   **FIXED**: `RigTurnRecord.criticRuns` (deduped by `run_id:iter`) + an `M6 critic invocation`
+   report line. The stopgap `rig/scripts/critic-activity.ts` is deleted — one source of truth.
+   Before deleting it, both pilots were re-harvested and the harvester reproduced its numbers
+   exactly (pilot-02 10/10, 16 proposed, 3 surviving; pilot-01 0/0), every headline metric
+   byte-identical.
 
 ### Why M2's 0.0000 is not good news
 
@@ -76,23 +83,21 @@ caught one vacuous case (an inline `Bearer <literal>` header).
 
 ## Current metrics (measured, not recalled)
 
-- Suite **3163 pass / 12 skip / 0 fail** · `bunx tsc --noEmit` clean · biome clean (643 files)
-- Working tree **clean** · HEAD **`dd21408`**
-- **origin/master = `33bc02f`** → **3 commits unpushed**: `ac2f5d5` (preregistration),
-  `dd21408` (result + extractor), and this handoff commit itself.
+- Suite **0 fail** (3180 tests, 12 skip) · `bunx tsc --noEmit` clean · biome clean (643 files)
+- Working tree **clean** · HEAD **`5a1f94f`**
+- **origin/master = `33bc02f`** → **4 commits unpushed**: `ac2f5d5` (preregistration),
+  `dd21408` (pilot-02 result), `0989ae5` (handoff), `5a1f94f` (rig measurement fixes).
   The 15 that were pending last session **were pushed** this session with Markus's OK
   (`04563ee..33bc02f`, verified `git rev-list --count` = 15).
 - Binary **unchanged**: `sha256:7f92445b…` — pinned by the preregistration and deliberately not
   rebuilt. `dist/reviewgate.prev` (`879a87e5…`) is still the rollback target.
 - Control plane approved, `pending: None`
 
-## THE NEXT TASK — decide between two, both justified by pilot-02
+## THE NEXT TASK — (b), because (a) is DONE
 
-**(a) Fix the measurement tooling (small, protects every future number).** `rig ablate`'s
-denominator first, then M5's critic cost and a `critic` invocation field on `RigResult`. Entry
-points: `src/rig/ablate.ts:207`, `src/rig/harvest.ts:509`, `src/schemas/rig-result.ts`,
-`src/core/orchestrator.ts:2300`. Note fixing 2–3 requires `bun run build`, which re-pins the
-binary for any later pilot — do it *before* preregistering pilot-03, never during.
+**(a) Fix the measurement tooling — DONE this session (`5a1f94f`).** See the three-bugs section
+above. Two fixed, one scoped out with its omission made explicit. 3 review rounds × 2 slots,
+ending PASS/PASS; all four new guard tests seen red first.
 
 **(b) Close the true-positive hole the critic exposed (substantive, needs a pilot-03).** Two
 candidates, in evidence order:
@@ -103,8 +108,13 @@ candidates, in evidence order:
       corroboration exemption can engage. Two reviewers agreeing under different phrasings
       currently reads as two lone, individually-demotable findings.
 
-Recommendation: **(a) then (b)**, because (b) must be measured and (a) is what makes the
-measurement trustworthy.
+The measurement is now trustworthy enough to score (b): the ablation prints honest deltas and
+the critic's invocation is harvested, so a pilot-03 can show whether a protection change keeps
+the turn-2 class of finding blocking **without** re-inflating FP burden.
+
+**Sequencing trap for pilot-03:** implementing (b) changes gate behaviour, so `bun run build`
+is required for it to reach a pilot — and that re-pins the binary. Build and verify the hash
+FIRST, then preregister pilot-03 against the new hash. Never rebuild mid-run.
 
 **Do NOT enable the critic in the `init` scaffold.** The spec's C1 made that conditional on
 pilot-02 confirming the effect; what pilot-02 measured is one true positive lost against zero
@@ -112,8 +122,12 @@ measurable FP reduction. It is also not on its own a reason to turn it off here 
 
 ## Traps that still hold
 
-- **`rig ablate` numbers are wrong until bug 1 is fixed.** Recompute from the ablated
-  `RigTurnRecord`s (`caught` over `seedLanded !== false`) rather than quoting the matrix.
+- **`rig ablate`'s denominator must stay identical to `harvest.ts`'s.** They are two files that
+  independently filter seeded turns, and the renderer subtracts one's numerator from the
+  other's — so any future change to one is a silent bug unless mirrored. Two guard tests pin it.
+- **`dist/reviewgate` does NOT carry these fixes** — it is the pilot-02-pinned `7f92445b…` and
+  was deliberately not rebuilt. Use `bun run dev rig …` to exercise the fixed code; the compiled
+  binary still prints the old ablation matrix.
 - **Turning the critic OFF needs a SECOND human TTY approval.** `safeStrengthening` auto-classifies
   only four sandbox/loop paths; `ControlPlaneStateSchema` stores one `approved_config` with no
   history, so the with-critic config *is* the last-known-good. Deleting the line does not undo it.
@@ -137,7 +151,8 @@ measurable FP reduction. It is also not on its own a reason to turn it off here 
 
 ## Open, needs Markus
 
-1. **3 commits unpushed** (`ac2f5d5` prereg, `dd21408` result, + this handoff). Push?
+1. **4 commits unpushed** (`ac2f5d5` prereg, `dd21408` pilot-02 result, `0989ae5` handoff,
+   `5a1f94f` rig fixes) + this handoff update. Push?
 2. **Two `~/Developer` fixes**, diagnosed but still not applied (outside this repo):
    `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at
    `${CLAUDE_PROJECT_DIR}/.reviewgate/bin/…` while `~/Developer/.reviewgate/bin/` does not exist
