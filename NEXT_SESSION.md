@@ -14,10 +14,13 @@ fixed, plus the duplicate-gate bug from the field.
 |---|---|
 | `72e717d` | pilot-01 baseline + write-up; phantom-reviewer provenance fix; hook stand-down fix |
 | `f4b6761` | per-turn `diff.patch` recording; `reviewgate rig replay` |
+| `bc4cc6a` | seed-landing verification (`landedPattern` → `seedLanded`) + the 2/3 correction |
+| `0f71051` | gate findings F-002/F-003: added-line matching, 200-char cap, TOCTOU + warning fixes |
 
-Suite **3144 pass / 12 skip / 0 fail** · `tsc` + biome clean · `dist/reviewgate` rebuilt
-(`sha256:879a87e5…`) and deployed via the `~/.local/bin/reviewgate` symlink.
-**HEAD is 2 commits ahead of origin — nothing pushed.**
+Suite **3150 pass / 12 skip / 0 fail** · `tsc` + biome clean · `dist/reviewgate` rebuilt
+(`sha256:879a87e5…`) and deployed via the `~/.local/bin/reviewgate` symlink — note that build
+PREDATES `bc4cc6a`/`0f71051`, so rebuild before relying on seed-landing from the binary.
+**Everything pushed: `origin/master` = `0f71051`.**
 
 ## The pilot's results, and what they actually say
 
@@ -31,31 +34,44 @@ Suite **3144 pass / 12 skip / 0 fail** · `tsc` + biome clean · `dist/reviewgat
 
 Full write-up: `docs/dev/2026-08-05-pilot-01-result.md`. Two findings dominate it:
 
-1. **The rig never verifies a seeded defect LANDED.** Turn 9 directed a hardcoded API token;
-   the agent declined and wrote `process.env.REPORT_API_TOKEN`. Nothing was there to catch, and
-   the harvester scored it as a recall miss AND the run's only escape. On seeds that actually
-   landed: recall 3/4, escape 0/4. **Every rig recall number is a lower bound until turns
-   record `seed_landed`.** Turn 7's race DID land and was genuinely missed.
+1. **The rig never verified a seeded defect LANDED** (fixed below). Turn 9 directed a hardcoded
+   API token; the agent declined and wrote `process.env.REPORT_API_TOKEN`. Nothing was there to
+   catch, and the harvester scored it as a recall miss AND the run's only escape. Turn 4's SQL
+   seed likewise never landed. On the three seeds that DID land: **recall 2/3, escape 0/3**
+   (an earlier "3/4" here was wrong — it came from checking only the uncaught seeds).
+   Turn 7's race landed and was genuinely missed.
 2. **No suppression layer ever fired.** critic + lore off by config; fp-ledger held 14 entries,
    all `candidate` with ONE distinct provider (promotion needs ≥2, and the two reviewers
    fragment their `rule_id`s); reputation hit 21 samples for `openrouter:security` at trust
    ≈0.476 against a 0.45 floor. The history-dependent half of the product did not engage in 12
    turns — which is what the positive slope is consistent with.
 
-## THE NEXT TASK — seed-landing verification, before any second run
+## Seed-landing verification — SHIPPED (`bc4cc6a`, hardened in `0f71051`)
 
-Re-running at n=12 without it produces another recall number that silently blames the reviewer
-whenever the agent behaves well. The substrate now exists: the driver records
-`<snapshotDir>/diff.patch` per turn (`diffBytes` in the manifest).
+`RigSeededDefect.landedPattern` (regex, ≤200 chars) is matched against the **added lines** of
+the turn's recorded `diff.patch` and drives `RigTurnRecord.seedLanded`. `false` leaves the
+recall/escape denominators and gets a `warnings[]` line; the report has a `landed` column.
+`null` = UNKNOWN (no pattern, no diff, bad regex) and counts exactly as before, so pilot-01
+harvests unchanged.
 
-Shape: harvester reads the turn's patch, checks the seeded defect is present (per-seed
-predicate — the turn script would need to carry one, e.g. a regex or an absence-assertion),
-records `seed_landed: true|false`, EXCLUDES unlanded seeds from the recall/escape denominators,
-and gives each one a `warnings[]` line. Note the patch is CUMULATIVE (the sandbox never commits
-between turns) — a per-turn delta is the difference between consecutive captures, the same
-discipline the harvester already applies to the append-only audit tree.
+**It immediately corrected a published number.** Re-scoring pilot-01 with patterns showed
+turn 4's SQL seed ALSO never landed (parameterized `$1` + params instead of the directed
+concatenation). Two of five seeds never reached the code, so the earlier "3/4 on landed seeds"
+was wrong → **2/3**, which is worse for the gate. It also removed a spurious CATCH: turn 4 had
+been credited for a finding about a hypothetical `Db` implementation.
 
-After that: the aggregator detangle, with `rig replay` as its acceptance test.
+**Write patterns that match the DEFECT, not the topic.** `API_TOKEN` matches the safe version
+too. My path-traversal pattern (`readFileSync\(`) gave the right answer by luck — it would
+match a properly-validated implementation just as happily.
+
+## THE NEXT TASK — the aggregator detangle
+
+`rig replay` is its acceptance test and reports DETERMINISTIC against pilot-01 today, so a
+refactor that changes a number cannot hide. Markus' earlier analysis named the aggregator's
+~8 suppression passes as the cleanest first cut; the pilot adds evidence, since two of those
+layers never fired in 12 turns and their behaviour is currently asserted rather than observed.
+
+A second pilot run is worth doing **after** that, with `landedPattern`s on all five seeds.
 
 ## Traps that still hold
 
