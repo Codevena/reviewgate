@@ -1,108 +1,101 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-05. Supersedes all earlier content._
+_Last updated: 2026-08-05 (afternoon). Supersedes all earlier content._
 
 ## One-line state
 
-The longitudinal effectiveness rig is **fully built, reviewed and pushed** (Tasks 1–5 minus one
-step) — but the **baseline still does not exist**: the 12-turn pilot failed three times without
-producing a single audit event, and today's session found and fixed the cause without yet
-re-running it.
+**The pilot-01 baseline exists.** 12/12 turns reviewed, 61 min, $0.0166 billed; harvested,
+reported, ablated, written up, and verified reproducible. Two bugs the run itself exposed are
+fixed, plus the duplicate-gate bug from the field.
 
-## What got done this session — and how it was verified
+## What landed this session
 
-**Task 4 (harvester) and Task 5 (reporter + ablation) shipped.** The load-bearing correction the
-plan did not anticipate: **the per-turn snapshots are CUMULATIVE** (the audit tree is append-only
-and `handleReset` never clears it), so every per-iteration fact is a multiset delta against the
-previous snapshot. Mutation-checked — with the delta removed the M2 slope does not merely drift,
-it **flips sign** (+0.43 where the true fit is negative), i.e. the bug would have manufactured the
-exact opposite of the rig's headline claim.
-
-**The pilot's root cause, found by stepwise isolation.** Same prompt + default config, direct →
-gate fires. Same prompt + **pilot config**, direct → gate fires (850 B output, audit written).
-That eliminated prompt, config, hooks and contention. The remaining variable was
-`REVIEWGATE_CASSETTE`, absent from those isolation runs.
-
-> **A/B, same sandbox, back to back:** with the cassette → setup fails, no audit.
-> Without it → **PASS in 5.2 s** with the audit event.
-
-The cassette recorder refuses paths **outside the repo under review** (traversal/symlink guard),
-and refuses them during the gate's **setup** phase. The cassette sat in `rig/results/`, but the
-repo under review is the *sandbox*. So the gate never ran, never wrote an audit event, and every
-turn completed with the agent's edits made and no review at all.
-
-**Why that took three runs:** `gate.ts` wrapped the whole setup phase in a bare `catch` that
-reported **every** exception as `did not complete within 120s (likely git index-lock contention)`.
-The real error threw in **0.1 s** and its message was discarded. The message actively pointed the
-wrong way — two wrong causes were named before the exception was allowed to speak.
-
-Both fixed in `52fdb70`: a timeout and a throw now read differently and the real message is never
-swallowed; and `rig run`'s pre-flight now mirrors the recorder's containment rule, where being
-wrong is still free instead of costing twelve turns of quota.
-
-**Also shipped:** `acknowledgePass` block-loop fix (`4aabc09`, from the FlashBuddy field report),
-the driver's unreviewed-turn guard (`26a4f5c`), and the preregistration + its integrity schema.
-
-## Current metrics
-
-| | |
+| Commit | What |
 |---|---|
-| HEAD | `52fdb70`, **pushed** — `git rev-parse HEAD @{u} \| uniq -c` shows one line, count 2. Tree clean |
-| Suite | **3136 pass / 12 skip / 0 fail** on exactly this content |
-| Static | `bunx tsc --noEmit` clean · biome clean (640 files) |
-| `dist/reviewgate` | **deliberately NOT rebuilt** — still the 31.07 build, `0.1.0-alpha.15`, `sha256:6f52c766…` |
-| Pilot | 0 of 12 turns ever measured. OpenRouter actual spend so far: **$0.001180** |
+| `72e717d` | pilot-01 baseline + write-up; phantom-reviewer provenance fix; hook stand-down fix |
+| `f4b6761` | per-turn `diff.patch` recording; `reviewgate rig replay` |
 
-## THE NEXT TASK — run the pilot, with the cassette inside the sandbox
+Suite **3144 pass / 12 skip / 0 fail** · `tsc` + biome clean · `dist/reviewgate` rebuilt
+(`sha256:879a87e5…`) and deployed via the `~/.local/bin/reviewgate` symlink.
+**HEAD is 2 commits ahead of origin — nothing pushed.**
 
-Task 6 of `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md`. It is next
-because everything upstream only *collects*; without the baseline the planned aggregator refactor
-is a behaviour-neutral change nobody can prove is behaviour-neutral.
+## The pilot's results, and what they actually say
 
-The only change from the last attempt is **where the cassette lives**:
+| Metric | Value |
+|---|---|
+| M3 recall | 0.60 (3/5, CI 0.23–0.88) |
+| M4 escape rate | 0.20 (1/5, CI 0.04–0.62) |
+| M2 FP-burden slope | **+0.0239/turn (n=10)** — against the registered direction |
+| M1 iterations | median 1, mean 1.58 ± 0.86, max 3 |
+| M6 suppression | critic 0 · reputation 0 · fp-ledger 0 · lore 0 |
 
-```bash
-SB=$(mktemp -d /tmp/rig-pilot01-XXXXXX)   # arm it: git init + commit, copy the pilot config,
-                                          # `dist/reviewgate init --host claude`, commit again
-cd "$SB"
-export OPENROUTER_API_KEY='<fresh key>'
-export REVIEWGATE_CASSETTE="record:$SB/cassette.jsonl"   # INSIDE the sandbox — this is the fix
-bun /Users/markus/Developer/reviewgate/src/cli/index.ts rig run \
-  --script /Users/markus/Developer/reviewgate/rig/scripts/pilot-01.json \
-  --out /Users/markus/Developer/reviewgate/rig/results/pilot-01
-# afterwards: cp "$SB/cassette.jsonl" rig/results/pilot-01/
-```
+Full write-up: `docs/dev/2026-08-05-pilot-01-result.md`. Two findings dominate it:
 
-The pre-flight guard now refuses the old (broken) layout before spawning anything, so this cannot
-silently regress. Then: `rig harvest` → `rig report` → `rig ablate`, then the write-up.
+1. **The rig never verifies a seeded defect LANDED.** Turn 9 directed a hardcoded API token;
+   the agent declined and wrote `process.env.REPORT_API_TOKEN`. Nothing was there to catch, and
+   the harvester scored it as a recall miss AND the run's only escape. On seeds that actually
+   landed: recall 3/4, escape 0/4. **Every rig recall number is a lower bound until turns
+   record `seed_landed`.** Turn 7's race DID land and was genuinely missed.
+2. **No suppression layer ever fired.** critic + lore off by config; fp-ledger held 14 entries,
+   all `candidate` with ONE distinct provider (promotion needs ≥2, and the two reviewers
+   fragment their `rule_id`s); reputation hit 21 samples for `openrouter:security` at trust
+   ≈0.476 against a 0.45 floor. The history-dependent half of the product did not engage in 12
+   turns — which is what the positive slope is consistent with.
+
+## THE NEXT TASK — seed-landing verification, before any second run
+
+Re-running at n=12 without it produces another recall number that silently blames the reviewer
+whenever the agent behaves well. The substrate now exists: the driver records
+`<snapshotDir>/diff.patch` per turn (`diffBytes` in the manifest).
+
+Shape: harvester reads the turn's patch, checks the seeded defect is present (per-seed
+predicate — the turn script would need to carry one, e.g. a regex or an absence-assertion),
+records `seed_landed: true|false`, EXCLUDES unlanded seeds from the recall/escape denominators,
+and gives each one a `warnings[]` line. Note the patch is CUMULATIVE (the sandbox never commits
+between turns) — a per-turn delta is the difference between consecutive captures, the same
+discipline the harvester already applies to the append-only audit tree.
+
+After that: the aggregator detangle, with `rig replay` as its acceptance test.
 
 ## Traps that still hold
 
-- **Do NOT `bun run build` before the pilot.** The preregistration pins the binary by hash
-  (`sha256:6f52c766…`); rebuilding changes the measured system and forces another re-pin. The rig
-  runs from source, so the new cassette guard is active anyway. Rebuild *after* the run.
-- **The cassette must live inside the sandbox.** Anywhere else and the gate dies in setup with no
-  audit events — which looks exactly like "the agent's Stop hook never fired".
-- **`exit = 0` proves nothing about a turn.** A turn can complete with edits made and no review.
-  The driver's `gateReviewed` flag (audit growth + `dirty.flag`) is the real signal; two
-  consecutive unreviewed turns abort the run.
-- **Never run the full suite, or a second Claude session, beside a pilot run.** Contention is real
-  — but note it was NOT the cause here; do not let it become the default explanation again.
-- **A preregistration may only be re-frozen while zero numbers exist**, and the change goes into
-  `known_limitations`. That was done once (31.07 → binary re-pin) and is documented in the file.
-- **`rig replay` (Task 5 Step 4) is deliberately unbuilt** — its acceptance criterion needs a
-  recorded pilot that does not exist yet.
-- **fp-ledger's ablation Δ is an INTERVAL, not a point**, and that is correct: the layer
-  overwrites severity with INFO and the original is persisted nowhere. Do not "fix" it into a
-  point estimate. `lore` never demotes at all (additive INFO findings).
+- **`rig ablate` requires `--script`** (seeded tags are ground truth). The plan's Task 6 step
+  said otherwise and has been corrected.
+- **The cassette must live INSIDE the repo under review**, and `$SB` must be the PHYSICAL path
+  (`/private/tmp/…`): `runRigRun`'s containment guard compares uncanonicalised paths while the
+  recorder canonicalises, so `/tmp/…` is falsely rejected on macOS. **Unfixed — small guard bug.**
+- **`.gitignore` the cassette inside the sandbox**, or the untracked recording enters the diff
+  being reviewed and feeds reviewer output back into reviewer input.
+- **`exit = 0` proves nothing about a turn.** `gateReviewed` in the manifest is the real signal.
+- **Do NOT rebuild `dist/` mid-study** — a preregistration pins the binary by hash. (Pilot-01 is
+  done, so the current rebuild is fine; the next preregistration must re-pin `879a87e5…`.)
 - **Never `git add -A` at the repo root** (stages `.reviewgate/` state). `rig/results/` is
-  gitignored because cassettes contain raw reviewer prompts and output — review before committing.
-- **codex quota** reset was `2026-08-05T11:24Z`; verify before assuming it is available.
+  gitignored: cassettes contain raw reviewer prompts and output.
+- **A preregistration may only be re-frozen while zero numbers exist.**
 
-## Read-first order
+## Open, deliberately not done
 
-1. This file.
-2. `docs/superpowers/plans/2026-07-29-longitudinal-effectiveness-rig.md` — Task 6, plus the
-   two "DONE" write-ups on Tasks 4 and 5 (they record the deviations from the original plan).
-3. `src/cli/commands/rig.ts:runRigRun` — the pre-flight guards, including the new containment rule.
-4. `rig/preregistrations/pilot-01.json` — what the run is committed to in advance.
+- **`rig replay` is a HARNESS self-check, not a pipeline replay.** The literal Task 5 Step 4
+  spec is not implementable: re-running the pipeline needs each iteration's reviewer prompt,
+  and the cassette stores only `promptSha256`. A true replay needs per-ITERATION prompt
+  recording — weigh that against the cassette's leak surface before building it.
+- **Four repos are armed without ever being init'ed** (`barrierefrei`, `fatemehdaily`,
+  `viergewinnt`, `youtubeQuiz` — `approved_via: human`/`init`, 13.–16.07., before user-scoped
+  hooks existed). Since 29.07. the user-scoped hook finds a valid approval there and runs the
+  full gate. Disarming them is Markus's policy call, not a bug fix. Off switch for user-scoped
+  hooks entirely: `reviewgate init --user --remove`.
+- **A transient `GATE POLICY CHANGED` reminder** appeared once mid-session in this repo while
+  `config status` said APPROVED, `pending: None`, no `POLICY_CHANGE.md`. Non-blocking by
+  design. Unexplained; worth a look if it recurs.
+- **3 INFO findings** from the gate's own review of `72e717d` were left unaddressed
+  (placeholder-filter asymmetry, id-convention not enforced, sentinel shares the product name).
+
+## The duplicate-gate bug (answered a field question)
+
+Two identical Stop messages per turn came from TWO gates running: the user-scoped shim's
+stand-down predicate matched only the CURRENT repo-hook spelling, while `init` wrote an
+unquoted form for 17 commits. 7 of 15 local repos were affected and paid double reviewer quota.
+`REPO_CLAUDE_COMMANDS` is now a closed, versioned set of exact spellings (the accepted set
+widened; the matching rule did not — mutation-checked: the loose-marker rule turns 3 guards
+red). Verified against the rebuilt binary in all 7 repos. **No `init --hooks-only` repair is
+needed** — the fix covers them.
