@@ -60,9 +60,13 @@ export const REVIEW_OUTPUT_SCHEMA = {
           details: { type: "string" },
           confidence: { type: "number" },
           // S4 (field report 2026-06-23): the exact source line the finding relies on, verbatim, or
-          // null if the deciding line/artifact was not provided to the reviewer. RENDER-ONLY: a
-          // deterministic cross-check (fact-check.ts) badges a CLEAR mismatch vs the working-tree
-          // line; it never changes severity. Nullable per strict-mode (express optional via type).
+          // null if the deciding line/artifact was not provided to the reviewer. UNTRUSTED
+          // reviewer-supplied input: a deterministic cross-check (fact-check.ts) badges a CLEAR
+          // mismatch vs the working-tree line (render-only, never changes severity), AND — added by
+          // the true-positive-hole slice — `validateFindingFacts` consults this quote to tell a
+          // mis-anchored finding (out-of-range line, quote matches real source) from a fabricated
+          // one, which DOES decide blocking vs advisory. Nullable per strict-mode (express optional
+          // via type).
           evidence_line: { type: ["string", "null"] },
         },
       },

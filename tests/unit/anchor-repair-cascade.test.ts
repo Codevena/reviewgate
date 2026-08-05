@@ -163,7 +163,7 @@ describe("pilot-02 turn 2 — the full cascade", () => {
     const r = aggregate({
       findings: checked,
       reviewersTotal: 2,
-      changedRanges: new Map([["src/store.ts", [[1, 27]] as Array<[number, number]>]]),
+      changedRanges: new Map([["src/store.ts", [[1, 28]] as Array<[number, number]>]]),
       scopeToDiff: true,
       // The critic called the weaker detection a likely FP, exactly as it did in the pilot.
       critic: new Map([["sigF001", { verdict: "likely_fp" }]]),

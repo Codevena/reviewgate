@@ -76,8 +76,10 @@ console.log({tot, ev, fi})'
 | distinct findings `fact_invalid` fired on, in 24 turns | **1** |
 | ...whose evidence line matched a real line of the cited file | **1 of 1** |
 
-The one time this pass fired, it labelled a real security finding a hallucination. **n = 1**: the
-change below is justified by the mechanism, not by that sample size.
+Running the command above prints `fi: 2`, not 1 — both numbers are right. It is the **same**
+signature (`8deca571…`) recurring in `turns/3`, so the raw count is 2 rows but 1 distinct finding.
+The one time this pass fired (on a distinct finding), it labelled a real security finding a
+hallucination. **n = 1**: the change below is justified by the mechanism, not by that sample size.
 
 ### Why this one anchor cost the whole turn
 
@@ -113,6 +115,13 @@ toggles; no new config key, and so no second TTY control-plane approval.
   provider-contract change, as recorded in the task-(a) plan.
 - **Findings with no `evidence_line`** (19 % of the corpus) get no new protection. Their
   behaviour is unchanged.
+- **Signature reordering.** `applySymbolSignatures` runs at `orchestrator.ts:2219`, *before*
+  `validateFindingFacts` at `:2226`, so a repaired finding keeps a signature derived from the
+  phantom pre-repair line rather than the symbol-relative form a correctly-anchored duplicate
+  would get. Deliberate, not an oversight: reordering the two passes would invalidate every
+  persisted signature and cache entry. Accepted because the location-keyed guard closes exactly
+  this gap and, thanks to the repair, now sees a *stable* region instead of a churning bogus one
+  (final review, M-6).
 
 ## Slice A — distinguish mis-anchored from fabricated
 
@@ -141,10 +150,12 @@ On a match it returns the finding re-anchored to that line, with `line_end` coll
 `anchor_repaired: true` marker, and a details note recording the original number.
 
 **Disambiguation, stated as a rule rather than left to chance:** when the quote matches several
-lines, re-anchor to the occurrence **nearest the cited line**; ties break to the **lower** line
-number. Both candidates are real occurrences of the reviewer's own quote, so this chooses among
-facts rather than inventing one, and it is fully deterministic — which the aggregator's clustering
-requires (`:433-444` sorts precisely to keep clustering order-independent).
+lines, re-anchor to the **LAST** matching occurrence — which, because this only ever runs on a
+citation past EOF, is also the occurrence **nearest** the cited line, so a tie cannot occur given
+the range-checked call site. Any matching occurrence is a real instance of the reviewer's own
+quote, so this chooses among facts rather than inventing one, and it is fully deterministic —
+which the aggregator's clustering requires (`:433-444` sorts precisely to keep clustering
+order-independent).
 
 **This is not the gate inventing a location.** It re-anchors to a line the reviewer itself
 quoted. The rejected alternative — clamping to the nearest changed hunk — would have been.
@@ -318,7 +329,7 @@ not part of this spec.
 
 | Risk | Handling |
 |---|---|
-| Re-anchoring rescues a genuinely fabricated finding | Only when the reviewer's quote is **found verbatim in the cited file**. A model that fabricates a line number *and* quotes real source has still read the file — that is the definition of mis-anchored. Guards 2 and 3 pin both no-quote and no-match paths |
+| Re-anchoring rescues a genuinely fabricated finding | Only when the reviewer's quote is **found verbatim in the cited file** AND carries at least one identifier-like token (3+ word characters) — a punctuation-only quote like `}` matches dozens of lines and was demonstrated to rescue a fabricated CRITICAL, so the quote alone is not proof the finding is real (final review, I-1). This bounds but does not eliminate the residual: a fabricator that additionally invents a plausible identifier-bearing line, or that simply cites an IN-RANGE line, was never covered by this pass at all — `validateFindingFacts` only ever runs on out-of-range citations. Guards 2 and 3 pin both no-quote and no-match paths |
 | The repair moves a finding onto unrelated code | It moves it onto a line the reviewer quoted; multi-match resolves to the nearest occurrence, deterministically. Guard 4 pins the rule |
 | Weakening the empty-file protection the pass was built for | An empty file has no lines, so no quote can match → the motivating case can never be re-anchored. Guard 2 uses exactly that fixture |
 | Slice B re-inflates FP burden | Floor stops at WARN; already-INFO security stays droppable (guard 8). pilot-03 reports FP burden, though pilot-02 showed M2 has no signal in this rig |

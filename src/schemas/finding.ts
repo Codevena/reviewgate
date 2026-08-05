@@ -122,8 +122,11 @@ export const FindingSchema = z.object({
   // unavailable). NEVER changes severity — purely an ownership tag, unlike foreign_to_session.
   session_attributable: z.boolean().optional(),
   // S4 (field report 2026-06-23): the exact source line the reviewer self-attests it relied on,
-  // verbatim (capped). RENDER-ONLY: fact-check badges a CLEAR mismatch vs the working-tree line.
-  // Never changes severity.
+  // verbatim (capped). UNTRUSTED reviewer-supplied input. Two consumers: `attestEvidence` badges a
+  // CLEAR mismatch vs the working-tree line (render-only, never changes severity); and — added by
+  // the true-positive-hole slice — `validateFindingFacts` (fact-check.ts) consults it to tell a
+  // MIS-ANCHORED finding (an out-of-range line whose quote matches real source) from a fabricated
+  // one, which DOES decide blocking vs advisory (see `anchor_repaired`).
   evidence_line: z.string().optional(),
   // S4: set true (render-only) when the reviewer's quoted evidence_line matches NO line in the cited
   // file — a strong signal it reasoned on stale/absent/fabricated context. Advisory badge ONLY; the

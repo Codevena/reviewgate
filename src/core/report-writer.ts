@@ -41,8 +41,8 @@ export function findingBadges(f: Finding): string | null {
   if (f.deterministic)
     badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
-  // Slice A: the counterpart to the badge above — the cited line was wrong, but the reviewer's
-  // quoted evidence proved the finding is grounded, so it was moved rather than demoted.
+  // Anchor repair: the counterpart to the badge above — the cited line was wrong, but the
+  // reviewer's quoted evidence proved the finding is grounded, so it was moved rather than demoted.
   if (f.anchor_repaired)
     badges.push(
       "⚑ reviewer cited a line that does not exist — re-anchored to the source line it quoted",

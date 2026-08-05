@@ -145,4 +145,24 @@ describe("validateFindingFacts — mis-anchored vs fabricated", () => {
     expect(out[0]?.line_start).toBe(3);
     expect(out[0]?.anchor_repaired).toBe(true);
   });
+
+  // GUARD 6 (I-1, final review 2026-08-05). A punctuation-only quote names no code: "}", "  }",
+  // "\t}" and fullwidth "｝" all normalize to "}", which matches many lines and proves nothing
+  // about WHICH line the reviewer read.
+  // WITHOUT the identifier-token guard: the quote "}" matches the file's brace line and the
+  // out-of-range CRITICAL re-anchors -> severity CRITICAL, anchor_repaired true.
+  // WITH it: a quote with no identifier-like token falls through to the demote exactly as before
+  // -> severity INFO, fact_invalid true, anchor_repaired undefined.
+  it("does not repair on a punctuation-only quote, even when it matches a real line", () => {
+    const braceLines = `${["function f() {", "  return 1", "}", "const b = 2", "const c = 3"].join("\n")}\n`;
+    const dir = repo(braceLines);
+    const out = validateFindingFacts(
+      [mkFinding({ line_start: 999, line_end: 999, evidence_line: "}" })],
+      dir,
+      new Set(),
+    );
+    expect(out[0]?.severity).toBe("INFO");
+    expect(out[0]?.fact_invalid).toBe(true);
+    expect(out[0]?.anchor_repaired).toBeUndefined();
+  });
 });

@@ -57,16 +57,22 @@ function demote(f: Finding, note: string): Finding {
  * which case the caller demotes exactly as before. This can only ever be reached for an
  * out-of-range anchor, so it can never move a valid one.
  *
- * Multiple matches resolve to the occurrence NEAREST the cited line, ties to the LOWER line
- * number. Both are real occurrences of the reviewer's own quote, so this chooses among facts
- * rather than inventing one — and it must be deterministic, because the aggregator's clustering
- * is deliberately order-independent and keys on line_start.
+ * Multiple matches resolve to the LAST matching occurrence — which, because this only ever runs on
+ * a citation past EOF (the range check above always fires first), is also the occurrence NEAREST
+ * the cited line; a tie cannot occur given the range-checked call site. Any matching occurrence is
+ * a real instance of the reviewer's own quote, so this chooses among facts rather than inventing
+ * one — and it must be deterministic, because the aggregator's clustering is deliberately
+ * order-independent and keys on line_start.
  */
 function reanchorByEvidence(f: Finding, text: string): Finding | null {
   const ev = typeof f.evidence_line === "string" ? f.evidence_line : null;
   if (ev === null || ev.length === 0) return null;
   const evN = normalizeLine(ev);
   if (evN.length === 0) return null; // quote was only whitespace/markers → no signal
+  // A quote with no identifier-like token ("}", "},", "});") names no code: it matches dozens of
+  // lines and proves nothing about WHICH line the reviewer read. Falling through to the demote is
+  // fail-safe — it restores exactly the pre-repair behaviour for a quote that carries no signal.
+  if (!/[A-Za-z_$][A-Za-z0-9_$]{2,}/.test(evN)) return null;
   const lines = text.split("\n");
   const cited = f.line_start - 1;
   let best = -1;
@@ -74,7 +80,9 @@ function reanchorByEvidence(f: Finding, text: string): Finding | null {
     const raw = lines[i];
     if (raw === undefined) continue;
     if (normalizeLine(raw) !== evN) continue;
-    // Strict `<` with an ascending scan makes ties keep the LOWER line number.
+    // Strict `<` with an ascending scan keeps the LAST match. Since `cited` is always past EOF
+    // here, every match index is strictly below it and distance is monotonic in i, so "last
+    // match" and "nearest match" are the same occurrence — no tie can arise to break.
     if (best === -1 || Math.abs(i - cited) < Math.abs(best - cited)) best = i;
   }
   if (best === -1) return null; // quote matches no line → the fabrication signal stands
