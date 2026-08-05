@@ -26,11 +26,18 @@ export const RigSeededDefectSchema = z
      * Write it to match the DEFECT, not the topic: `API_TOKEN` matches both the unsafe and
      * the safe version, so it proves nothing. Match the literal that makes it unsafe.
      *
+     * Matched against ADDED lines only (a seed "landed" means the agent wrote it), one line at
+     * a time.
+     *
      * OPTIONAL on purpose. Absent → `seedLanded: null` ("unknown"), the turn stays in the
      * denominator exactly as before, and a warning says so. Silently dropping unverifiable
      * seeds would change every existing script's numbers the day this shipped.
+     *
+     * Length-capped: V8's regex engine backtracks and has no timeout, and this string is
+     * user-supplied, so an unbounded pattern is an accidental-hang waiting to happen. 200 chars
+     * is far more than any real "did this defect land" check needs (gate F-002/F-003).
      */
-    landedPattern: z.string().min(1).optional(),
+    landedPattern: z.string().min(1).max(200).optional(),
   })
   .strict();
 

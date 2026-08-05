@@ -688,6 +688,48 @@ describe("rig harvest", () => {
     expect(result.warnings.join(" ")).toMatch(/never landed|did not land/i);
   });
 
+  test("a defect only in REMOVED or context lines has not landed — the agent must have written it", () => {
+    // Whole-patch matching would call this landed: the text is right there in the diff. But a
+    // removed line is the defect being DELETED, and a context line is code the agent never
+    // touched. Either would credit the seed to a turn that did not introduce it.
+    const fx = buildFixture([
+      {
+        seeded: {
+          id: "path-traversal",
+          tags: TRAVERSAL_TAGS,
+          severity: "critical",
+          landedPattern: "readFileSync\\(",
+        },
+        diff: [
+          "--- a/src/store.ts",
+          "+++ b/src/store.ts",
+          "-  return readFileSync(`./templates/${name}`, 'utf8')", // removed: the defect is GONE
+          "   const other = readFileSync(safePath)", // context: untouched code
+          "+  return readTemplateSafely(name)",
+        ].join("\n"),
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+    expect(result.turns[0]?.seedLanded).toBe(false);
+  });
+
+  test("a seeded turn with NO landedPattern warns, so an unverified seed is never silent", () => {
+    // The schema's JSDoc promised this warning; the first implementation returned silently and
+    // a reviewer caught the mismatch (gate F-005).
+    const fx = buildFixture([
+      {
+        seeded: { id: "path-traversal", tags: TRAVERSAL_TAGS, severity: "critical" },
+        diff: "+  readFileSync(x)\n",
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+    expect(result.warnings.join(" ")).toMatch(/NO landedPattern/);
+  });
+
   test("without a landedPattern the turn still counts, and landing is UNKNOWN not false", () => {
     // Fail-safe default: shipping this feature must not silently re-score every existing
     // script by dropping seeds nobody can verify.

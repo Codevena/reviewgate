@@ -264,6 +264,41 @@ interface TurnHarvest {
 }
 
 /**
+ * Collapse a user-supplied string to one line before it goes into a warning.
+ *
+ * `landedPattern` is free text from a JSON file and lands in a terminal table and a markdown
+ * blockquote; an embedded newline silently breaks both formats.
+ */
+function oneLine(s: string): string {
+  const flat = s.replace(/[\r\n\t]+/g, " ");
+  return flat.length > 120 ? `${flat.slice(0, 117)}…` : flat;
+}
+
+/**
+ * Does the pattern match a line the agent ADDED?
+ *
+ * Two reasons, and the correctness one came first. "The seed landed" means the agent WROTE the
+ * defect — so the evidence is an added line, not context and not a removal. Matching the whole
+ * patch text would happily accept a defect that appears in a context line (code the agent never
+ * touched) or, worse, in a REMOVED line, i.e. exactly the case where the defect is gone.
+ *
+ * It also bounds what the regex engine sees to one line at a time. V8's regex is a backtracking
+ * NFA with no timeout, `landedPattern` is user-supplied, and a diff can be megabytes: a nested
+ * quantifier against the whole blob can wedge the process with no recovery but SIGKILL (gate
+ * F-002/F-003, two reviewers). Per-line input plus the schema's length cap does not make
+ * catastrophic backtracking impossible — nothing short of a non-backtracking engine does — but
+ * it removes the input-size term that turns an accidental pattern into a hang.
+ */
+function matchesAddedLine(re: RegExp, patch: string): boolean {
+  for (const line of patch.split("\n")) {
+    // `+++ b/path` is a file header, not content.
+    if (!line.startsWith("+") || line.startsWith("+++")) continue;
+    if (re.test(line.slice(1))) return true;
+  }
+  return false;
+}
+
+/**
  * Did the seeded defect actually reach the code this turn?
  *
  * A turn script states an INTENTION. pilot-01 proved that is not the same as an outcome: turn
@@ -285,34 +320,41 @@ function checkSeedLanded(
 ): boolean | null {
   if (seeded === null) return null;
   const pattern = seeded.landedPattern;
-  if (pattern === undefined) return null;
-
-  const patchPath = join(snapshotDir, "diff.patch");
-  if (!existsSync(patchPath)) {
+  if (pattern === undefined) {
+    // Warned, not silent: an unverifiable seed still counts toward recall, and the whole point
+    // of this check is that a seed nobody verified must not quietly look like a verified one.
     warnings.push(
-      `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but the turn has NO recorded diff (runs recorded before per-turn diff.patch capture, pilot-01 among them). Landing is UNKNOWN, and the turn stays in the recall/escape denominators — it is NOT assumed to have landed, nor assumed not to.`,
+      `turn ${index}: seeded defect "${seeded.id}" has NO landedPattern, so it is unknown whether the agent actually wrote the defect. The turn stays in the recall/escape denominators — add a landedPattern to the turn script to verify it (pilot-01 scored two seeds the agent never wrote).`,
     );
     return null;
   }
+
+  const patchPath = join(snapshotDir, "diff.patch");
   let re: RegExp;
   try {
     re = new RegExp(pattern);
   } catch {
     warnings.push(
-      `turn ${index}: seeded defect "${seeded.id}" has a landedPattern that is not a valid regex (${pattern}). Landing is UNKNOWN and the turn stays in the denominators. Fix the script — a broken pattern must not silently drop a real seed.`,
+      `turn ${index}: seeded defect "${seeded.id}" has a landedPattern that is not a valid regex (${oneLine(pattern)}). Landing is UNKNOWN and the turn stays in the denominators. Fix the script — a broken pattern must not silently drop a real seed.`,
     );
     return null;
   }
+  // Read FIRST and let ENOENT distinguish "no recorded diff" from "unreadable": an
+  // existsSync-then-readFileSync pair is a TOCTOU (the path can be swapped for a symlink in
+  // between) and the read is already guarded, so the extra stat bought nothing (gate F-001).
   let patch: string;
   try {
     patch = readFileSync(patchPath, "utf8");
-  } catch {
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException)?.code === "ENOENT";
     warnings.push(
-      `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but diff.patch could not be read. Landing is UNKNOWN.`,
+      missing
+        ? `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but the turn has NO recorded diff (runs recorded before per-turn diff.patch capture, pilot-01 among them). Landing is UNKNOWN, and the turn stays in the recall/escape denominators — it is NOT assumed to have landed, nor assumed not to.`
+        : `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but diff.patch could not be read (${(err as Error).message}). Landing is UNKNOWN.`,
     );
     return null;
   }
-  const landed = re.test(patch);
+  const landed = matchesAddedLine(re, patch);
   if (!landed) {
     warnings.push(
       `turn ${index}: seeded defect "${seeded.id}" NEVER LANDED — the recorded diff does not match its landedPattern, so the agent did not write the defect the prompt directed (pilot-01 turn 9: it declined a hardcoded token and wrote the env-var version). EXCLUDED from the recall and escape denominators: there was nothing for the panel to catch, and counting it would charge the reviewer for the agent's judgment.`,
