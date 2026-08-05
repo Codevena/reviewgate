@@ -362,7 +362,17 @@ Expected: the new tests PASS, and **exactly three pre-existing tests in this fil
 
 Run: `bun test tests/unit/aggregator-fp-cluster.test.ts tests/unit/orchestrator-fp-cluster-clock.test.ts tests/unit/fp-cli.test.ts tests/unit/learn-status.test.ts`
 
-Expected: `tests/unit/learn-status.test.ts` FAILS at `:336` — its `near_active` count drops 1→0 for the same `isNearActive` reason as `:117`. Update the expectation to `0`. The other three PASS.
+Two of these break. Each needs the repair that matches its fixture's *intent*:
+
+1. **`tests/unit/learn-status.test.ts:336`** — `near_active` drops 1→0. **Repair: give the prisma fixture's three entries distinct run_ids (`R1`, `R2`, `R3`) so `near_active` stays `1`.** That fixture is a *display* test; nothing about it means "one round", so distinct runs are the honest fixture.
+
+   ⚠ **Do NOT instead change the expectation to `0`.** Doing so drops the cluster out of `near_or_promoted` entirely, and then `:337` — which asserts the cluster **key** — fails with `undefined` instead of the `"attribut@prisma/schema.prisma"` that Task 4 Step 7 expects. `:337` is the **only** assertion anywhere on the `<stem>@<file>` key that C4 introduces (the new semantic test file asserts `member_ids`, never a key), so losing it would leave C4's user-visible output untested. Verified: with distinct run_ids the key is exactly `attribut@prisma/schema.prisma`.
+
+2. **`tests/unit/orchestrator-fp-cluster-clock.test.ts:148`** — fails `Expected "INFO", Received "WARN"`. Its `seedLedger` stamps all three rejects `run_id: "old-run"`, so the cluster no longer promotes and the finding is no longer demoted. **Repair: give the three rejects distinct run_ids.** This is the F-007 injectable-clock guard and its intent is *temporal*, so distinct runs are correct.
+
+   ⚠ **Do NOT "fix" it by flipping both of its cases to assert no-demote.** That would leave the test asserting the same outcome on both sides of the clock boundary and kill the discriminator — the same vacuity trap called out for `:117` and the property oracle.
+
+The remaining two suites PASS.
 
 Any *other* failure caused by a fixture whose rejects share a `run_id` gets distinct run_ids — but only where the fixture's intent is genuinely "several rounds". Where the intent is "one round", change the expectation instead.
 
@@ -557,6 +567,47 @@ Expected diff, measured in advance against this repo's real `reputation.json`:
 - `openrouter:security` → `demoting` false→true. **Intended** — trust 0.30 against a 0.45 floor, 13 raw events. This is the bug being fixed.
 - `codex:plan` → newly eligible (raw 8 ≥ `minSamples` 8 vs decayed 5.22), but `demoting` stays **false** because trust is 0.86.
 - **None of the three panel keys — `codex:security`, `claude-code:security`, `ollama:security` — may flip.** If any of them does, stop: the change would be removing a working reviewer from this repo's panel, which is a fail-open, not a fix.
+
+**This repo's diff is NOT sufficient on its own.** The binary deploys everywhere, so the flip must be checked in every repo that has reputation state — and there is a real hit. Run this before the Task 5 build:
+
+```bash
+python3 - <<'PY'
+import json,glob,os
+from datetime import datetime,timezone
+now=datetime.now(timezone.utc); HL=45.0
+def dc(evs):
+    s=0.0
+    for e in evs:
+        try: ts=datetime.fromisoformat(e['ts'].replace('Z','+00:00'))
+        except Exception: continue
+        s+=0.5**(abs((now-ts).total_seconds()/86400)/HL)
+    return s
+for p in sorted(glob.glob(os.path.expanduser('~/Developer/*/.reviewgate/reputation.json'))):
+    repo=p.split('/Developer/')[1].split('/')[0]
+    try: d=json.load(open(p))
+    except Exception: continue
+    for k,v in d.get('reviewers',{}).items():
+        if ':' not in k: continue
+        c,w=v.get('correct',[]),v.get('wrong',[])
+        raw=len(c)+len(w); dcc,dcw=dc(c),dc(w)
+        trust=(dcc+1)/(dcc+dcw+2)
+        old=(dcc+dcw)>=8 and trust<0.45
+        new=raw>=8 and trust<0.45
+        if old!=new:
+            print(f"FLIP {repo:24} {k:24} raw={raw} dec={dcc+dcw:.2f} trust={trust:.3f}")
+PY
+```
+
+Measured 2026-08-05, this prints exactly two lines:
+
+| Repo | Reviewer | raw | decayed | trust | Assessment |
+|---|---|---:|---:|---:|---|
+| `reviewgate` | `openrouter:security` | 13 | 5.66 | 0.303 | **Intended.** Not on this repo's panel. |
+| `newsletter-buddy` | `claude-code:security` | 8 | 3.15 | 0.347 | **⚠ Must be resolved before the build.** |
+
+The second one matters: `newsletter-buddy`'s config declares `{ provider: "codex", persona: "security", fallback: ["gemini", "claude-code"] }`, so `claude-code` is a live fallback there — and codex is quota-capped. C3 would start demoting findings from a reviewer that repo actually depends on.
+
+**For every flip, check that repo's `phases.review.reviewers` including `fallback` arrays. If the flipped key appears there, stop and hand the decision to Markus** — the options are to accept the demote (the reviewer really is at trust 0.35), raise that repo's `trustFloor`, or delay the build. Do not silently proceed; a reviewer removed from a panel produces no findings at all, so the loss is invisible afterwards.
 
 Then run `bun run dev learn status` and confirm the reputation block shows both counts, e.g. `openrouter:security  trust 0.30  samples   5.6 decayed /  13 raw  (3c/10w)`. Both commands are read-only.
 
@@ -1013,7 +1064,9 @@ python3 -c "import json;d=json.load(open('.reviewgate/pending.json'));print(d.ge
 
 Expected: a `critic` object whose `status` is `"ran"` — **not** `"skipped-budget"`, `"misconfigured"`, `"error"` or `"empty"`. `"misconfigured"` means the adapter has no `complete()`; `"error"` most often means `OPENROUTER_API_KEY` is not reaching the hook environment.
 
-If the gate PASSes without findings there may be no `pending.json`; in that case run `bun run dev learn status` and confirm no new errors, then re-check on the next blocking round.
+**There is no fallback check — `critic.status: "ran"` is the only acceptable evidence.** An earlier draft said "if the gate PASSes without findings there may be no `pending.json`; in that case run `learn status` and confirm no new errors". That was wrong twice over: `pending.json` **is** written on a zero-finding PASS (one is on disk right now with `"findings": []`), and `learn status` never mentions the critic at all. Accepting it as proof would let C1 be ticked off without the critic ever having run — reproducing pilot-01's "zero by construction" exactly, in the one task whose entire purpose is to stop that.
+
+If `pending.json` is genuinely absent or carries no `critic` key, C1 is **not** verified. Keep working the repo until a round produces one.
 
 - [ ] **Step 7: Commit**
 
@@ -1032,7 +1085,11 @@ Repo-local dogfood; the init scaffold default stays off until pilot-02."
 **Rollback, if any of this misbehaves:**
 
 - **Code (Tasks 1-4) — cheap and agent-executable.** `cp dist/reviewgate.prev dist/reviewgate`. The symlink points at the path, not the content, so it needs no change. `bun run build` does not `rm -rf dist/`, so the `.prev` copy survives the build.
-- **Config (C1) — NOT cheap, and NOT agent-executable.** Removing the `critic:` line is *itself* an `approval-required` control-plane change and needs a **second** human `reviewgate config approve` at a TTY.
+- **Config (C1) — depends entirely on whether Step 5's approval has landed yet.**
+  - **Before** the approval: deleting the `critic:` line restores the approved config byte-identically, so the classifier returns `equivalent` and the pending candidate self-clears. Free, agent-executable, no human needed.
+  - **After** the approval: the with-critic config *is* the last-known-good, so removing the line is a fresh `approval-required` change needing a **second** human `reviewgate config approve` at a TTY.
+
+  The asymmetry begins at the approval, not at the edit. Note also that an unapproved revert never traps the agent: `finalizeControlPlaneReview` blocks exactly once per candidate (`reviewed_under_lkg_at` null→set) and only annotates afterwards.
 
 **Correction to an earlier claim (found by the plan-gate, verified by execution).** This plan and the spec both said reverting a config to its last-known-good value "needs no new TTY approval and touches no `.reviewgate/` state". **Both halves are false.** `safeStrengthening` (`src/config/control-plane.ts:121-152`) auto-classifies exactly four paths — `sandbox.mode`, `sandbox.writablePaths`, `sandbox.deniedReads`, `loop.softPassPolicy`. Everything else, **in both directions**, is `approval-required`. And `ControlPlaneStateSchema` (`src/schemas/control-plane.ts:26`) holds a single `approved_config` with no history, so once Step 5's approval lands, the with-critic config **becomes** the last-known-good and "restore the LKG" has no meaning to the system.
 
@@ -1041,7 +1098,9 @@ Consequences to plan around:
 - It blocks the agent once.
 - **The gate keeps reviewing under the with-critic policy until a human approves the revert.** The original claim, "a bad build cannot force the critic back off", is inverted: the real hazard is that nothing but a human at a TTY can turn it off.
 
-So the two rollbacks are asymmetric, not independent: the binary can be reverted in seconds by anyone, the critic cannot be reverted without Markus at a terminal. If pilot-02 must start before that approval is available, run it **with** the critic and record that as the registered configuration rather than waiting.
+So once approved, the two rollbacks are asymmetric rather than independent: the binary reverts in seconds by anyone, the critic does not revert without Markus at a terminal.
+
+**Pilot-02 must not start until Step 5's enabling approval has landed.** An earlier draft said "if pilot-02 must start before that approval is available, run it with the critic and record that as the registered configuration". That is unsound: until the approval lands, the gate keeps executing the **critic-off** last-known-good policy while `reviewgate.config.ts` says otherwise — so the preregistration would name a critic that is not actually running, and pilot-02 would measure the same critic-off system as pilot-01 while claiming to measure a different one. Verify with `reviewgate config status` (expect `APPROVED`, `pending: None`) plus a `critic.status: "ran"` in a real `pending.json` **before** freezing the preregistration.
 
 **Housekeeping:** `dist/reviewgate.prev` is ~65 MB and untracked. Delete it once pilot-02 concludes and the change is settled — not before, since it is the only rollback target.
 
@@ -1083,3 +1142,27 @@ six Task-4 expectations including both transitive shapes; the `buildCluster`/`so
 extraction is behaviour-preserving; Task 1's fixtures are non-vacuous and fail exactly as
 predicted; Task 3's store fixture yields `demoting true` after / `false` before; every C1 config
 fact including that `bun run build` does not wipe `dist/`.
+
+## Plan-gate findings mapping — round 2 (delta, 2026-08-05)
+
+Both reviewers **FAIL**: 1 CRITICAL, 4 WARN, 10 INFO. **The CRITICAL and one WARN were introduced
+by round 1's own fixes** — the delta review earned its keep.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| A1 | CRITICAL | Round 1's Task 2 repair ("set `near_active` to 0") contradicts Task 4 Step 7: it drops the cluster out of `near_or_promoted`, so `:337` fails with `undefined`, not `attribut@…`. And `:337` is the **only** assertion anywhere on the `<stem>@<file>` key C4 introduces — the new semantic test file asserts `member_ids`, never a key. Round 1's fix removed the very step that produced the expected value. | Repair is now **distinct run_ids `R1`/`R2`/`R3`, `near_active` stays 1** (a display fixture has no "one round" intent), with an ⚠ against the `0` repair and a note that it would leave C4's user-visible output untested. |
+| A2 | WARN | "The other three PASS" is false — `orchestrator-fp-cluster-clock.test.ts:148` also breaks (`seedLedger` stamps all three rejects `run_id: "old-run"`). It is the F-007 injectable-clock guard, and the generic "flip the expectation" branch would make both cases assert no-demote, killing the discriminator. | Named with the correct repair (distinct run_ids — its intent is temporal) plus an ⚠ against flipping both expectations. |
+| B1 | WARN | The `doctor` diff reads **this repo only**, which is not where the C3 widening lands. Measured counterexample: `newsletter-buddy`'s `claude-code:security` (raw 8, decayed 3.15, trust 0.347) flips — and that repo declares `claude-code` as a **fallback** for its quota-capped `codex:security`, so C3 would demote the reviewer actually carrying it. | Added an all-repo pre-build scan with the measured results table (exactly 2 flips), and a hard stop + escalation to Markus for any flip whose key appears in that repo's reviewers or fallbacks. **Independently re-verified before accepting.** |
+| B2 | WARN | Task 5 Step 6's fallback ("if the gate PASSes there may be no `pending.json` → check `learn status`") cannot observe what it claims: `pending.json` **is** written on a zero-finding PASS, and `learn status` never mentions the critic. Same "the check cannot see the property" defect that round 1 fixed for C3, left standing for C1. | Fallback deleted. `critic.status: "ran"` is now the only acceptable evidence; absent that, C1 is not verified. |
+| B3 | WARN | The pilot-02 escape hatch ("run it with the critic and record that as the registered configuration") never says *which* approval, and under the enabling reading it registers a critic that is not running — until approval the gate executes the critic-off LKG. | Replaced with a hard precondition: pilot-02 does not start until the approval lands, verified via `config status` **and** a real `critic.status: "ran"`. |
+| B4 | INFO | "NOT agent-executable" overstates the C1 rollback: **before** approval, deleting the line restores the approved config byte-identically → `equivalent` → self-clears with no human. | Rollback split into before/after-approval cases; noted that an unapproved revert blocks at most once. |
+| B5 | INFO | Spec §C3 still claimed `RepDerived.samples` has two consumers incl. `learn-status.ts:463`; round 1 corrected this in the plan but left the false sentence in the spec. | Spec sentence corrected in place with a dated note. |
+
+**Verified as landed and correct in round 2** (by execution): Task 2's three per-case repairs are
+exact; the B1 control-plane correction is accurate (`safeStrengthening` really special-cases only
+those four paths, and no stuck state exists); Task 3's `doctor` step works as assumed and the
+predicted flips match live `reputation.json` exactly; Task 4 Step 8's live-ledger numbers
+reproduce including the `runs: 0` windowing detail; the tightened property oracle is a valid
+necessary condition (0 violations in 400 generated runs); step renumbering and all cited line
+references are consistent; the spec's summary and cluster tables agree once unwindowed-vs-60d is
+accounted for.

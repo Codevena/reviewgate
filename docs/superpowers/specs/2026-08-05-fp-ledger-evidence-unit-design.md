@@ -210,8 +210,11 @@ serialised, so adding a field cannot leave stale objects on disk whose missing `
 compare as `NaN >= minSamples` (false) and silently suppress every future demotion. That failure
 mode is real for persisted types; it does not reach this one.
 
-`RepDerived.samples` has exactly two consumers, verified: `score.ts:44` (`isUnreliable`) and
-`cli/commands/learn-status.ts:463` (display, `.toFixed(1)`). The displayed value must stay
+`RepDerived.samples` has exactly **one** consumer: `score.ts:44` (`isUnreliable`). _(Corrected
+2026-08-05 — this first claimed two, naming `cli/commands/learn-status.ts:463` as the second.
+That is wrong: `learn-status.ts:268-280` builds its own row objects by calling
+`decayedCount`/`trustScore` directly and never imports `RepDerived`. The single consumer is why
+`samples` can keep its meaning untouched while `evidence` takes over eligibility.)_ The displayed value must stay
 interpretable, so `RepDerived` gains a second field rather than having `samples` silently change
 meaning: `samples` (decayed, displayed) and `evidence` (raw integer, used for eligibility).
 `isUnreliable`'s signature changes to read `evidence`; `learn-status` additionally prints the raw
