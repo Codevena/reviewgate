@@ -40,6 +40,8 @@
 
 **Why C4 adds a function instead of changing one.** `computeFpClusters` has exactly three callers: `orchestrator.ts:2364` (feeds the aggregator's `fpActiveClusters` **suppression** path), `cli/commands/learn-status.ts:255`, and `cli/commands/fp.ts:128` (both **diagnosis**). The spec requires the new key to reach diagnosis only. Changing the existing function in place would silently re-key suppression too.
 
+There is a fourth, **implicit** consumer that makes this stricter than a call-site count suggests: `src/core/aggregator.ts:783` independently reconstructs the lookup key as `` `${ruleIdToken0(rid)}@${f.file}` `` to probe `fpActiveClusters`. So the suppression key format is frozen at *both* ends — producer and consumer derive it separately. Any change to `ruleIdToken0` or to `computeFpClusters`' key would have to be mirrored there or the map would silently never match. Leaving both untouched is what makes C4 safe.
+
 ---
 
 ### Task 1: C2 — per-entry evidence unit becomes the distinct run
@@ -171,11 +173,19 @@ Run: `bun test tests/unit/fp-ledger-store.property.test.ts tests/unit/fp-ledger-
 
 Expected: PASS. If a test fails because its fixture reached `active` via several providers inside one `run_id`, that fixture encoded the old semantics — give each reject its own `run_id` and note the change in the commit body. **Do not** relax the new rule to keep an old fixture green.
 
+**One of these passes for the wrong reason and must be tightened.** `tests/unit/fp-ledger-store.property.test.ts:115` asserts `inWindow.length >= 3` as its active-stage oracle. Run-counting strictly implies that (`runs ≤ events`), so the property stays green while providing **zero** evidence for the new rule — it goes vacuous the moment C2 lands. Tighten it to the run-based invariant:
+
+```ts
+    expect(new Set(inWindow.map((r) => r.run_id)).size).toBeGreaterThanOrEqual(3);
+```
+
+Still a valid necessary condition (`active` needs ≥3 runs in 60d, and 60d ⊆ 90d; `sticky` needs ≥5), and it now actually exercises C2. Include this file in the Step 6 commit.
+
 - [ ] **Step 6: Typecheck, lint, commit**
 
 ```bash
 bunx tsc --noEmit && bun run lint
-git add src/core/fp-ledger/store.ts tests/unit/fp-ledger-store.test.ts
+git add src/core/fp-ledger/store.ts tests/unit/fp-ledger-store.test.ts tests/unit/fp-ledger-store.property.test.ts
 git commit -m "fix(fp-ledger): count distinct runs, not reject events, for promotion
 
 Three reviewers answering in ONE review round is one observation of an FP
@@ -192,7 +202,7 @@ ts; run_id is counted for distinctness only and never parsed for a time."
 ### Task 2: C2 — mirror the evidence unit at cluster level
 
 **Files:**
-- Modify: `src/core/fp-ledger/clusters.ts:28-31` (constants), `:34-60` (`FpCluster`), `:100-146` (aggregation), `:161-178` (`isNearActive`)
+- Modify: `src/core/fp-ledger/clusters.ts` (constants, `FpCluster`), (aggregation), `isNearActive`
 - Test: `tests/unit/fp-ledger-clusters.test.ts`
 
 **Interfaces:**
@@ -282,7 +292,7 @@ Add to the `FpCluster` interface, directly after `distinct_providers_active_wind
   distinct_runs_sticky_window: number;
 ```
 
-Carry `run_id` through the reject collection (currently `:106-113`):
+Carry `run_id` through the reject collection (currently `:105-114`):
 
 ```ts
     const seen = new Set<string>();
@@ -297,7 +307,7 @@ Carry `run_id` through the reject collection (currently `:106-113`):
     }
 ```
 
-Replace the staging block (currently `:118-126`):
+Replace the staging block (the staging block):
 
 ```ts
     const win60 = inWindow(ACTIVE_DAYS);
@@ -338,13 +348,23 @@ Leave `reject_count_total` / `reject_count_active_window` / `reject_count_sticky
 
 Run: `bun test tests/unit/fp-ledger-clusters.test.ts`
 
-Expected: the new tests PASS. **The pre-existing test `"would-be active when a second provider's entry joins the cluster"` (around line 138) now FAILS** — its fixture has run_ids `R1`, `R1`, `R5` = 2 distinct runs, so under the new rule it is `candidate`. That is correct new behaviour, not a regression. Update it: give the two `prisma-attribute*` entries distinct run_ids (`R1` and `R4`) so the cluster has three, keep the `expect(c?.stage).toBe("active")` assertion, and add a one-line comment saying the fixture needs three distinct runs now.
+Expected: the new tests PASS, and **exactly three pre-existing tests in this file FAIL**. All three were confirmed by applying the patch in a scratch copy. Each needs a *different* repair — do not apply one blanket remedy:
+
+1. **`"would-be active when a second provider's entry joins the cluster"` (`:120-147`)** — its fixture has run_ids `R1`, `R1`, `R5` = 2 distinct runs, so it is now `candidate`. Correct new behaviour. **Repair:** give the two `prisma-attribute*` entries distinct run_ids (`R1` and `R4`) so the cluster has three; keep `expect(c?.stage).toBe("active")`; add a comment that the fixture now needs three distinct runs.
+
+2. **`"4× same-provider rule_id_token0 burst…"` (`:117`)** — `isNearActive` flips true→false, because a one-run burst is now short on **both** dimensions (providers *and* runs) and `isNearActive` requires exactly one to be missing. **Repair: KEEP the single `run_id`** — a burst genuinely *is* one round, and that is the semantic C2 exists to encode. Flip the assertion to `expect(isNearActive(c as NonNullable<typeof c>)).toBe(false)` and comment why.
+
+   ⚠ **Do NOT give the burst fixture distinct run_ids to make it green.** That converts a fixture whose entire point is "one round, one provider" into exactly the evidence shape C2 exists to reject, and no later gate catches a guard test doctored into vacuity. If you feel pulled toward that repair, stop and ask.
+
+3. **`isNearActive > "is true only when exactly one promotion dimension is missing (windowed)"` (`:282`)** — its inputs are object literals cast `as Parameters<typeof isNearActive>[0]`, so **`tsc` will not flag the missing `distinct_runs_active_window`**; at runtime `undefined >= 3` silently evaluates false. **Repair:** add an explicit `distinct_runs_active_window` to *every* literal in that `describe` block (audit all of them, not just the failing one), choosing the value each case's intent implies.
 
 - [ ] **Step 5: Run the dependent suites**
 
 Run: `bun test tests/unit/aggregator-fp-cluster.test.ts tests/unit/orchestrator-fp-cluster-clock.test.ts tests/unit/fp-cli.test.ts tests/unit/learn-status.test.ts`
 
-Expected: PASS. Any failure caused by a fixture whose rejects share a `run_id` gets distinct run_ids, same as Step 4.
+Expected: `tests/unit/learn-status.test.ts` FAILS at `:336` — its `near_active` count drops 1→0 for the same `isNearActive` reason as `:117`. Update the expectation to `0`. The other three PASS.
+
+Any *other* failure caused by a fixture whose rejects share a `run_id` gets distinct run_ids — but only where the fixture's intent is genuinely "several rounds". Where the intent is "one round", change the expectation instead.
 
 - [ ] **Step 6: Typecheck, lint, commit**
 
@@ -367,9 +387,9 @@ the run count. reject_count_* stay as honest event counts for the CLI."
 ### Task 3: C3 — reputation eligibility uses raw evidence, trust stays decayed
 
 **Files:**
-- Modify: `src/core/reputation/score.ts:38-45`
-- Modify: `src/core/reputation/store.ts:135-146`
-- Modify: `src/cli/commands/learn-status.ts:461-467`
+- Modify: `src/core/reputation/score.ts` (`RepDerived` + `isUnreliable`)
+- Modify: `src/core/reputation/store.ts` (`derive`)
+- Modify: `src/cli/commands/learn-status.ts` (reputation row rendering)
 - Test: `tests/unit/reputation-score.test.ts`
 
 **Interfaces:**
@@ -454,7 +474,10 @@ Real signatures, verified: `record(events: RecordInput[], opts?: { now?: Date; h
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `bun test tests/unit/reputation-score.test.ts tests/unit/reputation-store.test.ts`
-Expected: FAIL — TypeScript rejects the `evidence` property on `RepDerived`, and the first predicate test fails because `isUnreliable` reads `samples` (5.6 < 8 → false).
+
+Expected: FAIL on the **assertion**, not on types. `bun test` strips types without checking them, and `const d = { … }` is a variable rather than a direct argument, so TypeScript's excess-property check does not fire — the extra `evidence` key is accepted even before the change. The real signal is `isUnreliable` still reading `samples` (5.6 < 8 → false) where the test expects `true`.
+
+Note also that predicate tests 2 and 3 return `false` both before and after — they are **regression guards**, not the discriminating pair. Only test 1 and the `forDoctor` store test flip. Add a comment saying so, so a later reader does not mistake them for evidence the change works.
 
 - [ ] **Step 3: Implement**
 
@@ -487,7 +510,7 @@ In `src/core/reputation/store.ts`, `derive()`:
     return { trust, samples, evidence: e.correct.length + e.wrong.length };
 ```
 
-In `src/cli/commands/learn-status.ts`, print both so the two can never be confused in the field. Replace the reviewer line (currently `:463-466`) with:
+In `src/cli/commands/learn-status.ts`, print both so the two can never be confused in the field. Replace the reviewer line (the reputation row) with:
 
 ```ts
     const trustStr = rev.trust.toFixed(2);
@@ -497,22 +520,45 @@ In `src/cli/commands/learn-status.ts`, print both so the two can never be confus
     );
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass, and fix the one pre-existing breakage**
 
 Run: `bun test tests/unit/reputation-score.test.ts tests/unit/reputation-store.test.ts`
-Expected: PASS.
+
+Expected: the new tests PASS, and the **pre-existing** `"isUnreliable requires BOTH enough samples AND trust below floor"` (`tests/unit/reputation-score.test.ts:27-31`) **FAILS** — its three `{ trust, samples }` literals leave `evidence` undefined, and `undefined >= 8` is false. This is a runtime failure; `bunx tsc --noEmit` additionally reports three `TS2345` errors at `:28-30` (the only type breaks in the tree).
+
+Repair: add an explicit `evidence` to each of those three literals, set to the raw count each case's intent implies (a case meaning "enough samples" gets a value ≥ `minSamples`; a case meaning "too few" gets one below it). Re-run until green.
 
 - [ ] **Step 5: Run every reputation-touching suite**
 
 Run: `bun test tests/unit/reputation-quarantine.test.ts tests/unit/reputation-corroboration.test.ts tests/unit/reputation-learn.test.ts tests/unit/reputation-config.test.ts tests/unit/reputation-score.property.test.ts tests/unit/aggregator-reputation.test.ts tests/unit/doctor-reputation.test.ts`
 
-Expected: PASS. Any test constructing a `RepDerived` literal needs the new `evidence` field; set it to a value consistent with that test's intent (usually the raw count the fixture implies). `src/core/reputation/quarantine.ts` also consumes `isUnreliable` — check it compiles and that its intent (a stricter floor) is unaffected.
+Expected: PASS. Any other test constructing a `RepDerived` literal needs the new `evidence` field, set consistently with that test's intent.
 
-- [ ] **Step 6: Verify the live effect by hand**
+Note: `src/core/reputation/quarantine.ts` does **not** import `isUnreliable` — it is a pure filter. Quarantine eligibility lives at `src/core/reputation/store.ts:167-170` (`quarantinedReviewers`), which calls `reviewersBelow` with the quarantine floor and therefore *does* inherit the new eligibility rule. That is the path Step 6 measures.
 
-Run: `bun run dev learn status`
+- [ ] **Step 6: Measure the eligibility change — do not assert it**
 
-Expected: the reputation block now shows both counts, e.g. `openrouter:security  trust 0.30  samples   5.6 decayed /  13 raw  (3c/10w)`. This is a read-only command; it changes no state.
+This change can only **grow** the demote-eligible set (`raw ≥ decayed` always), in every repo the rebuilt binary reaches. `learn status` cannot show that: it prints trust and samples but **not** `demoting`, which exists only on `forDoctor`. Use `doctor`, and capture before/after.
+
+Before applying Step 3 (or from a clean stash), capture the baseline:
+
+```bash
+bun run dev doctor 2>&1 | grep -iA20 reputation > /tmp/rep-before.txt
+```
+
+After Step 3:
+
+```bash
+bun run dev doctor 2>&1 | grep -iA20 reputation > /tmp/rep-after.txt
+diff /tmp/rep-before.txt /tmp/rep-after.txt
+```
+
+Expected diff, measured in advance against this repo's real `reputation.json`:
+- `openrouter:security` → `demoting` false→true. **Intended** — trust 0.30 against a 0.45 floor, 13 raw events. This is the bug being fixed.
+- `codex:plan` → newly eligible (raw 8 ≥ `minSamples` 8 vs decayed 5.22), but `demoting` stays **false** because trust is 0.86.
+- **None of the three panel keys — `codex:security`, `claude-code:security`, `ollama:security` — may flip.** If any of them does, stop: the change would be removing a working reviewer from this repo's panel, which is a fail-open, not a fix.
+
+Then run `bun run dev learn status` and confirm the reputation block shows both counts, e.g. `openrouter:security  trust 0.30  samples   5.6 decayed /  13 raw  (3c/10w)`. Both commands are read-only.
 
 - [ ] **Step 7: Typecheck, lint, commit**
 
@@ -808,7 +854,16 @@ function labelFor(members: FpLedgerEntry[]): string {
 }
 ```
 
-**Refactor note — do this rather than copy-pasting:** the per-cluster body of the existing `computeFpClusters` (reject dedup, windowing, stage computation, first/last seen, object construction) and its final sort must be extracted into the `buildCluster(token, members, nowIso)` and `sortClusters(list)` helpers used above, and `computeFpClusters` rewritten to call them. Both functions must produce byte-identical output to today's `computeFpClusters` for the same input — `tests/unit/fp-ledger-clusters.test.ts` is the guard, and it must stay green without edits in this task.
+**Refactor note — do this rather than copy-pasting:** the per-cluster body of the existing `computeFpClusters` (reject dedup, windowing, stage computation, first/last seen, object construction) and its final sort must be extracted into `buildCluster(label, members, nowIso)` and `sortClusters(list)`, and `computeFpClusters` rewritten to call them. Both functions must produce byte-identical output to today's `computeFpClusters` for the same input — `tests/unit/fp-ledger-clusters.test.ts` is the guard, and apart from the three fixture repairs made in Task 2 it must stay green without further edits.
+
+`buildCluster`'s first parameter is a **label**, not a `ruleIdToken0`: `computeFpClusters` passes the first hyphen segment, `computeFpSemanticClusters` passes `labelFor`'s most-shared canonical stem. Update the `FpCluster.rule_id_token0` doc comment accordingly — today it reads "first '-' segment of rule_id", which becomes false for half the callers:
+
+```ts
+  /** Cluster label token: the first hyphen segment for computeFpClusters, the
+   *  most-shared canonical STEM for computeFpSemanticClusters (so live keys read
+   *  `deadlock@…`, `delet@…`, `spac@…` — stems, not dictionary words). */
+  rule_id_token0: string;
+```
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -837,19 +892,31 @@ Add the run count to the per-cluster output, directly after the `rejects:` line,
 
 In `src/cli/commands/learn-status.ts`, change the import and the `:255` call to `computeFpSemanticClusters`. Leave `orchestrator.ts` untouched.
 
-- [ ] **Step 7: Verify against the live ledger**
+- [ ] **Step 7: Run the dependent suites**
+
+Run: `bun test tests/unit/learn-status.test.ts tests/unit/fp-cli.test.ts`
+
+Expected: `tests/unit/learn-status.test.ts` **FAILS at `:337`**. Its asserted cluster key `"prisma@prisma/schema.prisma"` becomes **`"attribut@prisma/schema.prisma"`** under the semantic view, because `labelFor` returns the most-shared canonical stem rather than the first hyphen segment. Update the expectation.
+
+⚠ **Do NOT "fix" this by making `labelFor` fall back to `ruleIdToken0`.** That would silently undo C4 while leaving every new test in Task 4 green — the failure is legitimate, so change the expectation, never the label function. The `<canonical-stem>@<file>` key format is a **sanctioned user-visible change** to `fp clusters` and `learn status` output.
+
+- [ ] **Step 8: Verify against the live ledger**
 
 Run: `bun run dev fp clusters`
 
-Expected: **5 clusters**, not the 2 that `ruleIdToken0` finds — `src/rig/driver.ts` (FP-021, FP-022, FP-023), `src/core/fact-check.ts`, `src/diff/sanitizer.ts`, `bin-templates/user-gate.sh`, `src/core/lore/approve.ts` (FP-026 + FP-027 only). Every one shows `runs: 1 distinct in active-window`, and every one is `[candidate]`. If any cluster reports `active`, stop — that contradicts the measurement this whole design rests on.
+Expected: **5 clusters**, not the 2 that `ruleIdToken0` finds — `src/rig/driver.ts` (FP-021, FP-022, FP-023), `src/core/fact-check.ts`, `src/diff/sanitizer.ts`, `bin-templates/user-gate.sh`, `src/core/lore/approve.ts` (FP-026 + FP-027 only). Live keys will read `deadlock@`, `delet@`, `defang@`, `spac@`, `guard@` — stems, not words; that is expected output, not a defect.
 
-Then run: `bun test` (the full suite) and confirm no phantom failures.
+**The stop condition is: no cluster reports `active`.** Every cluster must be `[candidate]`. If any reports `active`, stop — that contradicts the measurement this whole design rests on.
 
-- [ ] **Step 8: Typecheck, lint, commit**
+Run counts are *not* uniform, so do not assert `runs: 1` everywhere: four clusters show `runs: 1 distinct in active-window (60d)`, but **`delet@src/core/fact-check.ts` shows `runs: 0` in-window and `1` in the sticky window** — its single reject (2026-06-05T12:38Z) passed 60 days old on 2026-08-04 and has aged out. That is correct windowing, not a bug.
+
+Then run: `bun test` (the full suite). Every remaining failure is real — there are no phantom failures to wave away.
+
+- [ ] **Step 9: Typecheck, lint, commit**
 
 ```bash
 bunx tsc --noEmit && bun run lint
-git add src/diff/signature.ts src/core/fp-ledger/clusters.ts src/cli/commands/fp.ts src/cli/commands/learn-status.ts tests/unit/fp-ledger-semantic-clusters.test.ts
+git add src/diff/signature.ts src/core/fp-ledger/clusters.ts src/cli/commands/fp.ts src/cli/commands/learn-status.ts tests/unit/fp-ledger-semantic-clusters.test.ts tests/unit/learn-status.test.ts
 git commit -m "feat(fp-ledger): semantic cluster view for diagnosis
 
 ruleIdToken0 matches the first hyphen segment, so pipe-buffer-deadlock and
@@ -913,6 +980,10 @@ bunx tsc --noEmit && bun run lint && bun test
 
 Expected: all green. `reviewgate.config.ts` is data-parsed, never imported, so a config edit cannot break the suite — a failure here means something from Tasks 1-4 regressed.
 
+- [ ] **Step 3.5: Confirm no other session is mid-gate**
+
+`bun run build` rewrites `dist/reviewgate` **in place**, and `~/.local/bin/reviewgate` symlinks to that exact path. A Stop hook firing in any other repo during the build would exec a partially-written binary. Confirm no other Claude Code or Codex session is running a gate right now before proceeding. If one is, wait for it.
+
 - [ ] **Step 4: Build and verify the build actually took**
 
 ```bash
@@ -960,10 +1031,19 @@ Repo-local dogfood; the init scaffold default stays off until pilot-02."
 
 **Rollback, if any of this misbehaves:**
 
-- Code (Tasks 1-4): `cp dist/reviewgate.prev dist/reviewgate` — the symlink points at the path, not the content, so it needs no change.
-- Config (C1): revert the `critic:` line in `reviewgate.config.ts`. Restoring a config to its last-known-good value needs no new TTY approval and touches no `.reviewgate/` state.
+- **Code (Tasks 1-4) — cheap and agent-executable.** `cp dist/reviewgate.prev dist/reviewgate`. The symlink points at the path, not the content, so it needs no change. `bun run build` does not `rm -rf dist/`, so the `.prev` copy survives the build.
+- **Config (C1) — NOT cheap, and NOT agent-executable.** Removing the `critic:` line is *itself* an `approval-required` control-plane change and needs a **second** human `reviewgate config approve` at a TTY.
 
-They roll back independently by design, so a bad build cannot force the critic back off and confound pilot-02's attribution.
+**Correction to an earlier claim (found by the plan-gate, verified by execution).** This plan and the spec both said reverting a config to its last-known-good value "needs no new TTY approval and touches no `.reviewgate/` state". **Both halves are false.** `safeStrengthening` (`src/config/control-plane.ts:121-152`) auto-classifies exactly four paths — `sandbox.mode`, `sandbox.writablePaths`, `sandbox.deniedReads`, `loop.softPassPolicy`. Everything else, **in both directions**, is `approval-required`. And `ControlPlaneStateSchema` (`src/schemas/control-plane.ts:26`) holds a single `approved_config` with no history, so once Step 5's approval lands, the with-critic config **becomes** the last-known-good and "restore the LKG" has no meaning to the system.
+
+Consequences to plan around:
+- The revert writes `pending` into `.reviewgate/control-plane.json` plus a policy-change report — state *is* touched.
+- It blocks the agent once.
+- **The gate keeps reviewing under the with-critic policy until a human approves the revert.** The original claim, "a bad build cannot force the critic back off", is inverted: the real hazard is that nothing but a human at a TTY can turn it off.
+
+So the two rollbacks are asymmetric, not independent: the binary can be reverted in seconds by anyone, the critic cannot be reverted without Markus at a terminal. If pilot-02 must start before that approval is available, run it **with** the critic and record that as the registered configuration rather than waiting.
+
+**Housekeeping:** `dist/reviewgate.prev` is ~65 MB and untracked. Delete it once pilot-02 concludes and the change is settled — not before, since it is the only rollback target.
 
 ---
 
@@ -972,3 +1052,34 @@ They roll back independently by design, so a bad build cannot force the critic b
 - **pilot-02 itself.** It needs a fresh preregistration with `landedPattern` on all five seeds, the new binary hash pinned, and codex explicitly excluded from the panel (its quota cooldown ends 2026-08-08, and a panel that gains a reviewer measures two changes at once). Separate session.
 - **Brain curator quorum** (122 fails, every one exactly one provider short). Shares the ≥2-provider rule with the FP-ledger but promotes knowledge rather than suppressing findings, and `phases.brain` is default-off.
 - **Wiring `computeFpSemanticClusters` into suppression.** Deliberately withheld until real cross-run recurrence exists.
+
+---
+
+## Plan-gate findings mapping — round 1 (2026-08-05)
+
+Two executing Claude reviewers (Slot A: claims-about-existing-code; Slot B: safety/blast-radius).
+Both **FAIL**: 1 CRITICAL, 6 WARN, 11 INFO. Every finding below was verified by the reviewer
+running code, and each fix was applied to the plan or spec.
+
+| # | Sev | Finding | Fix | Where |
+|---|---|---|---|---|
+| B1 | CRITICAL | Reverting `phases.critic` is itself `approval-required` (only 4 sandbox/loop paths auto-classify), and `ControlPlaneStateSchema` keeps ONE `approved_config` with no history — so after approval the with-critic config IS the LKG. "Rolls back independently, no TTY, no state touched" was false in both directions. | Rewrote the rollback as **asymmetric**: binary reverts in seconds, critic needs a SECOND human TTY approval; with-critic policy stays in force until then. | Task 5 rollback; spec §Rollback 4 |
+| A1/B2 | WARN | Task 2 predicted ONE pre-existing failure; there are THREE (+`learn-status.test.ts:336`). `:282`'s `as Parameters<…>` casts hide the missing field so `tsc` stays silent and `undefined >= 3` is silently false. `:117`'s natural repair would doctor a guard test into vacuity. | Named all three with **per-case** repairs; explicit ⚠ forbidding distinct run_ids on the burst fixture; added the learn-status failure to Step 5. | Task 2 Steps 4-5 |
+| A2 | WARN | Task 4 Step 7's live expectation wrong: `delet@src/core/fact-check.ts` reports `runs: 0` in-window, not 1 — its only reject passed 60d old on 2026-08-04. | Stop condition narrowed to "no cluster reports `active`"; the 0-vs-1 split spelled out as correct windowing. | Task 4 Step 8 |
+| A3/B3 | WARN | Task 4 changes the user-visible cluster key (`prisma@` → `attribut@`), breaking `learn-status.test.ts:337` — a file the plan never listed, whose failure Step 7 pre-labelled "phantom". | Added a dependent-suite step, declared the `<stem>@<file>` format a sanctioned change, and forbade the `labelFor`→`ruleIdToken0` fallback repair that would silently undo C4. | Task 4 Step 7 |
+| B4 | WARN | C3 strictly **widens** demote-eligibility in every repo (raw ≥ decayed), feeding both the aggregator demote (`phases.reputation` defaults ON) and `quarantinedReviewers` (drops a reviewer from the panel). `learn status` cannot show it — `demoting` lives on `forDoctor`. Spec's "expected effect: none" was asserted, never measured. | Step 6 now diffs `doctor` before/after with named expected flips and a hard stop if any panel key flips; spec's expected-effect paragraph rewritten; quarantine reference repointed to `store.ts:167-170`. | Task 3 Steps 5-6; spec C3 |
+| A4/B5 | INFO | `reputation-score.test.ts:27-31` breaks at **runtime** (not compile — `bun test` strips types, and a `const` literal gets no excess-property check). | Moved the repair into Step 4 with the exact location; corrected Step 2's stated failure mechanism. | Task 3 Steps 2, 4 |
+| B6 | INFO | `fp-ledger-store.property.test.ts:115` goes **vacuous** under C2 — its `inWindow.length >= 3` oracle is implied by run-counting. | Tightened the oracle to the distinct-run set size. | Task 1 Step 5 |
+| A5/B7 | INFO | `FpCluster.rule_id_token0`'s doc lies for the semantic path; `buildCluster`'s first arg is a label, not a token0. `labelFor` emits stems (`delet@`, `spac@`), not words. | Doc comment rewritten; refactor note clarified; Step 8 states stems are expected output. | Task 4 |
+| B8 | INFO | `bun run build` rewrites `dist/reviewgate` in place while the symlink points at it — a concurrent gate could exec a half-written binary. No cleanup for the 65 MB `.prev`. | Added Step 3.5 (quiescence check) and a housekeeping note. | Task 5 |
+| A6 | INFO | `aggregator.ts:783` independently reconstructs the cluster key — a fourth, implicit consumer freezing the format at both ends. | Named it in "Why C4 adds a function". | File Structure |
+| A7 | INFO | Line-reference slop across four spots; spec called `RULE_ID_NOISE` 25 words (it holds 28). | Over-precise ranges dropped, noise count corrected. | plan + spec |
+
+**Verified-correct and not re-litigated** (both reviewers, by execution): C2 is strictly
+promotion-hardening (`runs ≤ events`); C4 genuinely stays out of suppression; every
+`canonicalRuleTokens` expectation computes correctly against the real `RULE_ID_NOISE`; the
+central 5-clusters/zero-false-merges claim reproduces exactly on the live 29-entry ledger; all
+six Task-4 expectations including both transitive shapes; the `buildCluster`/`sortClusters`
+extraction is behaviour-preserving; Task 1's fixtures are non-vacuous and fail exactly as
+predicted; Task 3's store fixture yields `demoting true` after / `false` before; every C1 config
+fact including that `bun run build` does not wipe `dist/`.

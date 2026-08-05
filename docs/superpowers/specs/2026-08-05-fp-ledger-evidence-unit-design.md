@@ -22,7 +22,7 @@ values independently.
 | Entries | 29 — **all `candidate`**, 0 active, 0 sticky |
 | Signatures rejected more than once | **1 of 29** (FP-001) |
 | Cross-**session** recurrence | **0 of 29** |
-| Distinct runs contributing to any one cluster | **1**, except `sanitizer.ts` (2) |
+| Distinct runs contributing to any one cluster | **1 — for all five clusters, no exception** |
 | Brain curator | 122 of 139 decisions failed quorum, **every one exactly 1 provider short** |
 | `openrouter:security` reputation | trust **0.30** vs floor 0.45 — not demoted (decayed samples 5.6 < `minSamples` 8) |
 
@@ -217,9 +217,25 @@ meaning: `samples` (decayed, displayed) and `evidence` (raw integer, used for el
 `isUnreliable`'s signature changes to read `evidence`; `learn-status` additionally prints the raw
 count so the two are never confused in the field.
 
-**Expected effect here: none today.** `openrouter:security` (3c/10w, trust 0.30) would become
-eligible and demote — but openrouter is no longer a panel reviewer in this repo, so no panel
-finding changes. The fix matters for repos where a weak reviewer *is* on the panel.
+**Expected effect — corrected 2026-08-05 by the plan gate. It is NOT "none".** This section first
+said "none today". That understated the blast radius: `raw ≥ decayed` always holds, so the change
+can only **grow** the demote-eligible set, and it does so in every repo the rebuilt binary
+reaches. Two paths consume that set:
+
+- `unreliableReviewers()` → the aggregator's reputation demote. `phases.reputation.enabled`
+  defaults to **true** (`src/config/defaults.ts:211`), so this is live everywhere, not opt-in.
+- `quarantinedReviewers()` (`store.ts:167-170`) → `selectActiveReviewers`, which removes a
+  reviewer from the panel **entirely**, so its true positives are never generated at all.
+
+Measured against this repo's real `.reviewgate/reputation.json`: `openrouter:security` flips
+`demoting` false→true (intended — trust 0.30 against a 0.45 floor) and `codex:plan` crosses the
+eligibility bar for the first time (raw 8 ≥ `minSamples` 8 vs decayed 5.22), harmless only
+because its trust is 0.86. None of this repo's three panel keys (`codex:security`,
+`claude-code:security`, `ollama:security`) flips.
+
+Honest statement: **widens demote-eligibility everywhere; verified a no-op for this repo's
+panel.** The verification is mandatory, and it must read `demoting` from `forDoctor` —
+`learn status` does not print that field, so it cannot show this effect.
 
 ### C4 — Cluster key: canonical token matching, diagnosis only
 
@@ -229,7 +245,7 @@ cluster, `piped-stdout-undrained-deadlock` — one character apart — does not.
 Replace with: same `file`, same `category`, and **≥2 shared canonical tokens**, transitively
 closed via union-find (named so the closure is reproducible — a different closure strategy over
 the same pairwise predicate can yield different clusters). Canonicalisation reuses
-`normalizeRuleId`'s tokeniser and its `RULE_ID_NOISE` set (`src/diff/signature.ts:29-60` — 25
+`normalizeRuleId`'s tokeniser and its `RULE_ID_NOISE` set (`src/diff/signature.ts:29-60` — 28
 connectors and generic finding nouns: `via`, `with`, `risk`, `issue`, `potential`, `unsafe`, …),
 plus light suffix folding (`ing`/`ed`/`s`, then a trailing `e`) so `pipe`/`piped` → `pip` and
 `defang`/`defanged` → `defang`.
@@ -363,9 +379,18 @@ Required before `bun run build`, because the build is global:
    that cost three pilot attempts (`docs/dev/2026-08-05-pilot-01-result.md`).
 3. **Roll back** by restoring `dist/reviewgate.prev` over `dist/reviewgate`. The symlink needs no
    change; it points at the path, not the content.
-4. **C1 rolls back independently** of the binary: revert the `phases.critic` line in
-   `reviewgate.config.ts`. Reverting a config to its last-known-good value does not require a new
-   TTY approval, and it touches no `.reviewgate/` state.
+4. **C1 does NOT roll back cheaply — corrected 2026-08-05 by the plan gate, verified by
+   execution.** This section first claimed reverting `phases.critic` "does not require a new TTY
+   approval, and it touches no `.reviewgate/` state". Both halves are false.
+   `safeStrengthening` (`src/config/control-plane.ts:121-152`) auto-classifies only
+   `sandbox.mode`, `sandbox.writablePaths`, `sandbox.deniedReads` and `loop.softPassPolicy`;
+   every other path is `approval-required` **in both directions**. `ControlPlaneStateSchema`
+   (`src/schemas/control-plane.ts:26`) stores one `approved_config` with no history, so after the
+   enabling approval the with-critic config *is* the last-known-good. Disabling the critic
+   therefore writes `pending` state, blocks the agent once, and leaves the with-critic policy in
+   force until a **second** human TTY `reviewgate config approve`.
 
-Code and config roll back separately by design, so a bad C2–C4 build does not force the critic
-back off (or vice versa) and confound pilot-02's attribution.
+The two rollbacks are **asymmetric, not independent**: the binary reverts in seconds and by
+anyone; the critic cannot be turned off without Markus at a terminal. The original conclusion —
+"a bad build cannot force the critic back off" — was inverted; the real hazard is that nothing
+short of a human can force it off.
