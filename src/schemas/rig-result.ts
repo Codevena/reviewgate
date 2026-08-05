@@ -56,6 +56,16 @@ export const RigTurnRecordSchema = z
     caught: z.boolean().nullable(),
     /** M4 — the seeded defect was never flagged in this turn or any later one; null when clean */
     escaped: z.boolean().nullable(),
+    /**
+     * Did the seeded defect actually reach the code? `true`/`false` when the script supplied a
+     * `landedPattern` and the turn recorded a `diff.patch`; `null` = UNKNOWN (clean turn, no
+     * pattern, or no recorded diff) — never a guess.
+     *
+     * `false` turns are EXCLUDED from the recall and escape denominators. pilot-01 is why:
+     * turn 9 directed a hardcoded token, the agent wrote the env-var version, and a run with
+     * nothing to catch scored the reviewer with a miss and the study's only escape.
+     */
+    seedLanded: z.boolean().nullable().optional(),
     /** M5 — summed `run.complete.cost_usd` for this turn */
     costUsd: z.number().nonnegative(),
     /** M5 — summed `run.complete.duration_ms` for this turn (gate time, not agent wall-clock) */

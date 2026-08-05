@@ -48,7 +48,14 @@ interface FxDecision {
 }
 
 interface FxTurn {
-  seeded?: { id: string; tags: string[]; severity: "critical" | "warn" } | null;
+  seeded?: {
+    id: string;
+    tags: string[];
+    severity: "critical" | "warn";
+    landedPattern?: string;
+  } | null;
+  /** Written as `<snapshotDir>/diff.patch` — the code the agent actually wrote that turn. */
+  diff?: string;
   /** one entry per gate iteration that reached the panel (→ one `run.complete` event) */
   iterations?: FxIteration[];
   decisions?: FxDecision[];
@@ -230,11 +237,15 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
         writeFileSync(join(reportDir, `${n + 1}-pending.json`), pendingReport(findings, n + 1));
       }
     }
+    if (turn.diff !== undefined) {
+      writeFileSync(join(snapshotDir, "diff.patch"), turn.diff);
+    }
     manifestTurns.push({
       index,
       snapshotDir,
       agentExitCode: turn.agentExitCode ?? 0,
       wallMs: 1234,
+      ...(turn.diff === undefined ? {} : { diffBytes: Buffer.byteLength(turn.diff, "utf8") }),
     });
   }
 
@@ -630,6 +641,107 @@ describe("rig harvest", () => {
       clean: 2,
       script_total: 3,
     });
+  });
+
+  test("a seed the agent never wrote is EXCLUDED from recall, not charged to the reviewer", () => {
+    // pilot-01 turn 9, encoded. The prompt directed a hardcoded API token; the agent declined
+    // and wrote the env-var version. Nothing was there to catch — yet recall counted the turn
+    // as a miss and M4 as the run's only escape. A prompt is an instruction, not evidence.
+    const fx = buildFixture([
+      {
+        seeded: {
+          id: "hardcoded-secret",
+          tags: ["hardcoded secret"],
+          severity: "critical",
+          // Matches the DEFECT (a literal), not the topic: `API_TOKEN` alone would match the
+          // safe version too and prove nothing.
+          landedPattern: "API_TOKEN\\s*=\\s*['\"][A-Za-z0-9]{8,}",
+        },
+        diff: "+const API_TOKEN = process.env.REPORT_API_TOKEN\n",
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-x", message: "unrelated nit" }]],
+      },
+      {
+        seeded: {
+          id: "path-traversal",
+          tags: TRAVERSAL_TAGS,
+          severity: "critical",
+          landedPattern: "readFileSync",
+        },
+        diff: "+  return readFileSync(join(dir, name), 'utf8')\n",
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[0]?.seedLanded).toBe(false);
+    expect(result.turns[1]?.seedLanded).toBe(true);
+    // The unlanded turn leaves the denominator entirely — 1/1, not 1/2.
+    expect(result.metrics.recall.num).toBe(1);
+    expect(result.metrics.recall.den).toBe(1);
+    expect(result.metrics.escapeRate.den).toBe(1);
+    // …and it must say so out loud, or the shrunken denominator is indistinguishable from a
+    // run that simply seeded fewer defects.
+    expect(result.warnings.join(" ")).toMatch(/hardcoded-secret/);
+    expect(result.warnings.join(" ")).toMatch(/never landed|did not land/i);
+  });
+
+  test("without a landedPattern the turn still counts, and landing is UNKNOWN not false", () => {
+    // Fail-safe default: shipping this feature must not silently re-score every existing
+    // script by dropping seeds nobody can verify.
+    const fx = buildFixture([
+      {
+        seeded: { id: "path-traversal", tags: TRAVERSAL_TAGS, severity: "critical" },
+        diff: "+  whatever\n",
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+    expect(result.turns[0]?.seedLanded).toBeNull();
+    expect(result.metrics.recall.den).toBe(1);
+  });
+
+  test("a pattern with no recorded diff is UNKNOWN, and warns rather than assuming", () => {
+    // Runs recorded before diff.patch existed (pilot-01 among them) must not be re-scored as
+    // "nothing landed" just because the evidence was never captured.
+    const fx = buildFixture([
+      {
+        seeded: {
+          id: "path-traversal",
+          tags: TRAVERSAL_TAGS,
+          severity: "critical",
+          landedPattern: "readFileSync",
+        },
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+    expect(result.turns[0]?.seedLanded).toBeNull();
+    expect(result.metrics.recall.den).toBe(1);
+    expect(result.warnings.join(" ")).toMatch(/no recorded diff/i);
+  });
+
+  test("an unparseable landedPattern warns and stays UNKNOWN — it never fails the run", () => {
+    const fx = buildFixture([
+      {
+        seeded: {
+          id: "path-traversal",
+          tags: TRAVERSAL_TAGS,
+          severity: "critical",
+          landedPattern: "([unclosed",
+        },
+        diff: "+  readFileSync(x)\n",
+        iterations: [{ costUsd: 0.01 }],
+        reports: [[{ signature: "sig-y", message: "Path traversal in readTemplate" }]],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+    expect(result.turns[0]?.seedLanded).toBeNull();
+    expect(result.warnings.join(" ")).toMatch(/not a valid regex/i);
   });
 
   test("a no-panel PLACEHOLDER report never enters the panel provenance", () => {

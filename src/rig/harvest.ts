@@ -263,6 +263,64 @@ interface TurnHarvest {
   seeded: RigTurn["seeded"];
 }
 
+/**
+ * Did the seeded defect actually reach the code this turn?
+ *
+ * A turn script states an INTENTION. pilot-01 proved that is not the same as an outcome: turn
+ * 9 directed a hardcoded API token, the agent declined and wrote `process.env.…`, and recall
+ * — which only ever sees the gate's output — booked a reviewer miss plus the study's only
+ * escape for a defect that never existed.
+ *
+ * Returns `null` for UNKNOWN in every case where the evidence is absent or unusable (clean
+ * turn, no `landedPattern`, no recorded `diff.patch`, unparseable pattern), and warns for the
+ * ones a script author can act on. Never guesses: an unverifiable seed keeps counting exactly
+ * as it did before this check existed, because shipping a feature must not silently re-score
+ * every run recorded before it.
+ */
+function checkSeedLanded(
+  snapshotDir: string,
+  index: number,
+  seeded: RigTurn["seeded"],
+  warnings: string[],
+): boolean | null {
+  if (seeded === null) return null;
+  const pattern = seeded.landedPattern;
+  if (pattern === undefined) return null;
+
+  const patchPath = join(snapshotDir, "diff.patch");
+  if (!existsSync(patchPath)) {
+    warnings.push(
+      `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but the turn has NO recorded diff (runs recorded before per-turn diff.patch capture, pilot-01 among them). Landing is UNKNOWN, and the turn stays in the recall/escape denominators — it is NOT assumed to have landed, nor assumed not to.`,
+    );
+    return null;
+  }
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    warnings.push(
+      `turn ${index}: seeded defect "${seeded.id}" has a landedPattern that is not a valid regex (${pattern}). Landing is UNKNOWN and the turn stays in the denominators. Fix the script — a broken pattern must not silently drop a real seed.`,
+    );
+    return null;
+  }
+  let patch: string;
+  try {
+    patch = readFileSync(patchPath, "utf8");
+  } catch {
+    warnings.push(
+      `turn ${index}: seeded defect "${seeded.id}" declares a landedPattern but diff.patch could not be read. Landing is UNKNOWN.`,
+    );
+    return null;
+  }
+  const landed = re.test(patch);
+  if (!landed) {
+    warnings.push(
+      `turn ${index}: seeded defect "${seeded.id}" NEVER LANDED — the recorded diff does not match its landedPattern, so the agent did not write the defect the prompt directed (pilot-01 turn 9: it declined a hardcoded token and wrote the env-var version). EXCLUDED from the recall and escape denominators: there was nothing for the panel to catch, and counting it would charge the reviewer for the agent's judgment.`,
+    );
+  }
+  return landed;
+}
+
 function harvestTurn(
   manifestPath: string,
   manifestTurn: RigManifest["turns"][number],
@@ -328,9 +386,11 @@ function harvestTurn(
   const seeded = scriptTurn.seeded;
   const blockingTexts = blocking.map(findingText);
   const caught = seeded === null ? null : blockingTexts.some((t) => matchesAnyTag(t, seeded.tags));
+  const seedLanded = checkSeedLanded(snapshotDir, index, seeded, warnings);
 
   const record: RigTurnRecord = {
     index,
+    seedLanded,
     seededId: seeded === null ? null : seeded.id,
     iterations,
     findingsTotal,
@@ -401,7 +461,10 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
     t.record.escaped = !flaggedLater;
   }
 
-  const seededTurns = turns.filter((t) => t.seeded !== null);
+  // Seeds that provably never reached the code are excluded outright. A turn whose landing is
+  // UNKNOWN (`null`) stays in — the pre-2026-08-05 behaviour — because "we could not check"
+  // must not silently become "it did not happen".
+  const seededTurns = turns.filter((t) => t.seeded !== null && t.record.seedLanded !== false);
   const recall: Metric = makeMetric(
     seededTurns.filter((t) => t.record.caught === true).length,
     // Denominator = seeded turns HARVESTED, never the script's total. A run capped at 3 turns

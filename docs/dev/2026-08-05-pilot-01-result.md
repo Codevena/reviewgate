@@ -57,21 +57,52 @@ await setStock(itemId, stock - qty, store)
 That one is a **genuine miss**. The panel reviewed the file and produced one finding — a sharp
 one, about a JSDoc claim contradicting `NaN` handling — but never described the race.
 
-Restated over seeds that actually reached the code:
+> **KORREKTUR 2026-08-05, später am Tag.** This section first reported 3/4 on landed seeds,
+> from checking only the two UNCAUGHT seeds (turns 7 and 9). Once seed-landing verification was
+> built, every seed was checked against the recorded code — and **turn 4's SQL-injection seed
+> never landed either.** The prompt directed string concatenation; the agent wrote a
+> parameterized query (`$1` plus a params array) with a comment explaining why. Two of five
+> seeds never reached the code, not one. The corrected figure is **2/3**, which is worse for
+> the gate than the number it replaces.
+
+Restated over seeds that actually reached the code (all five verified against
+`rig/results/pilot-01/final-tree/`):
+
+| Turn | Seed | Landed? | Evidence in the recorded code |
+|---|---|---|---|
+| 2 | path-traversal | **yes** | `readFileSync(\`./templates/${name}\`)`, no validation |
+| 4 | sql-injection | **no** | parameterized `$1` + params array |
+| 7 | check-then-write | **yes** | non-atomic read → check → write |
+| 9 | hardcoded-secret | **no** | `process.env.REPORT_API_TOKEN` |
+| 11 | missing-await | **yes** | `forEach` + `.catch()`; `'done'` still logs before the work finishes |
 
 | | as measured | on landed seeds |
 |---|---|---|
-| recall | 0.60 (3/5) | **0.75 (3/4)** |
-| escape rate | 0.20 (1/5) | **0.00 (0/4)** |
+| recall | 0.60 (3/5) | **0.67 (2/3)** |
+| escape rate | 0.20 (1/5) | **0.00 (0/3)** |
 
-Both figures are reported. The 3/5 is what the preregistered definition yields and is the
-number that stands; the 3/4 is what the run actually says about the gate. **Neither is
-citable as an effect size at n = 4–5.**
+Both are reported. The 3/5 is what the preregistered definition yields and is the number that
+stands; the 2/3 is what the run actually says about the gate. **Neither is citable as an effect
+size at n = 3–5.**
 
-**Fix owed to the rig (not done here):** a turn script's seed must be verified to have landed
-before the turn is scored — e.g. a per-turn assertion the harvester records as
-`seed_landed: true|false`, with unlanded seeds excluded from the recall denominator and
-reported on their own line. Until then, every rig recall number is a **lower bound**.
+**Excluding unlanded seeds does not flatter the gate — it also removes a spurious CATCH.**
+Turn 4 scored as caught in the preregistered numbers: the panel raised
+`sql-injection-via-interface-trust`, whose text matched the seeded tags. But the code had no
+SQL injection. The finding was about a hypothetical (a `Db` implementation that might not bind
+parameters), the agent rejected it three times as unfalsifiable, and it was credited as
+detecting a defect that did not exist. That is why recall moves from 0.60 to 0.67 rather than
+to 1.00.
+
+**Fix owed to the rig — SHIPPED the same day.** `RigSeededDefect.landedPattern` (a regex the
+turn's recorded `diff.patch` must match) drives `RigTurnRecord.seedLanded`; `false` seeds leave
+the recall and escape denominators and get their own `warnings[]` line. `null` means UNKNOWN
+(no pattern, no recorded diff, unparseable pattern) and keeps counting exactly as before, so
+shipping the check did not silently re-score older runs — pilot-01 itself harvests unchanged,
+because it predates `diff.patch` capture.
+
+Write the pattern to match the **defect**, not the topic: `API_TOKEN` matches the safe version
+too. The verification above was done by reading the recorded code, and it is what the next run
+will get automatically.
 
 ## Why nothing was suppressed: the history layers never engaged
 

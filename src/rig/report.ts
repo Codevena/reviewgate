@@ -54,6 +54,7 @@ interface Row {
   blocking: string;
   fp: string;
   burden: string;
+  landed: string;
   caught: string;
   escaped: string;
   cost: string;
@@ -67,6 +68,9 @@ function toRow(t: RigTurnRecord): Row {
     findings: String(t.findingsTotal),
     blocking: String(t.blockingTotal),
     fp: String(t.rejectedAsFp),
+    // A seed the agent never wrote is excluded from recall, so the column has to be visible:
+    // otherwise a shrunken denominator looks like a run that simply seeded fewer defects.
+    landed: fmtTriState(t.seedLanded ?? null),
     burden: fmtBurden(t.fpBurden),
     caught: fmtTriState(t.caught),
     escaped: fmtTriState(t.escaped),
@@ -133,16 +137,17 @@ export function renderRigReport(result: RigResult): { table: string; markdown: s
     blocking: 8,
     fp: 6,
     burden: 6,
+    landed: 6,
     caught: 6,
     escaped: 7,
     cost: 9,
   };
   L.push(
-    `  ${pad("turn", w.turn)}  ${pad("seeded", w.seeded)}  ${padStart("iters", w.iters)}  ${padStart("findings", w.findings)}  ${padStart("blocking", w.blocking)}  ${padStart("fp", w.fp)}  ${padStart("burden", w.burden)}  ${padStart("caught", w.caught)}  ${padStart("escaped", w.escaped)}  ${padStart("cost", w.cost)}`,
+    `  ${pad("turn", w.turn)}  ${pad("seeded", w.seeded)}  ${padStart("iters", w.iters)}  ${padStart("findings", w.findings)}  ${padStart("blocking", w.blocking)}  ${padStart("fp", w.fp)}  ${padStart("burden", w.burden)}  ${padStart("landed", w.landed)}  ${padStart("caught", w.caught)}  ${padStart("escaped", w.escaped)}  ${padStart("cost", w.cost)}`,
   );
   for (const r of rows) {
     L.push(
-      `  ${pad(r.turn, w.turn)}  ${pad(r.seeded, w.seeded)}  ${padStart(r.iters, w.iters)}  ${padStart(r.findings, w.findings)}  ${padStart(r.blocking, w.blocking)}  ${padStart(r.fp, w.fp)}  ${padStart(r.burden, w.burden)}  ${padStart(r.caught, w.caught)}  ${padStart(r.escaped, w.escaped)}  ${padStart(r.cost, w.cost)}`,
+      `  ${pad(r.turn, w.turn)}  ${pad(r.seeded, w.seeded)}  ${padStart(r.iters, w.iters)}  ${padStart(r.findings, w.findings)}  ${padStart(r.blocking, w.blocking)}  ${padStart(r.fp, w.fp)}  ${padStart(r.burden, w.burden)}  ${padStart(r.landed, w.landed)}  ${padStart(r.caught, w.caught)}  ${padStart(r.escaped, w.escaped)}  ${padStart(r.cost, w.cost)}`,
     );
   }
   L.push("");
@@ -184,12 +189,12 @@ export function renderRigReport(result: RigResult): { table: string; markdown: s
   M.push(`| M6 suppression provenance | ${supLine} |`);
   M.push("");
   M.push(
-    "| Turn | Seeded | Iters | Findings | Blocking | FP rejects | FP burden | Caught | Escaped | Cost |",
+    "| Turn | Seeded | Iters | Findings | Blocking | FP rejects | FP burden | Landed | Caught | Escaped | Cost |",
   );
-  M.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  M.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const r of rows) {
     M.push(
-      `| ${r.turn} | ${r.seeded} | ${r.iters} | ${r.findings} | ${r.blocking} | ${r.fp} | ${r.burden} | ${r.caught} | ${r.escaped} | ${r.cost} |`,
+      `| ${r.turn} | ${r.seeded} | ${r.iters} | ${r.findings} | ${r.blocking} | ${r.fp} | ${r.burden} | ${r.landed} | ${r.caught} | ${r.escaped} | ${r.cost} |`,
     );
   }
   M.push("");

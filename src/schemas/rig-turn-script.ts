@@ -13,6 +13,24 @@ export const RigSeededDefectSchema = z
     // differently run to run, so a single exact string would score wording, not detection.
     tags: z.array(z.string().min(1)).min(1),
     severity: z.enum(["critical", "warn"]),
+    /**
+     * JS regex (source only, no delimiters/flags) that must match the turn's recorded
+     * `diff.patch` for the seeded defect to count as having LANDED in the code.
+     *
+     * pilot-01 is the argument for this field. Turn 9's prompt directed a hardcoded API
+     * token; the agent declined and wrote `process.env.REPORT_API_TOKEN` instead. No defect
+     * ever existed — and recall, which only ever sees the gate's output, scored it as a MISS
+     * and as the run's only escape. The rig charged the reviewer for the agent's judgment.
+     * A prompt is an INSTRUCTION, never evidence that the code contains what it asked for.
+     *
+     * Write it to match the DEFECT, not the topic: `API_TOKEN` matches both the unsafe and
+     * the safe version, so it proves nothing. Match the literal that makes it unsafe.
+     *
+     * OPTIONAL on purpose. Absent → `seedLanded: null` ("unknown"), the turn stays in the
+     * denominator exactly as before, and a warning says so. Silently dropping unverifiable
+     * seeds would change every existing script's numbers the day this shipped.
+     */
+    landedPattern: z.string().min(1).optional(),
   })
   .strict();
 
