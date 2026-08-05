@@ -60,14 +60,20 @@ function stub(id: ProviderAdapter["id"]): ProviderAdapter {
 }
 
 // Seed a 2-member FP-cluster on (prisma, foo.ts): 3 rejects across 2 distinct
-// providers, all timestamped at REJECT_TS. Whether this cluster is "active"
-// depends entirely on how far `now` is from REJECT_TS (60-day active window).
+// providers AND 3 distinct gate runs, all timestamped at REJECT_TS. Whether this
+// cluster is "active" depends entirely on how far `now` is from REJECT_TS (60-day
+// active window) — which is what this test isolates.
+//
+// The run_ids must be DISTINCT: promotion counts gate runs, not reject events, so
+// three rejects sharing one run_id would never promote and the clock boundary this
+// test guards would stop being observable at all (both cases would assert
+// "no demote", leaving nothing to discriminate).
 const REJECT_TS = "2026-03-01T00:00:00.000Z";
 
 function seedLedger(repo: string): void {
   mkdirSync(join(repo, ".reviewgate", "learnings"), { recursive: true });
-  const reject = (provider: string) => ({
-    run_id: "old-run",
+  const reject = (provider: string, run: string) => ({
+    run_id: run,
     provider,
     ts: REJECT_TS,
     reason: "prior hallucination",
@@ -84,7 +90,7 @@ function seedLedger(repo: string): void {
         file: "foo.ts",
         symbol: "",
         stage: "candidate",
-        rejects: [reject("codex"), reject("gemini")],
+        rejects: [reject("codex", "run-1"), reject("gemini", "run-2")],
         distinct_providers: ["codex", "gemini"],
         first_seen_at: REJECT_TS,
         last_seen_at: REJECT_TS,
@@ -98,7 +104,7 @@ function seedLedger(repo: string): void {
         file: "foo.ts",
         symbol: "",
         stage: "candidate",
-        rejects: [reject("gemini")],
+        rejects: [reject("gemini", "run-3")],
         distinct_providers: ["gemini"],
         first_seen_at: REJECT_TS,
         last_seen_at: REJECT_TS,

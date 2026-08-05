@@ -114,14 +114,35 @@ describe("computeFpClusters — the shoal motivating case", () => {
     // cluster view alone doesn't suppress single-provider sprees — that's
     // intentional (anti-collusion), and matches the candidate→active rule.
     expect(c?.stage).toBe("candidate");
-    expect(isNearActive(c as NonNullable<typeof c>)).toBe(true);
+    // NOT near-active: a burst is ONE gate run, so the cluster is short on BOTH
+    // dimensions (1 provider AND 1 distinct run), and isNearActive requires
+    // exactly one to be missing. The four entries deliberately KEEP the shared
+    // run_id — giving them distinct ones would turn a fixture whose whole point
+    // is "one round, one provider" into the evidence shape the run-unit rule
+    // exists to reject.
+    expect(c?.distinct_runs_active_window).toBe(1);
+    expect(isNearActive(c as NonNullable<typeof c>)).toBe(false);
   });
 
   it("would-be active when a second provider's entry joins the cluster", () => {
+    // Three DISTINCT run_ids (R1/R4/R5): promotion counts gate runs, not reject
+    // events, so this fixture needs three separate rounds — not three findings.
     const out = computeFpClusters(
       [
         mkEntry({ id: "FP-001", signature: "s1", rule_id: "prisma-attribute-corruption" }),
-        mkEntry({ id: "FP-002", signature: "s2", rule_id: "prisma-corrupted-attribute" }),
+        mkEntry({
+          id: "FP-002",
+          signature: "s2",
+          rule_id: "prisma-corrupted-attribute",
+          rejects: [
+            {
+              run_id: "R4",
+              provider: "gemini",
+              ts: "2026-05-25T03:00:00.000Z",
+              reason: "hallucinated",
+            },
+          ],
+        }),
         mkEntry({
           id: "FP-005",
           signature: "s5",
@@ -260,6 +281,7 @@ describe("isNearActive", () => {
         distinct_providers: ["a", "b"],
         distinct_providers_active_window: 2,
         reject_count_active_window: 3,
+        distinct_runs_active_window: 3,
       } as Parameters<typeof isNearActive>[0]),
     ).toBe(false);
     // Sticky: not near-active.
@@ -269,6 +291,7 @@ describe("isNearActive", () => {
         distinct_providers: ["a", "b"],
         distinct_providers_active_window: 2,
         reject_count_active_window: 5,
+        distinct_runs_active_window: 5,
       } as Parameters<typeof isNearActive>[0]),
     ).toBe(false);
     // Candidate with enough rejects but only 1 windowed provider → near.
@@ -278,6 +301,7 @@ describe("isNearActive", () => {
         distinct_providers: ["a"],
         distinct_providers_active_window: 1,
         reject_count_active_window: 4,
+        distinct_runs_active_window: 4,
       } as Parameters<typeof isNearActive>[0]),
     ).toBe(true);
     // Candidate with 2 windowed providers but only 2 rejects → near.
@@ -287,6 +311,7 @@ describe("isNearActive", () => {
         distinct_providers: ["a", "b"],
         distinct_providers_active_window: 2,
         reject_count_active_window: 2,
+        distinct_runs_active_window: 2,
       } as Parameters<typeof isNearActive>[0]),
     ).toBe(true);
     // Candidate failing BOTH dimensions → not near (too far).
@@ -296,6 +321,7 @@ describe("isNearActive", () => {
         distinct_providers: ["a"],
         distinct_providers_active_window: 1,
         reject_count_active_window: 1,
+        distinct_runs_active_window: 1,
       } as Parameters<typeof isNearActive>[0]),
     ).toBe(false);
   });
@@ -377,5 +403,55 @@ describe("computeFpClusters — windowed-providers field (Claude WARN fix)", () 
     // isNearActive must reflect the windowed count, so NOT near (1 provider
     // + 1 reject in window → both dimensions short).
     expect(isNearActive(c as NonNullable<typeof c>)).toBe(false);
+  });
+});
+
+describe("computeFpClusters — evidence unit is the distinct run", () => {
+  it("3 rejects from 2 providers in ONE run stay candidate", () => {
+    const out = computeFpClusters(
+      [
+        mkEntry({ id: "FP-001", signature: "s1", rule_id: "prisma-attribute-corruption" }),
+        mkEntry({
+          id: "FP-002",
+          signature: "s2",
+          rule_id: "prisma-corrupted-attribute",
+          rejects: [
+            { run_id: "R1", provider: "claude-code", ts: "2026-05-25T03:00:00.000Z", reason: "h" },
+            { run_id: "R1", provider: "codex", ts: "2026-05-25T03:00:00.000Z", reason: "h" },
+          ],
+          distinct_providers: ["claude-code", "codex"],
+        }),
+      ],
+      NOW,
+    );
+    const c = out[0];
+    // Three reject EVENTS, but the cluster path aggregates across members and
+    // they all came from one gate run — one observation, not three.
+    expect(c?.reject_count_active_window).toBe(3);
+    expect(c?.distinct_runs_active_window).toBe(1);
+    expect(c?.stage).toBe("candidate");
+    expect(isNearActive(c as NonNullable<typeof c>)).toBe(true);
+  });
+
+  it("the same 3 rejects across 3 runs reach active", () => {
+    const out = computeFpClusters(
+      [
+        mkEntry({ id: "FP-001", signature: "s1", rule_id: "prisma-attribute-corruption" }),
+        mkEntry({
+          id: "FP-002",
+          signature: "s2",
+          rule_id: "prisma-corrupted-attribute",
+          rejects: [
+            { run_id: "R2", provider: "claude-code", ts: "2026-05-25T03:00:00.000Z", reason: "h" },
+            { run_id: "R3", provider: "codex", ts: "2026-05-25T03:00:00.000Z", reason: "h" },
+          ],
+          distinct_providers: ["claude-code", "codex"],
+        }),
+      ],
+      NOW,
+    );
+    const c = out[0];
+    expect(c?.distinct_runs_active_window).toBe(3);
+    expect(c?.stage).toBe("active");
   });
 });

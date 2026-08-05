@@ -293,7 +293,7 @@ describe("learn status — FP ledger + cluster view", () => {
             file: "prisma/schema.prisma",
             symbol: "",
             stage: "candidate",
-            rejects: [{ run_id: "R", provider: "gemini", ts: NOW, reason: "" }],
+            rejects: [{ run_id: "R1", provider: "gemini", ts: NOW, reason: "" }],
             distinct_providers: ["gemini"],
             first_seen_at: NOW,
             last_seen_at: NOW,
@@ -307,7 +307,7 @@ describe("learn status — FP ledger + cluster view", () => {
             file: "prisma/schema.prisma",
             symbol: "",
             stage: "candidate",
-            rejects: [{ run_id: "R", provider: "gemini", ts: NOW, reason: "" }],
+            rejects: [{ run_id: "R2", provider: "gemini", ts: NOW, reason: "" }],
             distinct_providers: ["gemini"],
             first_seen_at: NOW,
             last_seen_at: NOW,
@@ -321,7 +321,7 @@ describe("learn status — FP ledger + cluster view", () => {
             file: "prisma/schema.prisma",
             symbol: "",
             stage: "candidate",
-            rejects: [{ run_id: "R", provider: "gemini", ts: NOW, reason: "" }],
+            rejects: [{ run_id: "R3", provider: "gemini", ts: NOW, reason: "" }],
             distinct_providers: ["gemini"],
             first_seen_at: NOW,
             last_seen_at: NOW,
@@ -333,6 +333,10 @@ describe("learn status — FP ledger + cluster view", () => {
     const rep = await __test.buildReport({ repoRoot: r, now: NOW });
     expect(rep.fp_ledger.candidate).toBe(3);
     expect(rep.fp_ledger.clusters.total).toBe(1);
+    // The three entries carry DISTINCT run_ids: promotion counts gate runs, not
+    // reject events. Setting near_active to 0 instead would drop the cluster out
+    // of near_or_promoted entirely and silently delete the key assertion below —
+    // the only test anywhere on the derived cluster key.
     expect(rep.fp_ledger.clusters.near_active).toBe(1);
     expect(rep.fp_ledger.clusters.near_or_promoted[0]?.key).toBe("prisma@prisma/schema.prisma");
   });
