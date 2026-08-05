@@ -115,11 +115,19 @@ const STORE_TS = `${[
 ].join("\n")}\n`;
 
 describe("pilot-02 turn 2 — the full cascade", () => {
-  // WITHOUT the fix: F-002 is demoted as fabricated (INFO + fact_invalid) and stays 42 lines
-  // from F-001, so nothing merges, both stay `singleton`, and the critic demotes F-001 to INFO
-  // -> 2 findings, 0 blocking. This is what pilot-02 recorded.
-  // WITH the fix: F-002 re-anchors 67 -> 26, merges with F-001 at 25, consensus becomes
-  // `majority`, the critic is barred -> 1 finding, blocking WARN.
+  // WITHOUT the fix (Task 1): F-002 is demoted as fabricated (INFO + fact_invalid) and stays 42
+  // lines from F-001, so nothing merges, both stay `singleton` -> 2 findings, 0 blocking. This is
+  // what pilot-02 recorded.
+  // WITH the fix: F-002 re-anchors 67 -> 26, merges with F-001 at 25, and the merge lifts
+  // consensus to `majority` -> 1 finding.
+  // What bars the critic here is pre-existing corroboration (consensus === "majority"), NOT
+  // Task 4's WARN-security floor — with Task 4 reverted this scenario still passes, because the
+  // repair-driven merge already makes the finding corroborated before the critic runs. Task 4's
+  // floor covers the DIFFERENT, uncorroborated case: a single WARN security finding with no
+  // second detection to merge with. That case is exercised separately in
+  // tests/unit/aggregator-critic.test.ts, describe "critic — security/correctness floor
+  // (pilot-02 turn 2)". This test's job is to prove the repair -> merge -> corroboration chain
+  // (Tasks 1-2) composes and ends up blocking WARN, badge included (Task 3).
   it("repairs the anchor, merges, corroborates, and stays blocking", () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-turn2-"));
     createdDirs.push(dir);
@@ -162,10 +170,13 @@ describe("pilot-02 turn 2 — the full cascade", () => {
     });
 
     expect(r.dedupedFindings.length).toBe(1);
+    const merged = r.dedupedFindings[0];
+    if (!merged) throw new Error("expected one merged finding");
     expect(r.dedupedFindings[0]?.consensus).toBe("majority");
     expect(r.dedupedFindings[0]?.severity).toBe("WARN");
     expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
     expect(r.dedupedFindings[0]?.anchor_repaired).toBe(true);
+    expect(findingBadges(merged)).toContain("re-anchored");
     expect(r.dedupedFindings[0]?.scope_demoted).toBeUndefined();
     expect(r.dedupedFindings[0]?.fact_invalid).toBeUndefined();
   });
