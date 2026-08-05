@@ -73,6 +73,14 @@ export default {
         { provider: "ollama", persona: "security" },
       ],
     },
+    // Adversarial demote-only FP filter. Measured in bench/results/alpha12-v2/attempt-09:
+    // +4.1pp precision, -16.7pp clean-case FP rate, recall unchanged, 86/86 eligible —
+    // with THIS provider/model, which is why it is not swapped for a "better" one.
+    // openrouter is NOT a panel reviewer here, so the critic stays independent of the
+    // panel it filters; model resolves to providers.openrouter.model (deepseek-v4-flash),
+    // the exact model that benchmark used. Repo-local dogfood — the init scaffold
+    // default stays off until pilot-02 confirms the effect.
+    critic: { provider: "openrouter", persona: "fp-filter" },
     // FP-ledger: learns which finding signatures you reject as false
     // positives and stops re-reporting them. Standalone.
     fpLedger: { enabled: true },
