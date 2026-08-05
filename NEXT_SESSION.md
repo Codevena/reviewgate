@@ -88,12 +88,13 @@ caught one vacuous case (an inline `Bearer <literal>` header).
 
 - Suite **3168 pass / 12 skip / 0 fail** (3180 tests) · `bunx tsc --noEmit` clean · biome clean
   (643 files). **Re-run at HEAD**, not carried over from an earlier commit.
-- Working tree **clean** · HEAD **`7a05c0e`**
-- **Everything is PUSHED.** `origin/master` = `7a05c0e`, **0 unpushed** — verified with
-  `git rev-parse HEAD @{u} | uniq -c` (one line, count 2). Two pushes this session:
+- Working tree **clean**. Last **code** commit: **`5a1f94f`** (everything after it is docs).
+- **Everything is PUSHED**, including this handoff — **0 unpushed**. Do not trust that sentence,
+  check it: `git rev-parse HEAD @{u} | uniq -c` → one line, count 2. (A handoff can never name
+  its own hash, which is why this pins the last code commit instead.) Two pushes this session:
   `04563ee..33bc02f` (15 commits carried over from the previous session) and
   `33bc02f..7a05c0e` (this session's 5: `ac2f5d5` preregistration, `dd21408` pilot-02 result,
-  `0989ae5` + `7a05c0e` handoffs, `5a1f94f` rig measurement fixes).
+  `0989ae5` + later handoffs, `5a1f94f` rig measurement fixes).
 - Binary **unchanged**: `sha256:7f92445b…` — pinned by the preregistration and deliberately not
   rebuilt. `dist/reviewgate.prev` (`879a87e5…`) is still the rollback target.
 - Control plane approved, `pending: None`
@@ -156,7 +157,7 @@ measurable FP reduction. It is also not on its own a reason to turn it off here 
 
 ## Open, needs Markus
 
-1. ~~Commits unpushed~~ → **DONE.** Everything is on `origin/master` (`7a05c0e`).
+1. ~~Commits unpushed~~ → **DONE.** Everything is on `origin/master`.
 2. **Two `~/Developer` fixes**, diagnosed but still not applied (outside this repo):
    `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at
    `${CLAUDE_PROJECT_DIR}/.reviewgate/bin/…` while `~/Developer/.reviewgate/bin/` does not exist
