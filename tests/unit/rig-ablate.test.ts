@@ -244,6 +244,103 @@ describe("rig ablate", () => {
     expect(a.lower.turns[0]?.escaped).toBe(false);
   });
 
+  // pilot-02 (2026-08-05) printed `recall +1/3` for −reputation, −fp-ledger and −lore — three
+  // layers whose blocking delta was +0. A layer that suppressed nothing cannot change recall.
+  // The cause was that this file counted ALL seeded turns while harvest.ts counts only the
+  // LANDED ones, so a seed the agent never wrote (a spurious catch) inflated the ablated
+  // numerator but not the harvested baseline it is subtracted from.
+  test("recall denominator excludes seeds that never landed, matching harvest", () => {
+    const base = result(
+      [
+        // Never landed, yet the panel raised a matching finding anyway — the spurious catch
+        // that pilot-01 and pilot-02 both recorded on turn 4.
+        turn({
+          index: 1,
+          seededId: "sql-injection",
+          seedLanded: false,
+          caught: true,
+          escaped: false,
+          findings: [
+            finding({ signature: "a", message: "sql injection via string concatenation" }),
+          ],
+        }),
+        // Landed, and its only detection was demoted by the critic.
+        turn({
+          index: 2,
+          seededId: "path-traversal",
+          seedLanded: true,
+          caught: false,
+          escaped: true,
+          findings: [
+            finding({
+              signature: "b",
+              severity: "INFO",
+              critic_verdict: "likely_fp",
+              message: "path traversal via unvalidated name",
+            }),
+          ],
+        }),
+      ],
+      {},
+    );
+    // Harvest semantics: the landed seed is the only denominator, and it was not caught.
+    // Baseline as `rig harvest` would have written it: 0/1, NOT 1/2.
+    base.metrics.recall = makeMetric(0, 1);
+    base.metrics.escapeRate = makeMetric(1, 1);
+
+    const tags = new Map([
+      [1, ["sql injection"]],
+      [2, ["path traversal"]],
+    ]);
+    const a = ablate(base, "critic", tags);
+
+    // WITHOUT the fix this is 2/2 — turn 1's unlanded seed enters the denominator and its
+    // spurious catch the numerator, so the matrix prints a +2 delta over a denominator of 1.
+    expect(a.lower.metrics.recall.den).toBe(1);
+    expect(a.lower.metrics.recall.num).toBe(1);
+    expect(a.lower.metrics.escapeRate.den).toBe(1);
+  });
+
+  test("a layer that suppressed nothing produces a recall delta of exactly zero", () => {
+    const base = result(
+      [
+        turn({
+          index: 1,
+          seededId: "sql-injection",
+          seedLanded: false,
+          caught: true,
+          escaped: false,
+          findings: [
+            finding({ signature: "a", message: "sql injection via string concatenation" }),
+          ],
+        }),
+        turn({
+          index: 2,
+          seededId: "path-traversal",
+          seedLanded: true,
+          caught: true,
+          escaped: false,
+          // Blocking and never touched by any layer.
+          findings: [finding({ signature: "b", message: "path traversal via unvalidated name" })],
+        }),
+      ],
+      {},
+    );
+    base.metrics.recall = makeMetric(1, 1);
+    base.metrics.escapeRate = makeMetric(0, 1);
+
+    const tags = new Map([
+      [1, ["sql injection"]],
+      [2, ["path traversal"]],
+    ]);
+    // fp-ledger suppressed nothing here, so the counterfactual must be identical to baseline.
+    const a = ablate(base, "fp-ledger", tags);
+    expect(a.counts.touched).toBe(0);
+    // WITHOUT the fix: num 2, den 2 → the renderer prints `+1` for a no-op layer.
+    expect(a.lower.metrics.recall.num - base.metrics.recall.num).toBe(0);
+    expect(a.lower.metrics.recall.den).toBe(base.metrics.recall.den);
+  });
+
   test("iterations, cost and FP burden are NOT rewritten — it is not a behavioural A/B", () => {
     const base = result([
       turn({

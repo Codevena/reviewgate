@@ -53,7 +53,8 @@ the cost is to **surfacing**, not interception. n = 3 landed seeds.
    M5 reports as $0.
 3. **Claim (A) is not harvestable**: `RigResult` carries only `suppressed.critic`, a *demotion*
    count — a critic that ran and kept everything is indistinguishable from one never configured.
-   Hence the new read-only `rig/scripts/critic-activity.ts` (validated against pilot-01 → 0/12).
+   **FIXED** — `RigTurnRecord.criticRuns` + an `M6 critic invocation` report line; the
+   stopgap `rig/scripts/critic-activity.ts` is deleted, one source of truth again.
 
 None were fixed during the run: harvesting goes through the binary the preregistration pins, and
 rebuilding mid-experiment would break the pin and deploy to every repo via the symlink.

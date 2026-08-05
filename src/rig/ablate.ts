@@ -204,7 +204,17 @@ function rebuild(
       );
   }
 
-  const seeded = turns.filter((t) => t.seededId !== null);
+  // SAME PREDICATE AS `harvest.ts:509`, and it has to stay that way: the renderer subtracts
+  // this numerator from the HARVESTED baseline's, so a denominator that differs from harvest's
+  // makes the printed delta a difference between two different populations. pilot-02 shipped
+  // that bug — it printed `recall +1/3` for −reputation, −fp-ledger and −lore, three layers
+  // whose blocking delta was +0, because turn 4's seed never landed yet drew a matching
+  // finding: the spurious catch counted here but not in the baseline.
+  //
+  // A seed that provably never reached the code was no detection opportunity, so it belongs in
+  // NEITHER denominator. `null` (UNKNOWN) stays in, because "we could not check" must not
+  // silently become "it did not happen".
+  const seeded = turns.filter((t) => t.seededId !== null && t.seedLanded !== false);
   return RigResultSchema.parse({
     ...base,
     turns,

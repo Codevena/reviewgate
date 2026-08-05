@@ -36,7 +36,11 @@ import { makeMetric, summarizeSpread } from "../bench/metrics.ts";
 import type { DecisionOutcome } from "../schemas/audit-event.ts";
 import type { Metric } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
-import { NO_PANEL_REVIEWER_ID, PendingReportSchema } from "../schemas/pending-report.ts";
+import {
+  type CriticInfo,
+  NO_PANEL_REVIEWER_ID,
+  PendingReportSchema,
+} from "../schemas/pending-report.ts";
 import { type RigManifest, RigManifestSchema } from "../schemas/rig-manifest.ts";
 import {
   type RigResult,
@@ -138,11 +142,20 @@ function collectTurnFindings(
   snapshotDir: string,
   turnIndex: number,
   warnings: string[],
-): { findings: Finding[]; panel: PanelSlot[]; reportsRead: number } {
+): { findings: Finding[]; panel: PanelSlot[]; reportsRead: number; criticRuns: CriticInfo[] } {
   const reportsDir = join(snapshotDir, "reports");
   const bySignature = new Map<string, Finding>();
   const panel = new Map<string, PanelSlot>();
-  if (!existsSync(reportsDir)) return { findings: [], panel: [], reportsRead: 0 };
+  // Keyed by the report's OWN identity (`run_id:iter`), not by position and not by hashing the
+  // critic object. ONE critic invocation can appear in several archived versions, because the
+  // archiver keys on the whole file's hash and a pending.json rewritten for an unrelated reason
+  // carries the same `critic` object again — counting those would over-report how often the
+  // critic ran. `orchestrator.ts:2324` calls `runCritic` exactly once per iteration, so
+  // `run_id:iter` IS the invocation's identity. Hashing the object instead would silently
+  // collapse two genuinely distinct invocations that happened to report equal counts (easy:
+  // two rounds both reporting `ran/2/1`), which would under-report.
+  const criticRuns = new Map<string, CriticInfo>();
+  if (!existsSync(reportsDir)) return { findings: [], panel: [], reportsRead: 0, criticRuns: [] };
 
   const names = readdirSync(reportsDir)
     .filter((n) => n.endsWith("-pending.json"))
@@ -172,6 +185,8 @@ function collectTurnFindings(
       continue;
     }
     reportsRead++;
+    if (parsed.data.critic)
+      criticRuns.set(`${parsed.data.run_id}:${parsed.data.iter}`, parsed.data.critic);
     for (const f of parsed.data.findings) bySignature.set(f.signature, f);
     for (const r of parsed.data.reviewers) {
       // Skip the no-panel PLACEHOLDER row: it records that zero reviewers ran, not that one
@@ -187,7 +202,12 @@ function collectTurnFindings(
       });
     }
   }
-  return { findings: [...bySignature.values()], panel: [...panel.values()], reportsRead };
+  return {
+    findings: [...bySignature.values()],
+    panel: [...panel.values()],
+    reportsRead,
+    criticRuns: [...criticRuns.values()],
+  };
 }
 
 function isBlocking(f: Finding): boolean {
@@ -390,7 +410,11 @@ function harvestTurn(
     );
   }
 
-  const { findings, panel, reportsRead } = collectTurnFindings(snapshotDir, index, warnings);
+  const { findings, panel, reportsRead, criticRuns } = collectTurnFindings(
+    snapshotDir,
+    index,
+    warnings,
+  );
   const blocking = findings.filter(isBlocking);
   const iterations = runDelta.added.length;
   if (iterations === 0) {
@@ -447,6 +471,9 @@ function harvestTurn(
     agentExitCode: manifestTurn.agentExitCode,
     wallMs: manifestTurn.wallMs,
     suppressed: countSuppression(findings),
+    // Omitted entirely when the critic never reported, so a run without one serialises exactly
+    // as it did before this field existed.
+    ...(criticRuns.length > 0 ? { criticRuns } : {}),
     findings,
   };
 

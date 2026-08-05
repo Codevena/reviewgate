@@ -20,6 +20,31 @@ export const NO_PANEL_REVIEWER_ID = "reviewgate";
 export const Verdict = z.enum(["PASS", "SOFT-PASS", "FAIL"]);
 export type Verdict = z.infer<typeof Verdict>;
 
+/**
+ * The critic phase's own account of one invocation.
+ *
+ * Exported and shared rather than re-declared, because `RigTurnRecord.criticRuns` stores these
+ * verbatim off archived reports: two independent declarations of one persisted shape is the
+ * drift this repo already avoids for the rig manifest. Note `demoted` is REQUIRED here — the
+ * critic always knows how many it downgraded, and an optional field would let a rig-side
+ * re-declaration quietly disagree.
+ *
+ * DELIBERATELY NOT `.strict()`, which is what the inline declaration this replaced was.
+ * Extracting it must not change how a `pending.json` parses. The whole report goes through
+ * ONE `safeParse` in `harvest.ts:collectTurnFindings`, and a failure there SKIPS the report
+ * entirely — so a future orchestrator adding a field inside `critic` would not surface as a
+ * schema error but as that turn's findings silently vanishing from recall. Zod's default
+ * strips unknown keys instead, which is the fail-safe direction for a read path over
+ * artifacts written by a possibly-newer writer.
+ */
+export const CriticInfoSchema = z.object({
+  provider: z.string(),
+  status: z.enum(["ran", "error", "empty", "misconfigured", "skipped-budget"]),
+  verdicts: z.number().int().nonnegative(),
+  demoted: z.number().int().nonnegative(),
+});
+export type CriticInfo = z.infer<typeof CriticInfoSchema>;
+
 export const PendingReportSchema = z.object({
   schema: z.literal("reviewgate.pending.v1"),
   run_id: z.string(),
@@ -119,14 +144,7 @@ export const PendingReportSchema = z.object({
   //                           critic floor (fail-safe: demote-only, so nothing
   //                           was demoted; the panel verdict stands unchanged)
   //  demoted               — findings the critic actually downgraded this run
-  critic: z
-    .object({
-      provider: z.string(),
-      status: z.enum(["ran", "error", "empty", "misconfigured", "skipped-budget"]),
-      verdicts: z.number().int().nonnegative(),
-      demoted: z.number().int().nonnegative(),
-    })
-    .optional(),
+  critic: CriticInfoSchema.optional(),
   cost_usd_total: z.number().nonnegative(),
   duration_ms_total: z.number().nonnegative(),
   generated_at: z.string(),

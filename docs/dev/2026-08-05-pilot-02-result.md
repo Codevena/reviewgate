@@ -182,6 +182,26 @@ None of the three was fixed during the run: harvesting runs through the compiled
 sha256 the preregistration pins, and rebuilding mid-experiment would break the pin and, via the
 `~/.local/bin` symlink, deploy to every repo. All three are follow-ups.
 
+> **Update, later the same day (2026-08-05).** Bugs 1 and 3 are **fixed**; bug 2 is scoped out
+> with its omission made explicit. See
+> `docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md`.
+>
+> - **Bug 1 fixed.** `ablate.ts` now uses harvest's landed-seed predicate. Re-running the matrix
+>   on this very run reproduces the hand-recomputed table above: `−critic` **+1/3**, and the
+>   three no-op layers **+0/3** instead of the artefactual `+1/3`. pilot-01's matrix is
+>   unchanged (it has no `landedPattern` at all), which is the backward-compatibility check.
+> - **Bug 3 fixed.** `RigTurnRecord.criticRuns` now carries the invocation, and `rig report`
+>   prints `M6 critic invocation`. `rig/scripts/critic-activity.ts` — the stopgap that produced
+>   the 10/10 quoted above — has been **deleted**, so there is one source of truth. Before
+>   deleting it, both pilots were re-harvested and the harvester reproduced its numbers exactly:
+>   **pilot-02 10/10 invoking turns, 16 demotions proposed, 3 surviving; pilot-01 0/0.**
+> - **Bug 2 not fixed**, deliberately: `complete()` returns a bare `string` in all six adapters,
+>   so there is no usage envelope to attribute and a real fix is a provider-contract change.
+>   Instead the M5 line now states the omission whenever a critic ran.
+>
+> **No number in this document changed.** Both `result.json` files were re-harvested and every
+> metric — recall, escape rate, M6 suppression, the M2 slope — is byte-identical in both pilots.
+
 ## Preregistration scorecard
 
 | Registered prediction | Outcome |

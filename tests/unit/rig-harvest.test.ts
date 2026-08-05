@@ -61,7 +61,23 @@ interface FxTurn {
   decisions?: FxDecision[];
   /** one entry per archived `pending.json` version captured during the turn */
   reports?: FxFinding[][];
+  /** parallel to `reports`: the `critic` object that version carried, if any */
+  critics?: (FxCritic | undefined)[];
+  /**
+   * parallel to `reports`: the gate `iter` that version belongs to. Defaults to the version's
+   * own index, i.e. one iteration per archived report. Set it explicitly to model the real
+   * case the archiver produces: SEVERAL archived versions of the SAME iteration, because it
+   * keys on the whole file's hash and a report rewritten for an unrelated reason is a new file.
+   */
+  reportIters?: number[];
   agentExitCode?: number;
+}
+
+interface FxCritic {
+  provider: string;
+  status: "ran" | "error" | "empty" | "misconfigured" | "skipped-budget";
+  verdicts: number;
+  demoted: number;
 }
 
 const BASE_MS = Date.UTC(2026, 6, 30, 9, 0, 0);
@@ -122,7 +138,7 @@ function turnAuditJsonl(turn: FxTurn, turnIndex: number): string {
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
-function pendingReport(findings: FxFinding[], iter: number): string {
+function pendingReport(findings: FxFinding[], iter: number, critic?: FxCritic): string {
   return JSON.stringify({
     schema: "reviewgate.pending.v1",
     run_id: "session-x",
@@ -185,6 +201,7 @@ function pendingReport(findings: FxFinding[], iter: number): string {
           }),
       ...(f.lore === undefined ? {} : { lore: f.lore }),
     })),
+    ...(critic === undefined ? {} : { critic }),
     cost_usd_total: 0.01,
     duration_ms_total: 1000,
     generated_at: ts(iter, 0),
@@ -234,7 +251,10 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
       const reportDir = join(snapshotDir, "reports");
       mkdirSync(reportDir, { recursive: true });
       for (const [n, findings] of reports.entries()) {
-        writeFileSync(join(reportDir, `${n + 1}-pending.json`), pendingReport(findings, n + 1));
+        writeFileSync(
+          join(reportDir, `${n + 1}-pending.json`),
+          pendingReport(findings, turn.reportIters?.[n] ?? n + 1, turn.critics?.[n]),
+        );
       }
     }
     if (turn.diff !== undefined) {
@@ -331,6 +351,73 @@ describe("rig harvest", () => {
 
     // 2 non-null points in this fixture (turns 1 and 2) → below the n>=5 floor
     expect(result.metrics.fpBurdenSlope).toEqual({ slope: null, n: 2 });
+  });
+
+  // pilot-02 (2026-08-05): `suppression.critic` counts DEMOTIONS, so a critic that ran and
+  // returned `keep` for everything scores 0 there — and so does a critic that was never
+  // configured. Those are categorically different facts and the harvest must not publish the
+  // same number for both. `criticRuns` records the INVOCATION.
+  test("criticRuns records that the critic ran, which the demotion count cannot show", () => {
+    const { manifestPath, scriptPath } = buildFixture([
+      {
+        // Critic RAN and kept everything: demoted 0, so suppression.critic is 0 too.
+        reports: [[{ signature: "sig-a", severity: "WARN", message: "a finding" }]],
+        critics: [{ provider: "openrouter", status: "ran", verdicts: 4, demoted: 0 }],
+      },
+      {
+        // pilot-01's shape: findings, but no critic key at all.
+        reports: [[{ signature: "sig-b", severity: "WARN", message: "another finding" }]],
+      },
+    ]);
+    const r = harvest(manifestPath, scriptPath);
+
+    expect(r.turns[0]?.criticRuns).toHaveLength(1);
+    expect(r.turns[0]?.criticRuns?.[0]?.status).toBe("ran");
+    expect(r.turns[0]?.criticRuns?.[0]?.verdicts).toBe(4);
+    // Turn 2 has findings but never invoked a critic.
+    expect(r.turns[1]?.criticRuns ?? []).toHaveLength(0);
+    // The distinction the demotion count CANNOT make: identical (0) on both turns.
+    expect(r.turns[0]?.suppressed.critic).toBe(0);
+    expect(r.turns[1]?.suppressed.critic).toBe(0);
+  });
+
+  test("criticRuns dedupes one invocation repeated across archived report versions", () => {
+    const same = { provider: "openrouter", status: "ran" as const, verdicts: 2, demoted: 1 };
+    const { manifestPath, scriptPath } = buildFixture([
+      {
+        // ONE iteration, TWO archived versions of it — the archiver keys on the whole file
+        // hash, so a pending.json rewritten for an unrelated reason is a second file carrying
+        // the same `critic` object.
+        reports: [
+          [{ signature: "sig-a", severity: "WARN", message: "one" }],
+          [{ signature: "sig-b", severity: "WARN", message: "two" }],
+        ],
+        reportIters: [1, 1],
+        critics: [same, same],
+      },
+    ]);
+    const r = harvest(manifestPath, scriptPath);
+    expect(r.turns[0]?.criticRuns).toHaveLength(1);
+  });
+
+  // The complementary half, and the reason the key is `run_id:iter` rather than a hash of the
+  // critic object: two SEPARATE invocations can legitimately report identical counts (two
+  // rounds that each judged 2 findings and demoted 1). A content-keyed dedupe would silently
+  // collapse them into one and under-report how often the critic ran.
+  test("criticRuns keeps two distinct iterations that reported identical counts", () => {
+    const same = { provider: "openrouter", status: "ran" as const, verdicts: 2, demoted: 1 };
+    const { manifestPath, scriptPath } = buildFixture([
+      {
+        reports: [
+          [{ signature: "sig-a", severity: "WARN", message: "one" }],
+          [{ signature: "sig-b", severity: "WARN", message: "two" }],
+        ],
+        reportIters: [1, 2],
+        critics: [same, same],
+      },
+    ]);
+    const r = harvest(manifestPath, scriptPath);
+    expect(r.turns[0]?.criticRuns).toHaveLength(2);
   });
 
   test("reports the slope once 5 non-null points exist, and it falls when FP burden falls", () => {

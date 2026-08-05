@@ -100,6 +100,38 @@ export function renderRigReport(result: RigResult): { table: string; markdown: s
   const sup = m.suppression;
   const supLine = `critic ${sup.critic} · reputation ${sup.reputation} · fp-ledger ${sup.fp_ledger} · lore ${sup.lore} (lore = findings EMITTED; lore never demotes)`;
 
+  // The critic's INVOCATION, which `sup.critic` (a demotion count) structurally cannot show:
+  // it reads 0 both when no critic was configured and when one ran and kept every finding.
+  // pilot-02 (2026-08-05) is the case in point — 10/10 turns ran a critic that reported 16
+  // demotions, of which 3 survived aggregation.
+  const criticTurns = result.turns.filter((t) => (t.criticRuns?.length ?? 0) > 0);
+  const criticRan = criticTurns.filter((t) =>
+    (t.criticRuns ?? []).some((c) => c.status === "ran" && c.verdicts >= 1),
+  );
+  const criticLine =
+    criticTurns.length === 0
+      ? null
+      : `ran with >=1 verdict on ${criticRan.length}/${criticTurns.length} turn(s) that invoked it · ${criticTurns
+          .flatMap((t) => t.criticRuns ?? [])
+          .reduce(
+            (a, c) => a + c.demoted,
+            0,
+          )} demotion(s) proposed, ${sup.critic} surviving aggregation`;
+  // A cost figure that silently omits a component is worse than one that says what it omits.
+  // `orchestrator.ts` pins criticCostUsd to 0 because `complete()` returns no usage envelope,
+  // so M5 cannot see the critic at all — say so, but only when the critic actually cost something.
+  //
+  // That test is NOT `criticRan`: `ran` additionally requires >= 1 parsed verdict, while an
+  // `empty` or `error` critic still reached the provider and still spent tokens. Only
+  // `skipped-budget` and `misconfigured` never called out at all, so only those omit the caveat.
+  const criticCalled = criticTurns.filter((t) =>
+    (t.criticRuns ?? []).some((c) => c.status !== "skipped-budget" && c.status !== "misconfigured"),
+  );
+  const m5Caveat =
+    criticCalled.length === 0
+      ? ""
+      : " · EXCLUDES critic spend (complete() returns no usage envelope; criticCostUsd is pinned to 0)";
+
   // --- terminal table ---
   const L: string[] = [];
   L.push("Reviewgate rig report");
@@ -124,9 +156,10 @@ export function renderRigReport(result: RigResult): { table: string; markdown: s
     `  M1 iterations to allow-stop        : median ${m.iterations.median ?? "n/a"} · ${fmtSpread(m.iterations.spread)} over ${m.iterations.spread.samples} reviewed turn(s)`,
   );
   L.push(
-    `  M5 cost                            : $${m.cost.totalUsd.toFixed(4)} total · per reviewed turn ${fmtSpread(m.cost.perTurnUsd)} · ${(m.cost.totalDurationMs / 1000).toFixed(1)}s of gate time`,
+    `  M5 cost                            : $${m.cost.totalUsd.toFixed(4)} total · per reviewed turn ${fmtSpread(m.cost.perTurnUsd)} · ${(m.cost.totalDurationMs / 1000).toFixed(1)}s of gate time${m5Caveat}`,
   );
   L.push(`  M6 suppression provenance          : ${supLine}`);
+  if (criticLine !== null) L.push(`  M6 critic invocation               : ${criticLine}`);
   L.push("");
   L.push("Per turn:");
   const w = {
@@ -184,9 +217,10 @@ export function renderRigReport(result: RigResult): { table: string; markdown: s
     `| M1 iterations to allow-stop | median ${m.iterations.median ?? "n/a"} · ${fmtSpread(m.iterations.spread)} over ${m.iterations.spread.samples} reviewed turn(s) |`,
   );
   M.push(
-    `| M5 cost | $${m.cost.totalUsd.toFixed(4)} total · per reviewed turn ${fmtSpread(m.cost.perTurnUsd)} |`,
+    `| M5 cost | $${m.cost.totalUsd.toFixed(4)} total · per reviewed turn ${fmtSpread(m.cost.perTurnUsd)}${m5Caveat} |`,
   );
   M.push(`| M6 suppression provenance | ${supLine} |`);
+  if (criticLine !== null) M.push(`| M6 critic invocation | ${criticLine} |`);
   M.push("");
   M.push(
     "| Turn | Seeded | Iters | Findings | Blocking | FP rejects | FP burden | Landed | Caught | Escaped | Cost |",

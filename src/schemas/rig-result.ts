@@ -13,6 +13,7 @@
 import { z } from "zod";
 import { MetricSchema, SpreadStatSchema } from "./bench-result.ts";
 import { FindingSchema } from "./finding.ts";
+import { CriticInfoSchema } from "./pending-report.ts";
 
 /**
  * M6 — which suppression layer removed or demoted how many findings.
@@ -66,6 +67,30 @@ export const RigTurnRecordSchema = z
      * nothing to catch scored the reviewer with a miss and the study's only escape.
      */
     seedLanded: z.boolean().nullable().optional(),
+    /**
+     * The critic phase's own report(s) for this turn, read off the archived `pending.json`
+     * versions and deduped by the report's `run_id:iter` — the critic runs exactly once per
+     * gate iteration, so that pair IS an invocation's identity. One invocation can appear in
+     * SEVERAL archived versions (the archiver keys on the whole file's hash, so a report
+     * rewritten for an unrelated reason is a new file), and those collapse. Two genuinely
+     * distinct iterations do NOT collapse even when they report identical counts — which a
+     * content-hash key would have silently merged.
+     *
+     * DISTINCT FROM `metrics.suppression.critic`, which counts findings stamped
+     * `critic_verdict: "likely_fp"` — i.e. DEMOTIONS. That count is 0 in three different
+     * situations: the critic was never configured, it ran and kept everything, or it demoted
+     * findings that the aggregator's exemptions then restored. pilot-01 (critic off) and a
+     * hypothetical run whose critic kept every finding would publish the same `0`, which is
+     * why the invocation is recorded separately.
+     *
+     * Empty/absent has TWO causes this field cannot separate, and deliberately does not guess
+     * between: no critic configured, or a round that produced zero findings (the critic runs
+     * only when the panel produced >= 1, orchestrator.ts:2302).
+     *
+     * OPTIONAL so `result.json` files harvested before this field existed still parse — the
+     * same compatibility rule `seedLanded` follows.
+     */
+    criticRuns: z.array(CriticInfoSchema).optional(),
     /** M5 — summed `run.complete.cost_usd` for this turn */
     costUsd: z.number().nonnegative(),
     /** M5 — summed `run.complete.duration_ms` for this turn (gate time, not agent wall-clock) */
