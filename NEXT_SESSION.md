@@ -8,7 +8,12 @@ _Last updated: 2026-08-06, after pilot-03. Supersedes all earlier content._
 and Slice B's single activation protected a false positive. Nothing needs reverting; the next
 cut is an OFFLINE measurement, not another pilot.**
 
-`origin/master` = `e602a8c`, working tree clean.
+`origin/master` = `8737489`, working tree clean, **0 unpushed** (verified: `git rev-parse HEAD @{u}
+| uniq -c` → one line, count 2).
+
+**Suite NOT re-run this session, deliberately: no `src/` or `tests/` file was touched** (only
+`docs/` and `rig/`). The last green run stands — **3184 pass / 12 skip / 0 fail** on `9019e1e`.
+`bun run build` succeeded and the binary is pinned at **`sha256:fc9b8c18c62977ba…`**.
 
 ## What got done this session
 
