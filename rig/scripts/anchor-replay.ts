@@ -24,10 +24,9 @@
 //   bun run rig/scripts/anchor-replay.ts            # full replay
 //   bun run rig/scripts/anchor-replay.ts --verbose  # one line per finding
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { $ } from "bun";
 import { REGION_WINDOW, aggregate } from "../../src/core/aggregator.ts";
 import {
   attestEvidence,
@@ -38,25 +37,21 @@ import {
 import { computeSignature } from "../../src/diff/signature.ts";
 import { enclosingSymbol } from "../../src/research/symbol-graph.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
+// Corpus access is SHARED with critic-floor-replay.ts — see lib/corpus.ts on why it is not a copy.
+// The four self-checks below are what verify the extraction: they reproduce published numbers and
+// abort otherwise, so a broken move cannot pass quietly.
+import {
+  type Row,
+  die,
+  materialise,
+  readCorpus,
+  researchLineCounts,
+  reviewersRan,
+  turnIterations,
+} from "./lib/corpus.ts";
 
 const RUNS = ["pilot-01", "pilot-02", "pilot-03"] as const;
 const VERBOSE = process.argv.includes("--verbose");
-
-interface TurnManifest {
-  index: number;
-  cassetteBytes: { before: number; after: number } | null;
-  gateReviewed: boolean;
-}
-
-/** One raw reviewer finding, with the turn and panel run it came from. */
-interface Row {
-  run: string;
-  turn: number;
-  reviewer: string;
-  /** 0-based index of the panel run within the turn (the k-th call to THIS reviewer). */
-  panelRun: number;
-  finding: Finding;
-}
 
 type Outcome =
   | "in-range"
@@ -88,199 +83,6 @@ interface Scored extends Row {
 /** The three outcomes that mean "the citation was out of range" — the Slice A denominator.
  *  `out-of-range-unsplit` is an opportunity whose repair/demote split is unknowable (pilot-01). */
 const OPPORTUNITY = ["repaired", "demoted", "out-of-range-unsplit"] as const;
-
-/** `<run>/<turn>` → how many distinct reviewers RAN that turn (review entries in the cassette,
- *  whether or not they returned findings). This is the field's `reviewersTotal`, which
- *  `computeConsensus` divides by — counting only reviewers that produced findings would understate
- *  the panel and silently misreport how much power a consensus comparison had. */
-const reviewersRan = new Map<string, number>();
-
-function die(msg: string): never {
-  console.error(`\nanchor-replay: ABORT — ${msg}`);
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------------------------
-// Corpus: slice cassette.jsonl by the driver's per-turn byte offsets (driver.ts:331,361).
-// ---------------------------------------------------------------------------------------------
-
-function readCorpus(run: string): { rows: Row[]; turnsWithFindings: Map<number, number> } {
-  const manifest = JSON.parse(readFileSync(`rig/results/${run}/manifest.json`, "utf8")) as {
-    turns: TurnManifest[];
-  };
-  const buf = readFileSync(`rig/results/${run}/cassette.jsonl`);
-
-  // INTEGRITY 1 — the ranges must tile [0, filesize] with no gap and no overlap. A silent gap
-  // would drop a turn's reviewers entirely and read downstream as "that turn found nothing".
-  let cursor = 0;
-  for (const t of manifest.turns) {
-    if (t.cassetteBytes === null) continue;
-    if (t.cassetteBytes.before !== cursor) {
-      die(
-        `${run} turn ${t.index}: cassette range starts at ${t.cassetteBytes.before}, expected ${cursor} — the offsets do not tile the file, so per-turn attribution is unsound.`,
-      );
-    }
-    cursor = t.cassetteBytes.after;
-  }
-  if (cursor !== buf.length) {
-    die(`${run}: cassette ranges end at ${cursor} but the file is ${buf.length} bytes.`);
-  }
-
-  const rows: Row[] = [];
-  const turnsWithFindings = new Map<number, number>();
-  for (const t of manifest.turns) {
-    const cb = t.cassetteBytes;
-    if (cb === null || cb.after <= cb.before) continue;
-    const slice = buf.subarray(cb.before, cb.after).toString("utf8");
-    // Per-reviewer call counter: the k-th entry with a given key is that reviewer's k-th panel
-    // run this turn. Keyed per reviewer because the panel runs CONCURRENTLY, so raw entry order
-    // between the two reviewers is not stable and must not be read as sequence.
-    const seen = new Map<string, number>();
-    for (const line of slice.split("\n")) {
-      if (!line.trim()) continue;
-      let entry: { method: string; key: string; result?: { findings?: Finding[] } };
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        // INTEGRITY 2 — a torn line at a slice boundary means the offsets are off by bytes.
-        // Skipping it would quietly shrink the corpus, so it is fatal.
-        die(
-          `${run} turn ${t.index}: a line inside the turn's byte range is not valid JSON — the slice boundaries are wrong.`,
-        );
-      }
-      if (entry.method !== "review") continue;
-      const k = seen.get(entry.key) ?? 0;
-      seen.set(entry.key, k + 1);
-      for (const finding of entry.result?.findings ?? []) {
-        rows.push({ run, turn: t.index, reviewer: entry.key, panelRun: k, finding });
-      }
-    }
-    if (seen.size > 0) {
-      turnsWithFindings.set(t.index, Math.max(...seen.values()));
-      reviewersRan.set(`${run}/${t.index}`, seen.size);
-    }
-  }
-  return { rows, turnsWithFindings };
-}
-
-// ---------------------------------------------------------------------------------------------
-// Per-turn working tree. `turns/<T>/diff.patch` is the CUMULATIVE tree against the base commit
-// (driver.ts:290), so applying it to an EMPTY repo reproduces it — no dependency on the
-// /private/tmp sandboxes, which the handoff lists for reaping.
-// ---------------------------------------------------------------------------------------------
-
-async function materialise(run: string, turn: number, root: string): Promise<Set<string> | null> {
-  const patch = `${process.cwd()}/rig/results/${run}/turns/${turn}/diff.patch`;
-  if (!existsSync(patch)) return null;
-  await $`git init -q .`.cwd(root).quiet();
-  const applied = await $`git apply --whitespace=nowarn ${patch}`.cwd(root).nothrow().quiet();
-  if (applied.exitCode !== 0) {
-    // An unapplied patch leaves an EMPTY tree, in which every finding's file is absent and the
-    // pass fails safe — which reads exactly like "no opportunities". Fatal, never skipped.
-    die(
-      `${run} turn ${turn}: git apply failed (${applied.stderr.toString().trim()}). An empty tree would masquerade as zero opportunities.`,
-    );
-  }
-  const text = await Bun.file(patch).text();
-  const deleted = new Set<string>();
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i]?.startsWith("deleted file mode")) {
-      const header = lines
-        .slice(0, i)
-        .reverse()
-        .find((l) => l.startsWith("diff --git "));
-      const m = header?.match(/ b\/(.+)$/);
-      if (m?.[1]) deleted.add(m[1]);
-    }
-  }
-  return deleted;
-}
-
-// ---------------------------------------------------------------------------------------------
-// Did the turn's LAST gate iteration run the panel?
-//
-// This is the load-bearing question for the whole replay, and it is MEASURED here rather than
-// argued. `diff.patch` is the tree at END of turn. A rig turn ends when the gate allows the stop,
-// so the LAST iteration's tree IS the end-of-turn tree. If that last iteration ran the panel,
-// then the last panel run saw exactly the reconstructed tree.
-//
-// The audit tree records every iteration: `run.complete` carries `iter` and
-// `run_summary.source`, which is "panel" when reviewers ran and "skipped" when triage skipped
-// them. It is APPEND-ONLY and each turn's snapshot is cumulative, so a turn's own events are the
-// ones whose event hash is new against the previous turn's snapshot — the same multiset-delta
-// discipline `harvest()` already applies to this tree.
-//
-// A first version of this script asserted instead that "a later iteration served from the review
-// cache proves the diff did not change". A reviewer pointed out that the script never checked
-// that such an iteration existed, and was right: the condition was necessary, not sufficient.
-// This replaces the argument with the record.
-interface TurnIterations {
-  /** run.complete events for THIS turn, in iteration order. */
-  sources: string[];
-  /** true when the turn's final gate iteration actually ran the reviewer panel. */
-  lastRanPanel: boolean;
-}
-
-function auditEvents(dir: string): Map<string, { iter: number; source: string; runId: string }> {
-  const out = new Map<string, { iter: number; source: string; runId: string }>();
-  const stack = [dir];
-  while (stack.length > 0) {
-    const d = stack.pop();
-    if (d === undefined || !existsSync(d)) continue;
-    for (const e of readdirSync(d, { withFileTypes: true })) {
-      const p = join(d, e.name);
-      if (e.isDirectory()) {
-        stack.push(p);
-        continue;
-      }
-      for (const line of readFileSync(p, "utf8").split("\n")) {
-        if (!line.trim()) continue;
-        const j = JSON.parse(line) as {
-          event?: string;
-          iter?: number;
-          run_id?: string;
-          this_event_hash?: string;
-          run_summary?: { source?: string };
-        };
-        if (j.event !== "run.complete" || typeof j.this_event_hash !== "string") continue;
-        out.set(j.this_event_hash, {
-          iter: j.iter ?? 0,
-          source: j.run_summary?.source ?? "(none)",
-          runId: j.run_id ?? "",
-        });
-      }
-    }
-  }
-  return out;
-}
-
-function turnIterations(run: string, turn: number): TurnIterations {
-  const here = auditEvents(`rig/results/${run}/turns/${turn}/.reviewgate/audit`);
-  const before = auditEvents(`rig/results/${run}/turns/${turn - 1}/.reviewgate/audit`);
-  const mine = [...here].filter(([h]) => !before.has(h)).map(([, v]) => v);
-  mine.sort((a, b) => a.runId.localeCompare(b.runId) || a.iter - b.iter);
-  const sources = mine.map((m) => m.source);
-  return { sources, lastRanPanel: sources.length > 0 && sources[sources.length - 1] === "panel" };
-}
-
-/** pilot-01 recorded no diff.patch. Per-turn line counts survive in research.md's changed-file
- *  rows; `+N/-0` IS the line count for a file created after the review base. Validated 26/26
- *  against reconstructed trees on pilots 02/03 (plan, fact 4). */
-async function researchLineCounts(run: string, turn: number): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  const f = Bun.file(`rig/results/${run}/turns/${turn}/.reviewgate/research.md`);
-  if (!(await f.exists())) return out;
-  const block = (await f.text()).match(/## Changed files\n([\s\S]*?)\n\n/);
-  if (!block?.[1]) return out;
-  for (const line of block[1].split("\n")) {
-    const m = line.match(/^- (\S+) \(\w+, \+(\d+)\/-(\d+)\)/);
-    // Only `-0` is an exact line count: with deletions the numbers are a delta against the
-    // review base, not a size. Anything else is left unknown rather than approximated.
-    if (m?.[1] && m[3] === "0") out.set(m[1], Number(m[2]));
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Replay
@@ -327,7 +129,7 @@ async function replayRun(
     mkdirSync(root, { recursive: true });
     const deleted = await materialise(run, turn, root);
 
-    // EXACTNESS, measured on two independent records (see turnIterations above):
+    // EXACTNESS, measured on two independent records (see turnIterations in lib/corpus.ts):
     //   1. the finding came from the turn's FINAL panel run  (cassette), AND
     //   2. the turn's FINAL gate iteration ran the panel     (audit tree).
     // Together those establish that the reconstructed end-of-turn tree IS the tree that panel
