@@ -1,6 +1,7 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-06, after the offline Slice A corpus replay. Supersedes all earlier content._
+_Last updated: 2026-08-07 00:35, at handoff after the offline Slice A corpus replay.
+Supersedes all earlier content._
 
 ## One-line state
 
@@ -8,13 +9,20 @@ _Last updated: 2026-08-06, after the offline Slice A corpus replay. Supersedes a
 mechanism, it has 7 field instances across the pilots and the shipped pass repairs all 7. The
 "1 opportunity in 36 turns" figure was an artifact of counting post-aggregation survivors.**
 
-`origin/master` = `8737489`. **2 local commits unpushed** (`f92bcf1` from last session, plus this
-session's) — ask Markus before pushing.
+## Verified state (checked with commands at handoff time, not from memory)
 
-**The only `src/` changes are two `export` keywords:** `normalizeLine` and `lineCount` in `src/core/fact-check.ts` gained an
-`export`, so the replay imports them instead of carrying copies. **No gate behaviour changed and
-NOTHING WAS REBUILT — the installed binary is still `sha256:fc9b8c18…`.** `bunx tsc --noEmit`
-and `bun run lint` clean; full `bun test` re-run after the exports (see the commit message).
+| | |
+|---|---|
+| `origin/master` | **`3967ba4`** — the replay commit, pushed and verified |
+| unpushed | **2 commits** — `897d116` (the lore draft) and this handoff commit. Branch is 2 ahead of `origin/master`. **The lore draft needs Markus's OK before it is pushed.** |
+| working tree | clean |
+| suite | **3191 pass / 12 skip / 0 fail**, re-run at `897d116` (150s, exit 0). Only markdown changed after that |
+| `tsc --noEmit` / `bun run lint` | clean |
+| build | **deliberately NOT run.** `bun run build` re-pins the binary AND deploys machine-wide through the `~/.local/bin/reviewgate` symlink. Installed binary is still `sha256:fc9b8c18…` |
+
+**The only `src/` change all session is two `export` keywords** — `normalizeLine` and `lineCount`
+in `src/core/fact-check.ts`, so the replay imports them instead of keeping copies whose drift
+nothing guarded. Verified line-by-line in the staged diff; no behaviour change.
 
 ## What got done this session
 
@@ -25,6 +33,27 @@ and `bun run lint` clean; full `bun test` re-run after the exports (see the comm
 2. **`docs/dev/2026-08-06-slice-a-corpus-replay.md`** — the write-up.
 3. **Two documents corrected in place** (not appended to): the pilot-03 result and the design
    spec's "Scale" table both carried the wrong denominator.
+4. **`.reviewgate/lore/rig-metrics-corpus.md`** — a lore **draft** (commit `897d116`, unpushed)
+   recording the corpus invariant. `status: draft`, no `approvals.jsonl` line: canon promotion is
+   Markus's trust decision.
+
+**How it was verified — evidence, not adjectives:**
+
+- the script's own four self-checks pass on every run (ground truth, cassette tiling, corpus size
+  44/24/27, quote-reading agreement with `attestEvidence`);
+- **five guard mutations seen RED in a copy of the repo**, original confirmed unmodified with
+  `git diff` afterwards. The two that matter: disabling `reanchorByEvidence` flips the
+  ground-truth assertion to `demoted`, and removing the audit condition collapses exactness
+  39/95 → 0/95;
+- the two turn-9 repairs were checked by hand against the reconstructed file (they land on the
+  `sendReport` signature and on the hardcoded endpoint — semantically right, not just in-range);
+- **review gate: 4 rounds, two slots, both PASS at the end** (`agy` executing + GLM-5.2). Rounds
+  1–3 each found something real. Codex was quota-blocked, so `agy` held the executing slot.
+
+**Entry points** for the next session: `rig/scripts/anchor-replay.ts:turnIterations` (the
+two-record exactness check) and `src/core/fact-check.ts:reanchorByEvidence` (Slice A itself).
+The in-range discriminator already exists at `src/core/fact-check.ts:attestEvidence`, called
+render-only from `orchestrator.ts:2573`.
 
 ## The findings, in the order they matter
 
@@ -112,6 +141,15 @@ open FP question instead. **Do not start (a) without asking.**
 - **NEW — pilot-01 recorded no `diff.patch`** (the driver gained it afterwards). Its per-turn
   line counts come from `.reviewgate/research.md`'s `+N/-0` rows, validated 26/26 against
   reconstructed trees on pilots 02/03. That gives line counts, never content.
+- **NEW — never pipe `bun test` through `tail`.** Doing that cost a re-run this session: the
+  summary said `1 fail` and the failing test's name had already been discarded. Redirect the
+  whole log to a file, then read the tail of the FILE. (That failure did not reproduce in three
+  subsequent full runs, so it is unidentified — treat a lone red as "re-run and capture", not as
+  a known flake.)
+- **NEW — `agy` still fails 0-byte intermittently.** It worked for the plan gate, then produced a
+  4-byte log and no findings file on the very next invocation with an identical command line. A
+  reviewer that produced no findings file is an OPEN slot, not a pass — re-run it. Always check
+  the log size AND the findings-file mtime, never just that the file exists.
 - **NEW — `diff.patch` is captured at END of turn.** A finding from a non-final panel run may
   have been reviewed against a different file. That error has **no sign** (the agent's fix can
   lengthen or shorten), so such findings are UNVERIFIABLE, not a bound. Do not call them one.
@@ -125,7 +163,7 @@ open FP question instead. **Do not start (a) without asking.**
 - **Attribute catches by MARKER, never by outcome.**
 - **`rig/results/` is gitignored** — the artifacts are local only, and so are every number in the
   replay write-up.
-- **Never run two full `bun test` suites concurrently.** Serial: ~3184/0 in ~148s.
+- **Never run two full `bun test` suites concurrently.** Serial: 3191/0 in ~150s.
 - **`bun run lint`/`tsc` do NOT cover `rig/scripts/`** (tsconfig includes only `src*`/`tests*`).
   Check new rig scripts explicitly — `bunx biome check rig/scripts/<f>.ts` plus a `tsc --noEmit`
   with the project's flags passed by hand.
