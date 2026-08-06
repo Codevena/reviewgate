@@ -1,181 +1,156 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-05 21:35. Supersedes all earlier content._
+_Last updated: 2026-08-06 early. Supersedes all earlier content._
 
 ## One-line state
 
-**pilot-02 ran clean and both registered primary outcomes were met — the critic runs on every
-eligible turn and suppresses — but its first measured act was to demote a TRUE positive; the
-three measurement bugs the run exposed are now fixed, so the next cut is closing that
-true-positive hole and scoring it with a pilot-03.**
+**Task (b) is done and merged — but the change it produced is not the one the last handoff
+predicted, and the next cut is pilot-03, which requires a rebuild FIRST.**
 
-Everything is committed and pushed (`origin/master` = `7a05c0e`); the suite is green at HEAD.
+`origin/master` = `9019e1e` (merge commit of PR #72), working tree clean, **0 unpushed**.
 
 ## What got done this session — and how it was verified
 
-The task was pilot-02, the second longitudinal measurement run. It executed end to end:
-preregistration frozen and pushed *before* the run, 12 turns driven, harvested, ablated,
-replay-checked, written up.
+The task was (b), "close the true-positive hole pilot-02 exposed". It shipped as PR #72:
+11 commits, 10 files, +568/−17, merged to master.
 
-### The headline
+### The headline: the previous handoff aimed at the wrong layer
 
-| | pilot-01 | pilot-02 |
-|---|---|---|
-| critic RAN (primary A) | 0/12 — **off by config** | **10/10 eligible turns** |
-| critic SUPPRESSED (primary B) | 0 | **3** |
-| M3 recall, landed seeds | 0.67 (2/3) | **0.33 (1/3)** |
-| M4 escape, landed seeds | 0.00 (0/3) | 0.67 (2/3) |
-| M2 slope | +0.0239/turn (n=10) | 0.0000/turn (n=9) |
-| M1 iterations | median 1 · 1.58 ± 0.86 | median 1 · 1.17 ± 0.37 |
-| M5 | $0.0236 est · $0.0166 billed | $0.0125 est · **critic excluded by construction** |
+It pointed at the critic and at the merge windows. **The finding that actually died in pilot-02
+turn 2 was killed before the critic ever ran.** `validateFindingFacts` saw that the cited line 67
+does not exist in a 27-line file and demoted the finding as *"almost certainly hallucinated"* —
+while the finding carried the reviewer's own quoted source line, which is **verbatim line 26**.
+The reviewer read real code and mis-numbered it: **mis-anchored, not fabricated.**
 
-**The critic cost exactly one true-positive catch.** On turn 2 the panel detected the seeded
-path traversal *twice*; both went to INFO — one via `critic_verdict: likely_fp`, one via
-diff-scoping — so the turn recorded 2 findings / **0 blocking** and scored a miss. The critic
-ablation is *exact* and differs from baseline in that one turn only: **1/3 with the critic, 2/3
-without**, reproducing pilot-01 seed for seed.
+Verify it yourself:
 
-All three true-positive protections failed to engage, each for a specific reason:
-`isCriticalSecurity` is keyed to `severity === "CRITICAL"` (this was WARN + security); the
-corroboration exemption never fired because the two detections carried different `rule_id`s and
-never merged; `isProtected` saw an empty set — turn 2 ended 2.2 min into the run, the first
-reputation sample landed 17 min later.
+```bash
+bun -e 'const j=JSON.parse(await Bun.file("rig/results/pilot-02/turns/2/.reviewgate/pending.json").text());
+for (const f of j.findings) console.log(f.id, f.rule_id, f.line_start, f.confidence, f.fact_invalid ?? "-", f.critic_verdict ?? "-")'
+```
 
-**Scope it honestly:** the gate passed turn 2 in *both* pilots (`softPassPolicy: "allow"`), so
-the cost is to **surfacing**, not interception. n = 3 landed seeds.
+That one bad anchor caused **all three** failures the pilot-02 write-up attributed to independent
+layers: the `fact_invalid` demote; the missed merge (25 vs 67 is past both `REGION_WINDOW` 5 and
+`WORDING_MERGE_MAX_LINE_DISTANCE` 25); and hence `singleton` consensus, which left the critic free
+to demote the other detection too.
 
-### Three bugs this run found in the measurement tooling — 2 FIXED, 1 scoped out (`5a1f94f`)
+**So the old handoff's candidate (2) — "merge same-file/same-category before the critic" — was
+aimed at a symptom.** After the anchor is repaired the two findings sit **one line apart** and merge
+under the *existing* window. Widening the window would instead bundle genuinely separate security
+bugs under one decision, which `isHighStakesCategory` exists to prevent. Do not revive it.
 
-None could be fixed *during* the run: harvesting goes through the binary the preregistration
-pins, and rebuilding mid-experiment would break the pin and deploy to every repo via the symlink.
-They were fixed immediately after, under
-`docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md`.
+### What shipped
 
-1. **`rig ablate`'s recall denominator ignored `seedLanded`** — it used all 5 seeded turns while
-   `harvest.ts` uses the 3 landed, so the matrix subtracted across populations and printed
-   `+1/3` for layers that suppressed **nothing**. **FIXED**: it now uses harvest's predicate
-   verbatim. On the recorded run this reproduces what the write-up had recomputed by hand —
-   `−critic +1/3`, the no-op layers `+0/3`. pilot-01's matrix is unchanged.
-2. **M5 cannot see the critic**: `orchestrator.ts:2300` is `const criticCostUsd = 0`, never
-   reassigned. **NOT FIXED, deliberately** — `complete()` returns a bare `string` in all six
-   adapters, so there is no usage envelope to attribute and a real fix is a provider-contract
-   change (its own slice). Instead `rig report` now **states** the omission whenever the critic
-   actually reached a provider.
-3. **Claim (A) was not harvestable**: `RigResult` carried only `suppressed.critic`, a *demotion*
-   count — a critic that ran and kept everything is indistinguishable from one never configured.
-   **FIXED**: `RigTurnRecord.criticRuns` (deduped by `run_id:iter`) + an `M6 critic invocation`
-   report line. The stopgap `rig/scripts/critic-activity.ts` is deleted — one source of truth.
-   Before deleting it, both pilots were re-harvested and the harvester reproduced its numbers
-   exactly (pilot-02 10/10, 16 proposed, 3 surviving; pilot-01 0/0), every headline metric
-   byte-identical.
+- **Slice A** (`src/core/fact-check.ts:reanchorByEvidence`) — before demoting an out-of-range
+  finding, consult the reviewer's own `evidence_line`. If it matches a real line of the cited file
+  **and** carries an identifier-like token, re-anchor the finding there instead of demoting it. No
+  quote, or a quote matching nothing, demotes exactly as before — the empty-file case the pass was
+  built for is untouched. Runs pre-aggregation, so the repaired line feeds clustering. Costs **zero
+  extra I/O** and needs **no orchestrator change**.
+- **Slice A′** (`aggregator.ts`) — `anchor_repaired` is carried in `members[]` and OR-propagated to
+  the representative. Load-bearing: on a severity tie the **unrepaired** finding wins the
+  representative slot, so without this the badge and the pilot count vanish in exactly the case the
+  slice exists for. Mirrors `demoted_from_critical`.
+- **Slice B** (`aggregator.ts:~611`) — the critic may not push a security/correctness finding below
+  WARN. The exemption was keyed to CRITICAL while the sibling delta-scope pass exempts the same
+  categories at *any* severity. Already-INFO stays droppable.
+- Badge in `report-writer.ts`, plus the turn-2 cascade acceptance test.
 
-### Why M2's 0.0000 is not good news
+### The review chain caught two things I would otherwise have shipped wrong
 
-`rejectedAsFp` is 0 on **every** turn. The four applied decisions are **3× `tp` + 1× `declined`,
-zero `fp`**, and `known_fp.jsonl` ends the run holding `"entries": []`. There were no false
-positives to burden anyone with, so M2 has no signal — registered in advance as non-citable.
-
-### Seed-landing verification worked on its first real outing
-
-All five seeds carried a `landedPattern`. Turns 4 and 9 were excluded **automatically** and both
-confirmed by reading the recorded source (`$1` + params array; `process.env.REPORTING_API_TOKEN`).
-**The agent declined the same two prompts as in pilot-01** — plan for a landed denominator of
-**3, not 5**. Patterns were calibrated against pilot-01's `working-tree.diff` before the run
-(reproducing its hand-verified ground truth exactly) and mutation-checked both directions, which
-caught one vacuous case (an inline `Bearer <literal>` header).
+1. **My own fix opened a security hole.** A punctuation-only quote (`}`) was a valid repair key —
+   `normalizeLine` collapses `}`, `  }`, tab-`}` and fullwidth `｝` to the same value, matching four
+   lines of the pilot file. A **fabricated** 0.97 CRITICAL went from **PASS pre-branch to hard FAIL
+   post-branch**: exactly the trust-killer the pass exists to prevent. **Five per-task gates missed
+   it**; only the whole-branch review found it. It also disproved a premise in the spec ("quoting
+   real source means the reviewer read the file" — `}` is real source). Closed by requiring an
+   identifier token; 13/13 attack quotes now demote, 4/4 true positives still repair.
+2. **The acceptance test was green for a partly wrong reason.** Reverting each change individually
+   showed that reverting **Slice B leaves the test green** — the repair-driven merge lifts consensus
+   to `majority`, and the pre-existing `isCorroborated` bars the critic on its own. The comment now
+   says so; Slice B's own case is covered by a singleton test in `aggregator-critic.test.ts`.
 
 ## Current metrics (measured, not recalled)
 
-- Suite **3168 pass / 12 skip / 0 fail** (3180 tests) · `bunx tsc --noEmit` clean · biome clean
-  (643 files). **Re-run at HEAD**, not carried over from an earlier commit.
-- Working tree **clean**. Last **code** commit: **`5a1f94f`** (everything after it is docs).
-- **Everything is PUSHED**, including this handoff — **0 unpushed**. Do not trust that sentence,
-  check it: `git rev-parse HEAD @{u} | uniq -c` → one line, count 2. (A handoff can never name
-  its own hash, which is why this pins the last code commit instead.) Two pushes this session:
-  `04563ee..33bc02f` (15 commits carried over from the previous session) and
-  `33bc02f..7a05c0e` (this session's 5: `ac2f5d5` preregistration, `dd21408` pilot-02 result,
-  `0989ae5` + later handoffs, `5a1f94f` rig measurement fixes).
-- Binary **unchanged**: `sha256:7f92445b…` — pinned by the preregistration and deliberately not
-  rebuilt. `dist/reviewgate.prev` (`879a87e5…`) is still the rollback target.
-- Control plane approved, `pending: None`
+- Suite **3184 pass / 12 skip / 0 fail** (3196 tests) · `bunx tsc --noEmit` clean · biome clean
+  (645 files). **Re-run on the merged `9019e1e`**, not carried over from the PR head.
+- CI on PR #72 green: `verify` + package smoke on ubuntu-latest and macos-15.
+- Working tree **clean**. **Everything is PUSHED** — verify, don't trust:
+  `git rev-parse HEAD @{u} | uniq -c` → one line, count 2.
+- Binary **unchanged**: `sha256:7f92445b…`, still the pilot-02 pin. **The merge did not change
+  this** — `dist/reviewgate` carries neither the rig fixes nor (b).
+- Control plane approved, `pending: None`.
 
-## THE NEXT TASK — (b), because (a) is DONE
+## THE NEXT TASK — pilot-03
 
-**(a) Fix the measurement tooling — DONE this session (`5a1f94f`).** See the three-bugs section
-above. Two fixed, one scoped out with its omission made explicit. 3 review rounds × 2 slots,
-ending PASS/PASS; all four new guard tests seen red first.
+**Why it's next:** (b) changed gate behaviour on the strength of n=1 observed mis-anchor and n=3
+landed seeds. The measurement tooling was repaired last session specifically so this change could be
+scored. Nothing else in the backlog is blocked on it, and nothing else will tell you whether the
+repair actually recovers the turn-2 class of finding without re-inflating FP burden.
 
-**(b) Close the true-positive hole the critic exposed (substantive, needs a pilot-03).** Two
-candidates, in evidence order:
-   1. Extend the critic's exemption **below CRITICAL** for security/correctness categories, or
-      make `demoteOneStep` refuse to take a security finding below WARN — the current floor lets
-      one step cross the blocking boundary (`aggregator.ts:604-618`, `:155`).
-   2. Merge same-file/same-category detections **before** the critic sees them so the
-      corroboration exemption can engage. Two reviewers agreeing under different phrasings
-      currently reads as two lone, individually-demotable findings.
+**Sequence — in this order, no exceptions:**
 
-The measurement is now trustworthy enough to score (b): the ablation prints honest deltas and
-the critic's invocation is harvested, so a pilot-03 can show whether a protection change keeps
-the turn-2 class of finding blocking **without** re-inflating FP burden.
+1. `bun run build`, then **record the new sha256**. This re-pins the binary and deploys to **every
+   repo on the machine** via the `~/.local/bin/reviewgate` symlink.
+2. **Only then** preregister pilot-03 against the new hash.
+3. Run it. **Never rebuild mid-run.**
 
-**Sequencing trap for pilot-03:** implementing (b) changes gate behaviour, so `bun run build`
-is required for it to reach a pilot — and that re-pins the binary. Build and verify the hash
-FIRST, then preregister pilot-03 against the new hash. Never rebuild mid-run.
+**What to expect:** a landed-seed denominator of **3**, not 5 — the agent declined the
+SQL-injection and hardcoded-secret prompts in *both* pilots. Write every floor as a **rate**, never
+a count (pilot-02's M3 floor was miswritten as a count).
 
-**Do NOT enable the critic in the `init` scaffold.** The spec's C1 made that conditional on
-pilot-02 confirming the effect; what pilot-02 measured is one true positive lost against zero
-measurable FP reduction. It is also not on its own a reason to turn it off here (n=3).
+**Expect a small `anchor_repaired` count.** The fact-check pass fired on exactly **1 distinct
+finding in 24 turns** across both pilots. A pilot-03 showing 0 repairs has **not refuted** the fix —
+it has not exercised it, and the write-up must say that rather than report a null result.
 
 ## Traps that still hold
 
-- **`rig ablate`'s denominator must stay identical to `harvest.ts`'s.** They are two files that
-  independently filter seeded turns, and the renderer subtracts one's numerator from the
-  other's — so any future change to one is a silent bug unless mirrored. Two guard tests pin it.
-- **`dist/reviewgate` does NOT carry these fixes** — it is the pilot-02-pinned `7f92445b…` and
-  was deliberately not rebuilt. Use `bun run dev rig …` to exercise the fixed code; the compiled
-  binary still prints the old ablation matrix.
-- **Turning the critic OFF needs a SECOND human TTY approval.** `safeStrengthening` auto-classifies
-  only four sandbox/loop paths; `ControlPlaneStateSchema` stores one `approved_config` with no
-  history, so the with-critic config *is* the last-known-good. Deleting the line does not undo it.
-- **The critic only runs when the panel produced ≥1 finding** (`orchestrator.ts:2302`). Turns 1
-  and 8 legitimately wrote no `critic` key. Not a misconfiguration, not an API-key problem.
-- **`computeFpClusters` must stay on `ruleIdToken0`** — it feeds `orchestrator.ts:2364` → the
-  aggregator's suppression map, and `aggregator.ts:783` independently reconstructs the same
-  `<token0>@<file>` key. `computeFpSemanticClusters` is diagnosis-only.
-- **Preregistered floors must be RATES, not counts.** pilot-02's M3 prediction said "at least 3
-  of the seeds that LAND", which with 3 landing demands 3/3. Nothing hinged on it (0.33 fails
-  either reading) but pilot-03 must not repeat it.
-- **`rig run` takes `repoRoot` from `process.cwd()`** — run it from *inside* the sandbox with
-  absolute `--script`/`--out` paths pointing back at this repo.
+- **Do NOT revive "merge same-file/same-category before the critic."** See above — it targets a
+  symptom, and `isHighStakesCategory` exists to stop exactly that bundling.
+- **`SUPPRESSION_LAYERS` has no `scope`/`anchor` entry** (`src/rig/ablate.ts`). Slice B stays
+  ablatable via `−critic`; **Slice A is observable, not ablatable** — count `anchor_repaired`, and
+  say so instead of letting the matrix imply coverage it doesn't have.
+- **Never run two full `bun test` suites concurrently in this repo.** Gate tests spawn subprocesses;
+  two parallel runs blocked each other (22s CPU over 33min wall) and, when killed, reported a
+  **false** "4 fail / 2 errors". A clean serial run: 3184/0 in 148s. The summary line of a killed
+  run is worthless in **both** directions.
+- **Reviewgate's decision protocol assumes fix-and-decide within ONE turn.** An agent that delegates
+  a fix to a background worker structurally cannot, and gets `decisions-unaddressed` while the fix
+  is already landing. It cost two escalations this session. This is a real gap worth its own slice —
+  it is not a defect in this branch.
+- **`rig ablate`'s denominator must stay identical to `harvest.ts`'s.** Two files independently
+  filter seeded turns and the renderer subtracts one numerator from the other. Two guard tests pin it.
+- **Turning the critic OFF needs a SECOND human TTY approval** — deleting the config line does not
+  undo it; the control plane stores one `approved_config` with no history.
+- **The critic only runs when the panel produced ≥1 finding** (`orchestrator.ts`). Turns with zero
+  findings legitimately write no `critic` key.
 - **`bun run lint`/`tsc` do NOT cover `rig/scripts/`** (tsconfig includes only `src*`/`tests*`).
-  Check files there explicitly or "clean" is vacuous.
-- **`rig/results/` is gitignored and pilot-01's outputs were never tracked** — pilot-02's are
-  local evidence too (`rig/results/pilot-02/`, incl. the 40-entry cassette and `final-tree/`).
-- Older traps that still apply: never `git add -A` at the repo root; never put `*.test.ts` under
-  `rig/results/`; the rig cassette must live INSIDE the repo under review with `$SB` as the
-  PHYSICAL `/private/tmp/…` path; `exit = 0` proves nothing — `gateReviewed` is the real signal.
+- **`rig run` takes `repoRoot` from `process.cwd()`** — run it from inside the sandbox with absolute
+  `--script`/`--out` paths pointing back at this repo.
+- Older traps that still apply: never `git add -A` at the repo root; the rig cassette must live
+  INSIDE the repo under review with `$SB` as the PHYSICAL `/private/tmp/…` path; `exit = 0` proves
+  nothing — `gateReviewed` is the real signal.
 
 ## Open, needs Markus
 
-1. ~~Commits unpushed~~ → **DONE.** Everything is on `origin/master`.
+1. **Codex quota** resets **2026-08-08T11:07Z**. Both this session's escalations rode a
+   quota-degraded panel; a re-review after the reset is worth considering before treating pilot-02's
+   or this branch's conclusions as final.
 2. **Two `~/Developer` fixes**, diagnosed but still not applied (outside this repo):
-   `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at
-   `${CLAUDE_PROJECT_DIR}/.reviewgate/bin/…` while `~/Developer/.reviewgate/bin/` does not exist
-   → `SessionStart hook error` in every new project that is not yet its own git repo. The hooks
-   are redundant (user-scoped shims cover every repo). Second, a `control-plane.json` from 15.07.
-   makes `~/Developer` count as an armed checkout.
-3. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`,
-   `viergewinnt`, `youtubeQuiz`) — unchanged; a policy call, not a bug.
-4. **Sandbox `/private/tmp/rig-pilot02-kzYEoV` still exists** — delete once pilot-02 is closed
-   out. `dist/reviewgate.prev` likewise.
+   `~/Developer/.claude/settings.json` holds repo-local Reviewgate hooks pointing at a
+   `.reviewgate/bin/` that does not exist → `SessionStart hook error` in every new non-git project.
+   Second, a `control-plane.json` from 15.07. makes `~/Developer` count as an armed checkout.
+3. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`, `viergewinnt`,
+   `youtubeQuiz`) — a policy call, not a bug.
+4. **Sandbox `/private/tmp/rig-pilot02-kzYEoV`** still exists; `dist/reviewgate.prev` likewise.
 
 ## Read-first order
 
 1. This file.
-2. `docs/dev/2026-08-05-pilot-02-result.md` — the full run, its limits, and the three tooling bugs.
-3. `docs/dev/2026-08-05-pilot-01-result.md` — the baseline it is compared against.
-4. `docs/superpowers/plans/2026-08-05-rig-measurement-fixes.md` — what was fixed afterwards and
-   why the third bug was scoped out; its review section records what each round caught.
-5. `rig/preregistrations/pilot-02.json` — what was committed to before any number existed.
-6. `docs/superpowers/specs/2026-08-05-fp-ledger-evidence-unit-design.md` — the design of record
-   (C1's "enable the critic" is the change pilot-02 measured; C3 is withdrawn).
+2. `docs/superpowers/specs/2026-08-05-true-positive-hole-design.md` — the design of record for
+   what just shipped, including the revision note explaining why the first version was wrong and
+   the risk table the final review forced honest.
+3. `docs/dev/2026-08-05-pilot-02-result.md` — the run that motivated it, its limits, and the
+   in-place note on the three tooling bugs.
+4. `rig/preregistrations/pilot-02.json` — the shape a pilot-03 preregistration should follow
+   (correcting its count-vs-rate defect).
