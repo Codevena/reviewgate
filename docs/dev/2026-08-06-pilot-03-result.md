@@ -83,8 +83,17 @@ convenient reading now:
 
 Slice A only ever runs on an out-of-range citation. **Zero occurred**, so the slice had zero
 opportunities and the count is uninformative *by construction* — not "exercised and did not
-fire" (denominator > 0, repairs 0), which would have been the interesting negative. Across
-pilots 01–03 the pass has now had **one** opportunity in **36 turns**.
+fire" (denominator > 0, repairs 0), which would have been the interesting negative.
+
+> **CORRECTION (2026-08-06, `docs/dev/2026-08-06-slice-a-corpus-replay.md`).** This section
+> originally closed with "across pilots 01–03 the pass has now had **one** opportunity in 36
+> turns". That figure is **wrong: it is 7.** It was counted over the archived
+> `reports/*-pending.json`, which hold post-aggregation SURVIVORS, while the pass runs
+> pre-aggregation — so every out-of-range finding the critic dropped or a merge folded away was
+> invisible to the count. Replaying the raw reviewer output finds **7 out-of-range citations, all
+> in pilot-02** (5 in turn 2, 2 in turn 9), and the shipped pass repairs **all 7**. **The
+> pilot-03 statement on this page — denominator 0, not exercised — is confirmed by that replay
+> and stands.** Only the cross-pilot figure was wrong.
 
 Slice A's mechanism remains proven only by acceptance test 6, which reconstructs pilot-02
 turn 2 end-to-end. What no pilot has shown is that it fires in the wild. A 12-turn run cannot
@@ -285,12 +294,15 @@ process fix pilot-02 could not perform — worked: `56.879712998 → 56.88885176
 
 **Task (b) is not refuted, and it is not supported either.** After three runs the ledger is:
 
-- **Slice A** — 1 opportunity in 36 turns, 0 in this run. Its mechanism is proven by a unit
-  test and unobserved in the field. **Another pilot is the wrong instrument**: at this base
-  rate a 12-turn run has no power, and three more would not change that. What would settle it
-  is a targeted fixture — replay the corpus of recorded reviewer outputs across both pilots
-  through the pass and count how many mis-anchored findings it repairs — which is offline,
-  free, and needs no agent quota at all.
+- **Slice A** — 0 opportunities in this run. Its mechanism is proven by a unit test and
+  unobserved in the field. **Another pilot is the wrong instrument**: at this base rate a
+  12-turn run has no power, and three more would not change that. What would settle it is a
+  targeted fixture — replay the corpus of recorded reviewer outputs across both pilots through
+  the pass and count how many mis-anchored findings it repairs — which is offline, free, and
+  needs no agent quota at all.
+  **→ DONE, 2026-08-06: `docs/dev/2026-08-06-slice-a-corpus-replay.md`. The replay found 7
+  opportunities, not the 1 this write-up reported, and the pass repairs all 7 — see the
+  correction above. Slice A is no longer unobserved in the field.**
 - **Slice B** — 1 activation, and it kept a false positive blocking over a correct critic
   verdict. The floor works exactly as designed; the question the design deferred ("does it
   re-inflate FP burden") now has its first datum and it is unfavourable. **Not grounds to

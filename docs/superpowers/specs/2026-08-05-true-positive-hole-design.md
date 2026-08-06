@@ -81,6 +81,14 @@ signature (`8deca571…`) recurring in `turns/3`, so the raw count is 2 rows but
 The one time this pass fired (on a distinct finding), it labelled a real security finding a
 hallucination. **n = 1**: the change below is justified by the mechanism, not by that sample size.
 
+> **CORRECTION (2026-08-06, `docs/dev/2026-08-06-slice-a-corpus-replay.md`).** This table
+> undercounts, and the command above is why: it globs `reports/*-pending.json`, which are
+> **post-aggregation survivors**, while this pass runs pre-aggregation. Every out-of-range
+> finding the critic dropped or a merge folded away is missing from it. Replaying the reviewers'
+> **raw** output (`cassette.jsonl`) through the pass gives **7** out-of-range citations across
+> the pilots, not 1 — five of them in the very turn this design was built from — and the pass as
+> shipped repairs all 7. The design's reasoning is unaffected; only "n = 1" is.
+
 ### Why this one anchor cost the whole turn
 
 The bad anchor caused all three failures the pilot-02 write-up attributes to independent layers:

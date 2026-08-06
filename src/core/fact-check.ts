@@ -29,7 +29,11 @@ import { safeReadContained } from "../utils/safe-read.ts";
 const MAX_READ_BYTES = 5_000_000;
 
 // Number of lines in file content. "a\nb\nc\n" → 3, "a\nb" → 2, "" → 0, "x" → 1.
-function lineCount(text: string): number {
+//
+// EXPORTED for `rig/scripts/anchor-replay.ts` for the same reason as `normalizeLine` below: the
+// replay must count a file's lines exactly as this pass does, and a local copy is a drift class
+// with nothing guarding it. Export only — behaviour unchanged.
+export function lineCount(text: string): number {
   if (text.length === 0) return 0;
   return text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
 }
@@ -196,7 +200,13 @@ const MAX_EVIDENCE_READ_BYTES = 5_000_000;
 // Normalize a source line for a forgiving, injection-safe comparison: defang any reviewer-supplied
 // fence/marker (the quote is untrusted text), then collapse whitespace and trim. Whitespace-only
 // differences (tabs vs spaces, indentation) must NEVER read as a mismatch (precision-first).
-function normalizeLine(s: string): string {
+//
+// EXPORTED for `rig/scripts/anchor-replay.ts`, which must classify a quote against a file line
+// exactly as this module does. That script first carried a local copy; a reviewer pointed out the
+// copy's only drift guard covered the match/no-match boundary and not WHICH line a quote matches,
+// so the number it reports was unprotected. Sharing the function removes the drift class outright.
+// Behaviour here is unchanged — this is an export, not a rewrite.
+export function normalizeLine(s: string): string {
   return neutralizeFences(neutralizeInjectionMarkers(s)).replace(/\s+/g, " ").trim();
 }
 

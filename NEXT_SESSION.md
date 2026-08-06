@@ -1,133 +1,144 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-06, after pilot-03. Supersedes all earlier content._
+_Last updated: 2026-08-06, after the offline Slice A corpus replay. Supersedes all earlier content._
 
 ## One-line state
 
-**pilot-03 ran and scored task (b). Both slices came back weak: Slice A was never exercised,
-and Slice B's single activation protected a false positive. Nothing needs reverting; the next
-cut is an OFFLINE measurement, not another pilot.**
+**The replay ran and it reversed pilot-03's weakest finding: Slice A is not an unobserved
+mechanism, it has 7 field instances across the pilots and the shipped pass repairs all 7. The
+"1 opportunity in 36 turns" figure was an artifact of counting post-aggregation survivors.**
 
-`origin/master` = `8737489`, working tree clean, **0 unpushed** (verified: `git rev-parse HEAD @{u}
-| uniq -c` → one line, count 2).
+`origin/master` = `8737489`. **2 local commits unpushed** (`f92bcf1` from last session, plus this
+session's) — ask Markus before pushing.
 
-**Suite NOT re-run this session, deliberately: no `src/` or `tests/` file was touched** (only
-`docs/` and `rig/`). The last green run stands — **3184 pass / 12 skip / 0 fail** on `9019e1e`.
-`bun run build` succeeded and the binary is pinned at **`sha256:fc9b8c18c62977ba…`**.
+**The only `src/` changes are two `export` keywords:** `normalizeLine` and `lineCount` in `src/core/fact-check.ts` gained an
+`export`, so the replay imports them instead of carrying copies. **No gate behaviour changed and
+NOTHING WAS REBUILT — the installed binary is still `sha256:fc9b8c18…`.** `bunx tsc --noEmit`
+and `bun run lint` clean; full `bun test` re-run after the exports (see the commit message).
 
 ## What got done this session
 
-1. **Rebuilt and re-pinned the binary.** `sha256:fc9b8c18c62977ba5e82a4e0bdb4d842626a2c3a69c620643fae00c72278bca4`
-   (was `7f92445b…`). Verified in **both** directions — `reanchorByEvidence`/`anchor_repaired`
-   present in the new binary, absent from `dist/reviewgate.prev`. Live machine-wide via the
-   `~/.local/bin/reviewgate` symlink.
-2. **Preregistered pilot-03** (`9f9400f`, amended pre-run in `6ab4ca6`), frozen and pushed
-   before the run.
-3. **Ran pilot-03** — 12 turns, 53 min, $0.009139 billed. Full write-up:
-   `docs/dev/2026-08-06-pilot-03-result.md`.
+1. **`rig/scripts/anchor-replay.ts`** — the offline replay. Slices each pilot's `cassette.jsonl`
+   by the manifest's per-turn byte offsets, reconstructs the turn's working tree from
+   `diff.patch` into a throwaway `git init` dir, and runs the **real, imported**
+   `validateFindingFacts` over the reviewers' raw findings. Read-only, no quota, no network.
+2. **`docs/dev/2026-08-06-slice-a-corpus-replay.md`** — the write-up.
+3. **Two documents corrected in place** (not appended to): the pilot-03 result and the design
+   spec's "Scale" table both carried the wrong denominator.
 
 ## The findings, in the order they matter
 
-### 1. Slice B's one activation protected a false positive
+### 1. Slice A has 7 field instances, not 1, and the pass repairs all 7
 
-Turn 4, `injection-via-case-mismatch`, WARN/security/singleton — the exact firing signature
-registered in advance, so the attribution is not a post-hoc reading:
+| | archived reports | raw corpus replay |
+|---|---:|---:|
+| out-of-range citations (opportunities) | 1 | **7** |
+| repaired | 0 (mechanism absent from those binaries) | **7** |
+| demoted as fabricated | 1 | **0** |
 
-```
-"SQL query uses positional placeholder but may still allow injection via
- case-insensitive collation bypass"
-      against:  db.query('SELECT id, email FROM users WHERE email = $1', [email])
-```
+All 7 are in **pilot-02** — 5 in turn 2, and **2 in turn 9 that no write-up ever mentioned**,
+because both were gone before the report was written. Under the pilot-02 binary all seven were
+told they were "almost certainly hallucinated", including a 0.90 CRITICAL path traversal.
 
-Correctly parameterized. Collation governs comparison semantics, not whether a **bound**
-parameter can inject. **The critic called it `likely_fp` and was right; Slice B overrode it.**
-That is the first datum on the design's open "does Slice B re-inflate FP burden" risk row and
-it is unfavourable. **n = 1 — not grounds to revert, but stop calling the floor cost-free.**
+All 7 sit on trees the reviewer saw, established on **two independent records**: the finding came
+from its turn's final panel run (cassette) AND that turn's final gate iteration ran the panel
+(audit log, `run_summary.source`). The two are cross-checked per turn on the panel-run count.
+**pilot-03's own claim — denominator 0, not exercised — is confirmed by the replay and stands.**
+So does pilot-01's 0.
 
-### 2. Slice A was never exercised — a different statement from "no effect"
+### 2. The measurement lesson generalises past Slice A
 
-Opportunity denominator (`anchor_repaired + fact_invalid`) = **0**. The pass only ever runs on
-an out-of-range citation and none occurred. Across pilots 01–03: **1 opportunity in 36 turns.**
+Every rate this rig computes from `reports/*-pending.json` is a rate over **survivors**. For any
+pass that runs BEFORE aggregation, that is the wrong denominator, and it errs in the direction
+that makes the pass look useless. The cassette is the pre-aggregation record and was already
+being written — nothing new had to be recorded to get this right.
 
-### 3. The recall jump is real and is NOT the fix's
+### 3. The in-range mis-anchor population is now sized — and it is the bigger hole
 
-0.33 → 1.00, but **neither catch carries a marker**: both were `consensus: majority` with no
-`anchor_repaired`. On turn 2 the agent wrote the byte-identical unsafe line and the panel
-simply anchored it correctly this time — pilot-02's failure mode did not recur. The denominator
-also changed (2 seeds landed, not 3; `missing-await` didn't land). The comparison that survives
-is the **paired** one over seeds landing in both runs: **0/2 → 2/2**.
+On trees the reviewer provably saw, of 16 in-range findings carrying a quote:
 
-### 4. Fourth rig defect: a dead turn inherits the previous turn's report
+| quote matches the cited line | **4** |
+|---|---:|
+| quote matches a **different** real line (in-range mis-anchor) | **7** |
+| quote matches no line (already badged `evidence_mismatch`) | 5 |
 
-Turn 5's agent died on an API error and wrote nothing; the archiver re-captured turn 4's
-on-disk `pending.json` and the harvester credited turn 5 with its 3 findings / 3 blocking.
-Proved twice: byte-identical `diff.patch` sha, and a strict signature subset. Corrected totals
-22/19 → **19/16**; no headline number moves. **Not yet fixed.**
+**Only 4 of 16 are anchored to the line they quote.** The offsets are small (2, 3, 7 lines) and
+the quotes are correct — this is arithmetic, not fabrication. The replay independently
+rediscovered pilot-03 turn 4's `injection-via-case-mismatch` (cites 37, quotes 40), the one
+instance found by hand, which is the closest thing to an external check the instrument has.
 
-## THE NEXT TASK — the offline Slice A corpus replay
+## THE NEXT TASK — Markus's call, not an obvious next step
 
-**Why it's next, and why it is NOT pilot-04.** At 1 opportunity in 36 turns a 12-turn run has
-no power to characterise Slice A, and three more pilots would not change that. The instrument
-that fits is offline, free, and needs no agent quota: **replay every recorded reviewer output
-across all three pilots through `validateFindingFacts` and count how many mis-anchored findings
-it repairs versus demotes.** The corpus already exists (`rig/results/pilot-0*/turns/*/reports/`)
-and `rig/scripts/anchor-markers.ts` already reads it.
+The evidence now points at the in-range half, and the mechanism is cheap: the comparison
+`attestEvidence` already computes at `orchestrator.ts:2573` (render-only, post-aggregation) is
+exactly the discriminator. Moving it pre-aggregation would repair in-range mis-anchors the same
+way Slice A repairs out-of-range ones.
 
-**Then the gap both pilots keep circling:** reviewers mis-numbering lines they quote correctly.
-pilot-02 gave an out-of-range instance; pilot-03 gave an **in-range** one (turn 4 cites line 37,
-quotes line 40) that no pass inspects — `validateFindingFacts` only ever runs past EOF. The
-same comparison `attestEvidence` already computes at `orchestrator.ts:2573` (render-only, post
-aggregation) would detect it. That is a candidate slice, not a decided one.
+**But it is a genuinely riskier change than Slice A, and the decision is Markus's:**
 
-**Also queued:** fix the rig stale-report defect (§4) — it needs a rebuild, so it cannot ride
-along inside a pilot.
+- Slice A only ever ran on citations **past EOF**, where the finding was going to be demoted
+  anyway — it could only ever improve on a demote. An in-range repair **moves a finding that
+  nothing was going to touch**, so a wrong repair is a net-new harm with no failure mode today.
+- n = 16 for the measurement, one panel, two models.
+
+Options: (a) spec it as Slice C with the same guard discipline; (b) ship it render-only first
+(badge, no move) and measure agreement for a run; (c) leave it and spend the effort on Slice B's
+open FP question instead. **Do not start (a) without asking.**
+
+## Also queued, unchanged
+
+1. **Slice B's FP cost is still n = 1** and unfavourable (pilot-03 turn 4 protected a false
+   positive over a correct critic). Keep / narrow / revert is still open. This replay says
+   nothing about it.
+2. **The rig stale-report defect** (a dead turn inherits the previous turn's `pending.json`) —
+   needs a rebuild, so it cannot ride along inside a pilot.
+3. **Codex quota resets 2026-08-08T11:07Z.** Until then the executing reviewer slot is `agy` or
+   a Claude subagent. (`agy` filled the plan gate this session and caught a real miscount.)
+4. **Two `~/Developer` fixes**, diagnosed, still not applied: stale repo-local hooks in
+   `~/Developer/.claude/settings.json`; a 15.07. `control-plane.json` that makes `~/Developer`
+   count as an armed checkout.
+5. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`,
+   `viergewinnt`, `youtubeQuiz`) — a policy call.
+6. **Sandboxes to reap:** `/private/tmp/rig-pilot02-kzYEoV`, `/private/tmp/rig-pilot03-a3doEy`,
+   and `dist/reviewgate.prev`. **NOTE:** the replay does NOT depend on them (it reconstructs from
+   `diff.patch` into a temp dir), so they are safe to delete. `/private/tmp/rig-pilot01-NZHKOT`
+   is likewise not needed.
 
 ## Traps that still hold
 
+- **NEW — a rate over `reports/*-pending.json` is a rate over SURVIVORS.** Never use it as a
+  denominator for a pre-aggregation pass. Use `cassette.jsonl`, sliced per turn by
+  `manifest.turns[].cassetteBytes`.
+- **NEW — pilot-01 recorded no `diff.patch`** (the driver gained it afterwards). Its per-turn
+  line counts come from `.reviewgate/research.md`'s `+N/-0` rows, validated 26/26 against
+  reconstructed trees on pilots 02/03. That gives line counts, never content.
+- **NEW — `diff.patch` is captured at END of turn.** A finding from a non-final panel run may
+  have been reviewed against a different file. That error has **no sign** (the agent's fix can
+  lengthen or shorten), so such findings are UNVERIFIABLE, not a bound. Do not call them one.
 - **Never rebuild mid-run.** The build re-pins the binary AND deploys to every repo via the
-  symlink. Build → record sha → preregister → run.
-- **Write every floor as a RATE.** And check the DENOMINATOR before comparing rates across
-  runs: pilot-03's landed-seed denominator was 2, pilot-02's 3, and the seeds differ.
-- **`SUPPRESSION_LAYERS` has no `scope`/`anchor` entry.** Slice B stays ablatable via
-  `−critic`; **Slice A is observable, not ablatable** — count `anchor_repaired` and say so.
-- **The agent declines seeds unpredictably.** SQL-injection and hardcoded-secret were declined
-  in all three pilots; `missing-await` landed in 01 and 02 but **not** in 03. Never assume 3.
-- **Attribute catches by MARKER, never by outcome.** A turn flipping missed→caught is panel
-  variance until a marker says otherwise. This is the whole reason pilot-03 did not overclaim.
-- **`rig/results/` is gitignored** — the artifacts are local only. The write-ups reference paths
-  that exist on this machine and nowhere else.
-- **Never run two full `bun test` suites concurrently.** Serial: 3184/0 in 148s. A killed run's
-  summary line is worthless in both directions.
-- **`rig run` takes `repoRoot` from `process.cwd()`** — run from inside the sandbox with
-  absolute `--script`/`--out`. Cassette must be an ABSOLUTE path INSIDE the sandbox.
+  `~/.local/bin/reviewgate` symlink. Build → record sha → preregister → run.
+- **Write every floor as a RATE, and check the DENOMINATOR** before comparing across runs.
+- **`SUPPRESSION_LAYERS` has no `scope`/`anchor` entry.** Slice B stays ablatable via `−critic`;
+  **Slice A is observable, not ablatable.**
+- **The agent declines seeds unpredictably.** SQL-injection and hardcoded-secret were declined in
+  all three pilots; `missing-await` landed in 01 and 02 but not 03. Never assume 3.
+- **Attribute catches by MARKER, never by outcome.**
+- **`rig/results/` is gitignored** — the artifacts are local only, and so are every number in the
+  replay write-up.
+- **Never run two full `bun test` suites concurrently.** Serial: ~3184/0 in ~148s.
 - **`bun run lint`/`tsc` do NOT cover `rig/scripts/`** (tsconfig includes only `src*`/`tests*`).
+  Check new rig scripts explicitly — `bunx biome check rig/scripts/<f>.ts` plus a `tsc --noEmit`
+  with the project's flags passed by hand.
 - **Reviewgate's decision protocol assumes fix-and-decide within ONE turn.** An agent that
-  delegates a fix to a background worker structurally cannot, and gets `decisions-unaddressed`
-  while the fix is already landing. A product gap for multi-agent hosts, still unaddressed.
+  delegates a fix to a background worker structurally cannot. Still unaddressed.
 - Older traps that still apply: never `git add -A` at the repo root; `exit = 0` proves nothing —
   `gateReviewed` is the real signal.
-
-## Open, needs Markus
-
-1. **Codex quota resets 2026-08-08T11:07Z.** Still the reason the executing reviewer slot is
-   `agy` or a Claude subagent.
-2. **Slice B's FP cost is n = 1.** Decision to make once there is more evidence: keep the floor,
-   narrow it (e.g. require corroboration OR confidence above a threshold), or revert it.
-   Reverting needs no TTY approval — it is code, not config.
-3. **Two `~/Developer` fixes**, diagnosed, still not applied (outside this repo): stale
-   repo-local Reviewgate hooks in `~/Developer/.claude/settings.json` pointing at a
-   non-existent `.reviewgate/bin/`; and a `control-plane.json` from 15.07. that makes
-   `~/Developer` count as an armed checkout.
-4. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`,
-   `viergewinnt`, `youtubeQuiz`) — a policy call, not a bug.
-5. **Sandboxes to reap:** `/private/tmp/rig-pilot02-kzYEoV`, `/private/tmp/rig-pilot03-a3doEy`,
-   and `dist/reviewgate.prev`.
 
 ## Read-first order
 
 1. This file.
-2. `docs/dev/2026-08-06-pilot-03-result.md` — what the fix actually did in the field.
-3. `docs/superpowers/specs/2026-08-05-true-positive-hole-design.md` — the design under test,
-   including the risk row pilot-03 supplied the first datum for.
-4. `rig/preregistrations/pilot-03.json` — the shape to follow, including the opportunity
-   denominator and the marker-attribution rule that stopped pilot-03 overclaiming.
+2. `docs/dev/2026-08-06-slice-a-corpus-replay.md` — the result and the instrument's limits.
+3. `rig/scripts/anchor-replay.ts` — run it; its four self-checks state their own integrity.
+4. `docs/superpowers/specs/2026-08-05-true-positive-hole-design.md` — the design, now carrying a
+   correction note on its "Scale" table.
+5. `docs/dev/2026-08-06-pilot-03-result.md` — the field run, now carrying the same correction.
