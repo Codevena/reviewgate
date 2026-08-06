@@ -41,6 +41,14 @@ export function findingBadges(f: Finding): string | null {
   if (f.deterministic)
     badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
   if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
+  // Anchor repair: the counterpart to the badge above — the cited line was wrong, but the
+  // reviewer's quoted evidence (carrying an identifier-like token) matched a real line of this
+  // file, showing the reviewer read real code rather than fabricating one, so it was moved rather
+  // than demoted. That is weaker than proof the defect itself is real — see finding.ts.
+  if (f.anchor_repaired)
+    badges.push(
+      "⚑ reviewer cited a line that does not exist — re-anchored to the source line it quoted",
+    );
   if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
   if (f.hypothetical_demoted)
     badges.push(

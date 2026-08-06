@@ -303,6 +303,7 @@ function memberOf(f: Finding): NonNullable<Finding["members"]>[number] {
     // can OR it in (a flagged member merged under an unflagged equal-severity rep must not
     // silently lose the flag). Only set when true so members[] stays minimal otherwise.
     ...(f.demoted_from_critical === true ? { demoted_from_critical: true } : {}),
+    ...(f.anchor_repaired === true ? { anchor_repaired: true } : {}),
   };
 }
 
@@ -529,6 +530,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const demotedFromCritical =
       sample.demoted_from_critical === true ||
       members.some((m) => m.demoted_from_critical === true);
+    // Slice A mirror of the G0 OR above: the repaired finding is often NOT the representative
+    // (equal severity + ties-keep-first), and losing the marker would hide the mis-anchor in
+    // exactly the merge the repair made possible.
+    const anchorRepaired =
+      sample.anchor_repaired === true || members.some((m) => m.anchor_repaired === true);
     deduped.push({
       ...sample,
       details: details.slice(0, 2000),
@@ -536,6 +542,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       consensus,
       members,
       ...(demotedFromCritical ? { demoted_from_critical: true } : {}),
+      ...(anchorRepaired ? { anchor_repaired: true } : {}),
     });
   }
 
@@ -602,6 +609,14 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const cv = critic && critSigs.map((s) => critic.get(s)).find((v) => v?.verdict === "likely_fp");
     if (cv?.verdict === "likely_fp") {
       const isCriticalSecurity = f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f);
+      // pilot-02 turn 2: the exemption above is keyed to CRITICAL, so a WARN-severity security
+      // finding was demotable by a single adversarial critic — and WARN→INFO is the one demote
+      // that crosses the blocking boundary (isBlocking = CRITICAL || WARN). The sibling
+      // delta-scope pass already exempts security/correctness at ANY severity; mirror that floor
+      // here. An already-INFO security finding stays droppable, so the critic keeps its
+      // FP-filtering power where reviewers are noisiest.
+      const isBlockingSecurity = f.severity === "WARN" && touchesSecurityOrCorrectness(f);
+      const isSecurityProtected = isCriticalSecurity || isBlockingSecurity;
       // A single adversarial critic must not override GROUP agreement. Both
       // unanimous AND majority are corroborated consensus — the verdict gate
       // treats them identically (warnFail), and the confidence- and reputation-
@@ -612,11 +627,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
       // the critic calls it likely_fp — the dangerous direction is a demoted TRUE positive
       // (field report F-005). Tag it so the agent sees WHY it stayed blocking; do NOT set
       // critic_verdict (that renders the dismissive "likely FP" badge).
-      if (!isCriticalSecurity && !isCorroborated && isProtected(f)) {
+      if (!isSecurityProtected && !isCorroborated && isProtected(f)) {
         survivors.push({ ...f, protected_high_precision: true });
         continue;
       }
-      if (!isCriticalSecurity && !isCorroborated) {
+      if (!isSecurityProtected && !isCorroborated) {
         const demoted = demoteOneStep(f);
         if (demoted.severity === "drop") {
           criticDropped.push(f); // INFO likely_fp dropped entirely — keep it attributable

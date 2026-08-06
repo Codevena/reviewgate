@@ -122,8 +122,11 @@ export const FindingSchema = z.object({
   // unavailable). NEVER changes severity — purely an ownership tag, unlike foreign_to_session.
   session_attributable: z.boolean().optional(),
   // S4 (field report 2026-06-23): the exact source line the reviewer self-attests it relied on,
-  // verbatim (capped). RENDER-ONLY: fact-check badges a CLEAR mismatch vs the working-tree line.
-  // Never changes severity.
+  // verbatim (capped). UNTRUSTED reviewer-supplied input. Two consumers: `attestEvidence` badges a
+  // CLEAR mismatch vs the working-tree line (render-only, never changes severity); and — added by
+  // the true-positive-hole slice — `validateFindingFacts` (fact-check.ts) consults it to tell a
+  // MIS-ANCHORED finding (an out-of-range line whose quote matches real source) from a fabricated
+  // one, which DOES decide blocking vs advisory (see `anchor_repaired`).
   evidence_line: z.string().optional(),
   // S4: set true (render-only) when the reviewer's quoted evidence_line matches NO line in the cited
   // file — a strong signal it reasoned on stale/absent/fabricated context. Advisory badge ONLY; the
@@ -232,6 +235,12 @@ export const FindingSchema = z.object({
   // a fabrication regardless of category, and demoting (vs blocking on a phantom) is
   // strictly safer. Fail-safe: any fs uncertainty leaves the finding untouched.
   fact_invalid: z.boolean().optional(),
+  // Slice A (pilot-02 turn 2): set true when the fact-check found the cited line OUT OF RANGE
+  // but the reviewer's own evidence_line matched a real line of that file — the finding was
+  // MIS-ANCHORED, not fabricated, so it is re-anchored to the quoted line instead of demoted.
+  // Severity is untouched; this is a provenance/render marker. Mutually exclusive with
+  // fact_invalid by construction (the repair returns before the demote).
+  anchor_repaired: z.boolean().optional(),
   // M5 Part B0: per-member provenance of a merged cluster. The aggregator clusters
   // findings (possibly different rule_id/category/signature) under one
   // representative; this records each member's own signature + trusted base
@@ -252,6 +261,10 @@ export const FindingSchema = z.object({
         // merge can OR-propagate it to the representative (a demoted member merged under
         // an unflagged equal-severity representative must not silently lose the flag).
         demoted_from_critical: z.boolean().optional(),
+        // Slice A: per-member mis-anchor provenance, so a repaired member merged under an
+        // unrepaired equal-severity representative (ties-keep-first) does not silently lose
+        // the marker — the badge and the pilot count both key on it.
+        anchor_repaired: z.boolean().optional(),
       }),
     )
     .optional(),

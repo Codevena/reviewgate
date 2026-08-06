@@ -203,3 +203,58 @@ describe("aggregate with critic", () => {
     expect(r.dedupedFindings[0]?.consensus).toBe("unanimous");
   });
 });
+
+describe("critic — security/correctness floor (pilot-02 turn 2)", () => {
+  // GUARD 7. WITHOUT the floor: INFO + critic_verdict "likely_fp" -> 0 blocking.
+  //          WITH it: WARN + critic_verdict "keep" -> 1 blocking.
+  it("does not demote a WARN security finding below the blocking boundary", () => {
+    const f = fin({ signature: "sigSecWarn", severity: "WARN", category: "security" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigSecWarn", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+  });
+
+  it("does not demote a WARN correctness finding below the blocking boundary", () => {
+    const f = fin({ signature: "sigCorrWarn", severity: "WARN", category: "correctness" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigCorrWarn", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+  });
+
+  // GUARD 8 (passes on current code — MUTATION-CHECKED in Step 3).
+  // WITH an "exempt at every severity" floor: criticDroppedCount 0.
+  // WITH the correct WARN floor: criticDroppedCount 1. The critic keeps its FP-filtering
+  // power exactly where reviewers are noisiest (low-confidence INFO security chatter).
+  it("still drops an already-INFO security likely_fp", () => {
+    const f = fin({ signature: "sigSecInfo", severity: "INFO", category: "security" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigSecInfo", { verdict: "likely_fp" }]]),
+    });
+    expect(r.criticDroppedCount).toBe(1);
+    expect(r.dedupedFindings.length).toBe(0);
+  });
+
+  // GUARD 9 (passes on current code — MUTATION-CHECKED in Step 3).
+  // WITH a severity-only floor (all WARN exempt): the finding stays WARN -> 1 blocking.
+  // WITH the correct category-keyed floor: INFO -> 0 blocking.
+  it("still demotes a WARN quality finding", () => {
+    const f = fin({ signature: "sigQualWarn", severity: "WARN", category: "quality" });
+    const r = aggregate({
+      findings: [f],
+      reviewersTotal: 2,
+      critic: new Map([["sigQualWarn", { verdict: "likely_fp" }]]),
+    });
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("likely_fp");
+  });
+});

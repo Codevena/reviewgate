@@ -4,8 +4,8 @@ id: review-output-schema-strict
 status: canon
 anchors:
   - "src/providers/review-output.ts"
-verified_at: 2026-07-10
-verified_tree: "3d6c09350b1a2dcede15eb0917e011310c0c327b409895dc00c469491a1a5068"
+verified_at: 2026-08-06
+verified_tree: "5388991bd6aebe97b8fad3437f141401be49649d18cbc2a772761f301ef94487"
 tags: []
 ---
 Why REVIEW_OUTPUT_SCHEMA is shaped the way it is: codex's `--output-schema` runs
