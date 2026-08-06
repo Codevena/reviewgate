@@ -309,7 +309,7 @@ function oneLine(s: string): string {
  * catastrophic backtracking impossible — nothing short of a non-backtracking engine does — but
  * it removes the input-size term that turns an accidental pattern into a hang.
  */
-function matchesAddedLine(re: RegExp, patch: string): boolean {
+export function matchesAddedLine(re: RegExp, patch: string): boolean {
   for (const line of patch.split("\n")) {
     // `+++ b/path` is a file header, not content.
     if (!line.startsWith("+") || line.startsWith("+++")) continue;

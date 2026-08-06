@@ -23,7 +23,7 @@
 //   bun run rig/scripts/critic-floor-replay.ts
 //   bun run rig/scripts/critic-floor-replay.ts --verbose   # every critic verdict, matched or not
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesAnyTag } from "../../src/bench/matcher.ts";
@@ -32,6 +32,7 @@ import { type CriticVerdict, parseCriticOutput } from "../../src/core/critic.ts"
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
 import { computeSignature } from "../../src/diff/signature.ts";
 import { enclosingSymbol } from "../../src/research/symbol-graph.ts";
+import { matchesAddedLine } from "../../src/rig/harvest.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import {
   type Row,
@@ -134,13 +135,48 @@ function seededByTurn(run: string): Map<number, Seeded> {
  *  bad regex) is reported as unknown rather than assumed either way. */
 function seedLanded(run: string, turn: number, seeded: Seeded): boolean | null {
   if (!seeded.landedPattern) return null;
-  const patch = `rig/results/${run}/turns/${turn}/diff.patch`;
-  if (!existsSync(patch)) return null;
+  let re: RegExp;
   try {
-    return new RegExp(seeded.landedPattern, "m").test(readFileSync(patch, "utf8"));
+    // No `m` flag, exactly as harvest.ts:355 — `matchesAddedLine` feeds it ONE line at a time, so
+    // multiline anchoring would change what `^`/`$` mean and silently alter which seeds "landed".
+    re = new RegExp(seeded.landedPattern);
   } catch {
-    return null;
+    return null; // unparseable pattern → UNKNOWN, never assumed either way
   }
+  let patch: string;
+  try {
+    // Read FIRST rather than existsSync-then-read: that pair is a TOCTOU (the path can be swapped
+    // for a symlink in between) and the read is already guarded, so the stat bought nothing. The
+    // shipped harvester fixed exactly this (harvest.ts:362, "gate F-001"); this replay had
+    // reintroduced it.
+    patch = readFileSync(`rig/results/${run}/turns/${turn}/diff.patch`, "utf8");
+  } catch {
+    return null; // no recorded diff / unreadable → UNKNOWN
+  }
+  // The SHIPPED matcher, imported rather than reimplemented. It matches only lines the agent ADDED,
+  // which is a CORRECTNESS requirement before it is a ReDoS mitigation: testing the whole patch text
+  // would count a defect appearing in a context line (code the agent never touched) or in a REMOVED
+  // line — precisely the case where the defect is gone — as "landed". It also bounds the regex input
+  // to one line, removing the input-size term that turns an accidental nested quantifier into a hang
+  // against a megabyte diff (V8's regex is a backtracking NFA with no timeout).
+  return matchesAddedLine(re, patch);
+}
+
+/** `reviewersTotal` for one gate iteration, FATAL when absent.
+ *
+ *  `aggregate()` divides by this to label consensus, and `isFloorActivation` excludes corroborated
+ *  findings — so a silent fallback would change the headline count with no sign that anything was
+ *  missing. (A fallback of 1 makes a lone finding `singleton`, which INFLATES the activation count
+ *  rather than suppressing it — the opposite of harmless.) This replay already lost one result to a
+ *  quietly-wrong reviewer count; it does not get to lose a second. */
+function panelSize(run: string, turn: number, k: number): number {
+  const n = reviewersRanPerPanel.get(`${run}/${turn}/${k}`);
+  if (n === undefined || n < 1) {
+    die(
+      `${run} turn ${turn} panel run ${k}: no recorded reviewer count. aggregate() divides by this to label consensus, so guessing it would silently change the activation count.`,
+    );
+  }
+  return n;
 }
 
 /** Same text the rig's harvester matches tags against (`harvest.ts:223`). */
@@ -249,7 +285,7 @@ try {
 
         const res = aggregate({
           findings,
-          reviewersTotal: reviewersRanPerPanel.get(`${run}/${turn}/${k}`) ?? 1,
+          reviewersTotal: panelSize(run, turn, k),
           critic,
         });
         for (const f of res.dedupedFindings) {

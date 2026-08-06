@@ -108,6 +108,17 @@ export function sliceCassetteByTurn(run: string): { turn: number; entries: Casse
 export function readCorpus(run: string): { rows: Row[]; turnsWithFindings: Map<number, number> } {
   const rows: Row[] = [];
   const turnsWithFindings = new Map<number, number>();
+  // IDEMPOTENCE. `reviewersRanPerPanel` ACCUMULATES (`+ 1` per review entry), so a second
+  // readCorpus() for the same run would double every panel size. `aggregate()` divides by that to
+  // label consensus, so the damage would be a silently wrong consensus everywhere — not a crash.
+  // Dropping this run's keys first makes re-reading a no-op instead of a corruption. (`reviewersRan`
+  // overwrites and is already idempotent; it is reset here too so both have one rule, not two.)
+  for (const k of [...reviewersRan.keys()]) {
+    if (k === run || k.startsWith(`${run}/`)) reviewersRan.delete(k);
+  }
+  for (const k of [...reviewersRanPerPanel.keys()]) {
+    if (k === run || k.startsWith(`${run}/`)) reviewersRanPerPanel.delete(k);
+  }
   for (const { turn, entries } of sliceCassetteByTurn(run)) {
     // Per-reviewer call counter: the k-th entry with a given key is that reviewer's k-th panel
     // run this turn. Keyed per reviewer because the panel runs CONCURRENTLY, so raw entry order
@@ -241,13 +252,25 @@ function auditEvents(dir: string): Map<string, { iter: number; source: string; r
       }
       for (const line of readFileSync(p, "utf8").split("\n")) {
         if (!line.trim()) continue;
-        const j = JSON.parse(line) as {
+        let j: {
           event?: string;
           iter?: number;
           run_id?: string;
           this_event_hash?: string;
           run_summary?: { source?: string };
         };
+        try {
+          j = JSON.parse(line);
+        } catch {
+          // Fatal, matching sliceCassetteByTurn's guard. A corrupt/truncated audit line silently
+          // skipped would drop a `run.complete` event, which is what the panel-run cross-check and
+          // every exactness label are computed from — the failure would surface as a quietly wrong
+          // exactness count, not as an error. An unhandled throw here would instead surface as a raw
+          // stack trace with no indication which file was bad.
+          die(
+            `audit log ${p} contains a line that is not valid JSON — iteration data is unusable.`,
+          );
+        }
         if (j.event !== "run.complete" || typeof j.this_event_hash !== "string") continue;
         out.set(j.this_event_hash, {
           iter: j.iter ?? 0,
