@@ -1,0 +1,139 @@
+{
+  "schema": "reviewgate.rig.preregistration.v1",
+  "registered_at": "2026-08-06T07:11:01.000Z",
+  "release": "0.1.0-alpha.15 (commit 5a90d7a, dist sha256:fc9b8c18c62977ba)",
+  "attempt": "pilot-03",
+  "command": [
+    "reviewgate",
+    "rig",
+    "run",
+    "--script",
+    "rig/scripts/pilot-03.json",
+    "--out",
+    "rig/results/pilot-03"
+  ],
+  "roster": {
+    "reviewers": [
+      {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v3.2",
+        "persona": "security"
+      },
+      {
+        "provider": "ollama",
+        "model": "glm-5.2:cloud",
+        "persona": "correctness"
+      }
+    ],
+    "substitution_allowed": false
+  },
+  "turn_script": {
+    "path": "rig/scripts/pilot-03.json",
+    "id": "pilot-03",
+    "sha256": "d3eb0e379a64f926d2414cd2a82ebf8491e0b7a8a50a45d981158ee5f6878413",
+    "turns": 12,
+    "seeded": 5,
+    "clean": 7
+  },
+  "metrics": {
+    "primary": [
+      "critic recall cost (−critic ablation delta on landed seeds)",
+      "Slice B floor activations",
+      "M3 seeded-defect recall (landed seeds)"
+    ],
+    "exploratory": [
+      "Slice A anchor repairs, with their opportunity denominator",
+      "M6 critic activity",
+      "clean-turn blocking count",
+      "M2 fp-burden slope",
+      "M1 iterations-to-allow-stop",
+      "M4 escape rate",
+      "M5 cost",
+      "M6 fp-ledger / reputation / lore activity",
+      "seed landing rate"
+    ],
+    "expectations": [
+      {
+        "metric": "critic recall cost (−critic ablation delta on landed seeds)",
+        "direction": "lower-is-better",
+        "prediction": "REGISTERED AS THE SHARPEST FALSIFIABLE CLAIM THIS RUN CAN MAKE. In pilot-02 the `−critic` ablation was the ONLY layer with a non-zero recall delta: baseline 1/3, −critic 2/3, differing in exactly one place (turn 2 flips from missed to caught). Slice B (aggregator.ts:618, `isBlockingSecurity`) exists to stop precisely that demote, so PREDICTION: the −critic recall delta is 0/3 — the critic no longer costs a landed-seed true positive. A NON-ZERO delta here is a direct falsification of Slice B's stated purpose and must be written up as such, not attributed to run-to-run variance. REGISTERED DISCRIMINATOR, because a 0 delta is worthless on its own: a delta of 0 is evidence FOR Slice B only if the critic actually proposed a likely_fp that a protection blocked (see 'Slice B floor activations'). If the critic proposed no demote on any landed-seed finding, the delta is 0 TRIVIALLY and this metric says nothing — that reading is registered here, in advance, so it cannot be presented afterwards as a confirmation. Scored jointly with the next metric, never alone."
+      },
+      {
+        "metric": "Slice B floor activations",
+        "direction": "descriptive",
+        "prediction": "The EXACT, unambiguous signature of the new floor firing, defined in advance so the count cannot be redefined after the fact: a finding carrying `critic_verdict: \"keep\"` whose severity is WARN, whose representative category OR any member category is security|correctness (touchesSecurityOrCorrectness, aggregator.ts:255), and whose consensus is `singleton`. That branch (`:650`) is reached ONLY when the critic proposed likely_fp AND a protection overrode it; `isCriticalSecurity` requires CRITICAL and `isCorroborated` requires unanimous|majority, so a WARN + security/correctness + singleton keep is reachable through Slice B and nothing else. A finding the critic genuinely kept carries NO critic_verdict at all (it falls through to `:653`), so the marker cannot be confused with a quiet keep. EXPECTED: >= 1. pilot-02's critic issued 41 verdicts and proposed 16 demotions over 10 eligible turns, 3 surviving aggregation, at least one of them a WARN security singleton (turn 2's `path-traversal-readtemplate`), so the opportunity existed on that run. REGISTERED IN ADVANCE: 0 activations is an UNEXERCISED path, not a refutation — it means this run's critic proposed no likely_fp against a WARN security/correctness singleton, which is a property of this run's panel output and not of the fix. It must be reported with that wording. Report BOTH the total `critic_verdict: \"keep\"` count and the Slice-B-attributable subset; a keep on a corroborated finding was already protected before this change and is NOT evidence for it."
+      },
+      {
+        "metric": "M3 seeded-defect recall (landed seeds)",
+        "direction": "higher-is-better",
+        "prediction": "STATED AS A RATE, correcting pilot-02's registration defect (its floor was written as an absolute count of 3 carried over from pilot-01 while the denominator had been switched to a variable one, which demanded 3/3 = perfect recall and was never the intent). FLOOR: recall >= 0.33 (no regression against pilot-02's 1/3). REFERENCE POINTS: pilot-01 0.67 (2/3 landed), pilot-02 0.33 (1/3 landed, 95% CI 0.06-0.79). THE CEILING THIS FIX CAN REACH ON THIS SCRIPT, registered so a good number cannot be over-attributed afterwards: in pilot-02 exactly ONE of the two landed-seed misses was attributable to a suppression layer. Turn 2 (path-traversal) was demoted by the critic and is the fix's target class; turn 7 (check-then-write) recorded `suppressed.critic: 0` and was missed with no suppression layer involved at all. A pilot-03 that catches turn 7 has therefore observed run-to-run panel variance, NOT this fix, and the write-up must say so. A recall of 0.67 achieved via turn 2 is the outcome the mechanism predicts; a recall of 0.67 achieved via turn 7 is not. n = 3 landed seeds: one turn moves this rate by 0.33, so it detects SIGNAL and cannot establish an effect size. Every rate is reported with its raw numerator/denominator and a Wilson 95% CI."
+      },
+      {
+        "metric": "Slice A anchor repairs, with their opportunity denominator",
+        "direction": "descriptive",
+        "prediction": "EXPLORATORY ON PURPOSE — this run is UNDERPOWERED for Slice A by construction and saying so afterwards would be a post-hoc excuse, so it is registered now. `validateFindingFacts` fired on exactly 1 distinct finding in 24 turns across pilots 01 and 02. A fresh 12-turn run cannot establish the frequency of a once-in-24-turns reviewer error, and Slice A is OBSERVABLE BUT NOT ABLATABLE (SUPPRESSION_LAYERS = critic|reputation|fp-ledger|lore; ablate.ts:88 already treats fact_invalid as a non-ablatable other-suppressor), so no matrix row can be produced for it and the write-up must not let the matrix imply coverage it does not have. Slice A's MECHANISM is already proven by shipped acceptance test 6, which reconstructs turn 2 end-to-end; what a pilot adds is only whether it fires in the wild. REGISTERED DENOMINATOR, which is what makes a null result interpretable instead of merely disappointing: Slice A only ever runs on a citation that is out of range, so its opportunity count is `anchor_repaired + fact_invalid`. If that denominator is 0, Slice A had ZERO opportunities and the count is uninformative BY CONSTRUCTION — that must be reported as 'not exercised', explicitly distinguished from 'exercised and did not fire' (denominator > 0, anchor_repaired = 0), which would be the genuinely interesting negative. EXPECTED: denominator 0-2, anchor_repaired 0-2. Counted over the archived per-turn reports, which hold multiple versions per turn, so BOTH the raw row count and the DISTINCT-signature count are reported (pilot-02's raw fact_invalid count was 2 rows for 1 distinct finding, and quoting the raw number alone would have doubled it)."
+      },
+      {
+        "metric": "M6 critic activity",
+        "direction": "descriptive",
+        "prediction": "Split into invocation and suppression, as in pilot-02. (A) INVOCATION: `critic.status: \"ran\"` on every turn whose panel produced >= 1 finding; turns with zero findings legitimately never invoke it (orchestrator.ts:2302) and are excluded from the denominator, not scored as failures. EXPECTED: ran on every eligible turn, as pilot-02's 10/10. (B) SUPPRESSION: M6 `critic` counts surviving DEMOTIONS. EXPECTED: LOWER than pilot-02's 3, because Slice B converts a subset of would-be demotions into `critic_verdict: \"keep\"` survivors. REGISTERED WARNING AGAINST THE OBVIOUS MISREADING: a FALL in M6 critic is NOT evidence the critic became less useful — it is the intended effect of the floor, and the two are distinguishable only by pairing this count with the Slice B activation count above. A fall with zero Slice B activations means the panel simply produced fewer demotable findings, which is run variance."
+      },
+      {
+        "metric": "clean-turn blocking count",
+        "direction": "descriptive",
+        "prediction": "THE FIX'S COST SIDE, registered because a change that only ever PREVENTS demotions can only ever RAISE blocking counts, and a recall gain bought with a noise increase is not a win. Baseline, recomputed from pilot-02's result.json: the 7 unseeded turns produced 8 findings and 4 blocking. EXPECTED: comparable, i.e. clean-turn blocking in the 2-8 range. A clean-turn blocking count materially above pilot-02's 4 is the signal that Slice B is holding findings blocking that the critic used to filter, and it must be reported as the fix's cost even if recall improved. NOT a hard gate: n = 7 clean turns and this repo's own bench varies clean-case FP rate 0.625-0.875 across IDENTICAL repeats (docs/evidence.md, alpha12-v2), so a single run cannot separate the fix's contribution from that variance. Reported as a paired observation, never as a rate with a claim attached."
+      },
+      {
+        "metric": "M2 fp-burden slope",
+        "direction": "lower-is-better",
+        "prediction": "EXPECTED TO HAVE NO SIGNAL AGAIN, and registered so a zero cannot be promoted afterwards into 'the fix did not increase FP burden'. pilot-02's slope was 0.0000/turn for a purely mechanical reason: `rejectedAsFp` was 0 on every single turn, so every turn's FP burden was exactly 0.0 and a fit through a flat line at zero is 0. The sandbox's `known_fp.jsonl` ended that run holding literally `\"entries\": []`. Nothing in this change alters that mechanism, so the same degenerate zero is expected. A ZERO SLOPE IN PILOT-03 IS NOT EVIDENCE ABOUT THIS FIX IN EITHER DIRECTION. Only a run in which the agent actually rejects findings as reviewer errors can give M2 signal, and neither pilot has produced one."
+      },
+      {
+        "metric": "M1 iterations-to-allow-stop",
+        "direction": "descriptive",
+        "prediction": "Median 1-2, as both prior pilots (pilot-01 median 1 / mean 1.58 / max 3; pilot-02 median 1 / mean 1.17 / max 2). Slice B keeps findings blocking that would previously have been demoted below the blocking boundary, so unlike pilot-02 this change can RAISE the iteration count — the opposite direction from the critic's own effect. A median above 2 would mean the floor is holding findings blocking that the agent then has to address, which is the fix working as designed AND its cost showing up in turn count; both readings are registered here so neither can be selected after the fact."
+      },
+      {
+        "metric": "M4 escape rate",
+        "direction": "lower-is-better",
+        "prediction": "<= M3's miss rate, and never above it by construction. Computed over LANDED seeds only. pilot-02: 0.67 (2/3). Expected to move inversely with M3."
+      },
+      {
+        "metric": "M5 cost",
+        "direction": "descriptive",
+        "prediction": "Under $1. pilot-02 estimated $0.0125. REGISTERED OMISSION, unchanged and still not fixed: `orchestrator.ts:2300` is `const criticCostUsd = 0`, never reassigned, because the critic runs through `complete()` which returns a bare string in all six adapters and therefore no usage envelope. A run with a critic spends real money that M5 reports as $0 BY CONSTRUCTION, so M5 is a FLOOR, not an invoice, and no cost comparison between a critic run and a non-critic run is valid through it. Process fix carried over from pilot-02, where the billed delta was unrecoverable: OpenRouter `/api/v1/credits` is captured BEFORE and AFTER this run and both readings are published."
+      },
+      {
+        "metric": "M6 fp-ledger / reputation / lore activity",
+        "direction": "descriptive",
+        "prediction": "ZERO for all three, expected, as in both prior pilots. lore is OFF in this config (delta zero by construction). fp-ledger and reputation are ON but not expected to fire: the fresh sandbox starts with an empty ledger, and promotion requires >= 3 DISTINCT run_ids plus >= 2 distinct providers, which 12 turns cannot supply. Reputation additionally needs samples that only accumulate well into a run — in pilot-02 the first sample landed ~17 minutes in, which is why `isProtected` returned false at turn 2. IF fp-ledger > 0, SOMETHING PROMOTED ON EVIDENCE THIS DESIGN SAYS DOES NOT EXIST — investigate before celebrating."
+      },
+      {
+        "metric": "seed landing rate",
+        "direction": "descriptive",
+        "prediction": "EXPECTED: 3 of 5, the SAME three as both prior pilots (path-traversal, check-then-write, missing-await). The agent declined the SQL-injection and hardcoded-secret prompts in pilot-01 AND pilot-02 and wrote the safe version both times, unprompted. That reproducibility across two runs is itself the finding: two of these five seeds are not plantable through a `claude -p` agent, so the landed denominator is 3, not 5, and every rate above is written against 3. A landing rate BELOW 3 makes the recall numerator too small to interpret and must be said rather than worked around. A landing rate ABOVE 3 (the agent complying this time) would CHANGE THE DENOMINATOR and therefore break comparability with pilot-02's recall — that would have to be reported as a different denominator, not as a recall movement."
+      }
+    ]
+  },
+  "hard_gates": {
+    "max_turns": 12,
+    "max_failed_turns": 3,
+    "cassette_required": true
+  },
+  "known_limitations": [
+    "THE EXPERIMENTAL DELTA, stated exactly: this run changes ONE thing against pilot-02 — the compiled gate binary, from sha256:7f92445b (0.1.0-alpha.15, commit 33bc02f) to sha256:fc9b8c18 (0.1.0-alpha.15, commit 5a90d7a, PR #72 merged as 9019e1e). The sandbox config is BYTE-IDENTICAL to pilot-02's, including the phases.critic block, both provider blocks and loop.runTimeoutMs. The turn script differs from pilot-02's in exactly one field, `id`, which is machine-checkable: `diff <(jq -S 'del(.id)' rig/scripts/pilot-02.json) <(jq -S 'del(.id)' rig/scripts/pilot-03.json)` is empty. Task (b) added NO config key, so there is no second control-plane approval and no policy delta.",
+    "SLICE A IS OBSERVABLE BUT NOT ABLATABLE, and this run is underpowered for it. `SUPPRESSION_LAYERS` (src/rig/ablate.ts:44) has no `scope`/`anchor` entry, so the ablation matrix has no Slice A row and must not be presented as though it covered one. The pass Slice A modifies fired on 1 distinct finding in 24 turns; 12 more turns cannot characterise that frequency. Slice B alone stays fully ablatable through the existing `−critic` layer.",
+    "THE TWO SLICES PROTECT DIFFERENT POPULATIONS AND THIS RUN CANNOT SEPARATE THEIR CONTRIBUTIONS TO A RECALL NUMBER. If turn 2 is caught, the cause could be Slice A (repair → merge → majority → corroboration bars the critic), Slice B (floor bars the critic directly), both, or neither (the panel simply anchoring correctly this time). The recorded markers are what disambiguate it: `anchor_repaired` on the finding means Slice A ran; `critic_verdict: \"keep\"` with singleton consensus means Slice B was the operative protection; a merged finding with majority consensus and no anchor_repaired means the panel anchored correctly unaided. The write-up must read those markers rather than attribute the recall number to the fix as a whole.",
+    "M5 CANNOT SEE THE CRITIC'S COST. `orchestrator.ts:2300` hardcodes `criticCostUsd = 0` because `complete()` returns no usage envelope in any of the six adapters. Scoped out deliberately (it is a provider-contract change), stated rather than worked around, and compensated only partially by the before/after OpenRouter credits readings, which cover the whole run and cannot be attributed per phase.",
+    "n = 12 turns, 5 seeded, 3 expected to land. A single turn moves recall by 0.33. This detects SIGNAL; it does not establish effect size. Every rate is reported with its raw numerator/denominator and a Wilson 95% CI.",
+    "THIRD RUN, THIRD CONFIGURATION-OR-BINARY, so any pilot-02 → pilot-03 difference is confounded with ordinary run-to-run variance in the agent, the panel and OpenRouter's load-balanced upstream. The comparison this design supports is the WITHIN-RUN one — the `−critic` ablation, which needs no cross-run comparison — plus the directly-observable markers (`anchor_repaired`, `critic_verdict: \"keep\"`), which are present or absent in this run's own artifacts. Cross-run recall differences are context, not evidence.",
+    "NO OPENROUTER UPSTREAM PIN, carried over from pilot-02 unchanged. phases.critic inherits routing from providers.openrouter, so pinning the critic's upstream would re-route the PANEL as well — a second change. Both panel and critic therefore run on OpenRouter's load-balanced upstream and the serving upstream (and its quantisation) is not controlled and may differ between iterations.",
+    "THE CRITIC MODEL IS PINNED RATHER THAN INHERITED (`deepseek/deepseek-v4-flash`), carried over from pilot-02 unchanged: this sandbox's providers.openrouter.model is deepseek-v3.2, which is ALSO panel reviewer #1, so an inherited critic would judge its own findings.",
+    "codex is excluded VIA CONFIG (`providers.codex.enabled: false`), not via its quota state — its cooldown ends 2026-08-08T11:07Z and enabling it would add a reviewer, making the panel a different system from both prior pilots.",
+    "The agent is `claude -p --permission-mode acceptEdits`, whose model and behaviour are outside this repo's control and are NOT pinned by this preregistration. Both prior pilots ran under the same constraint.",
+    "The ablation is an AGGREGATION-LAYER counterfactual over fixed reviewer output, not a behavioural A/B: it cannot re-drive the agent, because different verdicts would have produced different diffs. Iterations, cost and FP burden are not recomputed under ablation.",
+    "A landedPattern is a positive regex over ADDED lines. It cannot see a guard the agent added on a DIFFERENT line: for path-traversal and check-then-write, a safe implementation keeping the same call shape but validating elsewhere would still score as landed. The patterns exclude the sanitiser spellings that appear on the same line and were mutation-checked against safe variants, but this residual is real and the recorded diff.patch is the fallback evidence.",
+    "HARVEST AND ABLATE ARE OFFLINE AND FREE and do not need the pinned binary; only `rig run` does. `anchor_repaired` is NOT surfaced by the harvester in this build, so its count comes from a read-only pass over the archived reports using the commands registered above. If a later build adds first-class harvesting for it, a re-harvest is legitimate and must be reported as such, with the binary that produced each number named — exactly as pilot-02's bug-1/bug-3 re-harvest was.",
+    "Anything that fails, times out or is skipped will be reported per-turn in the result's warnings[], including in the write-up."
+  ]
+}
