@@ -51,30 +51,52 @@ consensus — precisely the finding the critic exists to filter, and precisely t
 overrides. The category is what earns the protection, and in all three cases the category is the
 reviewer's own (generous) self-classification.
 
-## What this does and does not settle
+The floor is not a rare curiosity: it fires about once per 4–5 turns of critic activity, and every
+observed activation cost precision. The "n = 1" framing that blocked the decision is gone.
 
-**Settles:** the floor is not a rare curiosity — it fires about once per 4–5 turns of critic
-activity, and every observed activation cost precision. The "n = 1" framing that blocked the
-decision is gone.
+## The discriminator — measured, and it settles the question
 
-**Does not settle:** whether the floor would ever save a true positive. **0 TPs protected could mean
-the critic never proposed demoting a true positive in this corpus** — in which case the floor had
-nothing to save and 0/3 is a statement about opportunity, not about the mechanism. That
-discriminator is unmeasured here, and it is the same rigor pilot-03 applied to its −critic delta
-("a 0 delta is worthless if the critic never proposed anything"). **Measuring it is the next cut**:
-of the 19 `likely_fp` verdicts, how many landed on a finding that caught a seeded defect?
+"0 true positives protected" only condemns the floor if the critic actually *tries* to demote true
+positives. Counted by MARKER (the turn's seeded-defect tags, per the rig's attribution rule), never
+by outcome:
+
+```
+  pilot-03 t2  WARN/security  src/store.ts:37  [no-input-sanitization]
+       seed=path-traversal  landed=TRUE   →  saved by: corroboration (majority) — PRE-EXISTING
+  pilot-03 t4  WARN/security  src/db.ts:37    [injection-via-case-mismatch]
+       seed=sql-injection   landed=FALSE  →  saved by: THE FLOOR
+```
+
+**2 of 15** matched `likely_fp` verdicts targeted a seed-tagged finding. Two conditions must hold
+for a hit to be evidence *for* the floor — the seed must have actually **landed** (else there was no
+real defect to protect), and the **floor** must be what saved it:
+
+- Only **1 of the 2** sat on a seed that landed (pilot-03 t2's path traversal). The critic did
+  propose demoting a real catch — so the floor's protective case is not hypothetical.
+- But that catch was saved by **corroboration (majority), a pre-existing mechanism**. The floor
+  contributed nothing.
+- The one the floor *did* save (t4) sat on a seed that **never landed** — the agent declined to
+  write the SQL injection, so there was no defect. That is one of the 3 false positives.
+
+**The floor's protective case was exercised exactly once, and a pre-existing protection already
+covered it.** Measured benefit: 0 real catches rescued. Measured cost: 3 false positives kept
+blocking. n = 1 exercised opportunity bounds the benefit; it does not prove it is always zero.
 
 ## Options
 
-1. **Revert** — restore the CRITICAL-only exemption. Removes 3 known FPs, and gives up an unmeasured
-   protection against a demoted true positive.
+1. **Revert** — restore the CRITICAL-only exemption. Removes 3 known FPs; gives up a protection
+   whose only exercised opportunity was already covered by corroboration.
 2. **Narrow** — keep the floor but exclude hedged/speculative findings. The repo already has a pass
    that demotes a CRITICAL whose own text frames it as hypothetical or currently-safe; that detector
    does not apply at WARN, which is exactly where all 3 activations sit. Reusing it as a floor
    *exclusion* would have suppressed all 3 without touching the confident case the floor was
    designed for.
-3. **Keep** — only defensible if the discriminator above shows the critic does wrongly demote real
-   true positives at WARN, which is not yet measured.
+3. **Keep** — the discriminator does not support it: the only landed catch the critic tried to
+   demote was already saved by corroboration.
+
+**Recommendation: narrow (option 2), or revert.** The floor's measured benefit in this corpus is
+zero and its measured cost is three false positives, all of the same hedged-speculation shape. The
+narrowing is cheap and targeted, and it leaves the confident case the design was written for intact.
 
 ## How it was measured
 
@@ -99,6 +121,9 @@ of the 19 `likely_fp` verdicts, how many landed on a finding that caught a seede
   are not archived (only the end-of-turn `diff.patch` is), so their signatures no longer resolve.
 - **n = 3 activations over 13 turns, one panel** (`deepseek-v3.2` security + `glm-5.2:cloud`
   correctness). A different panel is a different system.
+- **The discriminator rests on n = 1 exercised opportunity.** One landed seed whose catch the critic
+  tried to demote is thin. It bounds the floor's benefit; it does not prove the benefit is zero in
+  general.
 - **The FP/TP adjudication is human judgement**, made by reading the reconstructed code; the script
   deliberately does not guess it.
 - **`rig/results/` is gitignored** — the numbers are reproducible only on this machine.

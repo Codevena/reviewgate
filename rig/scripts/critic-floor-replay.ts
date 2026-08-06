@@ -23,9 +23,10 @@
 //   bun run rig/scripts/critic-floor-replay.ts
 //   bun run rig/scripts/critic-floor-replay.ts --verbose   # every critic verdict, matched or not
 
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { matchesAnyTag } from "../../src/bench/matcher.ts";
 import { aggregate } from "../../src/core/aggregator.ts";
 import { type CriticVerdict, parseCriticOutput } from "../../src/core/critic.ts";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
@@ -108,6 +109,43 @@ function isFloorActivation(f: Finding): boolean {
   return cats.some((c) => c === "security" || c === "correctness");
 }
 
+/** The turn's seeded defect, from the run's own turn script. `tags` are the CATCH MARKER — the
+ *  handoff's rule is that catches are attributed by marker, never by outcome — and `landedPattern`
+ *  says whether the agent actually wrote the defect (it sometimes declines). */
+interface Seeded {
+  id: string;
+  tags: string[];
+  landedPattern?: string;
+}
+function seededByTurn(run: string): Map<number, Seeded> {
+  const j = JSON.parse(readFileSync(`rig/scripts/${run}.json`, "utf8")) as {
+    turns: { index: number; seeded?: Seeded | null }[];
+  };
+  const out = new Map<number, Seeded>();
+  for (const t of j.turns) {
+    if (t.seeded) out.set(t.index, t.seeded);
+  }
+  return out;
+}
+
+/** Did the seeded defect actually LAND in the recorded diff? A seed the agent declined to write is
+ *  not something the panel could have caught, so a critic verdict on that turn cannot be "demoting
+ *  a true positive" for it. Mirrors harvest.ts's landing check; UNKNOWN (no pattern / no diff /
+ *  bad regex) is reported as unknown rather than assumed either way. */
+function seedLanded(run: string, turn: number, seeded: Seeded): boolean | null {
+  if (!seeded.landedPattern) return null;
+  const patch = `rig/results/${run}/turns/${turn}/diff.patch`;
+  if (!existsSync(patch)) return null;
+  try {
+    return new RegExp(seeded.landedPattern, "m").test(readFileSync(patch, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Same text the rig's harvester matches tags against (`harvest.ts:223`). */
+const findingText = (f: Finding): string => `${f.message} ${f.details}`;
+
 const tmpRoot = mkdtempSync(join(tmpdir(), "critic-floor-replay-"));
 try {
   console.log("Slice B counterfactual — the critic severity floor, replayed over the raw corpus");
@@ -118,12 +156,20 @@ try {
    *  silently dropped: each one is an opportunity the floor may have had that this replay cannot
    *  see, so it belongs in the denominator's error bar. */
   const unmatchedCalls: string[] = [];
+  /** Every likely_fp verdict aimed at a finding that MATCHES its turn's seeded-defect tags — i.e.
+   *  the critic proposing to demote a real catch. This is the floor's reason to exist. */
+  const criticProposedOnSeedCatch: {
+    line: string;
+    landed: boolean | null;
+    savedByFloor: boolean;
+  }[] = [];
   const perRun: { run: string; turns: number; findings: number; verdicts: number }[] = [];
   let likelyFpTotal = 0;
   let matchedTotal = 0;
 
   for (const run of RUNS) {
     const { rows, turnsWithFindings } = readCorpus(run);
+    const seeds = seededByTurn(run);
     const criticCalls = readCriticCalls(run);
     const callsByTurn = new Map<number, string[]>();
     for (const c of criticCalls) {
@@ -200,6 +246,7 @@ try {
         }
         matchedTotal += fps;
         const findings = setsByPanel.get(k) ?? [];
+
         const res = aggregate({
           findings,
           reviewersTotal: reviewersRanPerPanel.get(`${run}/${turn}/${k}`) ?? 1,
@@ -209,6 +256,43 @@ try {
           if (isFloorActivation(f)) {
             activations.push({ run, turn, finding: f, treeExact: k === finalPanelRun });
           }
+        }
+
+        // DISCRIMINATOR — "0 true positives protected" is worthless if the critic never PROPOSED
+        // demoting one. For every likely_fp verdict, ask whether the finding it targets matches the
+        // turn's seeded-defect tags (the marker, per the rig's own attribution rule) on a seed that
+        // actually landed. A demote proposed on such a finding is the exact event the floor exists
+        // to block; if that count is 0, the floor's 0/3 says nothing about the mechanism.
+        const seeded = seeds.get(turn);
+        const landed = seeded ? seedLanded(run, turn, seeded) : null;
+        for (const [sig, v] of critic) {
+          if (v.verdict !== "likely_fp") continue;
+          const target = findings.find((x) => x.signature === sig);
+          if (!target || !seeded) continue;
+          if (!matchesAnyTag(findingText(target), seeded.tags)) continue;
+          // WHICH mechanism actually saved it? Find this finding's representative in the aggregated
+          // output and ask whether the FLOOR is what kept it, or whether a pre-existing protection
+          // (corroboration, or the CRITICAL+security exemption) already covered the case. The floor
+          // only earns its cost where it is the sole thing standing between a real catch and INFO.
+          const rep = res.dedupedFindings.find(
+            (d) =>
+              d.signature === sig || (d.members ?? []).some((mm) => mm.signature === sig) === true,
+          );
+          const savedBy =
+            rep === undefined
+              ? "DEMOTED (not protected)"
+              : isFloorActivation(rep)
+                ? "THE FLOOR"
+                : rep.consensus === "unanimous" || rep.consensus === "majority"
+                  ? `corroboration (${rep.consensus}) — pre-existing`
+                  : rep.severity === "CRITICAL"
+                    ? "CRITICAL+security exemption — pre-existing"
+                    : `other (${rep.severity}/${rep.consensus}, critic_verdict=${rep.critic_verdict ?? "-"})`;
+          criticProposedOnSeedCatch.push({
+            line: `${run} t${turn} ${target.severity}/${target.category} ${target.file}:${target.line_start} [${target.rule_id}]\n         seed=${seeded.id} landed=${landed === null ? "UNKNOWN" : landed}  →  saved by: ${savedBy}`,
+            landed,
+            savedByFloor: rep !== undefined && isFloorActivation(rep),
+          });
         }
 
         if (VERBOSE) {
@@ -302,6 +386,62 @@ try {
   console.log(
     "  deliberately does not guess it. pilot-03's single one was adjudicated a false positive by hand.",
   );
+
+  console.log(
+    `\n${"─".repeat(97)}\nDISCRIMINATOR — did the critic ever PROPOSE demoting a real catch?\n`,
+  );
+  console.log(
+    '  "0 true positives protected" only condemns the floor if the critic actually tries to demote',
+  );
+  console.log(
+    "  true positives. Counted by MARKER (the turn's seeded-defect tags), never by outcome:\n",
+  );
+  if (criticProposedOnSeedCatch.length === 0) {
+    console.log(
+      `    0 of ${matchedTotal} matched likely_fp verdicts targeted a finding matching its turn's seed tags.`,
+    );
+    console.log(
+      "    So in this corpus the critic NEVER proposed demoting a seeded-defect catch, and the floor",
+    );
+    console.log(
+      "    had no true positive to save. Its 0/3 is then a statement about OPPORTUNITY, not about the",
+    );
+    console.log(
+      "    mechanism — the 3 false positives are what it demonstrably costs, the benefit is untested.",
+    );
+  } else {
+    for (const c of criticProposedOnSeedCatch) console.log(`    ${c.line}`);
+    // The count alone is NOT the answer, and reporting it as one would repeat the mistake this
+    // whole replay exists to correct. Two conditions have to hold for a hit to be evidence FOR the
+    // floor: the seeded defect must have actually LANDED (otherwise there was no real defect to
+    // protect), and the FLOOR must be what saved it (rather than a pre-existing protection that
+    // already covered the case).
+    const onLanded = criticProposedOnSeedCatch.filter((c) => c.landed === true);
+    const floorSavedALandedCatch = onLanded.filter((c) => c.savedByFloor);
+    console.log(
+      `\n    ${criticProposedOnSeedCatch.length} of ${matchedTotal} matched likely_fp verdicts targeted a seed-tagged finding.`,
+    );
+    console.log(
+      `    Of those, ${onLanded.length} sat on a seed that actually LANDED — the rest had no real defect to protect.`,
+    );
+    console.log(
+      `    The FLOOR was the mechanism that saved ${floorSavedALandedCatch.length} of those ${onLanded.length}.`,
+    );
+    if (floorSavedALandedCatch.length === 0) {
+      console.log(
+        "\n    So the floor's protective case was exercised, and a PRE-EXISTING mechanism already covered",
+      );
+      console.log(
+        "    it. Measured benefit in this corpus: 0 real catches that would otherwise have been demoted.",
+      );
+      console.log(
+        "    Measured cost: 3 false positives kept blocking. That is an argument to revert or narrow —",
+      );
+      console.log(
+        "    on n = 1 exercised opportunity, so it bounds the benefit rather than proving it is always 0.",
+      );
+    }
+  }
 } finally {
   rmSync(tmpRoot, { recursive: true, force: true });
 }
