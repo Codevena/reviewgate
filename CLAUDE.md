@@ -26,7 +26,7 @@ Einzeltest `bun test tests/unit/foo.test.ts` bzw. `bun test -t "Namensteil"`. `l
 - **Das Warum steht in Lore** (`.reviewgate/lore/`, freigegeben über `bun run dev lore approve <id>`, TTY-pflichtig).
 - Agenten-/Decision-Protokoll: `docs/AGENTS.md` · Architektur: `docs/architecture.md` · Sandbox: `SECURITY.md` · Tests: `TEST_PLAN.md`
 - Sessionstand und nächste Aufgabe: NEXT_SESSION.md im Wurzelverzeichnis
-- Projektstand, Feldrückmeldungen, Entscheidungen: Brain → `02 Projekte/ReviewGate.md`
+- Projektstand, Feldrückmeldungen, Entscheidungen: Brain → `02 Projekte/Aktiv/ReviewGate.md`
 
 ## Wo liegt was — nach Aufgabe
 
