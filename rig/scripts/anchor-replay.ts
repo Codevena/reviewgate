@@ -28,12 +28,15 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
+import { REGION_WINDOW, aggregate } from "../../src/core/aggregator.ts";
 import {
   attestEvidence,
   lineCount,
   normalizeLine,
   validateFindingFacts,
 } from "../../src/core/fact-check.ts";
+import { computeSignature } from "../../src/diff/signature.ts";
+import { enclosingSymbol } from "../../src/research/symbol-graph.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 const RUNS = ["pilot-01", "pilot-02", "pilot-03"] as const;
@@ -71,11 +74,26 @@ interface Scored extends Row {
   repairedTo: number | null;
   /** false when the finding came from a non-final panel run — see EXACTNESS below. */
   exact: boolean;
+  /** The finding AFTER the shipped `validateFindingFacts` — i.e. exactly what the field run fed
+   *  to `aggregate()`. In line-count mode the pass never ran, so this is the raw finding. */
+  checked: Finding;
+  /** Reconstructed working tree for this row's turn (kept until the run's `finally`). */
+  root: string;
+  /** Every 1-based line of the cited file whose content equals this finding's own quote, after
+   *  `normalizeLine`. Empty when the finding carries no usable quote or the file was absent.
+   *  Length > 1 is the TIE-BREAK EXPOSURE an in-range repair would have to decide (see IMPACT). */
+  matchLines: number[];
 }
 
 /** The three outcomes that mean "the citation was out of range" — the Slice A denominator.
  *  `out-of-range-unsplit` is an opportunity whose repair/demote split is unknowable (pilot-01). */
 const OPPORTUNITY = ["repaired", "demoted", "out-of-range-unsplit"] as const;
+
+/** `<run>/<turn>` → how many distinct reviewers RAN that turn (review entries in the cassette,
+ *  whether or not they returned findings). This is the field's `reviewersTotal`, which
+ *  `computeConsensus` divides by — counting only reviewers that produced findings would understate
+ *  the panel and silently misreport how much power a consensus comparison had. */
+const reviewersRan = new Map<string, number>();
 
 function die(msg: string): never {
   console.error(`\nanchor-replay: ABORT — ${msg}`);
@@ -137,7 +155,10 @@ function readCorpus(run: string): { rows: Row[]; turnsWithFindings: Map<number, 
         rows.push({ run, turn: t.index, reviewer: entry.key, panelRun: k, finding });
       }
     }
-    if (seen.size > 0) turnsWithFindings.set(t.index, Math.max(...seen.values()));
+    if (seen.size > 0) {
+      turnsWithFindings.set(t.index, Math.max(...seen.values()));
+      reviewersRan.set(`${run}/${t.index}`, seen.size);
+    }
   }
   return { rows, turnsWithFindings };
 }
@@ -350,6 +371,11 @@ async function replayRun(
           fileLines: lines ?? null,
           repairedTo: null,
           exact: turnExact && r.panelRun === finalPanelRun,
+          // The pass never ran in this mode and there is no file content, so there is nothing to
+          // check against and no quote to locate. The IMPACT section skips these by construction.
+          checked: r.finding,
+          root,
+          matchLines: [],
         });
       }
       continue;
@@ -394,6 +420,9 @@ async function replayRun(
         fileLines,
         repairedTo: after.anchor_repaired === true ? after.line_start : null,
         exact: turnExact && before.panelRun === finalPanelRun,
+        checked: after,
+        root,
+        matchLines: [],
       };
       scored.push(row);
 
@@ -407,7 +436,16 @@ async function replayRun(
       const lines = (await Bun.file(file).text()).split("\n");
       const cited = lines[before.finding.line_start - 1];
       const matchesCited = cited !== undefined && normalizeLine(cited) === evN;
-      const matchesSomewhere = lines.some((l) => normalizeLine(l) === evN);
+      // Collect EVERY matching line rather than `lines.some(...)`. Identical as a boolean (asserted
+      // against attestEvidence by GUARD 6 below), but it also records how many lines the quote
+      // matches — which is exactly the ambiguity an in-range repair would have to resolve and an
+      // out-of-range one never can (past EOF every match is below the cited line).
+      const matchLines: number[] = [];
+      for (let li = 0; li < lines.length; li++) {
+        if (normalizeLine(lines[li] ?? "") === evN) matchLines.push(li + 1);
+      }
+      row.matchLines = matchLines;
+      const matchesSomewhere = matchLines.length > 0;
       if (matchesCited) evidence.matchesCited.push(row);
       else if (matchesSomewhere) evidence.inRangeMisAnchor.push(row);
       else evidence.matchesNothing.push(row);
@@ -588,6 +626,206 @@ try {
     evidenceAll.matchesCited,
     evidenceAll.inRangeMisAnchor,
     evidenceAll.matchesNothing,
+  );
+
+  // -------------------------------------------------------------------------------------------
+  // IMPACT — what an in-range mis-anchor actually COSTS
+  //
+  // The SECONDARY table sizes the population; it does NOT show that the population matters. An
+  // in-range mis-anchor keeps its severity, its file and its (correct) quote — unlike a Slice A
+  // victim, which was demoted to INFO and told it was "almost certainly hallucinated". So before
+  // anything is specced, the question is whether being off by a few lines COSTS anything. Two
+  // shipped mechanisms read line_start at a granularity comparable to the observed offsets:
+  //
+  //   (1) MERGE / CONSENSUS. aggregate() clusters two same-file findings whose line_start differs
+  //       by <= REGION_WINDOW, or whose wording is highly similar within a bounded distance. Two
+  //       reviewers describing ONE defect at two mis-anchored lines can fail to merge — and on a
+  //       2-reviewer panel that is precisely the difference between singleton and majority.
+  //   (2) SIGNATURE IDENTITY. computeSignature buckets line_start (or its offset within the
+  //       enclosing symbol). That signature keys the FP-ledger, per-cycle rejection suppression,
+  //       the fix-verification pin and location-recurrence.
+  //
+  // Both are measured with the REAL shipped functions over each turn's ACTUAL panel output — never
+  // a reimplementation and never a hand-built fixture. The only substitution is the finding's
+  // `signature` field, replaced by a stable per-row id so a finding can be tracked across two arms
+  // that differ in line; GUARD 7 measures that this substitution does not change the clustering.
+  // -------------------------------------------------------------------------------------------
+  console.log(
+    `\n${"─".repeat(95)}\nIMPACT — does an in-range mis-anchor COST anything? (real aggregate + real computeSignature)\n`,
+  );
+
+  // Repair target chosen exactly as reanchorByEvidence would: nearest match to the cited line,
+  // ties to the EARLIER line (its strict `<` over an ascending scan). Past EOF that rule is forced
+  // by the range; in range it is a real choice, which is why the tie count is reported first.
+  const chooseRepair = (cited: number, matches: number[]): number => {
+    let best = matches[0] ?? cited;
+    for (const m of matches) if (Math.abs(m - cited) < Math.abs(best - cited)) best = m;
+    return best;
+  };
+  const misExact = ex(evidenceAll.inRangeMisAnchor);
+  const repairTarget = new Map<Scored, number>();
+  for (const m of misExact) repairTarget.set(m, chooseRepair(m.finding.line_start, m.matchLines));
+
+  const ties = misExact.filter((m) => m.matchLines.length > 1);
+  console.log(
+    `  TIE-BREAK EXPOSURE: ${ties.length} of ${misExact.length} mis-anchored quotes match more than one line.`,
+  );
+  console.log(
+    "  reanchorByEvidence's determinism argument holds only because it is unreachable in range: past",
+  );
+  console.log(
+    "  EOF every match lies below the cited line, so nearest == last and no tie can arise. In range,",
+  );
+  console.log("  matches straddle the cited line and the tie-break becomes a decision.\n");
+  for (const m of misExact) {
+    const to = repairTarget.get(m) ?? 0;
+    console.log(
+      `    ${m.run} t${String(m.turn).padEnd(2)} ${`${m.finding.file}:${m.finding.line_start}`.padEnd(20)} → ${String(to).padEnd(4)} Δ${String(Math.abs(to - m.finding.line_start)).padEnd(3)} ${m.matchLines.length === 1 ? "unique match" : `${m.matchLines.length} MATCHES (${m.matchLines.join(",")})`}  [${m.finding.rule_id}]`,
+    );
+  }
+
+  console.log(
+    `\n  (1) MERGE / CONSENSUS — real aggregate() over each turn's panel output, as-cited vs re-anchored.`,
+  );
+  console.log(
+    `      Two same-file findings cluster when their line_start differs by <= ${REGION_WINDOW}.\n`,
+  );
+  const partition = (r: { dedupedFindings: Finding[] }) =>
+    r.dedupedFindings
+      .map((f) =>
+        (f.members ?? [])
+          .map((m) => m.signature)
+          .sort()
+          .join("+"),
+      )
+      .sort()
+      .join(" | ");
+  const shape = (r: { dedupedFindings: Finding[] }) =>
+    r.dedupedFindings
+      .map((f) => (f.members ?? []).length)
+      .sort((a, b) => a - b)
+      .join(",");
+  const corroborated = (r: { dedupedFindings: Finding[] }) =>
+    r.dedupedFindings.filter((f) => f.consensus !== "singleton").length;
+
+  let turnsChanged = 0;
+  let poweredTurns = 0;
+  for (const key of [...new Set(misExact.map((m) => `${m.run}/${m.turn}`))].sort()) {
+    const [runKey, turnStr] = key.split("/");
+    const turn = Number(turnStr);
+    // The turn's EXACT rows ARE its final panel run across all reviewers — i.e. exactly the set the
+    // field run handed to aggregate(). (The field also ran symbol signatures and the self-refutation
+    // demoter in between; neither changes cluster MEMBERSHIP, which is decided by file/line/wording.)
+    const rows = all.filter((s) => s.run === runKey && s.turn === turn && s.exact);
+    // Reviewers that RAN, not reviewers that returned findings — see `reviewersRan`. A turn where
+    // only ONE reviewer ran cannot produce corroboration under ANY anchoring, so it carries no
+    // power to show a lost merge; that is reported alongside the result rather than averaged into it.
+    const reviewersTotal = reviewersRan.get(key) ?? new Set(rows.map((r) => r.reviewer)).size;
+    const label = (r: Scored, i: number): Finding => ({ ...r.checked, signature: `IDX-${i}` });
+    const armA = rows.map(label);
+    const armB = rows.map((r, i) => {
+      const to = repairTarget.get(r);
+      const f = label(r, i);
+      return to === undefined ? f : { ...f, line_start: to, line_end: to };
+    });
+    const resA = aggregate({ findings: armA, reviewersTotal });
+    const resB = aggregate({ findings: armB, reviewersTotal });
+
+    // GUARD 7 — the stable-id substitution must not itself change the clustering, or the A/B diff
+    // below measures the substitution instead of the re-anchoring.
+    const resAReal = aggregate({ findings: rows.map((r) => r.checked), reviewersTotal });
+    if (shape(resA) !== shape(resAReal)) {
+      die(
+        `${key}: replacing the signature with a stable id changed the cluster shape (${shape(resA)} vs ${shape(resAReal)}) — clustering reads the signature after all, so this A/B comparison is invalid.`,
+      );
+    }
+
+    const changed = partition(resA) !== partition(resB);
+    if (changed) turnsChanged++;
+    if (reviewersTotal >= 2) poweredTurns++;
+    // DIAGNOSTIC — distinguish "the partition held because nothing crossed the region window" from
+    // "it held because the merge was blocked for an unrelated reason". Counts same-file pairs that
+    // are ELIGIBLE to region-merge (distance <= REGION_WINDOW). If this number moves while the
+    // partition does not, some other rule (e.g. the high-stakes category guard) absorbed the move,
+    // and the zero above must not be read as "the offsets are too small to matter".
+    const eligiblePairs = (fs: Finding[]): string[] => {
+      const out: string[] = [];
+      for (let i = 0; i < fs.length; i++) {
+        for (let j = i + 1; j < fs.length; j++) {
+          const a = fs[i];
+          const b = fs[j];
+          if (a === undefined || b === undefined) continue;
+          if (a.file === b.file && Math.abs(a.line_start - b.line_start) <= REGION_WINDOW) {
+            out.push(`${a.file}:${a.line_start}(${a.category})↔${b.line_start}(${b.category})`);
+          }
+        }
+      }
+      return out;
+    };
+    const pairsA = eligiblePairs(armA);
+    const pairsB = eligiblePairs(armB);
+    console.log(
+      `    ${key.padEnd(14)} findings ${String(rows.length).padStart(2)}  reviewers ${reviewersTotal}  clusters ${resA.dedupedFindings.length} → ${resB.dedupedFindings.length}  corroborated ${corroborated(resA)} → ${corroborated(resB)}  region-eligible pairs ${pairsA.length} → ${pairsB.length}  ${changed ? "◀ PARTITION CHANGED" : "partition unchanged"}`,
+    );
+    // When eligibility moved but the partition did not, print the pairs themselves: the reader can
+    // then see WHICH rule absorbed it instead of taking the summary on trust. A pair that appears
+    // only in arm B is a co-location the REPAIR created — the net-new-harm case for an in-range move.
+    if (pairsA.join() !== pairsB.join()) {
+      const onlyA = pairsA.filter((p) => !pairsB.includes(p));
+      const onlyB = pairsB.filter((p) => !pairsA.includes(p));
+      if (onlyA.length > 0) console.log(`                   as-cited only : ${onlyA.join("  ")}`);
+      if (onlyB.length > 0)
+        console.log(`                   REPAIR-CREATED: ${onlyB.join("  ")}  ← did not merge here`);
+    }
+  }
+  const affectedTurns = new Set(misExact.map((m) => `${m.run}/${m.turn}`)).size;
+  console.log(
+    `\n      ${turnsChanged} of ${affectedTurns} affected turns change their cluster partition when the mis-anchors are repaired.`,
+  );
+  console.log(
+    `      POWER: ${poweredTurns} of ${affectedTurns} affected turns ran 2+ reviewers, so a lost corroboration was`,
+  );
+  console.log(
+    `      observable in ${poweredTurns === affectedTurns ? "all of them" : `only ${poweredTurns}`}. Read the region-eligible-pair column before concluding the`,
+  );
+  console.log(
+    "      offsets are too small to matter: an unchanged pair count means they never crossed the",
+  );
+  console.log(
+    "      window, while a changed one that leaves the partition intact means another rule absorbed it.",
+  );
+
+  console.log(
+    "\n  (2) SIGNATURE IDENTITY — real computeSignature with the real enclosingSymbol, on the",
+  );
+  console.log("      reconstructed tree. A changed signature means the FP-ledger, the per-cycle");
+  console.log(
+    "      rejection suppression, the fix-verification pin and location-recurrence would",
+  );
+  console.log("      all see the repaired finding as a DIFFERENT finding.\n");
+  let sigChanged = 0;
+  for (const m of misExact) {
+    const to = repairTarget.get(m) ?? m.finding.line_start;
+    const abs = join(m.root, m.finding.file);
+    const sigAt = async (line: number): Promise<string> => {
+      const sym = await enclosingSymbol(abs, line).catch(() => null);
+      return computeSignature({
+        file: m.finding.file,
+        ruleId: m.finding.rule_id,
+        category: m.finding.category,
+        lineStart: line,
+        lineEnd: line,
+        ...(sym ? { symbolName: sym.name, symbolStartLine: sym.startLine } : {}),
+      });
+    };
+    const differs = (await sigAt(m.finding.line_start)) !== (await sigAt(to));
+    if (differs) sigChanged++;
+    console.log(
+      `    ${m.run} t${String(m.turn).padEnd(2)} ${`${m.finding.file}:${m.finding.line_start}→${to}`.padEnd(26)} signature ${differs ? "CHANGES" : "unchanged"}  [${m.finding.rule_id}]`,
+    );
+  }
+  console.log(
+    `\n      ${sigChanged} of ${misExact.length} mis-anchors change signature when repaired.`,
   );
 
   if (VERBOSE) {
