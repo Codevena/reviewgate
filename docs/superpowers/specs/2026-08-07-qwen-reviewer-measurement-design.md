@@ -192,11 +192,36 @@ Phase 0b's stop condition forces a choice between three options that were weighe
 and deliberately not taken now. Recording them here so the fallback is a decision,
 not an improvisation:
 
-- **Direct API adapter.** A thin provider against the token-plan endpoint, ~2–3 K
-  tokens per review instead of ~26 K — roughly **3 credits per case**, which makes
-  both the authoritative run and a 19-repo rollout affordable. The cost is the
-  whole strategic point: Qwen becomes a pure completion like GLM-5.2, a Slot B
-  voice, and the vendor gap among *executing* reviewers stays open.
+**Correction (2026-08-07):** an earlier draft of this section treated "direct API"
+and "non-executing reviewer" as one option. They are **two independent axes** and
+conflating them hid the best available combination:
+
+- *Axis 1 — harness:* opencode (executes; ~24 K tokens of system prompt) vs. a bare
+  completion (~2–3 K tokens; cannot run anything).
+- *Axis 2 — billing:* token-plan credits (prepaid, 7-day window, 1–2 concurrent
+  agents) vs. pay-per-token DashScope (metered, no window, no concurrency cap).
+
+The options below are points in that grid, not a single ladder.
+
+- **Bare-completion adapter on the token plan.** ~2–3 K tokens per review instead
+  of ~26 K — roughly **3 credits per case**, which makes both the authoritative run
+  and a 19-repo rollout affordable. The cost is the whole strategic point: Qwen
+  becomes a pure completion like GLM-5.2, a Slot B voice, and the vendor gap among
+  *executing* reviewers stays open.
+- **opencode against a pay-per-token DashScope key.** Same harness, same execute
+  capability, different meter — it changes only axis 2. At list pricing the
+  benchmark costs about **$1.70** for 30 cases × 1 repeat and **$5.10** for the
+  authoritative 30 × 3, against 36 % and 108 % of a weekly window respectively.
+  Per token this is *more expensive* than the plan (≈$2.00/M vs. ≈$0.73/M at Lite);
+  what it buys is the absence of a window and of the 1–2 agent cap. A benchmark is
+  a one-off bundled burn, which is precisely the workload profile a prepaid window
+  is the wrong instrument for. **Recommended shape: keep the plan for day-to-day
+  gate traffic, run the benchmark on a metered key.**
+  **Unverified:** whether DashScope pay-per-token actually serves `qwen3.8-max`.
+  models.dev lists it under the `alibaba` provider, but models.dev also claimed 24
+  token-plan models where the live API returned 11, and the token-plan key returns
+  `invalid_api_key` against that endpoint. A real DashScope key must be created and
+  the model list checked before this option is costed as real.
 - **Accept the cost, shrink the scope.** Keep the opencode path, run only the
   exploratory pass (~1,000 credits, 40 % of the week), skip the authoritative run,
   and deploy Qwen as a reviewer in **one** repo rather than nineteen. Full Slot A
