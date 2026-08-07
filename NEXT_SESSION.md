@@ -13,10 +13,10 @@ picks a new task rather than continuing one.**
 
 | | |
 |---|---|
-| my commit this session | **`27c29f7`** — "revert Slice B: the critic WARN security/correctness floor" |
-| pushed? | **YES** — `709390d..27c29f7`, confirmed present on `origin/master` |
-| `HEAD` | **`b3032b3`** — *not mine.* A **second session** is committing to this checkout live |
-| unpushed | **1 commit, `b3032b3`** (the other session's Qwen plan, docs-only). **Not mine to push** |
+| my commits this session | **`27c29f7`** (the revert), `5543549` (this handoff), `76a758c` (Trailhead stamp) |
+| pushed? | **YES, all of them** — verified on `origin/master` after the final push |
+| also on master | **`b3032b3`** — *not mine.* A **second session** is committing to this checkout live; its commit rode along in my push, with Markus's explicit go-ahead |
+| Trailhead stamp | `5543549`. `verify-map.js` → **MAP OK**, 70/70 paths |
 | working tree | `.reviewgate/lore/approvals.jsonl` modified + two untracked `measure-opencode-tokens` files — **all foreign**, leave them alone |
 | suite | **3191 pass / 12 skip / 0 fail**, exit 0 — run at the reviewed tree of `27c29f7` |
 | `tsc` / `lint` | clean. `rig/` checked SEPARATELY (it is outside `tsconfig.include`) — 0 errors in the changed file |
