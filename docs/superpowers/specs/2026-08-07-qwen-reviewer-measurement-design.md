@@ -113,24 +113,58 @@ The bench CLI has `--critic-model`. It has no reviewer equivalent.
 
 ## 5. Phases
 
-**Phase 0 — cost probe.** Read the Bailian console usage **first and write the
-starting number down** (without it there is no delta), run exactly one bench case
-against Qwen, read it again. Output: credits per review call — the number Alibaba
-does not publish. Stop condition: if the extrapolated cost of Phase 2 exceeds
-**600 credits**, stop and re-plan rather than proceed.
+**Phase 0a — cost model. DONE, measured 2026-08-07.** The console reported
+**2.38 % of the weekly quota** consumed, against **50.5 K tokens** in the
+02:00–03:00 bucket. opencode's own session DB attributes that to two
+`qwen3.8-max` calls:
 
-*First signal, 2026-08-07 (indicative, NOT a measurement).* The console read
-**2.38 % used** after this design session, which spent three Qwen calls: two
-trivial `max_tokens: 5` completions and one `opencode run` carrying the full agent
-system prompt. Two unknowns make this unattributable — whether the percentage is
-against the 2,500-credit 7-day window or the ~10,000 monthly figure, and whether
-the counter stood at zero beforehand. Under the two readings that is ~60 or ~238
-credits for three calls. A bench call carries strictly more than any of them (up
-to 32 KB of diff context plus reasoning output), so a 30-case single-repeat run
-plausibly lands between **600 and 2,400 credits** — respectively at the stop
-condition and at the entire 7-day window. Phase 0 is therefore not a formality:
-it is the phase most likely to end this project, and it must resolve the
-denominator question first.
+| call | total | input | output | reasoning | cache read |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 25,629 | 23,544 | 15 | 22 | 2,048 |
+| 2 | 23,414 | 23,238 | 13 | 163 | 0 |
+
+Sum 49,043 tokens, matching the console to within the two bare `curl` probes.
+`0.0238 × 2,500 = 59.5 credits`, so the coefficient Alibaba does not publish is
+**≈ 1.21 credits per 1 K tokens**. The prompt for both calls was *"reply only
+with: OK"*.
+
+The consequence is the central finding of this design: **~24 K tokens per call is
+pure opencode harness overhead** — system prompt plus tool schemas, before the
+reviewer sees a single line of diff. The bench corpus is irrelevant next to it:
+all 30 diffs together are 18.7 KB, median 360 bytes. The 32 KB
+`fileContextBudgetBytes` is a ceiling that is never approached here.
+
+| | credits | share of the 2,500 weekly window |
+| --- | --- | --- |
+| one `opencode run`, any size | **~30** | 1.2 % |
+| the entire weekly window | 2,500 | **≈ 85 opencode calls, total** |
+| bench, 30 cases × 1 repeat | ~1,000 | 40 % |
+| bench, 30 × 3 (authoritative) | ~3,000 | **120 % — does not fit** |
+
+**Phase 0b — reduce the overhead, then re-measure.** The authoritative run is
+impossible at 30 credits per call, so the harness cost is the thing to attack
+before anything is benchmarked. Two levers, both **unverified**:
+
+1. **Tool surface.** The adapter invokes `opencode run --dangerously-skip-permissions
+   --format default` with the default agent. An `--agent` with a reduced tool set
+   should shrink the schema portion of the system prompt. A reviewer needs read and
+   execute; it does not need the full write/edit surface — which also narrows the
+   `sandbox.mode: off` exposure noted in §7.
+2. **Prompt caching.** Call 2 read only 2,048 of 23,238 input tokens from cache
+   (~9 %). Thirty bench calls share an identical system prompt, so the cacheable
+   fraction should be near-total. If caching engages, the run cost collapses;
+   if it does not, that is itself the answer.
+
+Re-measure after each lever with the same DB-plus-console method as Phase 0a.
+**Stop condition:** if per-case cost cannot be brought under **20 credits**, the
+opencode path cannot carry an authoritative run, and the choice reverts to the
+three alternatives weighed in §5a.
+
+**Phase 0c — one bench case end-to-end** at the tuned settings, to convert the
+per-call figure into a real per-case figure (a review prompt is larger than "reply
+only with: OK", and its output is reasoning-heavy — our sample produced 15 output
+tokens, a real review will produce orders of magnitude more, and output may carry
+a different credit weight than input, which this measurement cannot resolve).
 
 **Phase 1 — `--provider-model`.** Implement approach A. Passes through the
 PRE-implementation Plan-Gate first, with an *executing* reviewer, per the global
@@ -152,6 +186,42 @@ remaining window budget covers it: committed preregistration, 3 repeats, the ful
 **Phase 4 — slot decision.** Separate spec: panel position, the CLAUDE.md Slot A/B
 rules, and whether/where to roll out.
 
+## 5a. If the overhead cannot be reduced
+
+Phase 0b's stop condition forces a choice between three options that were weighed
+and deliberately not taken now. Recording them here so the fallback is a decision,
+not an improvisation:
+
+- **Direct API adapter.** A thin provider against the token-plan endpoint, ~2–3 K
+  tokens per review instead of ~26 K — roughly **3 credits per case**, which makes
+  both the authoritative run and a 19-repo rollout affordable. The cost is the
+  whole strategic point: Qwen becomes a pure completion like GLM-5.2, a Slot B
+  voice, and the vendor gap among *executing* reviewers stays open.
+- **Accept the cost, shrink the scope.** Keep the opencode path, run only the
+  exploratory pass (~1,000 credits, 40 % of the week), skip the authoritative run,
+  and deploy Qwen as a reviewer in **one** repo rather than nineteen. Full Slot A
+  capability, minimal reach.
+- **Buy Extra Bundles.** $15 per 20,000 credits, window-exempt, up to five held.
+  Makes the authoritative run trivial and turns $6/month into $21. It buys
+  headroom, not an answer — the "is 24 K tokens of packaging worth it" question
+  remains open, so this is a supplement to one of the two options above, never a
+  substitute.
+- **Move up a plan tier.** At the measured ~30 credits per opencode call, the
+  7-day windows translate directly into review throughput:
+
+  | tier | $/month | 7-day window | opencode calls/week | bench 1× | bench 3× | concurrent agents |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | Lite (current) | 6 | 2,500 | ~83 | 40 % | does not fit | 1–2 |
+  | Standard | 18 | 10,000 | ~333 | 10 % | 30 % | 3–4 |
+  | Pro | 68 | 40,000 | ~1,333 | 2.5 % | 7.5 % | 6–8 |
+
+  Standard is the first tier on which the authoritative run and a 3-voice panel
+  both fit. **Deliberately not taken before Phase 0b:** a larger plan buys
+  headroom, not an answer, and if caching engages the same work may fit inside
+  Lite. If a tier change is warranted afterwards it is Standard — Pro solves a
+  volume problem that only exists once Qwen has *earned* a slot in many repos,
+  which is precisely what has not been measured yet.
+
 ## 6. Acceptance bar (preregistered, fixed before any run)
 
 Qwen earns a slot if, on the RAW per-provider layer:
@@ -171,9 +241,12 @@ and the spec says so rather than dressing it up.
 
 ## 7. Risks
 
-- **An empty 7-day window stops the gate for a week.** This is the dominant risk
-  and the reason for the staging in §5. Mitigation: per-phase stop conditions, the
-  600-credit ceiling, and the $15/20,000 Extra Bundle as a bounded escape hatch.
+- **An empty 7-day window stops the gate for a week.** Now quantified rather than
+  feared: the window holds **≈ 85 opencode calls**. A gate that reviews every turn
+  across the 19 repos carrying a `.reviewgate/` would exhaust it inside a single
+  working day. This is the dominant risk, it is what Phase 0b exists to attack,
+  and it is why the rollout is explicitly out of scope until the per-call cost is
+  known. Mitigation: per-phase stop conditions and the window-exempt Extra Bundle.
 - **Concurrency 1–2.** `--repeat` and multi-provider panels may run reviewers
   concurrently. Phase 2 must confirm the harness does not exceed the plan's agent
   concurrency, or Qwen will fail in a way that looks like a model defect but is a
