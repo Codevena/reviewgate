@@ -79,7 +79,7 @@ details. The `/chat/completions` response carries no quota headers (checked). An
 cost estimate therefore has to be *measured*, which is why Phase 0 exists.
 
 **Reviewgate already accommodates this.** Every slot in the config schema takes an
-optional per-slot model — `src/config/define-config.ts:52` (reviewers), `:193`
+optional per-slot model — `src/config/define-config.ts:54` (reviewers), `:193`
 (critic), `:197` (triage), `:204` (grounding), `:212` (brain.curator). The
 `opencode` adapter honours it: `src/providers/opencode.ts:103` appends `-m <model>`
 whenever the model is not the sentinel `"default"`, and `:185` stamps the model
@@ -137,9 +137,9 @@ all 30 diffs together are 18.7 KB, median 360 bytes. The 32 KB
 | | credits | share of the 2,500 weekly window |
 | --- | --- | --- |
 | one `opencode run`, any size | **~30** | 1.2 % |
-| the entire weekly window | 2,500 | **≈ 85 opencode calls, total** |
-| bench, 30 cases × 1 repeat | ~1,000 | 40 % |
-| bench, 30 × 3 (authoritative) | ~3,000 | **120 % — does not fit** |
+| the entire weekly window | 2,500 | **≈ 83 opencode calls, total** |
+| bench, 30 cases × 1 repeat | ~900 | 36 % |
+| bench, 30 × 3 (authoritative) | ~2,700 | **108 % — does not fit** |
 
 **Phase 0b — reduce the overhead, then re-measure.** The authoritative run is
 impossible at 30 credits per call, so the harness cost is the thing to attack
@@ -188,9 +188,15 @@ rules, and whether/where to roll out.
 
 ## 5a. If the overhead cannot be reduced
 
-Phase 0b's stop condition forces a choice between three options that were weighed
-and deliberately not taken now. Recording them here so the fallback is a decision,
-not an improvisation:
+Phase 0b's stop condition forces a choice between the options below, weighed and
+deliberately not taken now. Recording them here so the fallback is a decision, not
+an improvisation.
+
+**Five are listed; four are live.** The pay-per-token DashScope route — which an
+earlier draft of this section recommended — was measured on 2026-08-07 and is
+**blocked**, so do not route the stop branch there. The live four are:
+bare-completion adapter, shrink-the-scope, Extra Bundles, and a plan-tier change;
+the last two are supplements to one of the first two, never substitutes.
 
 **Correction (2026-08-07):** an earlier draft of this section treated "direct API"
 and "non-executing reviewer" as one option. They are **two independent axes** and
@@ -208,22 +214,29 @@ The options below are points in that grid, not a single ladder.
   and a 19-repo rollout affordable. The cost is the whole strategic point: Qwen
   becomes a pure completion like GLM-5.2, a Slot B voice, and the vendor gap among
   *executing* reviewers stays open.
-- **opencode against a pay-per-token DashScope key.** Same harness, same execute
+- ~~**opencode against a pay-per-token DashScope key.**~~ **BLOCKED — measured
+  2026-08-07, see Phase 1b in the plan.** A DashScope workspace key lists 156 models
+  including `qwen3.8-max` but returns `AccessDenied.Unpurchased` on every completion,
+  account-wide (five models tested). Root cause: `RISK.RISK_CONTROL_REJECTION` on the
+  account — pay-as-you-go cannot be activated until Alibaba support lifts it. The
+  analysis below stands and this becomes live again if that happens; until then it is
+  **not** an escalation target. Same harness, same execute
   capability, different meter — it changes only axis 2. At list pricing the
   benchmark costs about **$1.70** for 30 cases × 1 repeat and **$5.10** for the
   authoritative 30 × 3, against 36 % and 108 % of a weekly window respectively.
   Per token this is *more expensive* than the plan (≈$2.00/M vs. ≈$0.73/M at Lite);
   what it buys is the absence of a window and of the 1–2 agent cap. A benchmark is
   a one-off bundled burn, which is precisely the workload profile a prepaid window
-  is the wrong instrument for. **Recommended shape: keep the plan for day-to-day
-  gate traffic, run the benchmark on a metered key.**
+  is the wrong instrument for. ~~Recommended shape: keep the plan for day-to-day
+  gate traffic, run the benchmark on a metered key.~~ **Withdrawn — this route is
+  blocked; see the strikethrough above.**
   **Unverified:** whether DashScope pay-per-token actually serves `qwen3.8-max`.
   models.dev lists it under the `alibaba` provider, but models.dev also claimed 24
   token-plan models where the live API returned 11, and the token-plan key returns
   `invalid_api_key` against that endpoint. A real DashScope key must be created and
   the model list checked before this option is costed as real.
 - **Accept the cost, shrink the scope.** Keep the opencode path, run only the
-  exploratory pass (~1,000 credits, 40 % of the week), skip the authoritative run,
+  exploratory pass (~900 credits, 36 % of the week), skip the authoritative run,
   and deploy Qwen as a reviewer in **one** repo rather than nineteen. Full Slot A
   capability, minimal reach.
 - **Buy Extra Bundles.** $15 per 20,000 credits, window-exempt, up to five held.
@@ -234,11 +247,11 @@ The options below are points in that grid, not a single ladder.
 - **Move up a plan tier.** At the measured ~30 credits per opencode call, the
   7-day windows translate directly into review throughput:
 
-  | tier | $/month | 7-day window | opencode calls/week | bench 1× | bench 3× | concurrent agents |
+  | tier | $/month | 7-day window | opencode calls/week | bench 1× (~900 cr) | bench 3× (~2,700 cr) | concurrent agents |
   | --- | --- | --- | --- | --- | --- | --- |
-  | Lite (current) | 6 | 2,500 | ~83 | 40 % | does not fit | 1–2 |
-  | Standard | 18 | 10,000 | ~333 | 10 % | 30 % | 3–4 |
-  | Pro | 68 | 40,000 | ~1,333 | 2.5 % | 7.5 % | 6–8 |
+  | Lite (current) | 6 | 2,500 | ~83 | 36 % | **108 % — does not fit** | 1–2 |
+  | Standard | 18 | 10,000 | ~333 | 9 % | 27 % | 3–4 |
+  | Pro | 68 | 40,000 | ~1,333 | 2.3 % | 6.8 % | 6–8 |
 
   Standard is the first tier on which the authoritative run and a 3-voice panel
   both fit. **Deliberately not taken before Phase 0b:** a larger plan buys
@@ -267,7 +280,7 @@ and the spec says so rather than dressing it up.
 ## 7. Risks
 
 - **An empty 7-day window stops the gate for a week.** Now quantified rather than
-  feared: the window holds **≈ 85 opencode calls**. A gate that reviews every turn
+  feared: the window holds **≈ 83 opencode calls**. A gate that reviews every turn
   across the 19 repos carrying a `.reviewgate/` would exhaust it inside a single
   working day. This is the dominant risk, it is what Phase 0b exists to attack,
   and it is why the rollout is explicitly out of scope until the per-call cost is

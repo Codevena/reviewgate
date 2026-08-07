@@ -25,7 +25,7 @@
 
   **Two consequences this plan is built around:**
   1. **Cache read costs ⅛ of input.** If credits track list pricing, a 90 %-cached call drops from ~30 to **~6 credits** — a 5× reduction that clears the 20-credit stop condition on its own. **Task 3 is therefore the decisive task, not Task 2.** Whether the credit ledger actually discounts cached tokens is unverified and is exactly what Task 3 Step 4 measures.
-  2. **Output weighs 3× input.** The sample behind the coefficient produced 213 output tokens total; a real review is reasoning-heavy. At a realistic 1–2 K output that is **+5 to +7 credits per call** on top of the input cost. Task 5 is the only step that measures a realistic mix.
+  2. **Output weighs 3× input.** The sample behind the coefficient produced 213 output tokens total; a real review is reasoning-heavy. At a realistic 1–2 K output that is **+3.6 to +7.3 credits per call** on top of the input cost (`1 K × 3 × 1.21 = 3.63`). Task 5 is the only step that measures a realistic mix.
 - **Budget depends on Task 1b's outcome.** If pay-per-token access works, this plan costs the credit window **~120 credits** (Task 3 Step 4 only, which is a question *about* the plan's billing) plus **~$0.20** metered. If it does not, the plan costs **~250 credits ≈ 10 %** of the 2,500-credit 7-day window (Task 2 ~90, Task 3 ~120, Task 5 ~30–40). Per-task costs are stated in each task. If a task's measured cost exceeds its stated estimate by more than 2×, stop and report — do not continue spending.
 - **Stop condition (from spec §5, Phase 0b):** if per-case cost cannot be brought under **20 credits**, stop and escalate to spec §5a. Do not proceed to Task 5.
 - **Never run measurement calls in parallel.** The Lite plan allows 1–2 concurrent agents; parallel calls will throttle and look like model defects.
@@ -50,7 +50,7 @@
 | `tests/unit/bench-provider-model.test.ts` | Parser tests + the provenance guard test. | 4 |
 | `bench/results/qwen-overhead/DECISION.md` | The per-case figure and the go/no-go against the 20-credit stop condition. | 5 |
 
-**Note, not a task:** `buildRoster` (`src/cli/commands/bench.ts:499`) records `providerCfg?.model`, ignoring a per-reviewer `r.model` override (`src/config/define-config.ts:54`). A run that used a reviewer-level override would therefore write a *different* model into provenance than it ran. Out of scope here — this plan sets the provider-level model, which `buildRoster` reads correctly. Report it separately.
+**Note, not a task:** `buildRoster` (`src/cli/commands/bench.ts:501`) records `providerCfg?.model`, ignoring a per-reviewer `r.model` override (`src/config/define-config.ts:54`). A run that used a reviewer-level override would therefore write a *different* model into provenance than it ran. Out of scope here — this plan sets the provider-level model, which `buildRoster` reads correctly. Report it separately.
 
 ---
 
@@ -149,8 +149,8 @@ Create `tests/unit/measure-opencode-tokens.test.ts`:
 // The token oracle for Qwen cost measurements: reads per-call token usage out of
 // opencode's own session DB, so a cost claim is never a guess. Seeded temp DB —
 // never touches the real ~/.local/share/opencode/opencode.db.
-import { describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
+import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -233,8 +233,7 @@ describe("creditsFor", () => {
     // Console: 2.38% of the 2500-credit weekly window = 59.5 credits for both calls.
     const a = readLatestUsage("qwen3.8-max", 50, seedDb([REAL_CALL_1]));
     const b = readLatestUsage("qwen3.8-max", 50, seedDb([REAL_CALL_2]));
-    const total =
-      creditsFor(a as NonNullable<typeof a>) + creditsFor(b as NonNullable<typeof b>);
+    const total = creditsFor(a as NonNullable<typeof a>) + creditsFor(b as NonNullable<typeof b>);
     expect(total).toBeCloseTo(59.5, 0);
   });
 });
@@ -327,8 +326,12 @@ if (import.meta.main) {
     console.error(`no usage recorded for model "${model}"`);
     process.exit(1);
   }
-  console.log(
-    JSON.stringify({ model, ...usage, credits: Number(creditsFor(usage).toFixed(2)) }, null, 2),
+  // process.stdout.write, not console.log: biome's lint/suspicious/noConsoleLog flags
+  // it and the global CLAUDE.md forbids console.log in favour of console.warn/error.
+  // `scripts/` sits outside both the lint glob (`src tests bin`) and the format glob
+  // (`src tests`), so nothing catches this today — but a later widening would.
+  process.stdout.write(
+    `${JSON.stringify({ model, ...usage, credits: Number(creditsFor(usage).toFixed(2)) }, null, 2)}\n`,
   );
 }
 ```
@@ -349,7 +352,7 @@ sed -i '' 's/export const CREDITS_PER_1K_TOKENS = 1.21;/export const CREDITS_PER
 bun test tests/unit/measure-opencode-tokens.test.ts
 ```
 
-Expected: **FAIL** on both `creditsFor` tests (31.01 → 62.02, 59.5 → 119.0). If it stays green the test is vacuous — rewrite it.
+Expected: **FAIL** on both `creditsFor` tests (31.01 → 62.02, and 59.5 → 118.68). If it stays green the test is vacuous — rewrite it.
 
 ```bash
 rm -rf /tmp/rg-mut && cd ~/Developer/reviewgate && git diff --stat
@@ -496,7 +499,13 @@ Record as variant `pure`. Note: `~/.config/opencode/package.json` declares one p
 
 - [ ] **Step 3: Create the reduced-tool agent**
 
-Create `~/.config/opencode/agent/rg-reviewer.md`:
+The directory does not exist yet, so create it first:
+
+```bash
+mkdir -p ~/.config/opencode/agent
+```
+
+Then create `~/.config/opencode/agent/rg-reviewer.md`:
 
 ```markdown
 ---
@@ -553,7 +562,13 @@ Create `bench/results/qwen-overhead/tool-surface.json` with all three variants, 
 
 - [ ] **Step 7: Check against the stop condition and commit**
 
-If the cheapest variant is still **> 20 credits**, stop here. Report the number, do not start Task 3 or Task 4, and escalate to spec §5a.
+Record the cheapest variant's cost. **Do not stop the plan here even if it exceeds 20 credits.**
+
+The stop condition belongs *after* Task 3, not after Task 2: Task 3 is the decisive lever (~5× from caching vs. Task 2's few K tokens), so abandoning on Task 2's number would kill the project on the weaker measurement. Task 4 is free and is a standalone spec Goal (§2, "close the one gap that makes such a measurement impossible today") — it is **exempt from every cost gate** and gets built regardless.
+
+Concretely: if the cheapest variant here exceeds 20 credits, note it, continue to Task 3, and let the combined Task 2 + Task 3 figure decide. **Only Task 5** is gated — it is the one that spends credits on a full review.
+
+Note also that this number is a per-**call** proxy measured with a 15-output-token prompt, while the spec's stop condition is per-**case**. A real review adds several credits of output on top (output weighs 3× input). Treat >13 credits here as already at risk, and let Task 5 supply the number that actually counts.
 
 ```bash
 cd ~/Developer/reviewgate && git status --porcelain
@@ -637,6 +652,30 @@ git add bench/results/qwen-overhead/caching.json
 git commit -m "bench: measure cache fill, credit discount and TTL survival for qwen3.8-max"
 ```
 
+- [ ] **Step 7: Evaluate the stop condition — this is the only place it is evaluated**
+
+Task 2 Step 7 deliberately does not stop the plan, and Task 4 is exempt from every cost gate. **This step owns the 20-credit decision for the whole plan.** Compute the effective per-call cost of the cheapest configuration, using Step 4's verdict to decide which number is real:
+
+| Step 4 verdict | effective per-call credits | reading |
+| --- | --- | --- |
+| `discounted: true` | the measured console delta **÷ 3 calls** | caching pays; use this |
+| `discounted: false` | Task 2's cheapest variant, unchanged | caching fills but does not bill cheaper |
+| `discounted: "unknown"` | Task 2's cheapest variant, flagged as an upper bound | see below |
+
+**The divisor is 3, not 4.** Task 3 takes exactly two console readings: Step 1 (before anything) and Step 4 (after Step 2's `for i in 1 2 3` loop). Step 5's TTL call happens *after* the Step 4 reading and no reading is taken afterwards, so the delta covers **three** calls. Dividing by 4 would understate the per-call cost by 25 % — in the permissive direction, on the one number that authorises spending. If you want a four-call figure instead, add a third console reading after Step 5 and divide the full Step 1 → post-Step-5 delta by 4.
+
+**If Task 3 ran before Task 2** (the header explicitly permits it), rows 2 and 3 have no "Task 2 cheapest variant" to reference. Use `creditsFor` on Task 3 Step 2's **call 1** instead — it is an uncached baseline with a DB token figure — and **re-evaluate this step once Task 2 completes**, since a cheaper variant changes the verdict.
+
+Then apply the condition:
+
+- **< 13 credits** → clear. Proceed to Task 5.
+- **13 ≤ x < 20 credits** → at risk. Proceed to Task 5, but state in the artifact that the headroom for a realistic output mix (output weighs 3× input, +3.6 to +7.3 credits) is thin.
+- **≥ 20 credits** → **stop.** Do not run Task 5. Report the number and escalate to spec §5a, naming which of its **four live** options fits. (§5a lists five; the pay-per-token DashScope route is dead — Task 1b measured it blocked.)
+
+**`discounted: "unknown"` does NOT block Task 5.** It routes *to* it: Task 5 is a single real review, ~30–40 credits, and it is the only measurement that resolves both the discount question and the realistic output mix at once. Blocking on an unresolved sub-question would spend zero credits and learn nothing. Proceed unless the upper-bound figure alone already exceeds 20.
+
+Record the computed figure and the branch taken in `caching.json` under `stopCondition: { effectivePerCall, verdict: "clear" | "at-risk" | "stop", basis }`, and amend the Step 6 commit.
+
 ---
 
 ### Task 4: `--provider-model` for `reviewgate bench`
@@ -651,7 +690,7 @@ Free (no model calls — tests use in-process stub adapters).
 
 **Interfaces:**
 - Consumes: `ProviderId` from `src/providers/registry.ts:10` (`"codex" | "gemini" | "claude-code" | "openrouter" | "opencode" | "ollama"`); `buildBenchConfig` from `src/bench/runner.ts`.
-- Produces: `parseProviderModels(raw: string): Partial<Record<ProviderId, string>>` exported from `src/cli/commands/bench.ts`; `BenchConfigOptions.providerModels?: Partial<Record<ProviderId, string>>`. The resolved value lands in provenance via `buildRoster` (`src/cli/commands/bench.ts:499`, which reads `providerCfg?.model`).
+- Produces: `parseProviderModels(raw: string): Partial<Record<ProviderId, string>>` exported from `src/cli/commands/bench.ts`; `BenchConfigOptions.providerModels?: Partial<Record<ProviderId, string>>`. The resolved value lands in provenance via `buildRoster` (`src/cli/commands/bench.ts:501`, which reads `providerCfg?.model`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -664,8 +703,9 @@ Create `tests/unit/bench-provider-model.test.ts`:
 // which means "whatever ~/.config/opencode/opencode.jsonc happens to say" — a
 // benchmark input living outside the repo, invisible to the provenance manifest.
 import { describe, expect, it } from "bun:test";
-import { parseProviderModels } from "../../src/cli/commands/bench.ts";
+// Import order per biome's organizeImports: bench/runner before cli/commands/bench.
 import { buildBenchConfig } from "../../src/bench/runner.ts";
+import { buildRoster, parseProviderModels } from "../../src/cli/commands/bench.ts";
 
 const QWEN = "alibaba-token-plan/qwen3.8-max";
 
@@ -720,22 +760,55 @@ describe("buildBenchConfig providerModels", () => {
     expect(cfg.providers.opencode?.model).toBe(QWEN);
   });
 
+  // Two numbers: the shipped default for ollama is "glm-5.2:cloud"
+  // (src/config/defaults.ts:63), so the override MUST be a different value or the
+  // test proves nothing. WITHOUT the mechanism: "glm-5.2:cloud". WITH it:
+  // "qwen3-coder:480b-cloud".
   it("pins a provider that is not in the reviewer panel", () => {
+    expect(buildBenchConfig({ providers: ["opencode"] }).providers.ollama?.model).toBe(
+      "glm-5.2:cloud",
+    );
     const cfg = buildBenchConfig({
       providers: ["opencode"],
-      providerModels: { ollama: "glm-5.2:cloud" },
+      providerModels: { ollama: "qwen3-coder:480b-cloud" },
     });
-    expect(cfg.providers.ollama?.model).toBe("glm-5.2:cloud");
+    expect(cfg.providers.ollama?.model).toBe("qwen3-coder:480b-cloud");
   });
 
+  // `suppressors: { critic: "openrouter" }` is REQUIRED: defaultConfig.phases.critic
+  // is null, and buildBenchConfig applies criticModel only inside its
+  // `if (base.phases.critic)` branch. Without it, cfg.phases.critic?.model is
+  // undefined and this test fails — which is correct existing behaviour, NOT a bug
+  // to "fix" by making criticModel unconditional.
   it("does not disturb the critic model override", () => {
     const cfg = buildBenchConfig({
       providers: ["opencode"],
       providerModels: { opencode: QWEN },
+      suppressors: { critic: "openrouter" },
       criticModel: "deepseek/deepseek-v4-flash",
     });
     expect(cfg.providers.opencode?.model).toBe(QWEN);
     expect(cfg.phases.critic?.model).toBe("deepseek/deepseek-v4-flash");
+  });
+});
+
+describe("buildRoster provenance", () => {
+  // The spec states the guard in terms of PROVENANCE, not config. Every test above
+  // asserts cfg.providers.<id>.model — the config layer. This one closes the hop to
+  // what actually gets written into the results file, via the `roster.push` in
+  // buildRoster (`model: providerCfg?.model ?? "unknown"`).
+  // Empty adapters: preflight is skipped, cli_version falls back to "unknown", and the
+  // model still resolves — which is the only field under test here.
+  // WITHOUT the override: "default". WITH it: the pinned id.
+  it("records the pinned model in the provenance roster", async () => {
+    const plain = await buildRoster(buildBenchConfig({ providers: ["opencode"] }), {});
+    expect(plain[0]?.model).toBe("default");
+
+    const pinned = await buildRoster(
+      buildBenchConfig({ providers: ["opencode"], providerModels: { opencode: QWEN } }),
+      {},
+    );
+    expect(pinned[0]?.model).toBe(QWEN);
   });
 });
 ```
@@ -746,7 +819,7 @@ describe("buildBenchConfig providerModels", () => {
 cd ~/Developer/reviewgate && bun test tests/unit/bench-provider-model.test.ts
 ```
 
-Expected: FAIL — `parseProviderModels` is not exported, and the `providerModels` cases fail because the option is ignored.
+Expected: FAIL — and specifically, the file does not even load: `SyntaxError: Export named 'parseProviderModels' not found` (`buildRoster` is not exported yet either), reported as "0 pass, 1 fail, 1 error". No individual case runs. That is the correct red-first state; do not "fix" it by stubbing the exports before writing the real ones.
 
 - [ ] **Step 3: Add the option to `BenchConfigOptions`**
 
@@ -795,7 +868,11 @@ const PROVIDER_IDS: readonly ProviderId[] = [
  * and occasionally `=`. */
 export function parseProviderModels(raw: string): Partial<Record<ProviderId, string>> {
   const out: Partial<Record<ProviderId, string>> = {};
-  for (const pair of raw.split(",").map((s) => s.trim()).filter(Boolean)) {
+  const pairs = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const pair of pairs) {
     const eq = pair.indexOf("=");
     if (eq <= 0) {
       throw new Error(`--provider-model expects <provider>=<model>, got "${pair}"`);
@@ -818,6 +895,8 @@ Add `providerModels?: Partial<Record<ProviderId, string>>;` to `BenchRunInput` n
       ...(input.providerModels ? { providerModels: input.providerModels } : {}),
 ```
 
+Finally, export `buildRoster` so the provenance guard can reach it — change `async function buildRoster(` at `:479` to `export async function buildRoster(`. Nothing else about it changes; it is used internally at `:794` exactly as before.
+
 - [ ] **Step 6: Wire the CLI flag**
 
 In `src/cli/index.ts`, directly after the `critic-model` block (`:830-832`):
@@ -836,7 +915,7 @@ Import `parseProviderModels` from `./commands/bench.ts` alongside the existing b
 cd ~/Developer/reviewgate && bun test tests/unit/bench-provider-model.test.ts
 ```
 
-Expected: PASS, 11 tests.
+Expected: PASS, 12 tests (7 parser + 4 config + 1 provenance roster).
 
 - [ ] **Step 8: Mutation-check the guard in a COPY**
 
@@ -847,7 +926,9 @@ perl -0pi -e 's/  if \(opts\.providerModels\) \{.*?\n  \}\n//s' src/bench/runner
 bun test tests/unit/bench-provider-model.test.ts
 ```
 
-Expected: **FAIL** on the three `providerModels` pinning cases (they fall back to `"default"`), while the "no override" case still passes. If everything stays green the guard is vacuous — rewrite it.
+Expected: **exactly 4 red** — "pins the provider model", "pins a provider that is not in the reviewer panel", "does not disturb the critic model override" (it asserts the pinned opencode model too), and "records the pinned model in the provenance roster". "Leaves the model at the 'default' sentinel" must stay **green**: it asserts the WITHOUT number, which the mutation does not change.
+
+Fewer than 4 red means one of the guards is vacuous — find which and rewrite it. More than 4 means the mutation removed something else too; check the `perl` substitution actually matched only the intended block.
 
 ```bash
 rm -rf /tmp/rg-mut2 && cd ~/Developer/reviewgate && git diff --stat
@@ -855,13 +936,23 @@ rm -rf /tmp/rg-mut2 && cd ~/Developer/reviewgate && git diff --stat
 
 Expected: no changes to the real repo.
 
-- [ ] **Step 9: Static gates**
+- [ ] **Step 9: Format first, then static gates**
+
+The code blocks pasted from this plan do **not** satisfy biome as written — measured: the chained `raw.split(",").map((s) => s.trim()).filter(Boolean)` must be broken across lines, and both new test files need `organizeImports`. Run the formatter before judging anything:
 
 ```bash
-cd ~/Developer/reviewgate && bun run typecheck && bun run lint && bun test
+cd ~/Developer/reviewgate && bun run format && bunx biome check --fix src tests
+bun run typecheck && bun run lint
 ```
 
-All three must pass before the commit.
+Then the suite. **Scope it** — a parallel session has been committing to `src/core/aggregator.ts`, `rig/scripts/` and several tests today, so a full `bun test` can go red for reasons that have nothing to do with this plan:
+
+```bash
+cd ~/Developer/reviewgate && git status --porcelain
+bun test tests/unit/bench-provider-model.test.ts tests/unit/measure-opencode-tokens.test.ts
+```
+
+If the tree is clean of foreign work, run the full `bun test` as well and require it green. If it is not, record which suites you ran and why the full run was skipped — never present a scoped run as a full one.
 
 - [ ] **Step 10: Commit**
 
@@ -877,7 +968,7 @@ git commit -m "feat(bench): --provider-model pins a reviewer's upstream model in
 
 **Estimated cost: ~30–40 credits** (one review call at the tuned configuration; a real review prompt is larger and far more output-heavy than "Antworte nur mit: OK").
 
-Only run this if Task 2 cleared the 20-credit stop condition.
+Only run this if **Task 3 Step 7 recorded `stopCondition.verdict` as `clear` or `at-risk`** in `bench/results/qwen-overhead/caching.json`. That step is the single evaluation site for the 20-credit condition. (Tasks 2, 3 and 4 all run regardless — this is the only cost-gated task.)
 
 **Files:**
 - Create: `bench/results/qwen-overhead/DECISION.md`
@@ -888,7 +979,13 @@ Only run this if Task 2 cleared the 20-credit stop condition.
 
 - [ ] **Step 1: Point the adapter at the tuned invocation**
 
-The adapter hard-codes `["run", "--dangerously-skip-permissions", "--format", "default"]` (`src/providers/opencode.ts:242`). If Task 2's winner needs `--pure` and/or `--agent rg-reviewer`, add them there — a one-line change, and note in the commit that this is measurement scaffolding, not a shipped default.
+**The reviewer path builds its argv at `src/providers/opencode.ts:97`**, inside `reviewInRun()` (`review()` :73 → `reviewInRun()` :90 → `const args = ["run", …]` at :97). Add Task 2's winning flags (`--pure` and/or `--agent rg-reviewer`) **there**.
+
+**Do not edit `:242`.** That argv array belongs to `complete()`, which serves the critic / triage / grounding / curator roles. `bench run --providers opencode` with the default (null) critic calls only `review()`, so a change at `:242` would leave the measurement completely untuned while Step 4 reported the number as tuned — and that number is the go/no-go for the whole spec. `:242` matters only if a critic or curator is *also* running on opencode, which this plan never configures.
+
+Note in the commit that this is measurement scaffolding, not a shipped default.
+
+Also verify the flag list itself: `--dangerously-skip-permissions` does **not** appear in `opencode run --help` for 1.18.10 (the documented flag is `--auto`), and opencode exits 0 on unknown flags instead of rejecting them — so a silently-ignored permission flag is possible, and is a plausible cause of the curator hang recorded in spec §8. Spend one non-model check here (`opencode run --help`) and switch to `--auto` if the old flag is gone.
 
 - [ ] **Step 2: Run exactly one case**
 
@@ -916,7 +1013,7 @@ cd ~/Developer/reviewgate && bun run scripts/measure-opencode-tokens.ts qwen3.8-
 
 - [ ] **Step 5: Write the decision record**
 
-Create `bench/results/qwen-overhead/DECISION.md` stating: measured per-case credits, extrapolated cost of 30 cases × 1 repeat and 30 × 3, whether each fits the 2,500-credit weekly window, and the go/no-go for spec Phase 2. If it is a no-go, name which of the three §5a options is recommended and why.
+Create `bench/results/qwen-overhead/DECISION.md` stating: measured per-case credits, extrapolated cost of 30 cases × 1 repeat and 30 × 3, whether each fits the 2,500-credit weekly window, and the go/no-go for spec Phase 2. If it is a no-go, name which of the **four live** §5a options is recommended and why (the fifth, pay-per-token DashScope, is blocked per Task 1b).
 
 - [ ] **Step 6: Commit**
 
@@ -932,7 +1029,7 @@ git commit -m "bench: per-case Qwen cost at tuned invocation + Phase 2 go/no-go"
 cd ~/Developer/reviewgate && rm -rf .review/ /tmp/rg-bench-one
 ```
 
-Report the decision to Markus. Do not push. Do not start spec Phase 2 without his go-ahead — it costs ~40 % of a weekly window.
+Report the decision to Markus. Do not push. Do not start spec Phase 2 without his go-ahead — it costs ~900 credits, ~36 % of a weekly window.
 
 ---
 
@@ -942,3 +1039,50 @@ Report the decision to Markus. Do not push. Do not start spec Phase 2 without hi
 - **Type consistency.** `TokenUsage` is defined once (Task 1) and consumed by Tasks 2, 3, 5. `parseProviderModels` and `BenchConfigOptions.providerModels` share one type, `Partial<Record<ProviderId, string>>`, in both the parser and the config. `ProviderId` is imported from `src/providers/registry.ts:10` rather than re-declared.
 - **Known limitation, stated rather than hidden.** The 1.21 credits/1 K coefficient was derived from a sample that was ~99.6 % input and 213 output tokens total. List pricing puts output at 3× input and cache read at ⅛ input, but whether the *credit* ledger uses those same ratios is unverified — Task 3 Step 4 tests the cache half of it, and Task 5 Step 4 is the only step that measures a realistic input/output mix. Both supersede every extrapolation made before them.
 - **Task ordering.** Task 3 is the decisive one (5× lever vs. Task 2's few K tokens) and carries no hard dependency on Task 2. Running it first gets the go/no-go earliest and is explicitly permitted; the numbering reflects the spec's lever order, not a required sequence.
+
+---
+
+## Findings mapping — round 1 (Claude reviewer, executing, 2026-08-07)
+
+Verdict: **FAIL** — 2 CRITICAL, 3 WARN, 11 INFO. All addressed below.
+
+| # | Finding | Fix applied | Task |
+| --- | --- | --- | --- |
+| C1 | Task 5 Step 1 pointed the tuned invocation at `opencode.ts:242` — the `complete()` argv (critic/curator), not the reviewer path. The bench would have run **untuned** while DECISION.md presented the number as tuned. | Step 1 now targets `:97` (`reviewInRun`), and explicitly forbids editing `:242` with the reason. | 5 |
+| C2 | Test "does not disturb the critic model override" fails against the plan's own implementation (measured 10/11): `defaultConfig.phases.critic` is `null`, so `criticModel` never applies. | Added `suppressors: { critic: "openrouter" }` to that call, plus a comment warning against "fixing" `runner.ts` instead. | 4 |
+| W1 | Test "pins a provider not in the panel" was **vacuous** — `defaults.ts:63` already ships `glm-5.2:cloud`, so WITH and WITHOUT were identical. | Pin changed to `qwen3-coder:480b-cloud`, both numbers asserted and stated in the comment. | 4 |
+| W2 | Task 2 Step 7's stop condition halted Tasks 3 and 4 — but Task 3 is the decisive lever and Task 4 is free and a standalone spec Goal. | Step 7 no longer stops anything; the stop evaluation moved after Task 3, Task 4 exempted, only Task 5 gated. | 2, 5 |
+| W3 | No guard covered the config→provenance hop; every test asserted the config layer while the spec states the guard in terms of provenance. | `buildRoster` exported; new test asserts `roster[0].model` is `"default"` without the flag and the pinned id with it. | 4 |
+| I1 | `bun run lint` fails on the verbatim code (chained `.split().map().filter()`, import order in both test files). | `parseProviderModels` pre-broken across lines; test imports reordered; Step 9 now runs `format` + `biome check --fix` first. | 1, 4 |
+| I2 | Line drift: `bench.ts:499` → `:501`; spec §3 cited `define-config.ts:52`, actual `:54`. | Both corrected. | — |
+| I3 | Arithmetic slips: "+5 to +7 credits" should be +3.6 to +7.3; spec §5 and §5a quoted different numbers for the same quantities. | "+3.6 to +7.3" with the derivation; spec unified on 83 calls / 900 / 2,700 / 36 % / 108 %. | — |
+| I4 | Task 1 verified by execution (6/6 pass, mutation real, typecheck clean); predicted mutation value 119.0 slightly off. | Corrected to 118.68. | 1 |
+| I5 | Task 1's CLI entry used `console.log`, which biome flags and the global CLAUDE.md forbids; invisible because `scripts/` is outside the lint glob. | Switched to `process.stdout.write`, with the glob caveat stated. | 1 |
+| I6 | `~/.config/opencode/agent/` does not exist. | `mkdir -p` prepended to Task 2 Step 3. | 2 |
+| I7 | `--dangerously-skip-permissions` is absent from `opencode run --help` in 1.18.10 (documented flag: `--auto`), and opencode exits 0 on unknown flags — a plausible cause of the curator hang in spec §8. | Task 5 Step 1 now requires one non-model `--help` check and a switch to `--auto` if needed. | 5 |
+| I8 | Task 2 Step 7 applied a per-**call** proxy (15 output tokens) to a per-**case** stop condition. | Reworded as an explicit proxy with a ~13-credit risk threshold; Task 5 supplies the number that counts. | 2 |
+| I9–I11 | Spec-to-task tracing complete both directions; `buildBenchConfig`/insertion-point/schema-path all verified correct; a parallel session is committing to this repo today. | No change needed for the first two. Step 9 now checks `git status` and scopes the suite, and forbids presenting a scoped run as a full one. | 4 |
+
+## Findings mapping — round 2 (delta review, same executing reviewer, 2026-08-07)
+
+Verdict: **FAIL** — 0 CRITICAL, 1 WARN, 4 INFO. Both round-1 CRITICALs and all three WARNs confirmed closed **by execution**: 12/12 tests pass on the current blocks, the mutation reddens exactly the 4 predicted cases with the sentinel test staying green, `buildRoster(config, {})` resolves without an adapter, `suppressors: { critic: "openrouter" }` does make `criticModel` apply, and `bunx tsc --noEmit` is clean across the whole change set.
+
+| # | Finding | Fix applied | Task |
+| --- | --- | --- | --- |
+| W2′ | **My round-1 fix orphaned the stop condition.** Task 2 Step 7 now declines to evaluate it, Task 3 had no step that computed a combined figure, and Task 5's precondition consumed a number no step produced. The `discounted: "unknown"` branch had no routing at all. The one control protecting the weekly window was owned by nobody. | New **Task 3 Step 7** owns the decision: a verdict-dependent table for the effective per-call figure, three bands (≤13 clear / 13–20 at risk / >20 stop), an explicit rule that `"unknown"` **routes to** Task 5 rather than blocking it, and the result recorded as `stopCondition` in `caching.json`. | 3 |
+| I1′ | Two sites survived the round-1 number unification: spec §5a "~1,000 credits, 40 %" and plan Task 5 Step 7 "~40 % of a weekly window". | Both on ~900 / ~36 %. Verified no other site still quotes 85 / 1,000 / 3,000 / 40 %. | — |
+| I2′ | The two **shipped** code comments carried line citations that this plan's own edits invalidate (`runner.ts:147-155` → `:160-168`; `bench.ts:479-506`/`:501` → `:514-541`/`:536` after the parser insert). Unlike round 1's drift, this would land in committed source. | Both comments now cite symbols (`the if (base.phases.critic) branch in buildBenchConfig`, `the roster.push in buildRoster`) instead of lines. | 4 |
+| I3′ | Step 2's red-first expectation described per-case failures, but pristine HEAD cannot even load the file (`SyntaxError: Export named 'parseProviderModels' not found`, 0 pass / 1 fail / 1 error). | Reworded to the measured reality, plus an explicit warning not to stub the exports to make it "look" red properly. | 4 |
+| I4′ | One format violation survived in the Task 1 test block (the `const total =` wrap). Harmless — Step 9's `format` fixes it — but the pasted code should be byte-clean. | Joined onto one line. | 1 |
+
+## Findings mapping — round 3 (delta review, 2026-08-07) — FINAL GATE ROUND
+
+Verdict: **FAIL** — 1 CRITICAL, 1 WARN, 3 INFO. All five fixed below. Per the project's round limit, this is the last gate round: remaining judgement is Markus's accept/fix call, not a round 4.
+
+| # | Finding | Fix applied | Task |
+| --- | --- | --- | --- |
+| C1″ | **Task 3 Step 7 divided a three-call console delta by four**, understating effective per-call cost by 25 % — in the permissive direction, on the single number that authorises spending. A true 20 credits/call would have read as 15 and routed to "at risk → proceed", releasing Task 5's ~30–40 credits and, downstream, Phase 2's ~900. Nothing recomputed it. | Divisor corrected to **÷ 3**, with the reason stated (Step 4's reading precedes Step 5's TTL call) and the alternative spelled out (add a third reading after Step 5 and divide by 4). | 3 |
+| W1″ | Step 7's rows 2 and 3 both referenced "Task 2's cheapest variant" — but the plan explicitly permits running Task 3 **first**, in which case no such variant exists and the step that owns the go/no-go cannot compute one. Nothing forced re-evaluation once Task 2 ran. | Step 7 now falls back to `creditsFor` on Task 3 Step 2's call 1 (an uncached baseline with a DB figure) and **requires re-evaluation after Task 2 completes**. | 3 |
+| I1″ | Band boundaries overlapped at exactly 13 and, at exactly 20, diverged from the spec's "under 20 → stop". | Bands rewritten as `< 13` / `13 ≤ x < 20` / `≥ 20`. | 3 |
+| I2″ | The escalation target was described as "three options" (§5a, Task 5), "four" (Task 3 Step 7), while §5a lists five — and §5a's own **Recommended shape** pointed at the pay-per-token route that Task 1b already measured as blocked. Step 7's stop branch sent the implementer straight there. | §5a's DashScope bullet struck through and annotated with the measured evidence; its recommendation withdrawn; all three sites now say **four live** options and name the dead one. | 3, 5 |
+| I3″ | Task 5's precondition and Step 7 agreed functionally but not by name, so which number gates Task 5 was inferred rather than stated. | Precondition now reads: run only if Task 3 Step 7 recorded `stopCondition.verdict` as `clear` or `at-risk`. | 5 |
