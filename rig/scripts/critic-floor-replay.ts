@@ -3,16 +3,47 @@
 // OFFLINE Slice B counterfactual. Read-only: no network, no agent quota, no rebuild, and it writes
 // nothing outside a temp dir it removes again.
 //
-// WHY THIS EXISTS. Slice B is the critic severity floor (`aggregator.ts:618`): the critic may not
+// ⚠ SLICE B WAS REVERTED ON 2026-08-07 — THIS SCRIPT HAS CHANGED JOBS. Everything below describes
+// why it was built; what it MEASURES now is different, and the difference is stated here rather
+// than left for the next reader to discover from a surprising 0. `aggregate()` no longer has the
+// WARN floor, so no finding here satisfies `isFloorActivation` and the expected output is 0
+// activations. It is therefore no longer a counterfactual instrument — it is the live end-to-end
+// REVERT CHECK, against the same real corpus that produced the decision. To re-derive the
+// historical 3, check out a commit before the revert and run it there.
+//
+// WHY THE 0 HOLDS — the honest reason, because an earlier draft of this comment got it wrong twice
+// and the second wrong version was the more dangerous one. The marker is computed from the FINAL
+// `aggregate()` output, and severity can still fall to WARN *after* the critic pass: a CRITICAL
+// CORRECTNESS singleton is exempted by the surviving CRITICAL-only check (`critic_verdict:"keep"`)
+// and the reputation pass (`aggregator.ts:903-914`) then clamps it CRITICAL→WARN, yielding
+// WARN + correctness + singleton + "keep" — which the marker accepts. So `isFloorActivation` is NOT
+// floor-exclusive in general.
+//   · Not security: `touchesSecurity` returns early at `aggregator.ts:883` ("never softened"), so a
+//     CRITICAL security finding stays CRITICAL and the marker misses it. Correctness only.
+//   · Why it cannot arise HERE: not because of anything about pilot-02/pilot-03's reviewers, but
+//     because THIS SCRIPT'S call site (`aggregate({ findings, reviewersTotal, critic })`, see the
+//     replay loop below) passes no `repUnreliable`/`demoteCorrectness`/`corroborateCritical`, and
+//     the whole reputation pass is gated on `repUnreliable && repUnreliable.size > 0`
+//     (`aggregator.ts:876-877`). The second producer is inert in this instrument BY CONSTRUCTION,
+//     and stays inert unless that call site gains reputation inputs.
+// Consequence: a non-zero count is not automatically proof the floor survived — but under today's
+// call site it is the likeliest explanation. The abort prints the offending findings so the reader
+// can tell the two apart instead of guessing.
+//
+// Instrument integrity rests solely on the signature-match self-check; the revert self-check below
+// asserts the revert, not the instrument (see the comment there).
+//
+// WHY THIS EXISTS. Slice B was the critic severity floor (`aggregator.ts:618`): the critic may not
 // push a WARN security/correctness finding below WARN, because WARN→INFO is the one demote that
 // crosses the blocking boundary. pilot-03 observed it fire EXACTLY ONCE, and that one activation
 // protected a FALSE POSITIVE over a critic that was right. Keep / narrow / revert on n = 1 is not
 // a decision, it is a coin flip.
 //
-// The counterfactual is free, because pilot-01 and pilot-02 ran BINARIES THAT DID NOT HAVE THE
-// FLOOR. Replaying their recorded reviewer findings and recorded critic verdicts through TODAY's
-// `aggregate()` — which does have it — shows exactly what the floor would have protected, on runs
-// that never had a chance to be biased by it.
+// The counterfactual was free, because pilot-01 and pilot-02 ran BINARIES THAT DID NOT HAVE THE
+// FLOOR. Replaying their recorded reviewer findings and recorded critic verdicts through an
+// `aggregate()` that did have it showed exactly what the floor would have protected, on runs that
+// never had a chance to be biased by it. Verdict: 3 activations, 3 false positives, 0 true
+// positives → docs/dev/2026-08-07-slice-b-critic-floor-counterfactual.md.
 //
 // WHAT THIS IS NOT: it does not decide whether a protected finding is a true or a false positive.
 // It produces the population and the evidence per activation; adjudication is a human call and the
@@ -48,8 +79,13 @@ const RUNS = ["pilot-02", "pilot-03"] as const;
 const VERBOSE = process.argv.includes("--verbose");
 
 /** Whether the floor was PRESENT in the binary that produced the run. pilot-02 predates Slice B,
- *  which is what makes it an unbiased counterfactual; pilot-03 shipped with it, so its result here
- *  must reproduce the 1 activation the field write-up recorded, or this instrument is wrong. */
+ *  which is what made it an unbiased counterfactual; pilot-03 shipped with it.
+ *
+ *  HISTORICAL contract, no longer asserted: while the floor existed in `aggregate()`, pilot-03's
+ *  result here had to reproduce the 1 activation its field write-up recorded, or the instrument was
+ *  wrong. The floor was reverted on 2026-08-07, so pilot-03 now reproduces 0 — expected, not a
+ *  defect. This flag today only LABELS rows as counterfactual-vs-field in the corpus table and the
+ *  TOTAL line; it gates no assertion. */
 const FLOOR_IN_BINARY: Record<string, boolean> = { "pilot-02": false, "pilot-03": true };
 
 interface Activation {
@@ -371,17 +407,48 @@ try {
     console.log(`    below is a LOWER bound: ${unmatchedCalls.join(", ")}`);
   }
 
-  // The reproduction check: pilot-03 SHIPPED with the floor and its write-up recorded exactly one
-  // activation. If this replay does not reproduce that, the instrument is wrong and every pilot-02
-  // number it produces is worthless.
+  // The revert check. This assertion USED to read `p03 !== 1`: pilot-03 shipped with the floor and
+  // its write-up recorded exactly one activation, so reproducing that 1 was what proved the
+  // instrument sound. Slice B was reverted on 2026-08-07 and `aggregate()` no longer has the floor,
+  // so that 1 is now unreachable BY DESIGN and the old assertion would abort every run.
+  //
+  // Be honest about what the new number is worth: 0 no longer validates the instrument — a wholly
+  // broken replay would also report 0. Instrument integrity is carried by the signature-match
+  // self-check above (which still resolves 15/19 likely_fp verdicts to real findings); THIS check
+  // asserts the revert against THIS corpus, i.e. that no recorded finding still reaches a blocking
+  // WARN via a critic likely_fp the floor used to override. It is a regression tripwire, not a
+  // proof — see the header for the CRITICAL-exemption + reputation-clamp path that can produce the
+  // same marker without the floor.
+  //
+  // THE INVARIANT THE FLAG-BASED DIAGNOSIS RESTS ON, named because nothing enforces it: every
+  // CRITICAL→WARN transition inside `aggregate()` stamps `demoted_from_critical` (`:165` via
+  // `demoteOneStep`, `:854` confidence floor, `:911` reputation, `:1061` docs cap), and the two
+  // non-reputation paths additionally return early on security/correctness (`:838`, `:1051`) —
+  // which is also why the header says "a SECOND producer" rather than undercounting. If a future
+  // pass lowers a CRITICAL security/correctness finding to WARN WITHOUT stamping provenance, the
+  // "both flags false ⇒ the floor is back" guidance below silently points at the wrong line.
+  // Re-check this list before trusting the diagnosis after any change to the demote passes.
   const p03 = activations.filter((a) => a.run === "pilot-03").length;
-  if (p03 !== 1) {
+  if (activations.length !== 0) {
+    // Print the evidence BEFORE aborting. `die()` is console.error + process.exit(1) and fires well
+    // above the ACTIVATIONS listing, so telling the reader to "check the finding" without printing
+    // it would be unfollowable advice at exactly the moment it matters.
+    console.error("\n  offending activations — the flags that tell the two producers apart:");
+    for (const a of activations) {
+      const f = a.finding;
+      console.error(
+        `    ${a.run} t${a.turn}  ${f.severity}/${f.category}  ${f.file}:${f.line_start}  consensus ${f.consensus}  [${f.rule_id}]`,
+      );
+      console.error(
+        `        reputation_demoted=${f.reputation_demoted === true}  demoted_from_critical=${f.demoted_from_critical === true}`,
+      );
+    }
     die(
-      `pilot-03 shipped WITH the floor and its field write-up recorded exactly 1 activation, but this replay finds ${p03}. The counterfactual cannot be trusted until that reproduces.`,
+      `expected 0 activations after the Slice B revert, but this replay finds ${activations.length} (${p03} in pilot-03). Diagnose before concluding the floor survived. The marker has a SECOND producer that does not involve the floor: a CRITICAL CORRECTNESS finding kept by the surviving CRITICAL-only exemption and then clamped CRITICAL→WARN by the reputation pass (aggregator.ts:903-914). If either flag above is true, suspect that path. If BOTH are false on every finding — the expected case, since this script passes no reputation inputs to aggregate() — the floor is back at aggregator.ts:621.`,
     );
   }
   console.log(
-    "  self-check · reproduction  : pilot-03 (floor present in its binary) reproduces its 1 field activation ✔",
+    "  self-check · revert        : 0 activations — no uncorroborated WARN security/correctness finding survives a critic likely_fp ✔",
   );
 
   console.log(`\n${"─".repeat(97)}\nCORPUS\n`);
@@ -398,7 +465,7 @@ try {
     `\n${"─".repeat(97)}\nSLICE B ACTIVATIONS — findings the floor kept blocking against the critic\n`,
   );
   if (activations.length === 0) {
-    console.log("  none.");
+    console.log("  none — EXPECTED: the floor was reverted on 2026-08-07 (see the file header).");
   }
   for (const a of activations) {
     const f = a.finding;
@@ -414,14 +481,15 @@ try {
     `  ${activations.filter((a) => FLOOR_IN_BINARY[a.run]).length} reproduced from the field (pilot-03).`,
   );
   console.log(
-    "\n  Each activation is a finding the critic proposed to demote below the blocking boundary and the",
+    "\n  An activation is a finding the critic proposed to demote below the blocking boundary and the",
   );
   console.log(
     "  floor kept. Whether that was right is a TRUE/FALSE-POSITIVE judgement per finding — this script",
   );
   console.log(
-    "  deliberately does not guess it. pilot-03's single one was adjudicated a false positive by hand.",
+    "  deliberately does not guess it. Before the revert this corpus produced 3, and all three were",
   );
+  console.log("  adjudicated FALSE positives by hand. That is why the expected count is now 0.");
 
   console.log(
     `\n${"─".repeat(97)}\nDISCRIMINATOR — did the critic ever PROPOSE demoting a real catch?\n`,

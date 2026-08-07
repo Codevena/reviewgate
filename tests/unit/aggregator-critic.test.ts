@@ -204,35 +204,43 @@ describe("aggregate with critic", () => {
   });
 });
 
-describe("critic — security/correctness floor (pilot-02 turn 2)", () => {
-  // GUARD 7. WITHOUT the floor: INFO + critic_verdict "likely_fp" -> 0 blocking.
-  //          WITH it: WARN + critic_verdict "keep" -> 1 blocking.
-  it("does not demote a WARN security finding below the blocking boundary", () => {
+describe("critic — WARN security/correctness floor REVERTED (Slice B, 2026-08-07)", () => {
+  // GUARD 7, INVERTED. The WARN floor was removed after measurement: 3 activations over the whole
+  // recorded corpus, 3 false positives protected, 0 true positives. These two tests are the
+  // mutation check for that removal — restoring `isBlockingSecurity` in aggregator.ts turns both
+  // red, because every asserted field flips.
+  //   WITH the floor (until 2026-08-07): severity WARN, critic_verdict "keep"  -> 1 blocking.
+  //   WITHOUT it (today):                severity INFO, critic_verdict "likely_fp" -> 0 blocking.
+  // What still protects this population: corroboration (majority/unanimous) and, once the reviewer
+  // has a track record, protected_high_precision. An uncorroborated WARN from an unproven reviewer
+  // is demotable again — the accepted cost, recorded in
+  // docs/dev/2026-08-07-slice-b-critic-floor-counterfactual.md.
+  it("demotes an uncorroborated WARN security finding the critic calls likely_fp", () => {
     const f = fin({ signature: "sigSecWarn", severity: "WARN", category: "security" });
     const r = aggregate({
       findings: [f],
       reviewersTotal: 2,
       critic: new Map([["sigSecWarn", { verdict: "likely_fp" }]]),
     });
-    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
-    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("likely_fp");
   });
 
-  it("does not demote a WARN correctness finding below the blocking boundary", () => {
+  it("demotes an uncorroborated WARN correctness finding the critic calls likely_fp", () => {
     const f = fin({ signature: "sigCorrWarn", severity: "WARN", category: "correctness" });
     const r = aggregate({
       findings: [f],
       reviewersTotal: 2,
       critic: new Map([["sigCorrWarn", { verdict: "likely_fp" }]]),
     });
-    expect(r.dedupedFindings[0]?.severity).toBe("WARN");
-    expect(r.dedupedFindings[0]?.critic_verdict).toBe("keep");
+    expect(r.dedupedFindings[0]?.severity).toBe("INFO");
+    expect(r.dedupedFindings[0]?.critic_verdict).toBe("likely_fp");
   });
 
-  // GUARD 8 (passes on current code — MUTATION-CHECKED in Step 3).
-  // WITH an "exempt at every severity" floor: criticDroppedCount 0.
-  // WITH the correct WARN floor: criticDroppedCount 1. The critic keeps its FP-filtering
-  // power exactly where reviewers are noisiest (low-confidence INFO security chatter).
+  // GUARD 8 — a boundary the Slice B revert must NOT move; green before and after it.
+  // WITH an "exempt security at every severity" mutation: criticDroppedCount 0.
+  // WITH the CRITICAL-only exemption (today): criticDroppedCount 1. The critic keeps its
+  // FP-filtering power exactly where reviewers are noisiest (low-confidence INFO security chatter).
   it("still drops an already-INFO security likely_fp", () => {
     const f = fin({ signature: "sigSecInfo", severity: "INFO", category: "security" });
     const r = aggregate({
@@ -244,9 +252,9 @@ describe("critic — security/correctness floor (pilot-02 turn 2)", () => {
     expect(r.dedupedFindings.length).toBe(0);
   });
 
-  // GUARD 9 (passes on current code — MUTATION-CHECKED in Step 3).
-  // WITH a severity-only floor (all WARN exempt): the finding stays WARN -> 1 blocking.
-  // WITH the correct category-keyed floor: INFO -> 0 blocking.
+  // GUARD 9 — a boundary the Slice B revert must NOT move; green before and after it.
+  // WITH a severity-only exemption (all WARN exempt): the finding stays WARN -> 1 blocking.
+  // WITH today's CRITICAL-only exemption: INFO -> 0 blocking.
   it("still demotes a WARN quality finding", () => {
     const f = fin({ signature: "sigQualWarn", severity: "WARN", category: "quality" });
     const r = aggregate({

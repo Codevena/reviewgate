@@ -608,15 +608,17 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const critSigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
     const cv = critic && critSigs.map((s) => critic.get(s)).find((v) => v?.verdict === "likely_fp");
     if (cv?.verdict === "likely_fp") {
-      const isCriticalSecurity = f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f);
-      // pilot-02 turn 2: the exemption above is keyed to CRITICAL, so a WARN-severity security
-      // finding was demotable by a single adversarial critic — and WARN→INFO is the one demote
-      // that crosses the blocking boundary (isBlocking = CRITICAL || WARN). The sibling
-      // delta-scope pass already exempts security/correctness at ANY severity; mirror that floor
-      // here. An already-INFO security finding stays droppable, so the critic keeps its
-      // FP-filtering power where reviewers are noisiest.
-      const isBlockingSecurity = f.severity === "WARN" && touchesSecurityOrCorrectness(f);
-      const isSecurityProtected = isCriticalSecurity || isBlockingSecurity;
+      // CRITICAL-only by measurement. A WARN floor (Slice B, 2026-08-05) sat here until
+      // 2026-08-07 and was REVERTED: replayed over the whole recorded corpus it fired 3 times,
+      // protected a false positive all 3 times, and protected 0 true positives. The one time the
+      // critic proposed demoting a catch of a seed that actually landed, CORROBORATION — not the
+      // floor — is what saved it. All three activations were hedged, uncorroborated WARN claims
+      // ("may lead to", "may cause", "may still allow") whose security/correctness category was
+      // the reviewer's own generous self-classification: exactly what the critic exists to filter.
+      // Accepted cost: an uncorroborated WARN security finding from an unproven reviewer, called
+      // likely_fp, now goes to INFO with no downstream gate (protected_high_precision below is
+      // cold-start-inert). Evidence: docs/dev/2026-08-07-slice-b-critic-floor-counterfactual.md.
+      const isSecurityProtected = f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f);
       // A single adversarial critic must not override GROUP agreement. Both
       // unanimous AND majority are corroborated consensus — the verdict gate
       // treats them identically (warnFail), and the confidence- and reputation-

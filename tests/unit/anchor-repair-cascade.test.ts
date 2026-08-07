@@ -121,13 +121,14 @@ describe("pilot-02 turn 2 — the full cascade", () => {
   // WITH the fix: F-002 re-anchors 67 -> 26, merges with F-001 at 25, and the merge lifts
   // consensus to `majority` -> 1 finding.
   // What bars the critic here is pre-existing corroboration (consensus === "majority"), NOT
-  // Task 4's WARN-security floor — with Task 4 reverted this scenario still passes, because the
-  // repair-driven merge already makes the finding corroborated before the critic runs. Task 4's
-  // floor covers the DIFFERENT, uncorroborated case: a single WARN security finding with no
-  // second detection to merge with. That case is exercised separately in
-  // tests/unit/aggregator-critic.test.ts, describe "critic — security/correctness floor
-  // (pilot-02 turn 2)". This test's job is to prove the repair -> merge -> corroboration chain
-  // (Tasks 1-2) composes and ends up blocking WARN, badge included (Task 3).
+  // Task 4's WARN-security floor — and that floor has since BEEN reverted (2026-08-07), which this
+  // test's continued pass confirms: the repair-driven merge makes the finding corroborated before
+  // the critic runs, so it never needed the floor. The DIFFERENT, uncorroborated case the floor
+  // used to cover — a single WARN security finding with no second detection to merge with — is now
+  // demotable again, and is exercised in tests/unit/aggregator-critic.test.ts, describe
+  // "critic — WARN security/correctness floor REVERTED (Slice B, 2026-08-07)". This test's job is
+  // to prove the repair -> merge -> corroboration chain (Tasks 1-2) composes and ends up blocking
+  // WARN, badge included (Task 3).
   it("repairs the anchor, merges, corroborates, and stays blocking", () => {
     const dir = mkdtempSync(join(tmpdir(), "rg-turn2-"));
     createdDirs.push(dir);

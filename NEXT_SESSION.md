@@ -28,7 +28,27 @@ execution, including in a simulated-revert repo copy.**
 mine. Do not `git add -A`, and check `git log` before assuming what is yours. Isolating parallel
 work in a `git worktree` is the standing recommendation.
 
-## THE NEXT TASK — implement the approved Slice B revert
+## ~~THE NEXT TASK~~ — DONE 2026-08-07: the Slice B revert is implemented
+
+> **✅ IMPLEMENTED.** All four tasks of `docs/superpowers/plans/2026-08-07-slice-b-revert.md` are
+> done. Verified: static checks clean; `bun test` **3191/12/0**, unchanged; the mutation check in a
+> copy turned **exactly** the two inverted tests red and nothing else; the replay went **3 → 0**
+> with signature-match still 15/19.
+>
+> **`isBlockingSecurity` NO LONGER EXISTS** — do not go looking for it at `aggregator.ts:611-619`.
+> The live code is `aggregator.ts:621`, `isSecurityProtected` = CRITICAL-only.
+>
+> **One thing worth carrying forward** (found by the executing Slot A reviewer, confirmed by
+> execution): the replay's `isFloorActivation` marker is **not floor-exclusive in general**. A
+> CRITICAL **correctness** singleton kept by the surviving CRITICAL exemption, then clamped
+> CRITICAL→WARN by the reputation pass (`aggregator.ts:903-914`), reproduces the same marker.
+> (Not security — `touchesSecurity` returns early at `:883` and it stays CRITICAL.) It cannot arise
+> in the replay because that script's `aggregate()` call site passes **no** reputation inputs and the
+> pass is gated on `repUnreliable.size > 0` (`:876-877`) — inert by construction, not by anything
+> about the pilots' reviewers. A future non-zero count is therefore not automatically a revert
+> regression; the abort now prints `reputation_demoted`/`demoted_from_critical` so you can tell.
+>
+> The rest of this section is the original brief, kept for the record.
 
 **Read `docs/superpowers/plans/2026-08-07-slice-b-revert.md` and execute its four tasks.** It passed
 the plan-gate; do not re-open the decision, and do NOT resurrect "narrow" (refuted by execution —

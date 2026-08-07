@@ -108,6 +108,11 @@ The handoff's candidate (1) is a real defect independent of turn 2: the critic's
 keyed to CRITICAL (`:604`) while the sibling `deltaScoped` pass exempts
 `touchesSecurityOrCorrectness` at **any** severity (`:664`). That is Slice B.
 
+**Slice B was REVERTED on 2026-08-07 — see the banner at §Slice B below. Present-tense descriptions
+of it anywhere in this document — including above this line, and in the Data flow block,
+§Measurability, and §Risks — are the original design, kept for the record; the critic's exemption is
+CRITICAL-only again.**
+
 ## Scope
 
 Two slices. Both **always-on** — they are defect corrections, and the sibling protections they
@@ -207,6 +212,41 @@ and OR-propagated to the representative, mirroring what `demoted_from_critical` 
 
 ## Slice B — critic severity floor
 
+> **REVERTED 2026-08-07.** Shipped 2026-08-05, removed two days later on measurement. Everything
+> below is the original design and is **left in place deliberately** — its reasoning was sound on
+> the evidence it had (one observed WARN-security demote, pilot-02 turn 2). What changed is the
+> evidence, not the argument.
+>
+> Replayed over the whole recorded corpus (pilot-02 as an unbiased counterfactual, since its binary
+> predated the floor; pilot-03 as the reproduction check):
+>
+> | | |
+> |---|---:|
+> | activations | **3** |
+> | protected a **true** positive | **0** |
+> | protected a **false** positive | **3** |
+> | times the critic proposed demoting a catch of a seed that actually LANDED | **1** |
+> | …of which the FLOOR was the mechanism that saved it | **0** — corroboration did |
+>
+> All three activations were hedged, uncorroborated WARN claims ("may lead to", "may cause", "may
+> still allow") whose security/correctness category was the reviewer's own generous
+> self-classification — exactly the finding the critic exists to filter. **Narrowing was considered
+> and refuted by execution:** the existing `HYPOTHETICAL` detector matches 0 of 3, and that pass
+> refuses to touch security/correctness by design (`hypothetical-demote.ts:60`); any other narrowing
+> would be a *new* text-signal suppressor over the two categories this codebase never softens on a
+> text signal.
+>
+> **The evidence is bounded:** 3 activations and exactly one exercised protective opportunity across
+> 13 turns of a single panel. That bounds the benefit; it does not prove it is zero in general.
+> **Accepted cost of the revert:** an uncorroborated WARN security finding from a reviewer with no
+> track record, called `likely_fp` by the critic, now goes to INFO with no downstream gate —
+> `isProtected` / `protected_high_precision` (`aggregator.ts:632`) fires in exactly that branch but
+> is cold-start-inert (`PROTECT_MIN_DECISIONS`). Reversible in one line if the field shows otherwise.
+>
+> Evidence: `docs/dev/2026-08-07-slice-b-critic-floor-counterfactual.md`.
+> Plan: `docs/superpowers/plans/2026-08-07-slice-b-revert.md`.
+> Live check: `bun run rig/scripts/critic-floor-replay.ts` (expects 0 activations).
+
 `aggregator.ts:604` gains a sibling to `isCriticalSecurity`:
 
 ```ts
@@ -246,7 +286,8 @@ orchestrator:2226   validateFindingFacts
 orchestrator:2451   aggregate()
                       cluster (now sees the repaired line → the two findings merge)
                       consensus → "majority"
-                      critic pass (isCorroborated bars it; Slice B bars WARN+security too)
+                      critic pass (isCorroborated bars it; Slice B barred WARN+security too
+                                   — REVERTED 2026-08-07, CRITICAL-only again)
                       scopeFindings → deltaScope → fp-ledger → reputation → verdict
 orchestrator:2573   attestEvidence  (now agrees; no evidence_mismatch)
 report-writer:      anchor_repaired badge
