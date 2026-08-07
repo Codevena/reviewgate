@@ -31,15 +31,24 @@ collision.
 The measurement is done; this is a decision plus an implementation, and it touches
 `src/core/aggregator.ts`, so **the plan-gate runs BEFORE any code**.
 
-**Recommendation: narrow.** All 3 activations are hedged speculation ("may lead to", "may cause",
-"may still allow") at WARN with singleton consensus. The repo already has a detector for exactly
-that framing — the pass that demotes a CRITICAL whose own text frames it as hypothetical or
-currently-safe — and it does **not** apply at WARN, which is precisely where every activation sits.
-Reusing it as a floor *exclusion* would have suppressed all 3 without touching the confident case
-the design was written for.
+**Recommendation: REVERT** (restore the CRITICAL-only exemption).
 
-**Revert** (restore the CRITICAL-only exemption) is the other defensible answer. **Keep** is not
-supported by the evidence.
+⚠ **An earlier version of this handoff recommended "narrow", and that was refuted by execution —
+do not resurrect it without re-reading this.** The proposal was to reuse the existing
+hypothetical-framing detector as a floor exclusion. Two independent facts kill it, both checked by
+running the code, not by reading it:
+
+1. `HYPOTHETICAL` (`src/core/hypothetical-demote.ts:27`) matches **0 of 3** activations against
+   their full `message + details + suggested_fix`. It requires a *positive* present-safe /
+   hypothetical / future marker; "may lead to" / "may cause" / "may still allow" is not one.
+2. That pass **refuses to touch `security` or `correctness`** (`hypothetical-demote.ts:60` — *"Never
+   soften the hard-veto categories on an untrusted text signal"*), and all 3 activations are exactly
+   those categories.
+
+Any remaining narrowing therefore needs a **new** hedging detector over the two categories the
+codebase has decided never to soften on a text signal — and hedged phrasing is standard in
+legitimate security findings ("this **may** allow an attacker to …"). That is a new suppressor
+needing its own calibration corpus, not a cheap narrowing. **Keep** is not supported by the evidence.
 
 Plan-gate note: **Codex quota resets 2026-08-08T11:07Z.** Until then the executing reviewer slot is
 `agy` or a Claude subagent. The gate reviewer MUST be able to run the code the plan makes claims

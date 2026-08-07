@@ -86,17 +86,29 @@ blocking. n = 1 exercised opportunity bounds the benefit; it does not prove it i
 
 1. **Revert** — restore the CRITICAL-only exemption. Removes 3 known FPs; gives up a protection
    whose only exercised opportunity was already covered by corroboration.
-2. **Narrow** — keep the floor but exclude hedged/speculative findings. The repo already has a pass
-   that demotes a CRITICAL whose own text frames it as hypothetical or currently-safe; that detector
-   does not apply at WARN, which is exactly where all 3 activations sit. Reusing it as a floor
-   *exclusion* would have suppressed all 3 without touching the confident case the floor was
-   designed for.
-3. **Keep** — the discriminator does not support it: the only landed catch the critic tried to
+2. ~~**Narrow** by reusing the existing hypothetical-framing detector.~~ **REFUTED BY EXECUTION —
+   this option does not exist.** An earlier draft of this document proposed it. Running
+   `HYPOTHETICAL` (`src/core/hypothetical-demote.ts:27`) against the three findings' full
+   `message + details + suggested_fix` text matches **0 of 3**: the regex requires a *positive*
+   present-safe / hypothetical / future marker ("currently safe", "hypothetically", "theoretical
+   risk", "if … future"), and "may lead to" / "may cause" / "may still allow" is none of those.
+   Independently, that pass **refuses to touch `security` or `correctness` at all**
+   (`hypothetical-demote.ts:60`, *"Never soften the hard-veto categories on an untrusted text
+   signal"*) — and all three activations are exactly those categories. Reusing it would contradict
+   a documented decision in the same file.
+3. **Narrow with a NEW hedging detector** ("may", "could", "might", "potentially") applied to
+   security/correctness at WARN. Not cheap and not obviously safe: hedged phrasing is *standard* in
+   legitimate security findings ("this **may** allow an attacker to …"), so such a detector would
+   need its own calibration corpus, and it points the opposite way from the hard-veto principle
+   above. It would be a new suppressor, not a narrowing.
+4. **Keep** — the discriminator does not support it: the only landed catch the critic tried to
    demote was already saved by corroboration.
 
-**Recommendation: narrow (option 2), or revert.** The floor's measured benefit in this corpus is
-zero and its measured cost is three false positives, all of the same hedged-speculation shape. The
-narrowing is cheap and targeted, and it leaves the confident case the design was written for intact.
+**Recommendation: revert (option 1).** The floor's measured benefit in this corpus is zero, its
+measured cost is three false positives, and — now that the "reuse the existing detector" shortcut is
+refuted — every narrowing route requires a new text-signal suppressor over exactly the two categories
+the codebase has decided never to soften on a text signal. Reverting restores a small, well-understood
+exemption and gives up a protection whose single exercised opportunity was already covered.
 
 ## How it was measured
 
