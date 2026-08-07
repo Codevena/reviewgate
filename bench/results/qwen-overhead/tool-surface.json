@@ -1,0 +1,66 @@
+{
+  "measuredAt": "2026-08-07",
+  "coefficient": 1.21,
+  "coefficientUnit": "credits per 1000 tokens",
+  "model": "alibaba-token-plan/qwen3.8-max",
+  "opencodeVersion": "1.18.10",
+  "prompt": "Antworte nur mit: OK",
+  "source": "opencode session DB (~/.local/share/opencode/opencode.db), via scripts/measure-opencode-tokens.ts",
+  "variants": [
+    {
+      "name": "baseline",
+      "args": [],
+      "usage": {
+        "total": 25629,
+        "input": 23544,
+        "output": 15,
+        "reasoning": 22,
+        "cacheRead": 2048,
+        "cacheWrite": 0
+      },
+      "credits": 31.01,
+      "note": "Reused from the Phase 0a measurement rather than re-run, to avoid spending ~30 credits on a number already in the DB. Two deviations from the other variants, both stated rather than hidden: the prompt was 'Antworte nur mit: OK und deinem Modellnamen' (a few tokens longer out of ~24K), and the cache was warm (2048 cacheRead), which inflates `total` relative to the cold variants. The input-only comparison below is the controlled one."
+    },
+    {
+      "name": "pure",
+      "args": ["--pure"],
+      "usage": {
+        "total": 23262,
+        "input": 23237,
+        "output": 6,
+        "reasoning": 19,
+        "cacheRead": 0,
+        "cacheWrite": 0
+      },
+      "credits": 28.15
+    },
+    {
+      "name": "pure+rg-reviewer",
+      "args": ["--pure", "--agent", "rg-reviewer"],
+      "usage": {
+        "total": 18895,
+        "input": 17847,
+        "output": 5,
+        "reasoning": 19,
+        "cacheRead": 1024,
+        "cacheWrite": 0
+      },
+      "credits": 22.86
+    }
+  ],
+  "findings": {
+    "cheapestVariant": "pure+rg-reviewer",
+    "cheapestCredits": 22.86,
+    "reductionFromBaseline": "26.3% by total, 24.2% by uncached input (23544 -> 17847)",
+    "pluginsAreNotTheCost": "--pure saved 307 input tokens against the baseline (23544 -> 23237). The 8 installed skills and the single @opencode-ai/plugin dependency are not the driver.",
+    "toolSchemasAreTheCost": "The reduced-tool agent saved 5390 input tokens against --pure (23237 -> 17847). The tool schemas are where the ~24K system prompt lives.",
+    "stopCondition": "NOT evaluated here by design (plan Task 2 Step 7). 22.86 credits is above both the 13-credit at-risk line and the 20-credit stop line, so Task 3's caching lever now has to carry the difference. Per the plan, Task 3 Step 7 is the single evaluation site."
+  },
+  "sideFinding": {
+    "id": "opencode-permission-flag",
+    "severity": "independent of this plan",
+    "claim": "src/providers/opencode.ts:97 and :242 both pass `--dangerously-skip-permissions`, which does not exist in opencode 1.18.10 (the documented flag is `--auto`).",
+    "evidence": "`opencode run --help` lists only `--auto`; `opencode run --definitely-not-a-real-flag --help` exits 0, so unknown flags are silently ignored rather than rejected.",
+    "consequence": "Both the reviewer path and the complete()/curator path run without permission auto-approval. A plausible but UNPROVEN contributor to the curator hang recorded in spec §8 (a 150s no-output hang observed 2026-08-07). Fix separately from this plan."
+  }
+}
