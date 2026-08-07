@@ -97,6 +97,11 @@ export interface BenchConfigOptions {
   /** Exact critic model and upstream route recorded by benchmark provenance. */
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Pin a provider's upstream model for this run. Recorded by provenance via
+   * buildRoster, which reads providers.<id>.model. Without this, a provider whose
+   * model is the "default" sentinel resolves against the user's own CLI config —
+   * an unversioned benchmark input. */
+  providerModels?: Partial<Record<ProviderId, string>>;
   /** Hard provider-side output ceiling for OpenRouter review/critic requests. */
   maxOutputTokens?: number;
 }
@@ -129,6 +134,15 @@ export function buildBenchConfig(opts: BenchConfigOptions = {}): ReviewgateConfi
     for (const provider of opts.providers) {
       const pc = base.providers[provider];
       if (pc) pc.enabled = true;
+    }
+  }
+  // Applied AFTER the panel loop so a pinned model survives the enable pass, and
+  // independently of `providers` so a critic-only or curator-only provider can be
+  // pinned too.
+  if (opts.providerModels) {
+    for (const [provider, model] of Object.entries(opts.providerModels)) {
+      const pc = base.providers[provider as ProviderId];
+      if (pc) pc.model = model;
     }
   }
   const s = opts.suppressors;

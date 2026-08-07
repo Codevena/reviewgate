@@ -70,6 +70,33 @@ const KNOWN_PROVIDERS: ReadonlySet<string> = new Set([
   "ollama",
 ]);
 
+/** Parse `--provider-model opencode=alibaba-token-plan/qwen3.8-max,ollama=glm-5.2:cloud`.
+ * Splits on the FIRST `=` only — model ids legitimately contain slashes, colons
+ * and occasionally `=`. Validated against KNOWN_PROVIDERS rather than a second
+ * hand-maintained list, so a new provider cannot be accepted here while being
+ * rejected two functions down. */
+export function parseProviderModels(raw: string): Partial<Record<ProviderId, string>> {
+  const out: Partial<Record<ProviderId, string>> = {};
+  const pairs = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`--provider-model expects <provider>=<model>, got "${pair}"`);
+    }
+    const provider = pair.slice(0, eq).trim();
+    const model = pair.slice(eq + 1).trim();
+    if (!model) throw new Error(`--provider-model: empty model for "${provider}"`);
+    if (!KNOWN_PROVIDERS.has(provider)) {
+      throw new Error(`--provider-model: unknown provider "${provider}"`);
+    }
+    out[provider as ProviderId] = model;
+  }
+  return out;
+}
+
 export interface BenchRunInput {
   repoRoot: string;
   corpus: string;
@@ -88,6 +115,9 @@ export interface BenchRunInput {
   ablationLabels?: string[];
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Pin a reviewer's upstream model, so provenance records what actually ran
+   * instead of a "default" sentinel that resolves outside the repo. */
+  providerModels?: Partial<Record<ProviderId, string>>;
   /** Benchmark-only physical critic completion limit; runtime default remains 1. */
   criticMaxAttempts?: number;
   /** Benchmark-only physical reviewer invocation limit per configured reviewer/case. */
@@ -476,7 +506,7 @@ async function preregistrationDigest(
   return { digest: sha256File(path), tracked: tracked.status === 0 };
 }
 
-async function buildRoster(
+export async function buildRoster(
   config: ReviewgateConfig,
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
 ): Promise<Array<{ id: string; cli_version: string; model: string; persona: string }>> {
@@ -578,6 +608,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
       ...(input.criticOpenrouterProvider
         ? { criticOpenrouterProvider: input.criticOpenrouterProvider }
         : {}),
+      ...(input.providerModels ? { providerModels: input.providerModels } : {}),
       ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     });
   } catch (err) {

@@ -9,7 +9,12 @@ import type { ProviderId } from "../providers/registry.ts";
 import { SUPPRESSION_LAYERS, type SuppressionLayer, isSuppressionLayer } from "../rig/ablate.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
-import { runBenchMatrix, runBenchReport, runBenchRun } from "./commands/bench.ts";
+import {
+  parseProviderModels,
+  runBenchMatrix,
+  runBenchReport,
+  runBenchRun,
+} from "./commands/bench.ts";
 import { runBrainList, runBrainRevoke, runBrainShow } from "./commands/brain.ts";
 import { formatControlPlaneStatus, runConfigApprove, runConfigStatus } from "./commands/config.ts";
 import { runDoctor } from "./commands/doctor.ts";
@@ -754,6 +759,11 @@ const bench = defineCommand({
           type: "string",
           description: "Exact model used by the critic (recorded in provenance)",
         },
+        "provider-model": {
+          type: "string",
+          description:
+            "Pin a reviewer's model, e.g. opencode=alibaba-token-plan/qwen3.8-max (comma-separated for several; recorded in provenance)",
+        },
         "critic-openrouter-provider": {
           type: "string",
           description: "Pinned OpenRouter upstream slug for the critic (for example alibaba)",
@@ -829,6 +839,9 @@ const bench = defineCommand({
           ...(repeat !== undefined ? { repeat } : {}),
           ...(typeof args["critic-model"] === "string"
             ? { criticModel: args["critic-model"].trim() }
+            : {}),
+          ...(typeof args["provider-model"] === "string" && args["provider-model"].trim()
+            ? { providerModels: parseProviderModels(args["provider-model"].trim()) }
             : {}),
           ...(typeof args["critic-openrouter-provider"] === "string"
             ? {
