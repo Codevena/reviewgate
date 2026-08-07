@@ -369,6 +369,25 @@ git commit -m "test: token oracle for Qwen cost measurements (opencode session D
 
 ### Task 1b: Verify pay-per-token access (routes every task after it)
 
+> **RESOLVED 2026-08-07 — `metered: false`. Do not execute this task; it is kept for the record.**
+>
+> A DashScope workspace key (`sk-ws-…`, workspace `ws-ax5oceqshzsi9np7`) was created and tested against both
+> `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` and the workspace-scoped
+> `https://ws-ax5oceqshzsi9np7.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`.
+> Both list 156 models including `qwen3.8-max`; both return **`AccessDenied.Unpurchased`** on
+> completion. The block is **account-wide, not model-specific** — `qwen-plus`, `qwen-turbo`,
+> `qwen3.7-max`, `qwen3-max` and `qwen3.8-max` all fail identically. Root cause is visible in the
+> console banner: **`RISK.RISK_CONTROL_REJECTION` — "your order is suspended"**. Pay-as-you-go
+> cannot be activated until Alibaba support lifts it.
+>
+> **Consequence:** Tasks 2, 3 and 5 run on the token plan under the original ~250-credit budget.
+> Re-open this task only if the risk-control block is lifted.
+>
+> **Side finding, feeds Task 2:** the same console exposes an **Anthropic-compatible** endpoint at
+> `https://ws-ax5oceqshzsi9np7.ap-southeast-1.maas.aliyuncs.com/apps/anthropic`. Driving Qwen
+> through Claude Code instead of opencode is a third overhead lever, untested. Its system-prompt
+> size is unknown and may be materially below opencode's ~24 K.
+
 **Cost: ~$0.001** (one tiny metered call). **No plan credits.**
 
 Two independent axes, per spec §5a: the *harness* (opencode, executes) and the *meter* (prepaid credits vs. pay-per-token). Running opencode against a metered DashScope key keeps the executing reviewer and removes both the 7-day window and the 1–2 agent cap. At list pricing the full authoritative benchmark is ~$5.10 — against 108 % of a weekly window, i.e. a blocked gate. If this task succeeds, every measurement below runs metered and this plan costs the credit window **nothing**.
