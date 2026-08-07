@@ -36,8 +36,21 @@ timestamp from opencode's session DB:
 | 13:01:30 | 1,334 | 22,528 | 6.57 |
 | | | **total** | **53.47 for 2 cases** |
 
-**≈ 26.7 credits per case.** A case costs roughly **two** LLM calls, not one, and
-the first call of a run pays a cold cache.
+**Superseded by a direct console measurement.** The table above converts DB tokens
+through a model; the console measures credits directly, and it is the better
+number. Reading before the TTL call: **5.55 %** (138.75 credits). Reading after the
+bench run: **8.17 %** (204.25 credits) — a delta of **65.5 credits** covering the
+TTL call plus the four bench calls. Subtracting the TTL call at the measured
+average for comparable calls (~9.2) leaves **≈ 56.3 credits for 2 cases**:
+
+> **≈ 28.2 credits per case** (direct), against ≈ 26.7 from the token model.
+
+The token model runs ~9 % low (predicted 7.95 %, actual 8.17 %), so every
+DB-derived figure in this document is a slight underestimate. The direction of
+every conclusion below is unchanged, and if anything reinforced.
+
+A case costs roughly **two** LLM calls, not one, and the first call of a run pays
+a cold cache.
 
 This supersedes every earlier extrapolation, exactly as the plan said it would:
 
@@ -46,7 +59,8 @@ This supersedes every earlier extrapolation, exactly as the plan said it would:
 | baseline, default agent (Task 2) | 31.0 /call | 900 (36 %) | 2,700 (108 %) |
 | + reduced tool set (Task 2) | 22.9 /call | 686 (27 %) | 2,058 (82 %) |
 | + warm cache (Task 3) | 9.2 /call | 275 (11 %) | 825 (33 %) |
-| **real case (Task 5)** | **26.7 /case** | **800 (32 %)** | **2,400 (96 %)** |
+| real case, token model (Task 5) | 26.7 /case | 800 (32 %) | 2,400 (96 %) |
+| **real case, console-measured (Task 5)** | **28.2 /case** | **846 (34 %)** | **2,538 (102 %)** |
 
 The Task 3 figure was a per-**call** number measured on a 5-output-token prompt.
 The plan predicted a realistic output mix would add +3.6 to +7.3 credits. It added
@@ -55,17 +69,18 @@ The plan predicted a realistic output mix would add +3.6 to +7.3 credits. It add
 ## Decision against the stop condition
 
 Spec §5 Phase 0b: stop if per-case cost cannot be brought under **20 credits**.
-Measured: **26.7**. The condition is **tripped**.
+Measured: **28.2** (console-direct). The condition is **tripped**.
 
 But the consequence is narrower than "stop everything", because the two runs have
 very different costs:
 
-- **Phase 2 (exploratory, 30 × 1): GO.** 800 credits ≈ 32 % of the 2,500-credit
+- **Phase 2 (exploratory, 30 × 1): GO.** ≈ 846 credits ≈ 34 % of the 2,500-credit
   weekly window. It fits, and it is the only way to answer the actual question in
   spec §6 — whether Qwen finds a seeded bug that GLM-5.2 and claude-code both miss.
-- **Phase 3 (authoritative, 30 × 3): NO-GO at Lite.** 2,400 credits ≈ 96 % of the
-  window. Running it consumes essentially the entire week and leaves nothing for
-  day-to-day gate traffic.
+  Note the window already stands at 8.17 % used, so budget ~42 % after it.
+- **Phase 3 (authoritative, 30 × 3): NO-GO at Lite.** ≈ 2,538 credits ≈ **102 %**
+  of the window — it does not fit at all, let alone leave room for day-to-day gate
+  traffic.
 
 **Recommended next step: run Phase 2.** It is affordable, it answers the quality
 question, and it produces the definitive per-case cost from 30 real cases instead
@@ -73,11 +88,14 @@ of the 2-case extrapolation above — which is the number Phase 3 needs.
 
 ## Caveats, stated rather than buried
 
-- **Not cross-checked against the console.** The credit figures convert DB tokens
-  at 1.21/1K uncached and 0.22/1K cached. That model was validated once
-  (4.45 % → 5.55 %, predicted 5.42 %, actual 5.55 %), but *this* extrapolation was
-  not. A single console reading would confirm or refute it: the predicted total
-  after the TTL call plus the four bench calls is **≈ 7.95 %**.
+- **Cross-checked against the console — and the token model lost.** Predicted
+  7.95 %, actual **8.17 %**: the model (1.21/1K uncached, 0.22/1K cached) runs ~9 %
+  low. Attempts to re-fit the two coefficients across three calibration points do
+  not converge — the fits disagree wildly (uncached 1.25–1.71/1K, cached
+  0.05–0.43/1K) because the console displays only two decimals (±0.125 credits) and
+  the sample sizes are small. **Do not trust a fitted coefficient; read the
+  console.** The per-case figure used above is console-direct for exactly that
+  reason.
 - **Cold-start amortisation is unquantified.** Only the first case of a run pays
   the cold cache. If steady state is the last two calls (12.10 credits/case), 30
   cases would be ~380 credits (15 %) and the authoritative run ~1,140 (46 %),
