@@ -1,0 +1,93 @@
+{
+  "measuredAt": "2026-08-07",
+  "variant": "pure+rg-reviewer",
+  "model": "alibaba-token-plan/qwen3.8-max",
+  "prompt": "Antworte nur mit: OK",
+  "consoleCreditsBefore": { "percentUsed": 4.45, "credits": 111.25 },
+  "consoleCreditsAfter": { "percentUsed": 5.55, "credits": 138.75 },
+  "consoleDeltaCredits": 27.5,
+  "consoleDeltaCoversCalls": 3,
+  "calls": [
+    {
+      "n": 1,
+      "gapSeconds": 0,
+      "usage": {
+        "total": 18980,
+        "input": 7616,
+        "output": 5,
+        "reasoning": 95,
+        "cacheRead": 11264,
+        "cacheWrite": 0
+      },
+      "cacheFraction": 0.597
+    },
+    {
+      "n": 2,
+      "gapSeconds": "<60",
+      "usage": {
+        "total": 18903,
+        "input": 2487,
+        "output": 6,
+        "reasoning": 26,
+        "cacheRead": 16384,
+        "cacheWrite": 0
+      },
+      "cacheFraction": 0.868
+    },
+    {
+      "n": 3,
+      "gapSeconds": "<60",
+      "usage": {
+        "total": 18891,
+        "input": 4531,
+        "output": 5,
+        "reasoning": 19,
+        "cacheRead": 14336,
+        "cacheWrite": 0
+      },
+      "cacheFraction": 0.76
+    },
+    {
+      "n": 4,
+      "gapSeconds": 1451,
+      "note": "TTL test — 24 minutes after call 3, ~5x the documented 5-minute cache TTL. NOT covered by the console delta above.",
+      "usage": {
+        "total": 18907,
+        "input": 2491,
+        "output": 6,
+        "reasoning": 26,
+        "cacheRead": 16384,
+        "cacheWrite": 0
+      },
+      "cacheFraction": 0.868
+    }
+  ],
+  "verdicts": {
+    "fills": true,
+    "discounted": true,
+    "survivesTtl": true
+  },
+  "notes": {
+    "statedCriterionNotMet": "The plan's criterion was 'call 3 cacheFraction >= 0.8'. Call 3 measured 0.760 and therefore FAILS it by the letter. The criterion was mis-specified: it assumed monotonic warming, while the measurement shows a block-quantised plateau fluctuating between 0.597 and 0.868 (every cacheRead is a multiple of 1024). Recorded as-is rather than rounded up. The economic question is settled by the credit delta below, which is measured rather than inferred from the fraction.",
+    "discountEvidence": "Flat-coefficient prediction for the three calls was 68.70 credits (56,774 tokens x 1.21/1K). The console delta was 27.5 — 40% of that, i.e. a 2.5x saving. Solving for the cache-read rate with uncached tokens at 1.21/1K gives ~0.22 credits/1K, a ratio of ~1/5.3 against uncached. Alibaba's list pricing puts cache read at 1/8 of input ($0.25 vs $2.00); the measured ratio is the same order but not identical, which is expected since the credit ledger is a different mechanism from list pricing.",
+    "ttlEvidence": "Call 4 ran 24 minutes after call 3 and returned the HIGHEST cache fraction of all four (0.868). The documented 5-minute TTL does not bound this plan's cache in practice — either reads refresh it or the effective TTL is longer.",
+    "outputMixCaveat": "All four calls produced 5-6 output tokens. A real review is reasoning-heavy and output weighs ~3x input, so the per-case figure will be higher than the per-call figure below. Task 5 is the only measurement that resolves this."
+  },
+  "stopCondition": {
+    "effectivePerCall": 9.17,
+    "verdict": "clear",
+    "basis": "discounted: true -> console delta 27.5 credits / 3 calls = 9.17. Divisor is 3, not 4: the Step 4 console reading precedes Step 5's TTL call, which is therefore not covered by the delta. Band: < 13 = clear.",
+    "chain": {
+      "baselineDefaultAgent": 31.01,
+      "plusReducedToolSet": 22.86,
+      "plusWarmCache": 9.17,
+      "totalReduction": "3.4x"
+    },
+    "extrapolation": {
+      "note": "At 9.17 credits/call against a 2,500-credit weekly window. The second figure in each pair adds a realistic 1.5K reasoning-heavy output (+5.4 credits/case) and is the honest planning number until Task 5 measures it.",
+      "bench30x1": "275 credits (11% of window) / ~438 credits (17.5%) with realistic output",
+      "bench30x3Authoritative": "825 credits (33%) / ~1,314 credits (53%) with realistic output",
+      "wasBeforeThisTask": "30x1 = 900 credits (36%), 30x3 = 2,700 credits (108%, did not fit)"
+    }
+  }
+}
