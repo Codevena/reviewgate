@@ -54,7 +54,8 @@ report would become an orphan and every finding-count assertion would break for 
 - Consumes: nothing
 - Produces: `pendingReport(findings: FxFinding[], iter: number, critic: FxCritic | undefined, runId: string): string`
   and a new optional `FxTurn.reportRunIds?: (string | undefined)[]`, which Task 2's tests use to
-  construct inherited and orphan reports.
+  construct inherited and orphan reports. Also leaves every fixture turn that carries `reports`
+  with at least one `iterations` entry (Step 4), which Task 2's rule depends on.
 
 - [ ] **Step 1: Add `reportRunIds` to the `FxTurn` interface**
 
@@ -106,13 +107,35 @@ In `buildFixture`, replace the `writeFileSync(join(reportDir, ...))` call:
         }
 ```
 
-- [ ] **Step 4: Run the harvest suite — everything must still pass**
+- [ ] **Step 4: Give every fixture turn that carries reports at least one gate iteration**
+
+**This step is load-bearing — without it Task 2 breaks three existing tests.** Four fixture turns
+declare `reports` but no `iterations`, so they emit no `run.complete` and their audit delta is
+empty. Under Task 2's rule their reports would be owned by no turn, become orphans, and be dropped
+— collapsing `criticRuns` to `[]`. A report cannot exist without a gate run that wrote it, so these
+fixtures were modelling an impossible state; make them model reality:
+
+- `"criticRuns records that the critic ran, which the demotion count cannot show"` (`:360-371`) —
+  add `iterations: [{}],` to **both** turn objects.
+- `"criticRuns dedupes one invocation repeated across archived report versions"` (`:386-398`) —
+  add `iterations: [{}],` (one iteration; its `reportIters` is `[1, 1]`).
+- `"criticRuns keeps two distinct iterations that reported identical counts"` (`:409-418`) —
+  add `iterations: [{}, {}],` (two iterations; its `reportIters` is `[1, 2]`).
+
+These tests assert only on `criticRuns` and `suppressed.critic`, never on `iterations` or the
+warning list, so adding the iterations cannot change what they check.
+
+Do **not** add iterations to `"a turn where the gate never ran is a warning, not a silent zero"`
+(`:609-623`) or to any other fixture with `iterations: []` — those model a dead turn deliberately.
+
+- [ ] **Step 5: Run the harvest suite — everything must still pass**
 
 Run: `bun test tests/unit/rig-harvest.test.ts > /tmp/t1.txt 2>&1; tail -5 /tmp/t1.txt`
-Expected: 0 fail. This task changes no behaviour — `criticRuns` is keyed `run_id:iter` within a
-single turn's Map, so renaming the run_id consistently cannot change any grouping.
+Expected: 0 fail. Task 1 changes no production behaviour — `criticRuns` is keyed `run_id:iter`
+within a single turn's Map, so renaming the run_id consistently cannot change any grouping, and the
+added iterations are not asserted on by the affected tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add tests/unit/rig-harvest.test.ts
@@ -411,12 +434,20 @@ Insert inside the same `describe("rig driver", ...)` block that contains `gateLi
   }, 20_000);
 ```
 
-- [ ] **Step 2: Run them and record which is red**
+- [ ] **Step 2: Run them and record that both are red**
 
 Run: `bun test tests/unit/rig-driver.test.ts > /tmp/t3-red.txt 2>&1; grep -c "(fail)" /tmp/t3-red.txt`
-Expected: **exactly 1 failure** — the first test (1 archived file instead of 0). The second test
-passes already **by design**: it is an over-suppression guard, so its job is to be green on both
-sides. Its mutation check is Step 5, which mutates the *fix* rather than removing it.
+Expected: **2 failures.** Both tests are red pre-fix, for different reasons, and the distinction
+matters when judging whether they have teeth:
+
+- Test 1 fails on the archived-file count (1 instead of 0).
+- Test 2 fails on its **second** assertion only: pre-fix the archiver captures the stale report
+  *and* the fresh one, so `stale-from-last-turn` is present when the test requires it absent. Its
+  first assertion (`fresh-this-turn` must be archived) is green pre-fix and stays green post-fix —
+  that half is the over-suppression guard, and it is the half Step 5's mutation check proves.
+
+So each assertion in Test 2 is covered by a different observation: the stale-exclusion half by this
+pre-fix red, the fresh-retention half by the Step 5 mutant. Neither half is vacuous.
 
 - [ ] **Step 3: Seed the archiver with the pre-turn state**
 
