@@ -1,134 +1,154 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-07, after the Slice B revert was implemented, gated and pushed.
+_Last updated: 2026-08-07, after the rig stale-report defect was diagnosed, specced and planned.
 Supersedes all earlier content._
 
 ## One-line state
 
-**All three slice questions are now closed: Slice A shipped, Slice C declined on measurement,
-Slice B implemented as a REVERT and pushed (`27c29f7`). Nothing is half-done — the next session
-picks a new task rather than continuing one.**
+**The rig stale-report defect is fully diagnosed and measured, the design and the implementation
+plan are written and committed — but NOT ONE LINE OF THE FIX IS IMPLEMENTED. The next session
+implements `docs/superpowers/plans/2026-08-07-rig-stale-report-fix.md`, Task 1 first.**
 
 ## Verified state (checked with commands at handoff time)
 
 | | |
 |---|---|
-| my commits this session | **`27c29f7`** (the revert), `5543549` (this handoff), `76a758c` (Trailhead stamp) |
-| pushed? | **YES, all of them** — verified on `origin/master` after the final push |
-| also on master | **`b3032b3`** — *not mine.* A **second session** is committing to this checkout live; its commit rode along in my push, with Markus's explicit go-ahead |
-| Trailhead stamp | `5543549`. `verify-map.js` → **MAP OK**, 70/70 paths |
-| working tree | `.reviewgate/lore/approvals.jsonl` modified + two untracked `measure-opencode-tokens` files — **all foreign**, leave them alone |
-| suite | **3191 pass / 12 skip / 0 fail**, exit 0 — run at the reviewed tree of `27c29f7` |
-| `tsc` / `lint` | clean. `rig/` checked SEPARATELY (it is outside `tsconfig.include`) — 0 errors in the changed file |
+| my commits this session | **`384df2a`** (spec), **`f36abf1`** (plan), **`734f5eb`** (plan corrections) — docs only, zero code |
+| pushed? | **NO.** `master` is **8 ahead** of `origin/master` — but only 3 are mine |
+| the other 5 | `0f8b6cf`, `e7c25e1`, `979bfea`, `ef54ed0`, `9fac6f8` — **a SECOND SESSION's bench/Qwen work**, still live |
+| working tree | only `.reviewgate/lore/approvals.jsonl` (foreign gate state) — leave it alone |
+| suite | **3209 pass / 12 skip / 0 fail**, exit 0 — run at `734f5eb` (was 3191; the parallel session added 18) |
 | build | **deliberately NOT run.** Installed binary still `sha256:fc9b8c18…` |
-| Trailhead | stamped to `b3032b3`; 3 GEÄNDERT rows were all mine and re-checked, entry points unchanged, 0 FEHLT, `CLAUDE.md` at exactly 80/80 lines |
+| Trailhead stamp | **left at `5543549` ON PURPOSE** — see Traps |
 
 ⚠ **A SECOND SESSION IS COMMITTING TO THIS CHECKOUT.** Never `git add -A`; stage explicit paths and
 check `git log` before assuming a commit is yours. A `git worktree` remains the standing fix.
 
 ## What got done — and how it was verified
 
-The four tasks of `docs/superpowers/plans/2026-08-07-slice-b-revert.md`, all of them:
+**Nothing was implemented. What exists is a diagnosis backed by measurement, plus a gated plan.**
 
-1. `isBlockingSecurity` deleted; `src/core/aggregator.ts:621` is the CRITICAL-only check again.
-2. The two floor tests inverted (WARN/`"keep"` → INFO/`"likely_fp"`).
-3. Three boundary guards confirmed green with assertions untouched.
-4. Design spec carries a dated REVERTED banner; original rationale preserved.
+The handoff that suggested this task described it as "a dead turn inherits the previous turn's
+`pending.json`". That was an order of magnitude too small. Measured against the recorded pilots:
 
-**Evidence, not adjectives:**
+| | pilot-01 | pilot-02 | pilot-03 | total |
+|---|---|---|---|---|
+| turns opening with the previous turn's final report | 11/12 | 11/12 | 9/12 | **31/36** |
+| reports owned by the turn | 19 | 14 | 14 | **47** |
+| reports inherited from an earlier turn | 11 | 11 | 9 | **31** |
+| reports owned by **no** turn (orphans) | 0 | 0 | 0 | **0** |
 
-- **Mutation check in a COPY** — restoring `isBlockingSecurity` reddens **exactly** the two inverted
-  tests, the other 16 stay green. Copy discarded, `git diff` confirmed the original untouched.
-- **The new abort path was itself mutation-checked** — failure-only code that would otherwise ship
-  untested. Floor restored → replay exits 1, prints all 3 activations with both diagnostic flags
-  `false`, and the `die()` guidance then correctly points at `aggregator.ts:621`.
-- **Replay 3 → 0 activations** with signature-match unchanged at **15/19** — the 0 comes from the
-  revert, not from a broken instrument.
-- Suite unchanged at 3191/12/0, exactly as the plan predicted.
+**13 of 36 turns count findings they did not earn; 9 of those produced none of their own.**
+Sharpest case: pilot-03 turn 5 has an EMPTY audit delta and still reports 3 findings, all turn 4's.
 
-**Post-implementation gate: 3 rounds** (Slot A = executing Claude subagent, Slot B = agy). Round 1
-FAIL/2 WARN, round 2 FAIL/2 WARN, round 3 PASS/PASS.
+Root cause: `driver.ts:201` promises to archive every version that **appears** while a turn runs;
+it was implemented as every version that **exists**. The first poll fires 250 ms in, while the
+predecessor's `pending.json` is still on disk.
 
-## THE NEXT TASK — pick one; none is a continuation
+**Evidence, not adjectives — every number above came from a command run against
+`rig/results/pilot-0{1,2,3}/`, not from reading code.** Also executed and confirmed:
 
-Nothing is left mid-flight. The strongest candidate, and why:
+- `run_id` maps **1:1 to a turn** across all **34** recorded gate runs — none spans two turns.
+  This is what makes the ownership rule sound and retroactive.
+- Every one of the 31 inherited reports is **byte-identical** to its predecessor's final report,
+  so dropping it loses nothing.
+- The **pre-fix baseline** for all three pilots is captured (table below) so the correction delta
+  cannot be back-fitted.
+- `createHash`/`existsSync`/`readFileSync`/`join`/`reviewgateDir` are already imported in
+  `driver.ts:6-20`; `window.runs`/`runDelta` are in scope at the harvest insertion point.
 
-**The rig stale-report defect** — a dead turn inherits the previous turn's `pending.json`, so a turn
-that produced nothing looks like it produced the previous turn's findings. It silently corrupts any
-metric read from `turns/*/reports/`, which is the exact failure class this rig has already been
-burned by twice. It is next because every future measurement rests on it, and because it **cannot
-ride along inside a pilot** — it needs a rebuild, so it must be its own task with its own
-preregistration. Entry point: `src/rig/driver.ts` (turn loop) plus `src/rig/harvest.ts`.
+**Pre-fix baseline — capture this again only if you distrust it; do not overwrite it:**
 
-Alternatives, all still open and all smaller:
+| | pilot-01 | pilot-02 | pilot-03 |
+|---|---|---|---|
+| recall | 0.60 (3/5) | 0.33 (1/3) | 1.00 (2/2) |
+| escape rate | 0.20 (1/5) | 0.67 (2/3) | 0.00 (0/2) |
+| M2 slope | 0.0239/turn (n=10) | 0.0000/turn (n=9) | 0.0014/turn (n=9) |
+| iterations median | 1 over 12 reviewed | 1 over 12 reviewed | 1 over 10 reviewed |
+| cost | $0.0236 | $0.0125 | $0.0136 |
 
-1. **`isFloorActivation` is not floor-exclusive** — documented in a comment this session, **not**
-   guarded by a test. See the trap below. A test would be cheap.
-2. **Two `~/Developer` fixes**, diagnosed, still not applied: stale repo-local hooks in
-   `~/Developer/.claude/settings.json`; a 15.07. `control-plane.json` that makes `~/Developer` count
-   as an armed checkout.
-3. **Four repos armed without ever being `init`ed** (`barrierefrei`, `fatemehdaily`, `viergewinnt`,
-   `youtubeQuiz`) — a policy call, not a code task.
-4. **Sandboxes to reap:** `/private/tmp/rig-pilot01-NZHKOT`, `/private/tmp/rig-pilot02-kzYEoV`,
-   `/private/tmp/rig-pilot03-a3doEy`, and `dist/reviewgate.prev`. Neither replay depends on them.
+### Plan gate: ONE round, and only half a gate
+
+- **agy (Slot B): PASS**, 0 CRITICAL / 0 WARN / 1 INFO. Findings file verified fresh (mtime
+  11:14:35Z against a round start of 11:13:26Z), log 2767 bytes. Its INFO was **correct** and is
+  fixed in `734f5eb`.
+- **Slot A (executing): STILL OPEN.** agy's log shows a single `readFile` — it reviewed by reading,
+  not by executing, despite being told to run the code.
+- **The proof that this matters:** I found a plan-breaking defect agy missed while it asserted "the
+  rule produces deterministic, safe outcomes in all cases" — four fixture turns declare `reports`
+  but no `iterations`, so under the new rule their reports become orphans and **three existing
+  `criticRuns` tests collapse to `[]`**. That is now Task 1 Step 4.
+
+## THE NEXT TASK
+
+**Implement the plan, Task 1 → Task 4, in order.**
+`docs/superpowers/plans/2026-08-07-rig-stale-report-fix.md`
+
+Why it is next: every future rig measurement rests on the harvester being right, and the corpus is
+currently wrong in a way that is invisible from the reports themselves. The harvest half works
+**retroactively and needs no rebuild**, so the three recorded pilots become usable again rather than
+being written off.
+
+Entry points: `src/rig/harvest.ts:141` (`collectTurnFindings`) and `:413` (its call site);
+`src/rig/driver.ts:214` (`startReportArchiver`).
+
+**Task 1 must land first** — it is a test-only refactor, and without its Step 4 Task 2 reddens three
+existing tests for the wrong reason.
 
 ## Traps — NEW this session
 
-- **`isFloorActivation` (`rig/scripts/critic-floor-replay.ts`) is NOT floor-exclusive, and its 0 is
-  a property of the CORPUS, not a theorem about the code.** A CRITICAL **correctness** singleton
-  kept by the surviving CRITICAL exemption, then clamped CRITICAL→WARN by the reputation pass
-  (`aggregator.ts:903-914`), reproduces the same marker. Not security — `touchesSecurity` returns
-  early at `:883`. It cannot fire in the replay only because that script's `aggregate()` call site
-  passes **no** reputation inputs and the pass is gated on `repUnreliable.size > 0` (`:876-877`).
-  **If that call site ever gains reputation inputs, the tripwire will false-alarm.** Documented in
-  the script's header; NOT covered by a test.
-- **The flag-based diagnosis in that script rests on an unguarded invariant:** every CRITICAL→WARN
-  transition inside `aggregate()` stamps `demoted_from_critical` (`:165`, `:854`, `:911`, `:1061`),
-  and the two non-reputation paths early-return on security/correctness (`:838`, `:1051`).
-  Re-check that list after ANY change to the demote passes, or the guidance points at the wrong line.
-- **A "VERIFIED BY EXECUTION" stamp does not protect the sentence it is attached to.** This session
-  executed the *existence* of that second producer and then invented a *cause* for it — and marked
-  the invented cause as execution-verified. The reviewer caught it. Execute the claim you are
-  actually writing down, not a neighbouring one.
-- **A vendor-diverse PASS is not independent confirmation when the second slot cannot run the code.**
-  agy passed all three rounds and found nothing; in round 2 it explicitly confirmed the false causal
-  claim as "accurately described against the aggregator implementation". Every substantive finding
-  came from the executing slot. Treat a non-executing PASS as one voice, never as corroboration.
-- **Failure-only code is untested code.** The new abort branch had never run once during
-  development. Mutate deliberately to make it run before believing its output.
+- **`run_id` alone is the ownership key, never `(run_id, iter)`.** A gate that writes
+  `pending.json` for iteration 3 and dies before appending `run.complete` would have its REAL report
+  dropped as an orphan under a pair key. Verified 1:1 across 34 gate runs.
+- **Four fixture turns model an impossible state** (`reports` with no `iterations`): the three
+  `criticRuns` tests at `rig-harvest.test.ts:360`, `:384`, `:407`. They need a gate iteration added.
+  Do NOT add one to `:609` ("a turn where the gate never ran") — that one is deliberately dead.
+- **The trailhead stamp was deliberately NOT moved.** All 4 GEÄNDERT rows (`tests/unit/`,
+  `src/cli/commands/bench.ts`, `src/bench/runner.ts`, `src/cli/commands/`) are the PARALLEL
+  session's bench work, which this session never looked at. Stamping HEAD would claim a verification
+  that did not happen. 0 FEHLT, 66/70 still valid, `CLAUDE.md` at exactly 80/80 lines.
+- **The gate escalated on findings that are not mine and cannot be honestly dispositioned.**
+  `F-002`/`F-003` on `src/providers/opencode.ts` are the parallel session's code, but the ownership
+  snapshot marked them `session_attributable: true` (their edits landed inside my baseline window),
+  so `out-of-scope` and `out-of-session` both fail closed. They remain **open and escalated** —
+  see `.reviewgate/ESCALATION.md`. That escalation also rests on a **quota-degraded panel** (codex
+  capped until 2026-08-08 11:07Z); the file itself says to re-run after the reset before treating
+  the findings as final.
+- **`harvest.ts` never reads `manifest.turns[].gateReviewed`** — the flag exists, is written by
+  the driver, and is consulted by nothing. The plan subsumes it rather than adding a second signal.
+- **An `iterations === 0` warning that says "EXCLUDED from the M1/cost-per-turn samples" is true and
+  misleading** — findings, recall, escape and suppression were never excluded.
 
 ## Traps — still standing
 
-- **Never run `bun run build` casually** — it re-pins the binary AND deploys machine-wide via the
-  `~/.local/bin/reviewgate` symlink. Build → record sha → preregister → run.
+- **Never run `bun run build` casually** — re-pins the binary AND deploys machine-wide via the
+  `~/.local/bin/reviewgate` symlink. Build → record sha → preregister → run. **Task 3's driver fix
+  reaches no real `rig run` until someone rebuilds; that is deliberately out of scope.**
 - **Never pipe `bun test` through `tail`** — a red test's identity is lost. Redirect to a file.
-- **`bun run lint`/`tsc` do NOT cover `rig/scripts/`.** Check it explicitly: `bunx biome check` plus
-  a `tsc --noEmit` with an include that reaches `rig/` (needs `typeRoots` pointing at
-  `node_modules` — `bun-types` is not under `@types/`).
-- **`agy` fails 0-byte intermittently.** A reviewer with no findings file is an OPEN slot, not a
-  pass — check log size AND findings-file **mtime against the round's start time**.
+- **`bun run lint`/`tsc` do NOT cover `rig/scripts/`.** Check it explicitly (needs `typeRoots`
+  pointing at `node_modules` — `bun-types` is not under `@types/`).
+- **`agy` fails 0-byte intermittently, and reviews shallowly even when it does not.** A missing
+  findings file is an OPEN slot; so, arguably, is a PASS whose log shows no execution.
 - **Codex quota resets 2026-08-08 11:07Z.** Until then the executing slot is agy or a Claude
   subagent; that is the normal configuration, not a degraded one.
 - **A rate over `reports/*-pending.json` is a rate over SURVIVORS.** Use `cassette.jsonl`.
-- **`rig/results/` is gitignored** — every number in the write-ups is reproducible only on this
-  machine.
-- **Never reimplement a shipped helper in a rig script** — import it. `seedLanded` got the landing
-  semantics wrong that way and the whole discriminator hung off it.
+- **`rig/results/` is gitignored** — every number here is reproducible only on this machine.
+- **Never reimplement a shipped helper in a rig script** — import it.
 - **`applySymbolSignatures` runs BEFORE `validateFindingFacts`** (`orchestrator.ts:2219`, `:2226`).
 - Reviewgate's decision protocol assumes fix-and-decide within ONE turn; an agent that delegates a
   fix to a background worker structurally cannot. Still unaddressed.
 
-## Open Trailhead note (carried forward, still unresolved)
+## Open Trailhead note (carried forward)
 
-`CLAUDE.md`'s Mess-Rig row points at `src/rig/driver.ts`, not at the offline replays under
-`rig/scripts/` — which are now load-bearing (this session's revert check *is* one of them).
-`CLAUDE.md` sits at exactly 80/80 lines, so this can only be a **swap**, not an addition. Deliberately
-left as-is: it is a judgement call about which entry point serves a cold reader better.
+`CLAUDE.md`'s Mess-Rig row points at `src/rig/driver.ts` rather than the offline replays under
+`rig/scripts/`. After this session's work the row is arguably *more* correct than before — the next
+task's entry points are `src/rig/driver.ts` and `src/rig/harvest.ts`. Left as-is; `CLAUDE.md` is at
+exactly 80/80 lines, so any change is a swap, not an addition.
 
 ## Read-first order
 
 1. This file.
-2. `docs/dev/2026-08-07-slice-b-critic-floor-counterfactual.md` — the evidence behind the revert.
-3. `rig/scripts/critic-floor-replay.ts` — read its HEADER before running it; it explains what the 0
-   does and does not prove.
-4. `docs/superpowers/specs/2026-08-05-true-positive-hole-design.md` §Slice B — the REVERTED banner.
+2. `docs/superpowers/plans/2026-08-07-rig-stale-report-fix.md` — the plan to execute.
+3. `docs/superpowers/specs/2026-08-07-rig-stale-report-design.md` — why the rule is what it is,
+   especially §"Why `run_id` alone" and §"Failure handling".
+4. `.reviewgate/ESCALATION.md` — the open, not-mine findings, before ending your first turn.
