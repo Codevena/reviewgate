@@ -14,12 +14,12 @@ implements `docs/superpowers/plans/2026-08-07-rig-stale-report-fix.md`, Task 1 f
 | | |
 |---|---|
 | my commits this session | **`384df2a`** (spec), **`f36abf1`** (plan), **`734f5eb`** (plan corrections) — docs only, zero code |
-| pushed? | **NO.** `master` is **8 ahead** of `origin/master` — but only 3 are mine |
-| the other 5 | `0f8b6cf`, `e7c25e1`, `979bfea`, `ef54ed0`, `9fac6f8` — **a SECOND SESSION's bench/Qwen work**, still live |
+| pushed? | **NO.** ~~`master` is 8 ahead~~ → **12 ahead** of `origin/master` as of 2026-08-08 01:4x — 3 are mine, **9 are the Qwen session's** |
+| ~~the other 5~~ the other 9 | `9fac6f8`, `ef54ed0`, `979bfea`, `e7c25e1`, `0f8b6cf`, `cef7022`, `56564ea`, `63a779f` (+ `b3032b3`, `9473973` already pushed) — **the SECOND SESSION's bench/Qwen work, now CLOSED OUT.** See "Second work stream" below |
 | working tree | only `.reviewgate/lore/approvals.jsonl` (foreign gate state) — leave it alone |
-| suite | **3209 pass / 12 skip / 0 fail**, exit 0 — run at `734f5eb` (was 3191; the parallel session added 18) |
+| suite | **3209 pass / 12 skip / 0 fail**, exit 0 — re-run at `56564ea` by the Qwen session (139 s). ⚠ One earlier full run showed `1 fail` that did **not** reproduce in four subsequent runs; the name was never captured. Only hint: `cassette: prompt drift for codex-security` appeared solely in the failing run. Treat as flaky-unknown, not as green-by-proof |
 | build | **deliberately NOT run.** Installed binary still `sha256:fc9b8c18…` |
-| Trailhead stamp | **left at `5543549` ON PURPOSE** — see Traps |
+| ~~Trailhead stamp left at `5543549` ON PURPOSE~~ | → **now `cef7022`, stamped 2026-08-08 (`56564ea`).** This is the completion of that decision, not an override: the 4 GEÄNDERT rows were the Qwen session's own work, and that session verified them (`bench.ts`/`runner.ts` entry points still correct, 0 FEHLT, 80/80 lines). The session that could honestly stamp them did |
 
 ⚠ **A SECOND SESSION IS COMMITTING TO THIS CHECKOUT.** Never `git add -A`; stage explicit paths and
 check `git log` before assuming a commit is yours. A `git worktree` remains the standing fix.
@@ -110,10 +110,11 @@ existing tests for the wrong reason.
 - **The gate escalated on findings that are not mine and cannot be honestly dispositioned.**
   `F-002`/`F-003` on `src/providers/opencode.ts` are the parallel session's code, but the ownership
   snapshot marked them `session_attributable: true` (their edits landed inside my baseline window),
-  so `out-of-scope` and `out-of-session` both fail closed. They remain **open and escalated** —
-  see `.reviewgate/ESCALATION.md`. That escalation also rests on a **quota-degraded panel** (codex
-  capped until 2026-08-08 11:07Z); the file itself says to re-run after the reset before treating
-  the findings as final.
+  so `out-of-scope` and `out-of-session` both fail closed. ~~They remain **open and escalated**~~ →
+  **RESOLVED 2026-08-08 by the session that owns that code:** `F-002` **fixed** (the measurement
+  scaffolding was removed from the reviewer path, `63a779f`), `F-003` **rejected with a reason** and
+  carried as a named next task. Both decisions are in `.reviewgate/decisions/1.jsonl`. The
+  quota-degraded-panel caveat still applies to any *re-run* (codex capped until 2026-08-08 11:07Z).
 - **`harvest.ts` never reads `manifest.turns[].gateReviewed`** — the flag exists, is written by
   the driver, and is consulted by nothing. The plan subsumes it rather than adding a second signal.
 - **An `iterations === 0` warning that says "EXCLUDED from the M1/cost-per-turn samples" is true and
@@ -152,3 +153,87 @@ exactly 80/80 lines, so any change is a swap, not an addition.
 3. `docs/superpowers/specs/2026-08-07-rig-stale-report-design.md` — why the rule is what it is,
    especially §"Why `run_id` alone" and §"Failure handling".
 4. `.reviewgate/ESCALATION.md` — the open, not-mine findings, before ending your first turn.
+
+---
+
+# Second work stream — Qwen3.8-Max as a measured reviewer (session of 2026-08-07/08)
+
+_Independent of the rig stale-report task above. Both are live in this checkout._
+
+## One-line state
+
+**The cost question is answered and the tooling is built and committed; the *quality* question is
+untouched. Phase 2 (the 30-case exploratory bench) is the next step — but run it on a Standard tier,
+not on Lite.**
+
+## What got done — and how it was verified
+
+| | |
+|---|---|
+| `scripts/measure-opencode-tokens.ts` (`9473973`, **pushed**) | Token oracle over opencode's SQLite session DB. 6/6 green; mutation seen red (coefficient 1.21 → 2.42 ⇒ 4 pass / 2 fail, measured value `118.68406`) |
+| `bench --provider-model` (`ef54ed0`) | Pins a reviewer's upstream model into provenance. 12/12 green; mutation reddened **exactly the 4 predicted cases**, the sentinel test stayed green. Verified end-to-end: a real `bench run` wrote `"model": "alibaba-token-plan/qwen3.8-max"`, not `"default"` |
+| Overhead + caching measurements (`9fac6f8`, `979bfea`, `e7c25e1`, `0f8b6cf`) | Artifacts under `bench/results/qwen-overhead/`. Every credit number is **console-read**, not modelled |
+| Risk-control scope correction (`cef7022`) | Markus: the block suspends **purchases only**; renewal and tier changes are unaffected |
+| Trailhead stamp (`56564ea`) | `verify-map.js`: 0 FEHLT, 4 GEÄNDERT (all this stream's), entry points re-checked |
+| F-002 fix (`63a779f`) | Measurement scaffolding removed from the live reviewer path |
+
+**The numbers, all console-verified:**
+
+| | credits/call | | |
+|---|---|---|---|
+| baseline, default agent | 31.01 | 30 × 1 | 30 × 3 |
+| + reduced tool set (`--agent`) | 22.86 | | |
+| + warm cache | 9.17 | | |
+| **real case** (2 calls/case, 1st cold) | **28.2 /case** | **846 cr** | **2,538 cr** |
+| …as % of a **Lite** window (2,500) | | 34 % | **102 % — does not fit** |
+| …as % of a **Standard** window (10,000) | | 8.5 % | **25.4 % — fits** |
+
+Smoke run: `2/2 cases scored → precision 1, recall 1, clean-FP 0`. **N=2 — that is a pipeline test,
+not evidence about review quality. The acceptance bar in the spec is untouched.**
+
+## THE NEXT TASK — and why
+
+**Decide the tier before spending anything.** Phase 2 costs 34 % of a Lite window but 8.5 % of a
+Standard one, and Phase 3 is impossible on Lite and routine on Standard. Running Phase 2 on Lite is
+the expensive ordering: it burns a third of the week to answer a question whose follow-up you then
+cannot afford. $12/month decides this, and the risk-control block does **not** stand in the way.
+
+Once the tier is settled, Phase 2 is `reviewgate bench run --corpus bench/cases --providers
+opencode,ollama,claude-code --provider-model opencode=alibaba-token-plan/qwen3.8-max`. The bar is
+preregistered in the spec §6: Qwen earns a slot if it finds **≥1 seeded bug that GLM-5.2 and
+claude-code both miss**, at a clean-FP rate no worse than GLM-5.2's.
+
+**Second task, small and independent:** finding **F-003** (rejected, carried forward) —
+`src/providers/opencode.ts` `complete()` still passes `--dangerously-skip-permissions`, which does
+not exist in opencode 1.18.10. Own commit, own gate: it changes curator runtime behaviour.
+
+## Traps — NEW from this stream
+
+- **`--dangerously-skip-permissions` does not exist in opencode 1.18.10.** The flag is `--auto`, and
+  opencode **exits 0 on unknown flags** instead of rejecting them, so the dead flag was silently
+  ignored on every call for an unknown span of time. Fixed at `:97`, still live at `:242`.
+- **Credits are read, never computed.** Fitting the uncached/cached coefficients across three
+  calibration points does **not converge** (1.25–1.71 and 0.05–0.43 per 1K). The console shows two
+  decimals (±0.125 credits). The token model ran **9 % low** on its one real test. Any credit figure
+  in a future doc must cite a console delta.
+- **A bench case costs ~2 LLM calls, not 1**, and the first call of a run pays a cold cache. Any
+  per-*call* figure understates the per-*case* cost by ~3×.
+- **`bench.ts` rejects a corpus with zero clean cases** (exit 4). A "just run one case" smoke test is
+  invalid; take one clean + one seeded.
+- **The reduced-tool `--agent rg-reviewer` win (23.5K → 17.8K input tokens) is real but not shipped.**
+  It depended on `~/.config/opencode/agent/rg-reviewer.md`, which exists only on Markus's machine.
+  Make it a config option before reintroducing it — do not hard-code it in the adapter again.
+- **`phases.brain.curator` points at `opencode` with `model: "minimax-m2"`, whose plan has expired.**
+  The call **hangs** instead of erroring — killed after 150 s. Independent of everything above.
+- **Pay-per-token DashScope is blocked**, account-wide (`AccessDenied.Unpurchased` on all 5 models
+  tested), root cause `RISK.RISK_CONTROL_REJECTION`. KYC would unblock it but costs a passport scan
+  and a month of bank transactions — and buys only pay-as-you-go and Extra Bundles, **neither of
+  which this work needs**. Do not treat it as a prerequisite.
+
+## Read-first order for this stream
+
+1. `bench/results/qwen-overhead/DECISION.md` — the go/no-go and every caveat.
+2. `docs/superpowers/specs/2026-08-07-qwen-reviewer-measurement-design.md` §5a (the live options) and
+   §6 (the preregistered acceptance bar).
+3. `docs/superpowers/plans/2026-08-07-qwen-overhead-and-provider-model.md` — the three findings
+   mappings at the end are the record of what three gate rounds actually caught.
