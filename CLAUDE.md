@@ -1,5 +1,5 @@
 ---
-verified_commit: c558f10
+verified_commit: e17de4e
 verified_at: 2026-08-07
 ---
 
