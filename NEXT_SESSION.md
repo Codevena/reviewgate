@@ -1,58 +1,61 @@
 # Reviewgate — Next-Session Handoff
 
-_Last updated: 2026-08-07, after the offline Slice C decision and the Slice B counterfactual.
+_Last updated: 2026-08-07, after the Slice B revert plan passed its plan-gate.
 Supersedes all earlier content._
 
 ## One-line state
 
-**Both open slice questions are now measured and answered. Slice C is declined on evidence
-(zero measured benefit, a demonstrated net-new harm). Slice B's floor has 3 field activations, all
-3 protected a false positive, and its one genuinely-protective opportunity was already covered by a
-pre-existing mechanism. The remaining decision is narrow-vs-revert on Slice B.**
+**Both slice questions are measured and decided. Slice C: declined. Slice B: REVERT, and the revert
+plan has PASSED its plan-gate (2 rounds, 2 independent slots, Slot A executing). The next session
+IMPLEMENTS that plan — the four tasks are fully specified and every claim in it was verified by
+execution, including in a simulated-revert repo copy.**
 
-## Verified state (checked with commands, not from memory)
+## Verified state (checked with commands at handoff time)
 
 | | |
 |---|---|
-| `origin/master` | **`709390d`** — pushed, branch in sync, nothing unpushed |
-| working tree | one file modified, **NOT mine**: `.reviewgate/lore/approvals.jsonl` (two `cli:lore-approve` entries from a real terminal) |
-| suite | **3191 pass / 12 skip / 0 fail**, exit 0 (170s) |
-| `tsc --noEmit` / `bun run lint` | clean. rig `tsc` + biome checked SEPARATELY (rig/ is outside tsconfig include) |
+| `HEAD` | **`71ce138`** — Trailhead stamp. **7 commits ahead of `origin/master`, UNPUSHED.** |
+| my commits this session | `709390d`, `64bcabc`, `fddc129`, `e3d115c`, `71ce138` |
+| **NOT my commits** | `c7fd17e`, `490d746`, `e17de4e` (Qwen reviewer spec/plan) — a **second session** is committing to this same checkout, live. |
+| working tree | one file modified, **not mine**: `.reviewgate/lore/approvals.jsonl` (two `cli:lore-approve` entries) |
+| suite | **3191 pass / 12 skip / 0 fail**, exit 0 — last run at **`709390d`**. Everything after that is docs/plans only, from me AND the other session; **I did NOT re-run it at `71ce138`** |
+| `tsc` / `lint` | clean at `709390d`; rig `tsc` + biome checked separately (rig/ is outside tsconfig) |
 | build | **deliberately NOT run.** Installed binary still `sha256:fc9b8c18…` |
-| `src/` changed this session | **one `export` keyword** — `matchesAddedLine` in `src/rig/harvest.ts`, so the replay imports the shipped landing check instead of reimplementing it. No behaviour change |
+| Trailhead | stamped to `e17de4e`, `MAP OK`, 70/70 paths. Both GEÄNDERT rows (`src/rig/harvest.ts`, `rig/scripts/`) were mine and verified; entry point `src/rig/driver.ts` still correct |
+| `src/` changed all session | **one `export` keyword** — `matchesAddedLine` in `src/rig/harvest.ts` |
 
-**⚠ ANOTHER SESSION IS COMMITTING TO THIS CHECKOUT.** Four commits (`2a2516a`, `aa89772`,
-`c558f10`, `1b15093` — CLAUDE.md Trailhead format + Brain pointer fixes) landed between
-`5ef9ab6` and `709390d`. Isolate concurrent work in a `git worktree` before it causes a real
-collision.
+⚠ **A SECOND SESSION IS COMMITTING TO THIS CHECKOUT.** Seven commits are unpushed and three are not
+mine. Do not `git add -A`, and check `git log` before assuming what is yours. Isolating parallel
+work in a `git worktree` is the standing recommendation.
 
-## THE NEXT TASK — Slice B: narrow or revert
+## THE NEXT TASK — implement the approved Slice B revert
 
-The measurement is done; this is a decision plus an implementation, and it touches
-`src/core/aggregator.ts`, so **the plan-gate runs BEFORE any code**.
+**Read `docs/superpowers/plans/2026-08-07-slice-b-revert.md` and execute its four tasks.** It passed
+the plan-gate; do not re-open the decision, and do NOT resurrect "narrow" (refuted by execution —
+see below).
 
-**Recommendation: REVERT** (restore the CRITICAL-only exemption).
+**Why it is next:** the critic severity floor bars the critic from demoting a WARN
+security/correctness finding below WARN. Measured across the whole recorded corpus it fired 3 times,
+protected a false positive all 3 times, and protected 0 true positives. The one time the critic
+proposed demoting a catch of a seed that actually landed, **corroboration** — not the floor — is what
+saved it. It costs precision and has not yet bought anything.
 
-⚠ **An earlier version of this handoff recommended "narrow", and that was refuted by execution —
-do not resurrect it without re-reading this.** The proposal was to reuse the existing
-hypothetical-framing detector as a floor exclusion. Two independent facts kill it, both checked by
-running the code, not by reading it:
+**Entry point:** `src/core/aggregator.ts:611-619` (`isBlockingSecurity` / `isSecurityProtected`).
 
-1. `HYPOTHETICAL` (`src/core/hypothetical-demote.ts:27`) matches **0 of 3** activations against
-   their full `message + details + suggested_fix`. It requires a *positive* present-safe /
-   hypothetical / future marker; "may lead to" / "may cause" / "may still allow" is not one.
-2. That pass **refuses to touch `security` or `correctness`** (`hypothetical-demote.ts:60` — *"Never
-   soften the hard-veto categories on an untrusted text signal"*), and all 3 activations are exactly
-   those categories.
+The four tasks, in short: (1) delete `isBlockingSecurity`, collapsing `isSecurityProtected` to the
+CRITICAL-only check; (2) invert the two floor tests in `tests/unit/aggregator-critic.test.ts` and
+update the cross-reference comment at `tests/unit/anchor-repair-cascade.test.ts:127-128` that quotes
+the describe name; (3) confirm three neighbouring guards stay green **unchanged**; (4) record the
+reversal in the design spec without deleting the original rationale.
 
-Any remaining narrowing therefore needs a **new** hedging detector over the two categories the
-codebase has decided never to soften on a text signal — and hedged phrasing is standard in
-legitimate security findings ("this **may** allow an attacker to …"). That is a new suppressor
-needing its own calibration corpus, not a cheap narrowing. **Keep** is not supported by the evidence.
+**Then the POST-implementation pipeline** — a separate gate from the one already passed: static
+checks, the mutation check in a **copy** (restore `isBlockingSecurity`; the two Task-2 tests must go
+red), then two reviewer slots.
 
-Plan-gate note: **Codex quota resets 2026-08-08T11:07Z.** Until then the executing reviewer slot is
-`agy` or a Claude subagent. The gate reviewer MUST be able to run the code the plan makes claims
-about — a non-executing model is an extra voice, never the deciding one.
+**One verification step is easy to miss:** `bun run rig/scripts/critic-floor-replay.ts` must go from
+3 activations to **0** after the revert — and its self-check "pilot-03 reproduces its 1 field
+activation" will then abort by design. Update that assertion to expect 0 **in the same commit**.
+Slot A already confirmed by execution that 3 → 0 holds once that assertion is updated.
 
 ## What got done this session
 
@@ -134,3 +137,18 @@ about — a non-executing model is an extra voice, never the deciding one.
 3. `docs/dev/2026-08-07-in-range-mis-anchor-impact.md` — the closed one, and why.
 4. `rig/scripts/critic-floor-replay.ts` — run it; its self-checks state their own integrity.
 5. `rig/scripts/anchor-replay.ts` — run it; four self-checks, byte-stable output.
+
+
+## Plan-gate record (for the post-implementation reviewers)
+
+- **Slot A — Claude subagent, EXECUTING** (Codex quota-blocked until **2026-08-08 11:07Z**, so an
+  executing Claude reviewer held Slot A; that is the normal configuration while Codex is capped, not
+  a degraded one). Round 1 PASS. Verified in a `/tmp` repo copy: both Task-2 guard numbers
+  non-vacuous, all three Task-3 guards green after a simulated revert (plus 159 further tests), and
+  the replay's 3 → 0 prediction confirmed.
+- **Slot B — agy/Gemini** (different vendor). Round 1 **FAIL** on one WARN: the plan did not name
+  what protects an uncorroborated WARN security finding once the floor is gone. Valid —
+  `isProtected`/`protected_high_precision` (`aggregator.ts:630`) fires in exactly that branch but is
+  **cold-start-inert** (`PROTECT_MIN_DECISIONS = 8`), so the residual case has no downstream gate.
+  Now stated in the plan's Risks table.
+- **Round 2 delta review: both slots PASS.** Findings mapping is appended to the plan itself.
