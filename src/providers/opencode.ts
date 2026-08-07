@@ -94,7 +94,19 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const stdoutFile = join(run, "out.txt");
     const stderrFile = join(run, "err.log");
 
-    const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
+    // MEASUREMENT SCAFFOLDING (2026-08-07, docs/superpowers/plans/2026-08-07-qwen-overhead-and-provider-model.md
+    // Task 5) — NOT a shipped default. `--pure --agent rg-reviewer` is the cheapest
+    // variant measured in bench/results/qwen-overhead/tool-surface.json: it cuts the
+    // opencode system prompt from ~23.5K to ~17.8K input tokens by dropping the
+    // write/edit tool schemas a reviewer never needs. Revert before release unless
+    // the bench result justifies keeping it.
+    //
+    // `--auto` replaces `--dangerously-skip-permissions`, which does NOT exist in
+    // opencode 1.18.10 — verified against `opencode run --help`, and opencode exits 0
+    // on unknown flags instead of rejecting them, so the old flag was silently
+    // ignored on every call. The complete() path at the bottom of this file still
+    // passes the dead flag; fix that separately, it changes curator behaviour.
+    const args = ["run", "--auto", "--pure", "--agent", "rg-reviewer", "--format", "default"];
     // Only force a model with -m for a REAL provider/model id. The sentinel
     // "default" (or empty) means "use opencode's own configured default model"
     // — which is how opencode is meant to be driven here (e.g. a MiniMax Token

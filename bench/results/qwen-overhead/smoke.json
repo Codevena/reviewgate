@@ -1,0 +1,162 @@
+{
+  "schema": "reviewgate.bench.result.v1",
+  "provenance": {
+    "reviewgate_version": "0.1.0-alpha.15",
+    "corpus_commit": "979bfea5d9ad0c1412bdb9b0c8e9edee56079f40",
+    "corpus_dirty": true,
+    "providers": [
+      {
+        "id": "opencode",
+        "cli_version": "1.18.10",
+        "model": "alibaba-token-plan/qwen3.8-max",
+        "persona": "security"
+      }
+    ],
+    "config_hash": "47885e462593a94983c8fffe0a8b6c237bf3504e752a5a27bfafc00562f9c923",
+    "window": 5,
+    "repeat": 1,
+    "include_advisory": false,
+    "temperature": null,
+    "stores": "per-case-fresh",
+    "cache": "cold",
+    "file_context": "full",
+    "phases": {
+      "critic": false,
+      "reputation": true,
+      "fp_ledger": false,
+      "confidence_floor": 0.6,
+      "scope_to_diff": true,
+      "ablations": []
+    },
+    "host_os": "darwin-arm64",
+    "timestamp": "2026-08-07T11:01:55.522Z",
+    "case_count": {
+      "seeded": 1,
+      "clean": 1
+    },
+    "case_run_count": {
+      "seeded": 1,
+      "clean": 1,
+      "total": 2
+    },
+    "critic": null,
+    "integrity": {
+      "source_commit": "979bfea5d9ad0c1412bdb9b0c8e9edee56079f40",
+      "repository_dirty": true,
+      "runner_sha256": "e0c90ec15d33363e6b70713d56bc3b2c7585c17f40a0fe0f8fd9305901d4e233",
+      "runner_kind": "source-runtime",
+      "preregistration_sha256": null,
+      "authoritative_requested": false,
+      "max_provider_calls": null,
+      "provider_calls_used": 2,
+      "max_output_tokens": null,
+      "reviewer_max_attempts": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "clean-clamp-ts",
+      "kind": "clean",
+      "status": "scored",
+      "content_hash": "7bad03dbcf5fc9f543955cfece96db2d712ad5558c83b5430a064118b5cc455a",
+      "counts": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 1,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 31295,
+      "error": null
+    },
+    {
+      "id": "sql-injection-ts",
+      "kind": "seeded-bug",
+      "status": "scored",
+      "content_hash": "2be1d6de9a4d3057f64fd00b26eb42ce12ee59075929f4937c7c638dcc7c6236",
+      "counts": {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "neutral": 0
+      },
+      "panel_ok": 1,
+      "panel_configured": 1,
+      "file_context": "full",
+      "repeat": 1,
+      "latency_ms": 42536,
+      "error": null
+    }
+  ],
+  "providers": [
+    {
+      "provider": "opencode",
+      "coverage": {
+        "num": 2,
+        "den": 2,
+        "value": 1,
+        "ci_lo": 0.34238022750665303,
+        "ci_hi": 1
+      },
+      "precision": {
+        "num": 1,
+        "den": 3,
+        "value": 0.3333333333333333,
+        "ci_lo": 0.06149194472039621,
+        "ci_hi": 0.7923403991979522
+      },
+      "recall": {
+        "num": 1,
+        "den": 1,
+        "value": 1,
+        "ci_lo": 0.20654931437723745,
+        "ci_hi": 1
+      },
+      "authoritative": true
+    }
+  ],
+  "cost": [
+    {
+      "provider": "opencode",
+      "calls": 2,
+      "cache_hits": 0,
+      "tokens_in": null,
+      "tokens_out": null,
+      "billed_usd": null,
+      "oauth_quota_calls": 2
+    }
+  ],
+  "critic": null,
+  "aggregate": {
+    "precision": {
+      "num": 1,
+      "den": 1,
+      "value": 1,
+      "ci_lo": 0.20654931437723745,
+      "ci_hi": 1
+    },
+    "recall": {
+      "num": 1,
+      "den": 1,
+      "value": 1,
+      "ci_lo": 0.20654931437723745,
+      "ci_hi": 1
+    },
+    "clean_fp_rate": {
+      "num": 0,
+      "den": 1,
+      "value": 0,
+      "ci_lo": 0,
+      "ci_hi": 0.7934506856227626
+    }
+  },
+  "stability": null,
+  "verdict": {
+    "authoritative": true,
+    "gate_exit_code": 0,
+    "reasons": []
+  }
+}
