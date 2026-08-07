@@ -78,9 +78,10 @@ very different costs:
   weekly window. It fits, and it is the only way to answer the actual question in
   spec §6 — whether Qwen finds a seeded bug that GLM-5.2 and claude-code both miss.
   Note the window already stands at 8.17 % used, so budget ~42 % after it.
-- **Phase 3 (authoritative, 30 × 3): NO-GO at Lite.** ≈ 2,538 credits ≈ **102 %**
-  of the window — it does not fit at all, let alone leave room for day-to-day gate
-  traffic.
+- **Phase 3 (authoritative, 30 × 3): NO-GO at Lite, GO at Standard.** ≈ 2,538
+  credits ≈ **102 %** of the Lite window — it does not fit at all. On Standard
+  (10,000/window, $18) the same run is **25.4 %**. See the corrected escape-hatch
+  note below: a tier change is not blocked by the risk control.
 
 **Recommended next step: run Phase 2.** It is affordable, it answers the quality
 question, and it produces the definitive per-case cost from 30 real cases instead
@@ -101,10 +102,25 @@ of the 2-case extrapolation above — which is the number Phase 3 needs.
   cases would be ~380 credits (15 %) and the authoritative run ~1,140 (46 %),
   which would change the Phase 3 verdict. That is an extrapolation from **two**
   data points and is not treated as a result here. Phase 2 settles it.
-- **The escape hatches in spec §5a are probably closed.** Extra Bundles and a plan
+- ~~**The escape hatches in spec §5a are probably closed.** Extra Bundles and a plan
   tier change are both *orders*, and the account carries a
-  `RISK.RISK_CONTROL_REJECTION` block on orders (Task 1b). Unverified — it needs a
-  purchase attempt — but do not plan on buying headroom.
+  `RISK.RISK_CONTROL_REJECTION` block on orders.~~
+  **KORREKTUR (Markus, 2026-08-07): renewal and plan changes are NOT affected by
+  the risk-control block.** Only pay-as-you-go activation and Extra Usage Packs are.
+  A **Standard tier change is therefore available**, and it changes the Phase 3
+  verdict:
+
+  | | Lite (2,500/window) | **Standard (10,000/window)** |
+  | --- | --- | --- |
+  | bench 30 × 1 (846 cr) | 34 % | **8.5 %** |
+  | bench 30 × 3 (2,538 cr) | **102 % — does not fit** | **25.4 % — fits** |
+  | real reviews per week | ~88 (12/day) | **~355 (50/day)** |
+  | concurrent agents | 1–2 | 3–4 |
+
+  **Phase 3 is NO-GO at Lite but GO at Standard**, for $12/month more. The 3–4
+  concurrent agents also fit a three-voice panel for the first time. This does not
+  reach "gate on every turn across 19 repos" (that needs ~10× more), but it covers
+  a primary repo or a bounded panel role.
 - **`--auto` vs `--dangerously-skip-permissions`.** `src/providers/opencode.ts:97`
   now passes `--auto`; the old flag does not exist in opencode 1.18.10 and was
   silently ignored. **`:242` (the `complete()` / critic / curator path) still passes
