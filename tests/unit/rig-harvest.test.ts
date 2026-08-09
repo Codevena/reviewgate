@@ -908,7 +908,7 @@ describe("rig harvest", () => {
       join(reportDir, "9-pending.json"),
       JSON.stringify({
         schema: "reviewgate.pending.v1",
-        run_id: "session-x",
+        run_id: "session-1",
         iter: 1,
         max_iter: 5,
         verdict: "PASS",
