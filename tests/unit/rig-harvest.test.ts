@@ -938,4 +938,104 @@ describe("rig harvest", () => {
       { provider: "openrouter", model: "anthropic/claude-sonnet-4.5", persona: "security" },
     ]);
   });
+
+  test("an inherited report is not counted again in the turn that merely saw it", () => {
+    const fx = buildFixture([
+      { seeded: null, iterations: [{ warn: 1 }], reports: [[{ signature: "s1" }]] },
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        // The archiver's first poll caught turn 1's leftover, then turn 2's own report.
+        reports: [[{ signature: "s1" }], [{ signature: "s2" }]],
+        reportRunIds: ["session-1", undefined],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.findingsTotal).toBe(1);
+    expect(result.turns[1]?.findings[0]?.signature).toBe("s2");
+    expect(result.warnings.some((w) => w.includes("turn 2") && /EARLIER turn/.test(w))).toBe(true);
+  });
+
+  test("a turn the gate never reviewed reports nothing, not its predecessor's findings", () => {
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 3 }],
+        reports: [[{ signature: "a" }, { signature: "b" }, { signature: "c" }]],
+      },
+      // The agent died; the gate never ran. Only turn 1's leftover was on disk to archive.
+      {
+        seeded: null,
+        iterations: [],
+        reports: [[{ signature: "a" }, { signature: "b" }, { signature: "c" }]],
+        reportRunIds: ["session-1"],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.iterations).toBe(0);
+    expect(result.turns[1]?.findingsTotal).toBe(0);
+  });
+
+  test("a report owned by NO turn is dropped and warned about, not charged to this turn", () => {
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "own" }], [{ signature: "ghost" }]],
+        reportRunIds: [undefined, "session-99"],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[0]?.findingsTotal).toBe(1);
+    expect(result.warnings.some((w) => /NO turn's audit events/.test(w))).toBe(true);
+  });
+
+  test("criticRuns is not attributed to a turn that only INHERITED the report", () => {
+    const critic = { provider: "ollama", status: "ran" as const, verdicts: 2, demoted: 1 };
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "s1" }]],
+        critics: [critic],
+      },
+      {
+        seeded: null,
+        iterations: [{ warn: 0 }],
+        reports: [[{ signature: "s1" }], []],
+        critics: [critic, undefined],
+        reportRunIds: ["session-1", undefined],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[0]?.criticRuns?.length).toBe(1);
+    expect(result.turns[1]?.criticRuns ?? []).toEqual([]);
+  });
+
+  test("reportsRead counts only OWNED reports, so the unmeasured-turn warning still fires", () => {
+    const fx = buildFixture([
+      { seeded: null, iterations: [{ warn: 1 }], reports: [[{ signature: "s1" }]] },
+      // The gate DID run, but the archiver caught only turn 1's leftover — none of turn 2's own.
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "s1" }]],
+        reportRunIds: ["session-1"],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.iterations).toBe(1);
+    expect(result.turns[1]?.findingsTotal).toBe(0);
+    expect(
+      result.warnings.some((w) => w.includes("turn 2") && /NO pending\.json was archived/.test(w)),
+    ).toBe(true);
+  });
 });

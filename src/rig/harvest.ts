@@ -142,6 +142,8 @@ function collectTurnFindings(
   snapshotDir: string,
   turnIndex: number,
   warnings: string[],
+  ownedRunIds: Set<string>,
+  knownRunIds: Set<string>,
 ): { findings: Finding[]; panel: PanelSlot[]; reportsRead: number; criticRuns: CriticInfo[] } {
   const reportsDir = join(snapshotDir, "reports");
   const bySignature = new Map<string, Finding>();
@@ -163,6 +165,8 @@ function collectTurnFindings(
     .sort((a, b) => (Number.parseInt(a, 10) || 0) - (Number.parseInt(b, 10) || 0));
 
   let reportsRead = 0;
+  let inheritedCount = 0;
+  const orphanNames: string[] = [];
   for (const name of names) {
     // JSON.parse inside the try, not just the schema check: the archiver writes atomically,
     // but a snapshot copied while a file was being renamed away can still land truncated, and
@@ -184,6 +188,20 @@ function collectTurnFindings(
       );
       continue;
     }
+    // OWNERSHIP. The archiver captures whatever `pending.json` is on disk, which on 31 of 36
+    // recorded pilot turns was the PREVIOUS turn's leftover — counting it here would count one
+    // finding once in the turn that produced it and again in the turn that merely saw it, the
+    // very double-count the per-turn signature dedup above exists to prevent. A gate run lives
+    // inside one Stop hook and therefore one turn, so `run_id` alone identifies the owner
+    // (verified 1:1 across all 34 recorded gate runs). Keyed on run_id and NOT on (run_id, iter):
+    // a gate that writes a report and then dies before appending `run.complete` would otherwise
+    // have its real report discarded as unattributable.
+    const runId = parsed.data.run_id;
+    if (!ownedRunIds.has(runId)) {
+      if (knownRunIds.has(runId)) inheritedCount++;
+      else orphanNames.push(name);
+      continue;
+    }
     reportsRead++;
     if (parsed.data.critic)
       criticRuns.set(`${parsed.data.run_id}:${parsed.data.iter}`, parsed.data.critic);
@@ -201,6 +219,20 @@ function collectTurnFindings(
         persona: r.persona,
       });
     }
+  }
+  // One line per TURN, not per report: naming each of eleven inherited files would bury the
+  // signal. Nothing is lost — each is counted in the turn whose gate produced it.
+  if (inheritedCount > 0) {
+    warnings.push(
+      `turn ${turnIndex}: ${inheritedCount} archived report(s) carry a run_id produced by an EARLIER turn — the gate did not write them during this turn. They are EXCLUDED here and counted where they were produced, so one finding is not counted twice across turns.`,
+    );
+  }
+  // One line per REPORT, and loud: unlike an inherited report, an orphan is not counted anywhere,
+  // so this is real data loss rather than a correction.
+  for (const orphan of orphanNames) {
+    warnings.push(
+      `turn ${turnIndex}: archived report ${orphan} carries a run_id that appears in NO turn's audit events and was EXCLUDED — it cannot be attributed to any turn (pruned audit day-partition, or a snapshot from a different run). This turn's findings may be UNDERSTATED.`,
+    );
   }
   return {
     findings: [...bySignature.values()],
@@ -410,10 +442,17 @@ function harvestTurn(
     );
   }
 
+  // `window.runs` is cumulative for this snapshot, so it carries every earlier turn's runs too —
+  // which is exactly what distinguishes an INHERITED report (owned by an earlier turn) from an
+  // ORPHAN (owned by none).
+  const ownedRunIds = new Set(runDelta.added.map((r) => r.run_id));
+  const knownRunIds = new Set(window.runs.map((r) => r.run_id));
   const { findings, panel, reportsRead, criticRuns } = collectTurnFindings(
     snapshotDir,
     index,
     warnings,
+    ownedRunIds,
+    knownRunIds,
   );
   const blocking = findings.filter(isBlocking);
   const iterations = runDelta.added.length;
