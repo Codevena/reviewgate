@@ -70,6 +70,13 @@ interface FxTurn {
    * keys on the whole file's hash and a report rewritten for an unrelated reason is a new file.
    */
   reportIters?: number[];
+  /**
+   * parallel to `reports`: the `run_id` that version carries. Defaults to this turn's own
+   * (`session-<turnIndex>`), i.e. a report the turn's own gate produced. Set it to an EARLIER
+   * turn's id to model the archiver catching a leftover `pending.json`, or to an id no audit
+   * event carries to model a report that cannot be attributed to any turn.
+   */
+  reportRunIds?: (string | undefined)[];
   agentExitCode?: number;
 }
 
@@ -138,10 +145,15 @@ function turnAuditJsonl(turn: FxTurn, turnIndex: number): string {
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
-function pendingReport(findings: FxFinding[], iter: number, critic?: FxCritic): string {
+function pendingReport(
+  findings: FxFinding[],
+  iter: number,
+  critic: FxCritic | undefined,
+  runId: string,
+): string {
   return JSON.stringify({
     schema: "reviewgate.pending.v1",
-    run_id: "session-x",
+    run_id: runId,
     iter,
     max_iter: 5,
     verdict: findings.length === 0 ? "PASS" : "FAIL",
@@ -253,7 +265,12 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
       for (const [n, findings] of reports.entries()) {
         writeFileSync(
           join(reportDir, `${n + 1}-pending.json`),
-          pendingReport(findings, turn.reportIters?.[n] ?? n + 1, turn.critics?.[n]),
+          pendingReport(
+            findings,
+            turn.reportIters?.[n] ?? n + 1,
+            turn.critics?.[n],
+            turn.reportRunIds?.[n] ?? `session-${index}`,
+          ),
         );
       }
     }
@@ -361,11 +378,13 @@ describe("rig harvest", () => {
     const { manifestPath, scriptPath } = buildFixture([
       {
         // Critic RAN and kept everything: demoted 0, so suppression.critic is 0 too.
+        iterations: [{}],
         reports: [[{ signature: "sig-a", severity: "WARN", message: "a finding" }]],
         critics: [{ provider: "openrouter", status: "ran", verdicts: 4, demoted: 0 }],
       },
       {
         // pilot-01's shape: findings, but no critic key at all.
+        iterations: [{}],
         reports: [[{ signature: "sig-b", severity: "WARN", message: "another finding" }]],
       },
     ]);
@@ -393,6 +412,7 @@ describe("rig harvest", () => {
           [{ signature: "sig-b", severity: "WARN", message: "two" }],
         ],
         reportIters: [1, 1],
+        iterations: [{}],
         critics: [same, same],
       },
     ]);
@@ -413,6 +433,7 @@ describe("rig harvest", () => {
           [{ signature: "sig-b", severity: "WARN", message: "two" }],
         ],
         reportIters: [1, 2],
+        iterations: [{}, {}],
         critics: [same, same],
       },
     ]);
