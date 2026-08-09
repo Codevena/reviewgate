@@ -1,6 +1,6 @@
 ---
-verified_commit: cef7022
-verified_at: 2026-08-08
+verified_commit: eb602b3
+verified_at: 2026-08-10
 ---
 
 # reviewgate — Trailhead
