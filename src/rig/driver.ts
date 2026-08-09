@@ -219,6 +219,21 @@ function startReportArchiver(repoRoot: string, destDir: string): () => void {
   // this archiver exists to keep (gate finding F-001).
   const seq = new Map<string, number>();
   const seen = new Set<string>();
+  // Seed with the state on disk BEFORE the agent runs. The docstring promises every version that
+  // APPEARS while the turn runs; without this seed the first poll (250ms in, long before this
+  // turn's gate has written anything) captures the PREVIOUS turn's leftover pending.json as this
+  // turn's report #1. Nothing is lost: the previous turn's own final sweep already archived those
+  // exact bytes. Hashed, not merely name-checked — a report REWRITTEN during this turn must still
+  // be archived.
+  for (const name of ["pending.json", "pending.md"]) {
+    const src = join(reviewgateDir(repoRoot), name);
+    if (!existsSync(src)) continue;
+    try {
+      seen.add(`${name}:${createHash("sha256").update(readFileSync(src, "utf8")).digest("hex")}`);
+    } catch {
+      /* unreadable this instant → it is simply not seeded, and a later tick captures it */
+    }
+  }
   const capture = () => {
     for (const name of ["pending.json", "pending.md"]) {
       const src = join(reviewgateDir(repoRoot), name);

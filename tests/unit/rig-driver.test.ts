@@ -312,6 +312,53 @@ describe("rig driver", () => {
     expect(mds.some((c) => c.includes("iteration 2"))).toBe(true);
   }, 20_000);
 
+  test("does NOT archive a pending.json left behind by the PREVIOUS turn", async () => {
+    // The archiver promises every version that APPEARS while the turn runs. A file already on
+    // disk when the turn starts did not appear during it — on 31 of 36 recorded pilot turns this
+    // leftover was archived as that turn's report #1.
+    const { root, scriptPath } = sandbox(1);
+    const pending = join(root, ".reviewgate", "pending.json");
+    writeFileSync(pending, '{"verdict":"FAIL","findings":[{"rule_id":"stale-from-last-turn"}]}');
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: appendingAgent(root), // touches agent.log only; pending.json is never rewritten
+      maxTurns: 1,
+    });
+    const reportsDir = join(manifest.turns[0]?.snapshotDir ?? "", "reports");
+    const archived = existsSync(reportsDir)
+      ? readdirSync(reportsDir).filter((f) => f.endsWith("pending.json"))
+      : [];
+    expect(archived).toEqual([]);
+  }, 20_000);
+
+  test("still archives a pending.json that CHANGES during the turn, even if one existed before", async () => {
+    // The over-suppression guard. A fix that skipped on filename, or on "a file was already
+    // there", rather than on CONTENT HASH would swallow this turn's real report.
+    const { root, scriptPath } = sandbox(1);
+    const pending = join(root, ".reviewgate", "pending.json");
+    writeFileSync(pending, '{"verdict":"FAIL","findings":[{"rule_id":"stale-from-last-turn"}]}');
+    const manifest = await runDriver({
+      scriptPath,
+      outDir: join(root, "out"),
+      repoRoot: root,
+      agentCmd: gateLikeWriter([
+        // Keep the stale file in place for one poll before replacing it. Without this delay the
+        // fake agent can win the race and rewrite pending.json before the archiver's first tick.
+        { file: join(root, ".reviewgate", "unrelated.txt"), body: "delay one poll" },
+        { file: pending, body: '{"verdict":"FAIL","findings":[{"rule_id":"fresh-this-turn"}]}' },
+      ]),
+      maxTurns: 1,
+    });
+    const reportsDir = join(manifest.turns[0]?.snapshotDir ?? "", "reports");
+    const archived = readdirSync(reportsDir)
+      .filter((f) => f.endsWith("pending.json"))
+      .map((f) => readFileSync(join(reportsDir, f), "utf8"));
+    expect(archived.some((c) => c.includes("fresh-this-turn"))).toBe(true);
+    expect(archived.some((c) => c.includes("stale-from-last-turn"))).toBe(false);
+  }, 20_000);
+
   test("records the agent's exit code instead of swallowing a failed turn", async () => {
     const { root, scriptPath } = sandbox(1);
     const manifest = await runDriver({
