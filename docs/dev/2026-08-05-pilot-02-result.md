@@ -4,6 +4,10 @@ _2026-08-05. Second longitudinal run. Preregistered in `rig/preregistrations/pil
 (commit `ac2f5d5`, frozen and pushed **before** the run started). Baseline:
 `docs/dev/2026-08-05-pilot-01-result.md`._
 
+> **Correction (2026-08-10):** The stale-report defect reduced the valid M2 samples for both
+> pilots quoted here and changed pilot-01's M2 value. The preserved before/after record is in
+> `docs/dev/2026-08-07-rig-stale-report-correction.md`.
+
 ## Headline
 
 12 turns, 39.8 minutes, **every turn reviewed**, zero failed turns. The critic ran on every

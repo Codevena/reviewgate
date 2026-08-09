@@ -3,6 +3,10 @@
 _2026-08-05. Follows `docs/dev/2026-08-05-pilot-01-result.md` (pilot-01 baseline)._
 _Task (a) from `NEXT_SESSION.md`, re-scoped after the measurement below contradicted its premise._
 
+> **Correction (2026-08-10):** The stale-report defect superseded the pilot-01 M2 value and
+> sample size cited as context below. See
+> `docs/dev/2026-08-07-rig-stale-report-correction.md` for the preserved before/after record.
+
 ## Why this exists
 
 Pilot-01 reported M6 suppression `critic 0 · reputation 0 · fp-ledger 0` and an M2 FP-burden

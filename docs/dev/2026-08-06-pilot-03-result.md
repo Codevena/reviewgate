@@ -5,6 +5,10 @@ _2026-08-06. Third longitudinal run. Preregistered in `rig/preregistrations/pilo
 started). Baselines: `docs/dev/2026-08-05-pilot-02-result.md`, and the design under test,
 `docs/superpowers/specs/2026-08-05-true-positive-hole-design.md`._
 
+> **Correction (2026-08-10):** The stale-report defect reduced the valid M2 samples for both
+> pilots quoted here; their rounded slope values remain unchanged. The preserved before/after
+> record is in `docs/dev/2026-08-07-rig-stale-report-correction.md`.
+
 ## Headline
 
 12 turns, 53 minutes. **All three registered primary outcomes were met. The run's most
