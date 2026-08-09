@@ -1,6 +1,6 @@
 # Policy Accountability & Pruning — Slice 1: Policy Trace & Replay
 
-_Written 2026-08-09. Status: design approved in dialogue; written spec awaiting Markus review._
+_Written 2026-08-09. Status: approved by Markus; implementation planning in progress._
 
 ## Context
 
@@ -184,8 +184,15 @@ interface PolicyEvaluation {
   reason_code: string; // validated against the pass catalog
   protected_by?: string;
   source_signatures: string[];
+  final_signature?: string;
 }
 ```
+
+`source_signatures` identify the raw or clustered finding lineage at the moment the pass evaluates
+it. `final_signature` identifies the visible final finding (or cluster representative) that carries
+that lineage after all later passes; every evaluation that converges into the same surviving
+cluster uses the same value. It is omitted when that lineage is dropped and has no visible final
+finding.
 
 This makes the opportunity denominator auditable per case/finding rather than leaving only an
 aggregate count. A configured pass that did not run has no per-finding evaluations and carries
@@ -205,6 +212,15 @@ interface PolicyEffect {
   reason_code: string; // validated against the pass catalog
   protected_by?: string;
   source_signatures: string[];
+}
+
+interface PolicyStageEvaluation {
+  stage_id: "aggregation.cluster" | "verdict.compute";
+  order: number;
+  reason_code: string;
+  input_signatures: string[];
+  output_signature?: string;
+  verdict?: "PASS" | "SOFT-PASS" | "FAIL";
 }
 ```
 
@@ -227,9 +243,9 @@ fields can be deleted after policy pruning.
 Each configured pass emits one compact row:
 
 ```ts
-interface PolicyPassSummary {
+interface RanPolicyPassSummary {
   pass_id: PolicyPassId;
-  status: "ran" | "not-run" | "error";
+  status: "ran";
   considered: number;
   opportunities: number;
   would_apply: number;
@@ -239,11 +255,22 @@ interface PolicyPassSummary {
   blocking_preserved: number;
   dropped: number;
 }
+
+interface InactivePolicyPassSummary {
+  pass_id: PolicyPassId;
+  status: "not-run" | "error";
+  reason_code: string;
+}
+
+type PolicyPassSummary = RanPolicyPassSummary | InactivePolicyPassSummary;
 ```
 
-All numeric fields are required when `status: ran`. Missing data is not defaulted to zero. The
-summary schema rejects impossible relationships such as `applied > would_apply` or
-`protected > would_apply`.
+All numeric fields are required when `status: ran` and forbidden otherwise. `blocking_removed`
+counts applied transitions from CRITICAL/WARN to INFO/drop. `blocking_preserved` counts matched
+events that were blocking before the pass and remain CRITICAL/WARN afterward, whether because of a
+protection or an applied blocking-preserving transition such as re-anchoring or CRITICAL→WARN.
+Missing data is not defaulted to zero. The summary schema rejects impossible relationships such as
+`applied > would_apply`, `protected > would_apply`, or `dropped > applied`.
 
 ### Full policy trace artifact
 
@@ -258,7 +285,8 @@ interface PolicyTrace {
   ablated: PolicyPassId[];
   raw_response_sha256: string[];
   passes: PolicyPassSummary[];
-  evaluations: Array<PolicyEvaluation & { final_signature?: string }>;
+  evaluations: PolicyEvaluation[];
+  stages: PolicyStageEvaluation[];
   final: {
     verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR";
     counts: { critical: number; warn: number; info: number };
@@ -269,7 +297,9 @@ interface PolicyTrace {
 
 The full artifact includes evaluations for findings later dropped by a pass and `would-apply`
 observations from an ablated pass. A visible final finding contains only its own applied/protected
-material effects.
+material effects. `aggregation.cluster` emits one stage row per resulting cluster (including a
+singleton row), and `verdict.compute` emits exactly one row with the final blocking signatures and
+the selected verdict reason. Neither stage is ablatable or counted as a demoter.
 
 ## Recorder and transition boundary
 
@@ -327,7 +357,21 @@ For an ablated pass:
 - `would_apply` remains observable;
 - the mutation and material marker do not apply;
 - every later pass runs normally on the counterfactual finding;
-- reviewer inputs, provider calls, state reads and raw responses remain unchanged.
+- reviewer inputs, provider calls and raw responses remain unchanged.
+
+Authoritative replay state is branch-isolated. Baseline and counterfactual start from byte-identical
+immutable snapshots with the same recorded state digest, then each receives its own scratch copy.
+All learning-store and pass-owned writes go only to that branch's scratch copy; an ablated pass does
+not disable otherwise-normal reads or writes. This preserves downstream causal effects in
+multi-turn sequences without contaminating the paired branch. Scratch state is never reused across
+pairs and must never resolve to the production checkout's `.reviewgate/` tree. Bench/Rig reject a
+pair before execution when the starting digests differ or either scratch target aliases production
+state. Tests prove authoritative runs leave every production learning store byte-identical.
+
+Within a single compared iteration, both branches therefore perform the same state-read code paths
+against the same starting snapshot. In a multi-turn sequence, later read values may intentionally
+diverge only because earlier branch-local outcomes produced different branch-local writes; that
+divergence is part of the measured policy effect and is recorded in the sequence result.
 
 This is a production-path ablation, not a second hand-built model of pass precedence.
 
@@ -352,6 +396,23 @@ especially:
 `PendingReportSchema` gains an optional compact `policy_summary`. Visible findings gain optional
 `policy_effects`. The existing `reviewgate.pending.v1` literal remains valid because the additions
 are optional and old reports remain parseable.
+
+Conceptual shape:
+
+```ts
+interface PolicySummary {
+  catalog_version: "reviewgate.policy-catalog.v1";
+  status: "complete" | "not-run" | "error" | "overflow";
+  passes: PolicyPassSummary[];
+  policy_trace_ref?: string;
+  policy_trace_sha256?: string;
+}
+```
+
+`passes` contains exactly one ordered row for each of the 18 catalogued passes; inactive passes use
+`status: not-run`.
+Reference and hash are both required for `complete` and forbidden for every other status. The
+summary contains no per-finding evaluations and remains optional as a unit for legacy reports.
 
 ### Audit artifact
 
@@ -400,9 +461,14 @@ agent/human explanation. A new top-level CLI subcommand is explicitly out of sco
 
 Trace telemetry must never decide whether code passes:
 
-- recorder errors preserve the existing finding and continue the gate;
+- recorder/effect-attachment errors preserve the pre-instrumentation policy result (including an
+  existing mutation or drop) and continue the gate;
 - artifact write errors leave ref/hash absent and set trace status `error`;
-- an artifact over the size limit sets `overflow` and is not silently truncated;
+- the complete trace is canonicalized in memory before any artifact path is created; when its bytes
+  exceed the limit, no temporary or destination artifact is written, ref/hash remain absent, the
+  compact pending summary remains available with status `overflow`, and the full buffer is
+  discarded after ordinary report data is produced;
+- the recorder never stops mid-run and no summary-only, sampled or truncated trace file is emitted;
 - pending/report writing continues with the canonical existing finding data;
 - no trace failure changes a verdict, dirty flag, iteration or decision requirement.
 
