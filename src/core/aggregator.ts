@@ -957,52 +957,55 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // section, and the decisions-gate already ignores INFO.
   const fpActive = input.fpActive;
   const fpSignatureEnabled = fpActive !== undefined && fpActive.size > 0;
-  const fpScoped: Finding[] =
-    fpSignatureEnabled || input.policyRuntime
-      ? foreignScoped.map((f) => {
-          // Representative first, then members; dedup so a member equal to the
-          // representative is not double-counted.
-          const sigs = [...new Set([f.signature, ...(f.members?.map((m) => m.signature) ?? [])])];
-          const matchingSignatures = fpActive ? sigs.filter((s) => fpActive.has(s)) : [];
-          const opportunity = fpSignatureEnabled && f.severity !== "INFO";
-          const matched = opportunity && matchingSignatures.length > 0;
-          // pattern_id = the first matching signature's entry (deterministic order).
-          const hit = matchingSignatures[0] ? fpActive?.get(matchingSignatures[0]) : undefined;
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "history.fp-signature",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "active-fp-signature",
-              action: "suppressed",
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => ({
-                ...f,
-                severity: "INFO" as const,
-                fp_ledger_match: {
-                  pattern_id: (hit as { id: string }).id,
-                  matched_count: matchingSignatures.length,
-                  suppressed: true,
-                },
-              }),
-            }) ?? f;
-          // INFO-only matches keep their legacy attribution without entering the
-          // blocking opportunity denominator.
-          if (f.severity === "INFO" && hit !== undefined) {
-            return {
-              ...transitioned,
+  if (!fpSignatureEnabled) {
+    input.policyRuntime?.markInactive("history.fp-signature", "stage-precondition-miss");
+  }
+  const fpSignatureAblated = input.policyRuntime?.isAblated("history.fp-signature") ?? false;
+  const fpScoped: Finding[] = fpSignatureEnabled
+    ? foreignScoped.map((f) => {
+        // Representative first, then members; dedup so a member equal to the
+        // representative is not double-counted.
+        const sigs = [...new Set([f.signature, ...(f.members?.map((m) => m.signature) ?? [])])];
+        const matchingSignatures = fpActive ? sigs.filter((s) => fpActive.has(s)) : [];
+        const opportunity = fpSignatureEnabled && f.severity !== "INFO";
+        const matched = opportunity && matchingSignatures.length > 0;
+        // pattern_id = the first matching signature's entry (deterministic order).
+        const hit = matchingSignatures[0] ? fpActive?.get(matchingSignatures[0]) : undefined;
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "history.fp-signature",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "active-fp-signature",
+            action: "suppressed",
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => ({
+              ...f,
+              severity: "INFO" as const,
               fp_ledger_match: {
-                pattern_id: hit.id,
+                pattern_id: (hit as { id: string }).id,
                 matched_count: matchingSignatures.length,
                 suppressed: true,
               },
-            };
-          }
-          return transitioned;
-        })
-      : foreignScoped;
+            }),
+          }) ?? f;
+        // INFO-only matches keep their legacy attribution without entering the
+        // blocking opportunity denominator.
+        if (!fpSignatureAblated && f.severity === "INFO" && hit !== undefined) {
+          return {
+            ...transitioned,
+            fp_ledger_match: {
+              pattern_id: hit.id,
+              matched_count: matchingSignatures.length,
+              suppressed: true,
+            },
+          };
+        }
+        return transitioned;
+      })
+    : foreignScoped;
 
   // Per-cycle suppression: a finding whose representative OR any member signature
   // the agent already rejected (reviewer_was_wrong) earlier this cycle is demoted
@@ -1010,41 +1013,43 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // dispositions a finding once and never sees it as blocking again this cycle.
   const cycleRejected = input.cycleRejected;
   const cycleRejectedEnabled = cycleRejected !== undefined && cycleRejected.size > 0;
-  const cycleScoped: Finding[] =
-    cycleRejectedEnabled || input.policyRuntime
-      ? fpScoped.map((f) => {
-          const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
-          const opportunity = cycleRejectedEnabled && f.severity !== "INFO";
-          const matched = opportunity && sigs.some((s) => cycleRejected?.has(s));
-          // G0b ceiling (codex DoD 2026-06-21): NEVER auto-hide a CRITICAL or any
-          // security/correctness finding via cycleRejected. One false reviewer_was_wrong
-          // rejection must not silence a later REAL CRITICAL of the same signature this cycle
-          // (a fail-open); it re-surfaces for an explicit per-iteration decision instead.
-          let protectedBy: PolicyProtectionCode | undefined;
-          if (matched && f.severity === "CRITICAL") protectedBy = "critical-floor";
-          else if (matched && touchesSecurityOrCorrectness(f)) {
-            protectedBy = "security-correctness-floor";
-          }
-          return (
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "history.cycle-rejected",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "cycle-signature-rejected",
-              action: "suppressed",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => ({
-                ...f,
-                severity: "INFO" as const,
-                details: `${f.details.slice(0, 1900)}\n\n↓ already rejected earlier this cycle — advisory only.`,
-              }),
-            }) ?? f
-          );
-        })
-      : fpScoped;
+  if (!cycleRejectedEnabled) {
+    input.policyRuntime?.markInactive("history.cycle-rejected", "stage-precondition-miss");
+  }
+  const cycleScoped: Finding[] = cycleRejectedEnabled
+    ? fpScoped.map((f) => {
+        const sigs = [f.signature, ...(f.members?.map((m) => m.signature) ?? [])];
+        const opportunity = cycleRejectedEnabled && f.severity !== "INFO";
+        const matched = opportunity && sigs.some((s) => cycleRejected?.has(s));
+        // G0b ceiling (codex DoD 2026-06-21): NEVER auto-hide a CRITICAL or any
+        // security/correctness finding via cycleRejected. One false reviewer_was_wrong
+        // rejection must not silence a later REAL CRITICAL of the same signature this cycle
+        // (a fail-open); it re-surfaces for an explicit per-iteration decision instead.
+        let protectedBy: PolicyProtectionCode | undefined;
+        if (matched && f.severity === "CRITICAL") protectedBy = "critical-floor";
+        else if (matched && touchesSecurityOrCorrectness(f)) {
+          protectedBy = "security-correctness-floor";
+        }
+        return (
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "history.cycle-rejected",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "cycle-signature-rejected",
+            action: "suppressed",
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => ({
+              ...f,
+              severity: "INFO" as const,
+              details: `${f.details.slice(0, 1900)}\n\n↓ already rejected earlier this cycle — advisory only.`,
+            }),
+          }) ?? f
+        );
+      })
+    : fpScoped;
 
   // F3 Phase 2 — DERIVED FP-cluster demote. Applies AFTER the signature-keyed
   // pass so a finding already tagged via fp_ledger_match keeps both tags
@@ -1054,52 +1059,55 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // re-applies the identical tag + INFO severity. No explicit short-circuit.
   const fpClusters = input.fpActiveClusters;
   const fpClusterEnabled = fpClusters !== undefined && fpClusters.size > 0;
-  const fpClusterScoped: Finding[] =
-    fpClusterEnabled || input.policyRuntime
-      ? cycleScoped.map((f) => {
-          // Check the representative AND every merged member rule_id (clustering is
-          // category/rule-id-independent, so a known-FP rule can ride as a member
-          // under a different representative). Same file for all cluster members.
-          const ruleIds = [f.rule_id, ...(f.members?.map((m) => m.rule_id) ?? [])];
-          const keys = [...new Set(ruleIds.map((rid) => `${ruleIdToken0(rid)}@${f.file}`))];
-          const matchKey = keys.find((key) => fpClusters?.has(key));
-          const hit = matchKey ? fpClusters?.get(matchKey) : undefined;
-          const opportunity = fpClusterEnabled && f.severity !== "INFO";
-          const matched = opportunity && hit !== undefined;
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "history.fp-cluster",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "active-fp-cluster",
-              action: "suppressed",
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => ({
-                ...f,
-                severity: "INFO" as const,
-                fp_cluster_match: {
-                  cluster_key: (hit as { key: string }).key,
-                  member_ids: (hit as { member_ids: string[] }).member_ids,
-                  suppressed: true,
-                },
-              }),
-            }) ?? f;
-          // INFO-only matches retain the legacy explanatory marker.
-          if (f.severity === "INFO" && hit !== undefined) {
-            return {
-              ...transitioned,
+  if (!fpClusterEnabled) {
+    input.policyRuntime?.markInactive("history.fp-cluster", "stage-precondition-miss");
+  }
+  const fpClusterAblated = input.policyRuntime?.isAblated("history.fp-cluster") ?? false;
+  const fpClusterScoped: Finding[] = fpClusterEnabled
+    ? cycleScoped.map((f) => {
+        // Check the representative AND every merged member rule_id (clustering is
+        // category/rule-id-independent, so a known-FP rule can ride as a member
+        // under a different representative). Same file for all cluster members.
+        const ruleIds = [f.rule_id, ...(f.members?.map((m) => m.rule_id) ?? [])];
+        const keys = [...new Set(ruleIds.map((rid) => `${ruleIdToken0(rid)}@${f.file}`))];
+        const matchKey = keys.find((key) => fpClusters?.has(key));
+        const hit = matchKey ? fpClusters?.get(matchKey) : undefined;
+        const opportunity = fpClusterEnabled && f.severity !== "INFO";
+        const matched = opportunity && hit !== undefined;
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "history.fp-cluster",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "active-fp-cluster",
+            action: "suppressed",
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => ({
+              ...f,
+              severity: "INFO" as const,
               fp_cluster_match: {
-                cluster_key: hit.key,
-                member_ids: hit.member_ids,
+                cluster_key: (hit as { key: string }).key,
+                member_ids: (hit as { member_ids: string[] }).member_ids,
                 suppressed: true,
               },
-            };
-          }
-          return transitioned;
-        })
-      : cycleScoped;
+            }),
+          }) ?? f;
+        // INFO-only matches retain the legacy explanatory marker.
+        if (!fpClusterAblated && f.severity === "INFO" && hit !== undefined) {
+          return {
+            ...transitioned,
+            fp_cluster_match: {
+              cluster_key: hit.key,
+              member_ids: hit.member_ids,
+              suppressed: true,
+            },
+          };
+        }
+        return transitioned;
+      })
+    : cycleScoped;
 
   // Phase 4 #7 — confidence demote: an uncorroborated finding below the floor is
   // advisory only. Exempt: corroborated findings (majority/unanimous — multiple
@@ -1109,107 +1117,112 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // security/correctness concern can ride as a member under, e.g., a quality
   // representative — demoting the cluster would hide it and could flip FAIL→PASS).
   const floor = input.confidenceFloor ?? 0;
-  const confScoped: Finding[] =
-    floor > 0 || input.policyRuntime
-      ? fpClusterScoped.map((f) => {
-          // Cluster confidence = MAX over the representative and all merged members,
-          // so a co-located high-confidence member is never masked by a
-          // low-confidence representative. (memberOf records each member's
-          // confidence; older/persisted members may omit it → ignored in the max.)
-          const memberConfs = (f.members ?? [])
-            .map((m) => m.confidence)
-            .filter((c): c is number => typeof c === "number");
-          const maxConfidence = Math.max(f.confidence, ...memberConfs);
-          const corroborated = f.consensus === "unanimous" || f.consensus === "majority";
-          // A from-CRITICAL WARN is already at the G0 floor. The current catalog
-          // deliberately treats that marker-only repeat as ineligible rather than
-          // inventing a second WARN→WARN material transition.
-          const atCriticalFloor = f.severity === "WARN" && f.demoted_from_critical === true;
-          const opportunity =
-            floor > 0 && f.severity !== "INFO" && !corroborated && !atCriticalFloor;
-          const matched = opportunity && maxConfidence < floor;
-          let protectedBy: PolicyProtectionCode | undefined;
-          if (matched && pinned.has(f.signature)) protectedBy = "claimed-fixed-pin";
-          else if (matched && f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f)) {
-            protectedBy = "security-correctness-floor";
-          } else if (matched && isProtected(f)) {
-            protectedBy = "high-precision-reviewer";
-          }
+  const confidenceEnabled = floor > 0;
+  if (!confidenceEnabled) {
+    input.policyRuntime?.markInactive("judgment.confidence", "configured-off");
+  }
+  const confidenceAblated = input.policyRuntime?.isAblated("judgment.confidence") ?? false;
+  const confScoped: Finding[] = confidenceEnabled
+    ? fpClusterScoped.map((f) => {
+        // Cluster confidence = MAX over the representative and all merged members,
+        // so a co-located high-confidence member is never masked by a
+        // low-confidence representative. (memberOf records each member's
+        // confidence; older/persisted members may omit it → ignored in the max.)
+        const memberConfs = (f.members ?? [])
+          .map((m) => m.confidence)
+          .filter((c): c is number => typeof c === "number");
+        const maxConfidence = Math.max(f.confidence, ...memberConfs);
+        const corroborated = f.consensus === "unanimous" || f.consensus === "majority";
+        // A from-CRITICAL WARN is already at the G0 floor. The current catalog
+        // deliberately treats that marker-only repeat as ineligible rather than
+        // inventing a second WARN→WARN material transition.
+        const atCriticalFloor = f.severity === "WARN" && f.demoted_from_critical === true;
+        const opportunity = floor > 0 && f.severity !== "INFO" && !corroborated && !atCriticalFloor;
+        const matched = opportunity && maxConfidence < floor;
+        let protectedBy: PolicyProtectionCode | undefined;
+        if (matched && pinned.has(f.signature)) protectedBy = "claimed-fixed-pin";
+        else if (matched && f.severity === "CRITICAL" && touchesSecurityOrCorrectness(f)) {
+          protectedBy = "security-correctness-floor";
+        } else if (matched && isProtected(f)) {
+          protectedBy = "high-precision-reviewer";
+        }
 
-          const action = f.severity === "CRITICAL" ? "capped" : "demoted";
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "judgment.confidence",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "below-confidence-floor",
-              action,
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                if (f.severity === "CRITICAL") {
-                  const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — demoted CRITICAL→WARN; kept blocking pending your decision.`;
-                  return {
-                    ...f,
-                    severity: "WARN" as const,
-                    low_confidence: true,
-                    demoted_from_critical: true,
-                    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                  };
-                }
-                const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — advisory only.`;
+        const action = f.severity === "CRITICAL" ? "capped" : "demoted";
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "judgment.confidence",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "below-confidence-floor",
+            action,
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => {
+              if (f.severity === "CRITICAL") {
+                const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — demoted CRITICAL→WARN; kept blocking pending your decision.`;
                 return {
                   ...f,
-                  severity: "INFO" as const,
+                  severity: "WARN" as const,
                   low_confidence: true,
+                  demoted_from_critical: true,
                   details: `${f.details.slice(0, 2000 - note.length)}${note}`,
                 };
-              },
-            }) ?? f;
+              }
+              const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — advisory only.`;
+              return {
+                ...f,
+                severity: "INFO" as const,
+                low_confidence: true,
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            },
+          }) ?? f;
 
-          // #4: a high-precision reviewer's blocking finding is not demoted for low
-          // self-reported confidence — its track record outweighs one low confidence call.
-          if (matched && protectedBy === "high-precision-reviewer") {
+        // #4: a high-precision reviewer's blocking finding is not demoted for low
+        // self-reported confidence — its track record outweighs one low confidence call.
+        if (!confidenceAblated && matched && protectedBy === "high-precision-reviewer") {
+          return { ...transitioned, protected_high_precision: true };
+        }
+        if (
+          !confidenceAblated &&
+          f.severity === "INFO" &&
+          floor > 0 &&
+          maxConfidence < floor &&
+          !corroborated &&
+          !pinned.has(f.signature)
+        ) {
+          return { ...transitioned, low_confidence: true };
+        }
+        // G0: this pass sends a non-security/correctness low-confidence CRITICAL DIRECTLY to
+        // INFO (not via DEMOTE) — that would flip a sole demoted-from-CRITICAL finding to a
+        // non-blocking INFO/PASS and auto-hide a possibly-real CRITICAL. CLAMP a from-CRITICAL
+        // at WARN (kept blocking + decision-required) and stamp provenance; a genuine
+        // never-CRITICAL WARN still demotes to INFO as before.
+        if (
+          !confidenceAblated &&
+          atCriticalFloor &&
+          floor > 0 &&
+          maxConfidence < floor &&
+          !corroborated &&
+          !pinned.has(f.signature)
+        ) {
+          if (isProtected(f)) {
             return { ...transitioned, protected_high_precision: true };
           }
-          if (
-            f.severity === "INFO" &&
-            floor > 0 &&
-            maxConfidence < floor &&
-            !corroborated &&
-            !pinned.has(f.signature)
-          ) {
-            return { ...transitioned, low_confidence: true };
-          }
-          // G0: this pass sends a non-security/correctness low-confidence CRITICAL DIRECTLY to
-          // INFO (not via DEMOTE) — that would flip a sole demoted-from-CRITICAL finding to a
-          // non-blocking INFO/PASS and auto-hide a possibly-real CRITICAL. CLAMP a from-CRITICAL
-          // at WARN (kept blocking + decision-required) and stamp provenance; a genuine
-          // never-CRITICAL WARN still demotes to INFO as before.
-          if (
-            atCriticalFloor &&
-            floor > 0 &&
-            maxConfidence < floor &&
-            !corroborated &&
-            !pinned.has(f.signature)
-          ) {
-            if (isProtected(f)) {
-              return { ...transitioned, protected_high_precision: true };
-            }
-            const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — demoted CRITICAL→WARN; kept blocking pending your decision.`;
-            return {
-              ...transitioned,
-              severity: "WARN" as const,
-              low_confidence: true,
-              demoted_from_critical: true,
-              details: `${transitioned.details.slice(0, 2000 - note.length)}${note}`,
-            };
-          }
-          return transitioned;
-        })
-      : fpClusterScoped;
+          const note = `\n\n↓ low reviewer confidence (${maxConfidence.toFixed(2)} < ${floor}) — demoted CRITICAL→WARN; kept blocking pending your decision.`;
+          return {
+            ...transitioned,
+            severity: "WARN" as const,
+            low_confidence: true,
+            demoted_from_critical: true,
+            details: `${transitioned.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        }
+        return transitioned;
+      })
+    : fpClusterScoped;
 
   // Reviewer-reputation demote (Slice B: provider:persona keys): an un-corroborated finding whose every
   // contributing reviewer key is currently unreliable is demoted one step. Mirrors the
@@ -1218,109 +1231,113 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // INFO is untouched.
   const repUnreliable = input.repUnreliable;
   const reputationEnabled = repUnreliable !== undefined && repUnreliable.size > 0;
-  const repScoped: Finding[] =
-    reputationEnabled || input.policyRuntime
-      ? confScoped.map((f) => {
-          const corroborated = f.consensus === "unanimous" || f.consensus === "majority";
-          const isCorrectness = touchesCorrectness(f);
-          const keys =
-            f.confirmed_by && f.confirmed_by.length > 0
-              ? f.confirmed_by
-              : [`${f.reviewer.provider}:${f.reviewer.persona}`];
-          const opportunity = reputationEnabled && f.severity !== "INFO" && !corroborated;
-          const matched = opportunity && keys.every((key) => repUnreliable?.has(key));
-          const canClampCorrectnessCritical =
-            input.demoteCorrectness === true &&
-            input.corroborateCritical === true &&
-            input.reviewersTotal > 1;
-          let protectedBy: PolicyProtectionCode | undefined;
-          if (matched && pinned.has(f.signature)) protectedBy = "claimed-fixed-pin";
-          else if (matched && touchesSecurity(f)) protectedBy = "security-floor";
-          else if (matched && isCorrectness && input.demoteCorrectness !== true) {
-            protectedBy = "correctness-demote-disabled";
-          } else if (
-            matched &&
-            ((f.severity === "WARN" && f.demoted_from_critical === true) ||
-              (isCorrectness && f.severity === "CRITICAL" && !canClampCorrectnessCritical))
-          ) {
-            protectedBy = "critical-floor";
-          }
+  if (!reputationEnabled) {
+    input.policyRuntime?.markInactive("judgment.reputation", "stage-precondition-miss");
+  }
+  const reputationAblated = input.policyRuntime?.isAblated("judgment.reputation") ?? false;
+  const repScoped: Finding[] = reputationEnabled
+    ? confScoped.map((f) => {
+        const corroborated = f.consensus === "unanimous" || f.consensus === "majority";
+        const isCorrectness = touchesCorrectness(f);
+        const keys =
+          f.confirmed_by && f.confirmed_by.length > 0
+            ? f.confirmed_by
+            : [`${f.reviewer.provider}:${f.reviewer.persona}`];
+        const opportunity = reputationEnabled && f.severity !== "INFO" && !corroborated;
+        const matched = opportunity && keys.every((key) => repUnreliable?.has(key));
+        const canClampCorrectnessCritical =
+          input.demoteCorrectness === true &&
+          input.corroborateCritical === true &&
+          input.reviewersTotal > 1;
+        let protectedBy: PolicyProtectionCode | undefined;
+        if (matched && pinned.has(f.signature)) protectedBy = "claimed-fixed-pin";
+        else if (matched && touchesSecurity(f)) protectedBy = "security-floor";
+        else if (matched && isCorrectness && input.demoteCorrectness !== true) {
+          protectedBy = "correctness-demote-disabled";
+        } else if (
+          matched &&
+          ((f.severity === "WARN" && f.demoted_from_critical === true) ||
+            (isCorrectness && f.severity === "CRITICAL" && !canClampCorrectnessCritical))
+        ) {
+          protectedBy = "critical-floor";
+        }
 
-          const action = isCorrectness && f.severity === "CRITICAL" ? "capped" : "demoted";
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "judgment.reputation",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "unreliable-reviewer",
-              action,
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                if (isCorrectness) {
-                  // R5: an eligible CRITICAL correctness claim is clamped to a
-                  // decision-required WARN pending corroboration.
-                  if (f.severity === "CRITICAL") {
-                    const note =
-                      "\n\n↓ low reviewer reputation — uncorroborated CRITICAL correctness from a chronically-unreliable reviewer; demoted CRITICAL→WARN pending corroboration. Kept blocking + decision-required: verify the claim in the cited code, then fix it or reject it with evidence.";
-                    return {
-                      ...f,
-                      severity: "WARN" as const,
-                      reputation_demoted: true,
-                      demoted_from_critical: true,
-                      reputation_corroboration_required: true,
-                      details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                    };
-                  }
+        const action = isCorrectness && f.severity === "CRITICAL" ? "capped" : "demoted";
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "judgment.reputation",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "unreliable-reviewer",
+            action,
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => {
+              if (isCorrectness) {
+                // R5: an eligible CRITICAL correctness claim is clamped to a
+                // decision-required WARN pending corroboration.
+                if (f.severity === "CRITICAL") {
                   const note =
-                    "\n\n↓ low reviewer reputation — correctness finding from an unreliable lone reviewer; advisory only.";
+                    "\n\n↓ low reviewer reputation — uncorroborated CRITICAL correctness from a chronically-unreliable reviewer; demoted CRITICAL→WARN pending corroboration. Kept blocking + decision-required: verify the claim in the cited code, then fix it or reject it with evidence.";
                   return {
                     ...f,
-                    severity: "INFO" as const,
+                    severity: "WARN" as const,
                     reputation_demoted: true,
+                    demoted_from_critical: true,
+                    reputation_corroboration_required: true,
                     details: `${f.details.slice(0, 2000 - note.length)}${note}`,
                   };
                 }
-
-                // Pure quality/style: existing one-step demote (CRITICAL→WARN,
-                // WARN→INFO), with the G0 floor handled above as a protection.
-                const demoted = demoteOneStep(f);
-                if (demoted.severity === "drop") return f;
-                const note = demoted.demoted_from_critical
-                  ? "\n\n↓ low reviewer reputation — demoted CRITICAL→WARN; kept blocking pending your decision."
-                  : "\n\n↓ low reviewer reputation — advisory only.";
+                const note =
+                  "\n\n↓ low reviewer reputation — correctness finding from an unreliable lone reviewer; advisory only.";
                 return {
                   ...f,
-                  severity: demoted.severity,
+                  severity: "INFO" as const,
                   reputation_demoted: true,
-                  ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
                   details: `${f.details.slice(0, 2000 - note.length)}${note}`,
                 };
-              },
-            }) ?? f;
-          // Preserve the pre-trace marker/details behavior for a pure-quality
-          // from-CRITICAL WARN already held at the G0 floor. The trace records
-          // the attempted second demotion as protected.
-          if (
-            matched &&
-            protectedBy === "critical-floor" &&
-            !isCorrectness &&
-            f.severity === "WARN"
-          ) {
-            const note =
-              "\n\n↓ low reviewer reputation — demoted CRITICAL→WARN; kept blocking pending your decision.";
-            return {
-              ...transitioned,
-              reputation_demoted: true,
-              demoted_from_critical: true,
-              details: `${transitioned.details.slice(0, 2000 - note.length)}${note}`,
-            };
-          }
-          return transitioned;
-        })
-      : confScoped;
+              }
+
+              // Pure quality/style: existing one-step demote (CRITICAL→WARN,
+              // WARN→INFO), with the G0 floor handled above as a protection.
+              const demoted = demoteOneStep(f);
+              if (demoted.severity === "drop") return f;
+              const note = demoted.demoted_from_critical
+                ? "\n\n↓ low reviewer reputation — demoted CRITICAL→WARN; kept blocking pending your decision."
+                : "\n\n↓ low reviewer reputation — advisory only.";
+              return {
+                ...f,
+                severity: demoted.severity,
+                reputation_demoted: true,
+                ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            },
+          }) ?? f;
+        // Preserve the pre-trace marker/details behavior for a pure-quality
+        // from-CRITICAL WARN already held at the G0 floor. The trace records
+        // the attempted second demotion as protected.
+        if (
+          !reputationAblated &&
+          matched &&
+          protectedBy === "critical-floor" &&
+          !isCorrectness &&
+          f.severity === "WARN"
+        ) {
+          const note =
+            "\n\n↓ low reviewer reputation — demoted CRITICAL→WARN; kept blocking pending your decision.";
+          return {
+            ...transitioned,
+            reputation_demoted: true,
+            demoted_from_critical: true,
+            details: `${transitioned.details.slice(0, 2000 - note.length)}${note}`,
+          };
+        }
+        return transitioned;
+      })
+    : confScoped;
 
   // T3/R4 (field report 2026-07-03) — region-rejection pass. Placed AFTER the
   // reputation clamp so it evaluates POST-clamp severity (a clamped from-CRITICAL
@@ -1341,91 +1358,98 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // Fail-safe: findings without line data and unparseable regions are untouched.
   const rejectedRegions = input.rejectedRegions;
   const regionRejectedEnabled = rejectedRegions !== undefined && rejectedRegions.length > 0;
+  if (!regionRejectedEnabled) {
+    input.policyRuntime?.markInactive("history.region-rejected", "stage-precondition-miss");
+  }
+  const regionRejectedAblated = input.policyRuntime?.isAblated("history.region-rejected") ?? false;
   let regionSuppressedCount = 0;
-  const regionScoped: Finding[] =
-    regionRejectedEnabled || input.policyRuntime
-      ? repScoped.map((f) => {
-          const opportunity =
-            regionRejectedEnabled && f.severity !== "INFO" && Boolean(f.line_start);
-          const file = normalizeRepoPath(f.file);
-          const lineEnd = typeof f.line_end === "number" ? f.line_end : f.line_start;
-          const match = rejectedRegions?.find(
-            (r) =>
-              typeof r.start_line === "number" &&
-              typeof r.end_line === "number" &&
-              normalizeRepoPath(r.file) === file &&
-              f.line_start <= r.end_line + REGION_WINDOW &&
-              lineEnd >= r.start_line - REGION_WINDOW,
-          );
-          const matched = opportunity && match !== undefined;
-          const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
-          const categoryCompatible =
-            match !== undefined &&
-            memberCats.every((category) => match.categories.includes(category));
-          const severityDominated =
-            match !== undefined && SEVERITY_RANK[f.severity] <= SEVERITY_RANK[match.severity];
-          let protectedBy: PolicyProtectionCode | undefined;
-          if (matched && f.claimed_fixed_recurred) protectedBy = "claimed-fixed-pin";
-          else if (matched && (match?.distinct_count ?? 0) < 2) {
-            protectedBy = "insufficient-distinct-rejections";
-          } else if (matched && !categoryCompatible) protectedBy = "category-change";
-          else if (matched && !severityDominated) protectedBy = "severity-increase";
-          else if (matched && (f.severity === "CRITICAL" || f.demoted_from_critical === true)) {
-            protectedBy = "critical-floor";
-          } else if (matched && touchesSecurity(f)) {
-            protectedBy = "security-correctness-floor";
-          }
+  const regionScoped: Finding[] = regionRejectedEnabled
+    ? repScoped.map((f) => {
+        const opportunity = regionRejectedEnabled && f.severity !== "INFO" && Boolean(f.line_start);
+        const file = normalizeRepoPath(f.file);
+        const lineEnd = typeof f.line_end === "number" ? f.line_end : f.line_start;
+        const match = rejectedRegions?.find(
+          (r) =>
+            typeof r.start_line === "number" &&
+            typeof r.end_line === "number" &&
+            normalizeRepoPath(r.file) === file &&
+            f.line_start <= r.end_line + REGION_WINDOW &&
+            lineEnd >= r.start_line - REGION_WINDOW,
+        );
+        const matched = opportunity && match !== undefined;
+        const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+        const categoryCompatible =
+          match !== undefined &&
+          memberCats.every((category) => match.categories.includes(category));
+        const severityDominated =
+          match !== undefined && SEVERITY_RANK[f.severity] <= SEVERITY_RANK[match.severity];
+        let protectedBy: PolicyProtectionCode | undefined;
+        if (matched && f.claimed_fixed_recurred) protectedBy = "claimed-fixed-pin";
+        else if (matched && (match?.distinct_count ?? 0) < 2) {
+          protectedBy = "insufficient-distinct-rejections";
+        } else if (matched && !categoryCompatible) protectedBy = "category-change";
+        else if (matched && !severityDominated) protectedBy = "severity-increase";
+        else if (matched && (f.severity === "CRITICAL" || f.demoted_from_critical === true)) {
+          protectedBy = "critical-floor";
+        } else if (matched && touchesSecurity(f)) {
+          protectedBy = "security-correctness-floor";
+        }
 
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "history.region-rejected",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "rejected-region-overlap",
-              action: "suppressed",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                const hit = match as NonNullable<typeof match>;
-                const tag = {
-                  distinct_count: hit.distinct_count,
-                  prior_reason: hit.reason.slice(0, 200),
-                  suppressed: true,
-                };
-                const note = `\n\n↓ overlaps a region you already rejected ${hit.distinct_count}× this cycle ("${hit.reason.slice(0, 120)}") — advisory only.`;
-                return {
-                  ...f,
-                  severity: "INFO" as const,
-                  region_rejected_match: tag,
-                  details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                };
-              },
-            }) ?? f;
-
-          if (matched && protectedBy !== undefined && protectedBy !== "claimed-fixed-pin") {
-            const hit = match as NonNullable<typeof match>;
-            return {
-              ...transitioned,
-              region_rejected_match: {
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "history.region-rejected",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "rejected-region-overlap",
+            action: "suppressed",
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => {
+              const hit = match as NonNullable<typeof match>;
+              const tag = {
                 distinct_count: hit.distinct_count,
                 prior_reason: hit.reason.slice(0, 200),
-                suppressed: false,
-              },
-            };
-          }
-          if (
-            matched &&
-            protectedBy === undefined &&
-            transitioned.severity === "INFO" &&
-            transitioned.region_rejected_match?.suppressed === true
-          ) {
-            regionSuppressedCount++;
-          }
-          return transitioned;
-        })
-      : repScoped;
+                suppressed: true,
+              };
+              const note = `\n\n↓ overlaps a region you already rejected ${hit.distinct_count}× this cycle ("${hit.reason.slice(0, 120)}") — advisory only.`;
+              return {
+                ...f,
+                severity: "INFO" as const,
+                region_rejected_match: tag,
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            },
+          }) ?? f;
+
+        if (
+          !regionRejectedAblated &&
+          matched &&
+          protectedBy !== undefined &&
+          protectedBy !== "claimed-fixed-pin"
+        ) {
+          const hit = match as NonNullable<typeof match>;
+          return {
+            ...transitioned,
+            region_rejected_match: {
+              distinct_count: hit.distinct_count,
+              prior_reason: hit.reason.slice(0, 200),
+              suppressed: false,
+            },
+          };
+        }
+        if (
+          matched &&
+          protectedBy === undefined &&
+          transitioned.severity === "INFO" &&
+          transitioned.region_rejected_match?.suppressed === true
+        ) {
+          regionSuppressedCount++;
+        }
+        return transitioned;
+      })
+    : repScoped;
 
   // Slice 2 (field report #9): demote a SECURITY finding on a test/fixture file to INFO
   // (advisory). Only category "security"; correctness/other test-file findings stay blocking
@@ -1437,52 +1461,56 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // "correctness stays blocking" rule — flagged by the dogfood gate iter 3). So we demote only
   // when EVERY clustered member is also security: a single non-security member keeps the whole
   // cluster blocking. (members[] includes the representative's own entry; absent → lone finding.)
-  const testScoped: Finding[] =
-    input.demoteTestSecurity === true || input.policyRuntime
-      ? regionScoped.map((f) => {
-          const testFile = classify(f.file) === "tests";
-          const opportunity =
-            input.demoteTestSecurity === true && f.severity !== "INFO" && testFile;
-          const matched = opportunity && f.category === "security";
-          const protectedBy =
-            matched && (f.members ?? []).some((member) => member.category !== "security")
-              ? "mixed-category-cluster"
-              : undefined;
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "judgment.test-security",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "test-only-security",
-              action: "demoted",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                const note =
-                  "\n\n↓ security finding on a test/fixture file — not production code; advisory only.";
-                return {
-                  ...f,
-                  severity: "INFO" as const,
-                  test_severity_demoted: true,
-                  details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                };
-              },
-            }) ?? f;
-          // Preserve the legacy marker for already-advisory security test findings.
-          if (
-            input.demoteTestSecurity === true &&
-            f.severity === "INFO" &&
-            testFile &&
-            f.category === "security" &&
-            !(f.members ?? []).some((member) => member.category !== "security")
-          ) {
-            return { ...transitioned, test_severity_demoted: true };
-          }
-          return transitioned;
-        })
-      : regionScoped;
+  const testSecurityEnabled = input.demoteTestSecurity === true;
+  if (!testSecurityEnabled) {
+    input.policyRuntime?.markInactive("judgment.test-security", "configured-off");
+  }
+  const testSecurityAblated = input.policyRuntime?.isAblated("judgment.test-security") ?? false;
+  const testScoped: Finding[] = testSecurityEnabled
+    ? regionScoped.map((f) => {
+        const testFile = classify(f.file) === "tests";
+        const opportunity = input.demoteTestSecurity === true && f.severity !== "INFO" && testFile;
+        const matched = opportunity && f.category === "security";
+        const protectedBy =
+          matched && (f.members ?? []).some((member) => member.category !== "security")
+            ? "mixed-category-cluster"
+            : undefined;
+        const transitioned =
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "judgment.test-security",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "test-only-security",
+            action: "demoted",
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => {
+              const note =
+                "\n\n↓ security finding on a test/fixture file — not production code; advisory only.";
+              return {
+                ...f,
+                severity: "INFO" as const,
+                test_severity_demoted: true,
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            },
+          }) ?? f;
+        // Preserve the legacy marker for already-advisory security test findings.
+        if (
+          !testSecurityAblated &&
+          input.demoteTestSecurity === true &&
+          f.severity === "INFO" &&
+          testFile &&
+          f.category === "security" &&
+          !(f.members ?? []).some((member) => member.category !== "security")
+        ) {
+          return { ...transitioned, test_severity_demoted: true };
+        }
+        return transitioned;
+      })
+    : regionScoped;
 
   // Slice D (P5) — docs severity cap. A CRITICAL whose FILE classifies as "docs" is
   // over-severity (a stale doc is not a security/data-loss bug). Cap to WARN via demoteOneStep
@@ -1492,41 +1520,44 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // tests BEFORE docs, so a *.md fixture under tests/ is "tests", not "docs", and is untouched.
   // Fires BEFORE the verdict loop so a capped docs finding no longer trips the singleton
   // reviewersTotal<=1 hard-FAIL; the sec/corr exemption preserves that path for dangerous docs.
-  const docsScoped: Finding[] =
-    input.capDocsSeverity === true || input.policyRuntime
-      ? testScoped.map((f) => {
-          const opportunity = input.capDocsSeverity === true && f.severity === "CRITICAL";
-          const matched = opportunity && classify(f.file) === "docs";
-          const protectedBy =
-            matched && touchesSecurityOrCorrectness(f) ? "security-correctness-floor" : undefined;
-          return (
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "judgment.docs-cap",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "docs-critical-cap",
-              action: "capped",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                const demoted = demoteOneStep(f); // CRITICAL → WARN (+ demoted_from_critical)
-                if (demoted.severity !== "WARN") return f;
-                const note =
-                  "\n\n↓ docs/markdown file — capped CRITICAL→WARN (a stale doc is not a security/data-loss bug); kept blocking pending your decision.";
-                return {
-                  ...f,
-                  severity: "WARN" as const,
-                  docs_severity_capped: true,
-                  ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
-                  details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                };
-              },
-            }) ?? f
-          );
-        })
-      : testScoped;
+  const docsCapEnabled = input.capDocsSeverity === true;
+  if (!docsCapEnabled) {
+    input.policyRuntime?.markInactive("judgment.docs-cap", "configured-off");
+  }
+  const docsScoped: Finding[] = docsCapEnabled
+    ? testScoped.map((f) => {
+        const opportunity = input.capDocsSeverity === true && f.severity === "CRITICAL";
+        const matched = opportunity && classify(f.file) === "docs";
+        const protectedBy =
+          matched && touchesSecurityOrCorrectness(f) ? "security-correctness-floor" : undefined;
+        return (
+          transitionFinding({
+            ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
+            passId: "judgment.docs-cap",
+            finding: f,
+            opportunity,
+            matched,
+            reasonCode: "docs-critical-cap",
+            action: "capped",
+            ...(protectedBy === undefined ? {} : { protectedBy }),
+            sourceSignatures: sourceSignatures(f),
+            proposed: () => {
+              const demoted = demoteOneStep(f); // CRITICAL → WARN (+ demoted_from_critical)
+              if (demoted.severity !== "WARN") return f;
+              const note =
+                "\n\n↓ docs/markdown file — capped CRITICAL→WARN (a stale doc is not a security/data-loss bug); kept blocking pending your decision.";
+              return {
+                ...f,
+                severity: "WARN" as const,
+                docs_severity_capped: true,
+                ...(demoted.demoted_from_critical ? { demoted_from_critical: true } : {}),
+                details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+              };
+            },
+          }) ?? f
+        );
+      })
+    : testScoped;
 
   // Slice C (P4) — render-only honest framing for a lone uncorroborated CRITICAL. It STILL
   // hard-FAILs in the verdict loop below (PR#22 unchanged); the badge just tells the agent to

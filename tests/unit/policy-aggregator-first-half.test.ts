@@ -338,7 +338,7 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
     });
   });
 
-  it("protects a G0-clamped WARN from critic likely_fp in active and ablated runs", () => {
+  it("records active G0 protection but removes its material effect when critic is ablated", () => {
     const clamped = finding({
       signature: "sig-critic-critical-floor",
       severity: "WARN",
@@ -357,9 +357,7 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
     expect(numericSummary(active.recorder, "judgment.critic")).toEqual(
       PROTECTED_BLOCKING_PRESERVED,
     );
-    expect(numericSummary(ablated.recorder, "judgment.critic")).toEqual(
-      PROTECTED_BLOCKING_PRESERVED,
-    );
+    expect(numericSummary(ablated.recorder, "judgment.critic")).toEqual(ABLATED_BLOCKING_PRESERVED);
     expectSingleEffect(active.result.dedupedFindings[0], {
       pass_id: "judgment.critic",
       order: 70,
@@ -369,15 +367,7 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
       reason_code: "critic-likely-fp",
       protected_by: "critical-floor",
     });
-    expectSingleEffect(ablated.result.dedupedFindings[0], {
-      pass_id: "judgment.critic",
-      order: 70,
-      action: "protected",
-      before: "WARN",
-      after: "WARN",
-      reason_code: "critic-likely-fp",
-      protected_by: "critical-floor",
-    });
+    expect(ablated.result.dedupedFindings[0]?.policy_effects).toBeUndefined();
     for (const output of [active, ablated]) {
       expect(output.result.dedupedFindings[0]?.critic_verdict).toBeUndefined();
       expect(output.result.dedupedFindings[0]?.critic_reason).toBeUndefined();

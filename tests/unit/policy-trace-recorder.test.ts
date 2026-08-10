@@ -447,6 +447,155 @@ describe("PolicyTraceRecorder fail-open telemetry", () => {
   });
 });
 
+describe("PolicyTraceRecorder pass lifecycle", () => {
+  it("records an inactive pass without counters or evaluations and finalizes a valid mixed trace", () => {
+    const runtime = PolicyTraceRecorder.start({ runId: "run-inactive", iter: 1, ablated: [] });
+    runtime.markInactive("judgment.confidence", "configured-off");
+    runtime.recordStage({
+      stageId: "aggregation.cluster",
+      reasonCode: "singleton",
+      memberCount: 1,
+      inputSignatures: [warnFinding.signature],
+      outputSignature: warnFinding.signature,
+    });
+    runtime.linkFinal([warnFinding.signature], warnFinding.signature);
+    runtime.recordStage({
+      stageId: "verdict.compute",
+      reasonCode: "blocking-present",
+      inputSignatures: [warnFinding.signature],
+      verdict: "SOFT-PASS",
+    });
+
+    const trace = runtime.finalize({
+      rawResponseSha256: [],
+      verdict: "SOFT-PASS",
+      finalFindings: [warnFinding],
+    });
+
+    expect(runtime.telemetryError).toBe(false);
+    expect(runtime.summary("judgment.confidence")).toEqual({
+      pass_id: "judgment.confidence",
+      status: "not-run",
+      reason_code: "configured-off",
+    });
+    expect(runtime.evaluations()).toEqual([]);
+    expect(trace?.passes.find((pass) => pass.pass_id === "judgment.confidence")).toEqual({
+      pass_id: "judgment.confidence",
+      status: "not-run",
+      reason_code: "configured-off",
+    });
+  });
+
+  it("isolates ran-versus-inactive conflicts without changing production transition semantics", () => {
+    const evaluated = PolicyTraceRecorder.start({
+      runId: "run-inactive-after-evaluation",
+      iter: 1,
+      ablated: [],
+    });
+    transitionFinding({
+      runtime: evaluated,
+      passId: "judgment.confidence",
+      finding: warnFinding,
+      opportunity: true,
+      matched: false,
+      reasonCode: "below-confidence-floor",
+      action: "demoted",
+      proposed: () => {
+        throw new Error("predicate miss must stay lazy");
+      },
+    });
+    evaluated.markInactive("judgment.confidence", "configured-off");
+
+    expect(evaluated.telemetryError).toBe(true);
+    expect(evaluated.summary("judgment.confidence")).toMatchObject({
+      status: "ran",
+      considered: 1,
+    });
+    expect(
+      evaluated.finalize({ rawResponseSha256: [], verdict: "PASS", finalFindings: [] }),
+    ).toBeNull();
+
+    const inactive = PolicyTraceRecorder.start({
+      runId: "run-evaluation-after-inactive",
+      iter: 1,
+      ablated: [],
+    });
+    inactive.markInactive("judgment.confidence", "configured-off");
+    const proposed = { ...warnFinding, severity: "INFO" as const, low_confidence: true };
+    const after = transitionFinding({
+      runtime: inactive,
+      passId: "judgment.confidence",
+      finding: warnFinding,
+      opportunity: true,
+      matched: true,
+      reasonCode: "below-confidence-floor",
+      action: "demoted",
+      proposed: () => proposed,
+    });
+
+    expect(after).toBe(proposed);
+    expect(inactive.telemetryError).toBe(true);
+    expect(inactive.summary("judgment.confidence")).toEqual({
+      pass_id: "judgment.confidence",
+      status: "not-run",
+      reason_code: "configured-off",
+    });
+    expect(inactive.evaluations()).toEqual([]);
+  });
+
+  it("exposes only internal ablation membership to pass-owned marker branches", () => {
+    const runtime = PolicyTraceRecorder.start({
+      runId: "run-ablation-membership",
+      iter: 1,
+      ablated: ["judgment.confidence"],
+    });
+
+    expect(runtime.isAblated("judgment.confidence")).toBe(true);
+  });
+
+  it("lets ablation outrank protection without attaching a render-visible effect", () => {
+    const runtime = PolicyTraceRecorder.start({
+      runId: "run-ablated-protection",
+      iter: 1,
+      ablated: ["judgment.confidence"],
+    });
+
+    const after = transitionFinding({
+      runtime,
+      passId: "judgment.confidence",
+      finding: warnFinding,
+      opportunity: true,
+      matched: true,
+      reasonCode: "below-confidence-floor",
+      action: "demoted",
+      protectedBy: "high-precision-reviewer",
+      proposed: () => {
+        throw new Error("an ablated protected proposal must stay lazy");
+      },
+    });
+
+    expect(after).toBe(warnFinding);
+    expect(after?.policy_effects).toBeUndefined();
+    expect(runtime.evaluations()).toEqual([
+      {
+        pass_id: "judgment.confidence",
+        order: 140,
+        result: "would-apply",
+        before: "WARN",
+        after: "WARN",
+        reason_code: "below-confidence-floor",
+        source_signatures: ["sig-confidence"],
+      },
+    ]);
+    expect(runtime.summary("judgment.confidence")).toMatchObject({
+      would_apply: 1,
+      applied: 0,
+      protected: 0,
+      blocking_preserved: 1,
+    });
+  });
+});
+
 describe("policy effect merging", () => {
   it("deduplicates identical effects and restores ascending catalog order", () => {
     const earlier = {

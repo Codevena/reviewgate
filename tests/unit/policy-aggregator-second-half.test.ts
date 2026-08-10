@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { type AggregateInput, aggregate } from "../../src/core/aggregator.ts";
+import { deriveImplicitOutcomes } from "../../src/core/learnings/implicit-outcomes.ts";
 import type {
   PolicyPassId,
   PolicyProtectionCode,
@@ -98,6 +99,20 @@ function finalized(output: ReturnType<typeof run>): PolicyTrace {
   return trace;
 }
 
+function withoutPolicyEffects(value: Finding | undefined): Finding | undefined {
+  if (value === undefined) return undefined;
+  const { policy_effects: _policyEffects, ...legacyFinding } = value;
+  return legacyFinding as Finding;
+}
+
+function implicitOutcomes(value: Finding | undefined) {
+  return deriveImplicitOutcomes(value === undefined ? [] : [value], [], {
+    runId: "run-ablation-marker",
+    iter: 1,
+    nowIso: "2026-08-10T00:00:00Z",
+  });
+}
+
 function activeCluster() {
   return new Map([["policy@src/a.ts", { key: "policy@src/a.ts", member_ids: ["FP-001"] }]]);
 }
@@ -118,6 +133,43 @@ function rejectedRegion(
 }
 
 describe("aggregator policy numeric contracts, orders 110-180", () => {
+  it("marks every configured-inactive second-half pass not-run and finalizes without evaluations", () => {
+    const output = run("second-half-inactive", {
+      findings: [finding()],
+      reviewersTotal: 2,
+    });
+    const expected = [
+      ["history.fp-signature", "stage-precondition-miss"],
+      ["history.cycle-rejected", "stage-precondition-miss"],
+      ["history.fp-cluster", "stage-precondition-miss"],
+      ["judgment.confidence", "configured-off"],
+      ["judgment.reputation", "stage-precondition-miss"],
+      ["history.region-rejected", "stage-precondition-miss"],
+      ["judgment.test-security", "configured-off"],
+      ["judgment.docs-cap", "configured-off"],
+    ] as const;
+
+    for (const [passId, reasonCode] of expected) {
+      expect(output.recorder.summary(passId)).toEqual({
+        pass_id: passId,
+        status: "not-run",
+        reason_code: reasonCode,
+      });
+      expect(output.recorder.evaluations().some((row) => row.pass_id === passId)).toBe(false);
+    }
+
+    const trace = finalized(output);
+    expect(
+      trace.passes
+        .filter((pass) => expected.some(([passId]) => pass.pass_id === passId))
+        .map((pass) => [
+          pass.pass_id,
+          pass.status,
+          "reason_code" in pass ? pass.reason_code : null,
+        ]),
+    ).toEqual(expected.map(([passId, reasonCode]) => [passId, "not-run", reasonCode]));
+  });
+
   it("records FP-signature no-opportunity, miss, active, and ablated tuples", () => {
     const info = run("fp-signature-info", {
       findings: [finding({ severity: "INFO" })],
@@ -742,6 +794,163 @@ describe("aggregator policy numeric contracts, orders 110-180", () => {
       reason_code: "docs-critical-cap",
       protected_by: "security-correctness-floor",
     });
+  });
+});
+
+describe("second-half ablation marker isolation", () => {
+  it("preserves legacy FP-signature INFO attribution only when the pass is not ablated", () => {
+    const original = finding({ severity: "INFO", details: "original FP details" });
+    const input = {
+      findings: [original],
+      reviewersTotal: 1,
+      fpActive: new Map([["sig-policy", { id: "FP-001" }]]),
+    };
+    const legacy = aggregate(input);
+    const control = aggregate({ findings: [original], reviewersTotal: 1 });
+    const active = run("fp-info-marker-active", input);
+    const ablated = run("fp-info-marker-ablated", input, ["history.fp-signature"]);
+
+    expect(withoutPolicyEffects(active.result.dedupedFindings[0])).toEqual(
+      legacy.dedupedFindings[0],
+    );
+    expect(active.result.dedupedFindings[0]?.fp_ledger_match).toEqual({
+      pattern_id: "FP-001",
+      matched_count: 1,
+      suppressed: true,
+    });
+    expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+    expect(implicitOutcomes(ablated.result.dedupedFindings[0])).toEqual([]);
+  });
+
+  it("does not leak the FP-cluster INFO attribution branch through ablation", () => {
+    const original = finding({ severity: "INFO", details: "original cluster details" });
+    const input = {
+      findings: [original],
+      reviewersTotal: 1,
+      fpActiveClusters: activeCluster(),
+    };
+    const legacy = aggregate(input);
+    const control = aggregate({ findings: [original], reviewersTotal: 1 });
+    const active = run("fp-cluster-info-marker-active", input);
+    const ablated = run("fp-cluster-info-marker-ablated", input, ["history.fp-cluster"]);
+
+    expect(withoutPolicyEffects(active.result.dedupedFindings[0])).toEqual(
+      legacy.dedupedFindings[0],
+    );
+    expect(active.result.dedupedFindings[0]?.fp_cluster_match?.suppressed).toBe(true);
+    expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+  });
+
+  it("removes confidence G0 and high-precision markers, details, effects, and implicit outcomes", () => {
+    const g0 = finding({
+      confidence: 0.1,
+      demoted_from_critical: true,
+      details: "original confidence details",
+    });
+    const g0Input = { findings: [g0], reviewersTotal: 1, confidenceFloor: 0.5 };
+    const g0Legacy = aggregate(g0Input);
+    const g0Control = aggregate({ findings: [g0], reviewersTotal: 1 });
+    const g0Active = run("confidence-g0-marker-active", g0Input);
+    const g0Ablated = run("confidence-g0-marker-ablated", g0Input, ["judgment.confidence"]);
+
+    expect(withoutPolicyEffects(g0Active.result.dedupedFindings[0])).toEqual(
+      g0Legacy.dedupedFindings[0],
+    );
+    expect(g0Active.result.dedupedFindings[0]).toMatchObject({
+      low_confidence: true,
+      demoted_from_critical: true,
+    });
+    expect(g0Ablated.result.dedupedFindings[0]).toEqual(g0Control.dedupedFindings[0]);
+    expect(implicitOutcomes(g0Ablated.result.dedupedFindings[0])).toEqual([]);
+
+    const protectedFinding = finding({
+      confidence: 0.1,
+      details: "original protected details",
+    });
+    const protectedInput = {
+      findings: [protectedFinding],
+      reviewersTotal: 1,
+      confidenceFloor: 0.5,
+      protectedReviewers: new Set(["codex"]),
+    };
+    const protectedLegacy = aggregate(protectedInput);
+    const protectedControl = aggregate({ findings: [protectedFinding], reviewersTotal: 1 });
+    const protectedActive = run("confidence-protected-marker-active", protectedInput);
+    const protectedAblated = run("confidence-protected-marker-ablated", protectedInput, [
+      "judgment.confidence",
+    ]);
+
+    expect(withoutPolicyEffects(protectedActive.result.dedupedFindings[0])).toEqual(
+      protectedLegacy.dedupedFindings[0],
+    );
+    expect(protectedActive.result.dedupedFindings[0]?.protected_high_precision).toBe(true);
+    expect(protectedAblated.result.dedupedFindings[0]).toEqual(protectedControl.dedupedFindings[0]);
+  });
+
+  it("removes reputation G0 markers, details, effects, and implicit outcomes", () => {
+    const original = finding({
+      demoted_from_critical: true,
+      details: "original reputation details",
+    });
+    const input = {
+      findings: [original],
+      reviewersTotal: 1,
+      repUnreliable: new Set(["codex:quality"]),
+    };
+    const legacy = aggregate(input);
+    const control = aggregate({ findings: [original], reviewersTotal: 1 });
+    const active = run("reputation-g0-marker-active", input);
+    const ablated = run("reputation-g0-marker-ablated", input, ["judgment.reputation"]);
+
+    expect(withoutPolicyEffects(active.result.dedupedFindings[0])).toEqual(
+      legacy.dedupedFindings[0],
+    );
+    expect(active.result.dedupedFindings[0]?.reputation_demoted).toBe(true);
+    expect(implicitOutcomes(ablated.result.dedupedFindings[0])).toEqual([]);
+    expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+  });
+
+  it("removes protected region badges and INFO test-security markers under ablation", () => {
+    const regionFinding = finding({ details: "original region details" });
+    const regionInput = {
+      findings: [regionFinding],
+      reviewersTotal: 1,
+      rejectedRegions: [rejectedRegion({ distinct_count: 1 })],
+    };
+    const regionLegacy = aggregate(regionInput);
+    const regionControl = aggregate({ findings: [regionFinding], reviewersTotal: 1 });
+    const regionActive = run("region-marker-active", regionInput);
+    const regionAblated = run("region-marker-ablated", regionInput, ["history.region-rejected"]);
+
+    expect(withoutPolicyEffects(regionActive.result.dedupedFindings[0])).toEqual(
+      regionLegacy.dedupedFindings[0],
+    );
+    expect(regionActive.result.dedupedFindings[0]?.region_rejected_match?.suppressed).toBe(false);
+    expect(regionAblated.result.dedupedFindings[0]).toEqual(regionControl.dedupedFindings[0]);
+
+    const testFinding = finding({
+      severity: "INFO",
+      category: "security",
+      file: "tests/a.test.ts",
+      details: "original test details",
+    });
+    const testInput = {
+      findings: [testFinding],
+      reviewersTotal: 1,
+      demoteTestSecurity: true,
+    };
+    const testLegacy = aggregate(testInput);
+    const testControl = aggregate({ findings: [testFinding], reviewersTotal: 1 });
+    const testActive = run("test-security-info-marker-active", testInput);
+    const testAblated = run("test-security-info-marker-ablated", testInput, [
+      "judgment.test-security",
+    ]);
+
+    expect(withoutPolicyEffects(testActive.result.dedupedFindings[0])).toEqual(
+      testLegacy.dedupedFindings[0],
+    );
+    expect(testActive.result.dedupedFindings[0]?.test_severity_demoted).toBe(true);
+    expect(testAblated.result.dedupedFindings[0]).toEqual(testControl.dedupedFindings[0]);
   });
 });
 

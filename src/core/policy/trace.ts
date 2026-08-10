@@ -23,6 +23,10 @@ import {
 } from "./catalog.ts";
 
 type RanPolicyPassSummary = Extract<PolicyPassSummary, { status: "ran" }>;
+type InactivePolicyReasonCode = Extract<
+  PolicyReasonCode,
+  "configured-off" | "stage-precondition-miss"
+>;
 type TraceVerdict = PolicyTrace["final"]["verdict"];
 
 const PASS_BY_ID = new Map(POLICY_PASSES.map((pass) => [pass.id, pass]));
@@ -67,6 +71,8 @@ export interface FinalizePolicyTraceInput {
 
 export interface PolicyRuntime {
   readonly telemetryError: boolean;
+  isAblated(passId: PolicyPassId): boolean;
+  markInactive(passId: PolicyPassId, reasonCode: InactivePolicyReasonCode): void;
   transition(input: TransitionInput): Finding | null;
   summary(passId: PolicyPassId): PolicyPassSummary;
   evaluations(): PolicyEvaluation[];
@@ -163,7 +169,7 @@ export class PolicyTraceRecorder implements PolicyRuntime {
   readonly #runId: string;
   readonly #iter: number;
   readonly #ablated: ReadonlySet<PolicyPassId>;
-  readonly #summaries = new Map<PolicyPassId, RanPolicyPassSummary>();
+  readonly #summaries = new Map<PolicyPassId, PolicyPassSummary>();
   readonly #evaluations: PolicyEvaluation[] = [];
   readonly #stages: PolicyStageEvaluation[] = [];
   readonly #finalBySource = new Map<string, string>();
@@ -182,6 +188,37 @@ export class PolicyTraceRecorder implements PolicyRuntime {
 
   get telemetryError(): boolean {
     return this.#telemetryError;
+  }
+
+  isAblated(passId: PolicyPassId): boolean {
+    return this.#ablated.has(passId);
+  }
+
+  markInactive(passId: PolicyPassId, reasonCode: InactivePolicyReasonCode): void {
+    try {
+      const current = this.#summaries.get(passId);
+      if (current === undefined) throw new Error(`unknown policy pass: ${passId}`);
+      if (current.status === "not-run") {
+        if (current.reason_code !== reasonCode) {
+          throw new Error(`${passId} already has a different inactivity reason`);
+        }
+        return;
+      }
+      if (current.status !== "ran" || current.considered > 0) {
+        throw new Error(`${passId} cannot become inactive after evaluation`);
+      }
+      const inactive = PolicyPassSummarySchema.parse({
+        pass_id: passId,
+        status: "not-run",
+        reason_code: reasonCode,
+      });
+      if (inactive.status !== "not-run") {
+        throw new Error("inactive lifecycle unexpectedly produced a ran summary");
+      }
+      this.#summaries.set(passId, inactive);
+    } catch {
+      this.#telemetryError = true;
+    }
   }
 
   transition(input: TransitionInput): Finding | null {
@@ -221,6 +258,21 @@ export class PolicyTraceRecorder implements PolicyRuntime {
       }
 
       const sourceSignatures = this.#sourceSignatures(input, finding);
+      // An internal ablation removes this pass's mutation and every material
+      // marker/effect, including a protected effect. The positive predicate is
+      // still observable as would-apply and later passes receive the original.
+      if (ablated) {
+        this.#recordEvaluation({
+          pass_id: input.passId,
+          result: "would-apply",
+          before: finding.severity,
+          after: finding.severity,
+          reason_code: input.reasonCode,
+          source_signatures: sourceSignatures,
+        });
+        return finding;
+      }
+
       if (protectedBy !== undefined) {
         const effect = PolicyEffectSchema.parse({
           pass_id: input.passId,
@@ -248,18 +300,6 @@ export class PolicyTraceRecorder implements PolicyRuntime {
           ...finding,
           policy_effects: mergePolicyEffects(finding.policy_effects, [effect]),
         };
-      }
-
-      if (ablated) {
-        this.#recordEvaluation({
-          pass_id: input.passId,
-          result: "would-apply",
-          before: finding.severity,
-          after: finding.severity,
-          reason_code: input.reasonCode,
-          source_signatures: sourceSignatures,
-        });
-        return finding;
       }
 
       const after = productionResult?.severity ?? null;
@@ -419,6 +459,9 @@ export class PolicyTraceRecorder implements PolicyRuntime {
     });
     const current = this.#summaries.get(evaluation.pass_id);
     if (current === undefined) throw new Error(`unknown policy pass: ${evaluation.pass_id}`);
+    if (current.status !== "ran") {
+      throw new Error(`inactive policy pass cannot record evaluations: ${evaluation.pass_id}`);
+    }
     const next: RanPolicyPassSummary = { ...current, considered: current.considered + 1 };
 
     if (evaluation.result !== "no-opportunity") next.opportunities += 1;
