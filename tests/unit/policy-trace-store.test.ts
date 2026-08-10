@@ -15,10 +15,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
 import {
   POLICY_TRACE_MAX_BYTES,
+  type PolicyTraceWriteResult,
   verifyPolicyTraceReference,
   writePolicyTrace,
 } from "../../src/audit/policy-trace-store.ts";
@@ -170,6 +171,127 @@ function artifactDescriptor(auditDir: string, trace: PolicyTrace) {
   const sha = sha256(canonical);
   const ref = `2026/08/10/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${sha.slice(0, 12)}.json`;
   return { canonical, ref, sha256: sha, path: join(auditDir, ...ref.split("/")) };
+}
+
+async function runSynchronizedWriters(
+  inputs: Array<{ auditDir: string; trace: PolicyTrace }>,
+): Promise<PolicyTraceWriteResult[]> {
+  const barrierDir = tmp("rg-policy-writer-barrier-");
+  const startPath = join(barrierDir, "start");
+  const childSource = `
+    const input = JSON.parse(process.env.RG_POLICY_WRITER_INPUT);
+    const fs = require("node:fs");
+    const mkdirSync = fs.mkdirSync;
+    const wait = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+    fs.mkdirSync = (path, options) => {
+      if (path === input.auditDir) {
+        fs.writeFileSync(input.readyPath, "ready");
+        while (!fs.existsSync(input.startPath)) Atomics.wait(wait, 0, 0, 1);
+      }
+      try {
+        return mkdirSync(path, options);
+      } finally {
+        if (path === input.auditDir) Atomics.wait(wait, 0, 0, input.releaseDelayMs);
+      }
+    };
+    const { writePolicyTrace } = await import(process.env.RG_POLICY_STORE_URL);
+    process.stdout.write(JSON.stringify(writePolicyTrace({
+      auditDir: input.auditDir,
+      trace: input.trace,
+      now: new Date(input.now),
+    })));
+  `;
+  const storeUrl = new URL("../../src/audit/policy-trace-store.ts", import.meta.url).href;
+  const children = inputs.map((input, index) => {
+    const payload = JSON.stringify({
+      ...input,
+      now: NOW.toISOString(),
+      readyPath: join(barrierDir, `ready-${index}`),
+      releaseDelayMs: index * 4,
+      startPath,
+    });
+    return Bun.spawn([process.execPath, "-e", childSource], {
+      env: {
+        ...process.env,
+        RG_POLICY_STORE_URL: storeUrl,
+        RG_POLICY_WRITER_INPUT: payload,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  });
+
+  try {
+    const readyDeadline = Date.now() + 15_000;
+    while (readdirSync(barrierDir).length !== children.length) {
+      if (Date.now() >= readyDeadline) throw new Error("parallel writer ready barrier timed out");
+      await Bun.sleep(5);
+    }
+    writeFileSync(startPath, "start");
+
+    return await Promise.all(
+      children.map(async (child) => {
+        const [stdout, stderr, exitCode] = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ]);
+        if (exitCode !== 0) throw new Error(`parallel writer exited ${exitCode}: ${stderr}`);
+        return JSON.parse(stdout) as PolicyTraceWriteResult;
+      }),
+    );
+  } catch (error) {
+    for (const child of children) child.kill();
+    await Promise.allSettled(children.map((child) => child.exited));
+    throw error;
+  }
+}
+
+async function runWriterWithCreatedRootFault(
+  auditDir: string,
+  trace: PolicyTrace,
+): Promise<PolicyTraceWriteResult> {
+  const storeUrl = new URL("../../src/audit/policy-trace-store.ts", import.meta.url).href;
+  const childSource = `
+    const input = JSON.parse(process.env.RG_POLICY_WRITER_INPUT);
+    const fs = require("node:fs");
+    const mkdirSync = fs.mkdirSync;
+    fs.mkdirSync = (path, options) => {
+      if (path === input.auditDir) {
+        mkdirSync(path, options);
+        const error = new Error("injected non-EEXIST mkdir failure");
+        error.code = "EACCES";
+        throw error;
+      }
+      return mkdirSync(path, options);
+    };
+    const { writePolicyTrace } = await import(process.env.RG_POLICY_STORE_URL);
+    process.stdout.write(JSON.stringify(writePolicyTrace({
+      auditDir: input.auditDir,
+      trace: input.trace,
+      now: new Date(input.now),
+    })));
+  `;
+  const child = Bun.spawn([process.execPath, "-e", childSource], {
+    env: {
+      ...process.env,
+      RG_POLICY_STORE_URL: storeUrl,
+      RG_POLICY_WRITER_INPUT: JSON.stringify({
+        auditDir,
+        trace,
+        now: NOW.toISOString(),
+      }),
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0) throw new Error(`faulted writer exited ${exitCode}: ${stderr}`);
+  return JSON.parse(stdout) as PolicyTraceWriteResult;
 }
 
 describe("canonical policy trace storage", () => {
@@ -328,6 +450,80 @@ describe("canonical policy trace storage", () => {
     });
     expect(statSync(artifact.path).ino).toBe(inode);
     expect(readFileSync(artifact.path, "utf8")).toBe(artifact.canonical);
+  });
+
+  it("lets synchronized identical writers share a freshly-created verified partition", async () => {
+    const root = tmp();
+    const auditDir = join(root, "audit");
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    const trace = emptyTrace("parallel-identical");
+    const artifact = artifactDescriptor(auditDir, trace);
+
+    const results = await runSynchronizedWriters(
+      Array.from({ length: 64 }, () => ({ auditDir, trace })),
+    );
+
+    expect(results).toEqual(
+      Array.from({ length: 64 }, () => ({
+        status: "complete",
+        ref: artifact.ref,
+        sha256: artifact.sha256,
+      })),
+    );
+    expect(readdirSync(dirname(artifact.path))).toEqual([basename(artifact.path)]);
+    expect(readFileSync(artifact.path, "utf8")).toBe(artifact.canonical);
+    const finalStat = lstatSync(artifact.path);
+    expect(finalStat.mode & 0o777).toBe(0o600);
+    expect(finalStat.nlink).toBe(1);
+    expect(allDescendants(root).some((path) => path.endsWith(".tmp"))).toBe(false);
+    expect(allDescendants(outside)).toEqual([]);
+  }, 30_000);
+
+  it("lets synchronized distinct writers populate one freshly-created verified partition", async () => {
+    const root = tmp();
+    const auditDir = join(root, "audit");
+    const outside = join(root, "outside");
+    mkdirSync(outside);
+    const traces = Array.from({ length: 32 }, (_, index) =>
+      emptyTrace(`parallel-distinct-${index}`),
+    );
+    const artifacts = traces.map((trace) => artifactDescriptor(auditDir, trace));
+
+    const results = await runSynchronizedWriters(traces.map((trace) => ({ auditDir, trace })));
+
+    expect(results.every((result) => result.status === "complete")).toBe(true);
+    const complete = results.filter(
+      (result): result is Extract<PolicyTraceWriteResult, { status: "complete" }> =>
+        result.status === "complete",
+    );
+    expect(new Set(complete.map(({ ref }) => ref)).size).toBe(traces.length);
+    expect(new Set(complete.map(({ sha256 }) => sha256)).size).toBe(traces.length);
+    const firstArtifact = artifacts[0];
+    if (firstArtifact === undefined) throw new Error("parallel fixture was empty");
+    expect(readdirSync(dirname(firstArtifact.path)).sort()).toEqual(
+      artifacts.map(({ path }) => basename(path)).sort(),
+    );
+    for (const artifact of artifacts) {
+      expect(readFileSync(artifact.path, "utf8")).toBe(artifact.canonical);
+      const finalStat = lstatSync(artifact.path);
+      expect(finalStat.mode & 0o777).toBe(0o600);
+      expect(finalStat.nlink).toBe(1);
+    }
+    expect(allDescendants(root).some((path) => path.endsWith(".tmp"))).toBe(false);
+    expect(allDescendants(outside)).toEqual([]);
+  }, 30_000);
+
+  it("does not forgive a non-EEXIST mkdir failure when the root appeared", async () => {
+    const root = tmp();
+    const auditDir = join(root, "audit");
+
+    expect(await runWriterWithCreatedRootFault(auditDir, emptyTrace())).toEqual({
+      status: "error",
+    });
+    expect(lstatSync(auditDir).isDirectory()).toBe(true);
+    expect(existsSync(join(auditDir, "2026"))).toBe(false);
+    expect(allDescendants(root).some((path) => path.endsWith(".tmp"))).toBe(false);
   });
 });
 

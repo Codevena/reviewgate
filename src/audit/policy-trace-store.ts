@@ -72,11 +72,20 @@ function realNonSymlinkDirectory(path: string): string | null {
   return realpathSync(path);
 }
 
+function mkdirIfMissing(path: string): void {
+  if (existsSync(path)) return;
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
 function ensureAuditRoot(auditRoot: string): string | null {
   if (!existsSync(auditRoot)) {
     const parent = dirname(auditRoot);
     if (realNonSymlinkDirectory(parent) === null) return null;
-    mkdirSync(auditRoot, { mode: 0o700 });
+    mkdirIfMissing(auditRoot);
   }
   return realNonSymlinkDirectory(auditRoot);
 }
@@ -90,7 +99,7 @@ function ensureContainedDirectory(
   const realParent = realNonSymlinkDirectory(parent);
   if (realParent === null || !isContained(realAuditRoot, realParent)) return null;
   const path = join(parent, name);
-  if (!existsSync(path)) mkdirSync(path, { mode: 0o700 });
+  mkdirIfMissing(path);
   const realPath = realNonSymlinkDirectory(path);
   if (realPath === null || !isContained(realAuditRoot, realPath)) return null;
   if (!isContained(auditRoot, path)) return null;
