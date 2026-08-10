@@ -31,6 +31,23 @@ describe("OrderedResponseHashes", () => {
     expect(JSON.stringify(hashes.entries())).not.toContain("secret-shaped");
   });
 
+  it("rejects a duplicate global ordinal even when call kinds differ", () => {
+    const hashes = new OrderedResponseHashes();
+
+    hashes.record("reviewer", 0, "first logical response");
+
+    expect(() => hashes.record("critic", 0, "different response at the same position")).toThrow(
+      "duplicate response hash ordinal: 0",
+    );
+    expect(hashes.entries()).toEqual([
+      {
+        kind: "reviewer",
+        ordinal: 0,
+        sha256: "c177496f3a8c709a22592ff68cd8ac6f41db2a48c26cf8a1241a6e079a3909c7",
+      },
+    ]);
+  });
+
   it("distinguishes an empty successful response from no response", () => {
     const hashes = new OrderedResponseHashes();
     const recordCall = (ordinal: number, call: () => string): void => {

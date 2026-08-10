@@ -6,18 +6,12 @@ export interface OrderedResponseHash {
   readonly sha256: string;
 }
 
-function compareByteOrder(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
-}
-
 /**
  * Holds response digests in logical call order. The raw response is hashed at
  * the boundary and is never retained by this object.
  */
 export class OrderedResponseHashes {
-  readonly #entries = new Map<string, OrderedResponseHash>();
+  readonly #entries = new Map<number, OrderedResponseHash>();
 
   record(kind: string, ordinal: number, rawText?: string): void {
     if (rawText === undefined) return;
@@ -26,12 +20,11 @@ export class OrderedResponseHashes {
       throw new Error("response hash ordinal must be a non-negative safe integer");
     }
 
-    const identity = JSON.stringify([kind, ordinal]);
-    if (this.#entries.has(identity)) {
-      throw new Error(`duplicate response hash call identity: ${kind}:${ordinal}`);
+    if (this.#entries.has(ordinal)) {
+      throw new Error(`duplicate response hash ordinal: ${ordinal}`);
     }
 
-    this.#entries.set(identity, {
+    this.#entries.set(ordinal, {
       kind,
       ordinal,
       sha256: createHash("sha256").update(Buffer.from(rawText, "utf8")).digest("hex"),
@@ -40,9 +33,7 @@ export class OrderedResponseHashes {
 
   entries(): OrderedResponseHash[] {
     return [...this.#entries.values()]
-      .sort(
-        (left, right) => left.ordinal - right.ordinal || compareByteOrder(left.kind, right.kind),
-      )
+      .sort((left, right) => left.ordinal - right.ordinal)
       .map((entry) => ({ ...entry }));
   }
 
