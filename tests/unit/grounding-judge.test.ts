@@ -5,6 +5,7 @@ import {
   judgeGrounding,
   parseGroundingOutput,
 } from "../../src/core/grounding.ts";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import { type Finding, FindingSchema } from "../../src/schemas/finding.ts";
 
 function mk(over: Partial<Finding> = {}): Finding {
@@ -100,6 +101,45 @@ describe("grounding judge (S6 layer 2)", () => {
     expect(captured).not.toContain("sig-warn");
   });
 
+  it("judgeGrounding returns only the SHA-256 of a successful raw response", async () => {
+    const raw = '{"verdicts":[{"signature":"sig-hash","grounded":true}]}';
+    const result = await judgeGrounding(
+      { complete: async () => raw },
+      { model: "x" },
+      [mk({ signature: "sig-hash", severity: "CRITICAL" })],
+      CORPUS,
+    );
+
+    expect(result.rawResponseSha256).toBe(
+      "1a6fad758d64c4f258f1d635bfaead430ba8b8782fc0ce8bf411c6e8319bbc23",
+    );
+    expect(Object.values(result)).not.toContain(raw);
+  });
+
+  it("judgeGrounding hashes an empty successful response but not a thrown call", async () => {
+    const empty = await judgeGrounding(
+      { complete: async () => "" },
+      { model: "x" },
+      [mk({ severity: "CRITICAL" })],
+      CORPUS,
+    );
+    const failed = await judgeGrounding(
+      {
+        complete: async () => {
+          throw new Error("boom");
+        },
+      },
+      { model: "x" },
+      [mk({ severity: "CRITICAL" })],
+      CORPUS,
+    );
+
+    expect(empty.rawResponseSha256).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(failed.rawResponseSha256).toBeUndefined();
+  });
+
   it("judgeGrounding is fail-safe: a thrown adapter yields an empty map + error status", async () => {
     const adapter = {
       complete: async () => {
@@ -159,12 +199,32 @@ describe("grounding judge (S6 layer 2)", () => {
   });
 
   it("G0: EXEMPTS a correctness CRITICAL even when the judge marks it ungrounded", () => {
+    const runtime = PolicyTraceRecorder.start({
+      runId: "grounding-llm-protected",
+      iter: 1,
+      ablated: [],
+    });
     const out = applyGroundingJudgeVerdicts(
       [mk({ signature: "s1", severity: "CRITICAL", category: "correctness" })],
       new Map([["s1", { grounded: false, reason: "value not present" }]]),
+      runtime,
     );
     expect(out[0]?.severity).toBe("CRITICAL");
     expect(out[0]?.grounding_demoted).toBeUndefined();
+    expect(out[0]?.policy_effects?.[0]).toMatchObject({
+      pass_id: "judgment.grounding-llm",
+      order: 50,
+      action: "protected",
+      reason_code: "judge-ungrounded",
+      protected_by: "security-correctness-floor",
+    });
+    expect(runtime.summary("judgment.grounding-llm")).toMatchObject({
+      opportunities: 1,
+      would_apply: 1,
+      applied: 0,
+      protected: 1,
+      blocking_preserved: 1,
+    });
   });
 
   // A security CRITICAL clustered under a non-security representative must also be exempt —

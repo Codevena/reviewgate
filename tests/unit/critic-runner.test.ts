@@ -31,6 +31,37 @@ function mkFinding(over: Partial<Finding> = {}): Finding {
 const OPTS: CompleteOptions = { model: "m" };
 
 describe("runCritic", () => {
+  it("returns only the SHA-256 of the successful raw critic response", async () => {
+    const raw = '{"verdicts":[{"signature":"sig-hash","verdict":"keep"}]}';
+    const result = await runCritic({ complete: async () => raw }, "codex", OPTS, [
+      mkFinding({ signature: "sig-hash" }),
+    ]);
+
+    expect(result.rawResponseSha256).toBe(
+      "ff83aa82e9f5568766a85df650d31931478f29a3af43523571c266882344d312",
+    );
+    expect(Object.values(result)).not.toContain(raw);
+  });
+
+  it("hashes an empty successful critic response but not a run with only thrown calls", async () => {
+    const empty = await runCritic({ complete: async () => "" }, "codex", OPTS, [mkFinding()]);
+    const failed = await runCritic(
+      {
+        complete: async () => {
+          throw new Error("boom");
+        },
+      },
+      "codex",
+      OPTS,
+      [mkFinding()],
+    );
+
+    expect(empty.rawResponseSha256).toBe(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    );
+    expect(failed.rawResponseSha256).toBeUndefined();
+  });
+
   it("uses complete() and returns the critic verdict map", async () => {
     const adapter: Pick<ProviderAdapter, "complete"> = {
       complete: async () =>

@@ -1,4 +1,5 @@
 // src/core/critic.ts
+import { createHash } from "node:crypto";
 import { neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { CompleteOptions, ProviderAdapter } from "../providers/adapter-base.ts";
 import type { Finding } from "../schemas/finding.ts";
@@ -12,6 +13,7 @@ export interface CriticVerdict {
 export interface CriticRunResult {
   map: Map<string, CriticVerdict>;
   info: { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number };
+  rawResponseSha256?: string;
 }
 
 export function buildCriticPrompt(findings: Finding[]): string {
@@ -59,6 +61,7 @@ export async function runCritic(
   const attemptLimit = Number.isSafeInteger(maxAttempts) && maxAttempts > 0 ? maxAttempts : 1;
   const prompt = buildCriticPrompt(findings);
   let finalStatus: "error" | "empty" = "empty";
+  let rawResponseSha256: string | undefined;
   for (let attempt = 1; attempt <= attemptLimit; attempt++) {
     try {
       // Force reasoning OFF: the critic is a keep/demote classification that needs
@@ -67,16 +70,25 @@ export async function runCritic(
       // coverage gaps in the alpha.12 benchmark). Providers that don't support the
       // flag ignore it.
       const text = await adapter.complete(prompt, { ...opts, disableReasoning: true });
+      rawResponseSha256 = createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
       const map = parseCriticOutput(text);
       if (map.size > 0) {
-        return { map, info: { provider, status: "ran", verdicts: map.size } };
+        return {
+          map,
+          info: { provider, status: "ran", verdicts: map.size },
+          rawResponseSha256,
+        };
       }
       finalStatus = "empty";
     } catch {
       finalStatus = "error";
     }
   }
-  return { map: new Map(), info: { provider, status: finalStatus, verdicts: 0 } };
+  return {
+    map: new Map(),
+    info: { provider, status: finalStatus, verdicts: 0 },
+    ...(rawResponseSha256 === undefined ? {} : { rawResponseSha256 }),
+  };
 }
 
 // Locate the real `{"verdicts":[...]}` payload inside arbitrary model output.

@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { safeReadContained } from "../utils/safe-read.ts";
+import { type PolicyRuntime, transitionFinding } from "./policy/trace.ts";
 
 // Deterministic finding fact-check — no LLM, no network. Two independent production
 // field reports hit the same trust-killer: a single reviewer emitted a 0.97/1.00
@@ -126,31 +127,57 @@ export function validateFindingFacts(
   findings: Finding[],
   repoRoot: string,
   deletedPaths: Set<string>,
+  runtime?: PolicyRuntime,
 ): Finding[] {
+  const runtimeInput = runtime === undefined ? {} : { runtime };
   let repoReal: string;
   try {
     repoReal = realpathSync(repoRoot);
   } catch {
-    return findings; // can't establish a safe root → demote nothing
+    if (runtime === undefined) return findings; // can't establish a safe root → demote nothing
+    return findings.map(
+      (f) =>
+        transitionFinding({
+          ...runtimeInput,
+          passId: "evidence.fact-location",
+          finding: f,
+          opportunity: false,
+          matched: false,
+          reasonCode: "location-out-of-range",
+          action: "demoted",
+          proposed: () => f,
+        }) ?? f,
+    );
   }
   return findings.map((f) => {
+    const noOpportunity = (): Finding =>
+      transitionFinding({
+        ...runtimeInput,
+        passId: "evidence.fact-location",
+        finding: f,
+        opportunity: false,
+        matched: false,
+        reasonCode: "location-out-of-range",
+        action: "demoted",
+        proposed: () => f,
+      }) ?? f;
     const file = f.file;
-    if (!file || file === "." || deletedPaths.has(file)) return f;
-    if (f.line_start < 1) return f;
+    if (!file || file === "." || deletedPaths.has(file)) return noOpportunity();
+    if (f.line_start < 1) return noOpportunity();
     // Reject a path that escapes the repo BEFORE touching the filesystem.
     const abs = join(repoRoot, file);
     const rel = relative(repoRoot, abs);
-    if (rel.startsWith("..") || isAbsolute(rel)) return f;
+    if (rel.startsWith("..") || isAbsolute(rel)) return noOpportunity();
     // Realpath-contain the PARENT directory (catches intermediate-symlink escape that
     // a final-component lstat would miss); then validate the leaf inside it.
     let parentReal: string;
     try {
       parentReal = realpathSync(dirname(abs));
     } catch {
-      return f; // parent unresolved (absent dir / perm) → can't prove anything
+      return noOpportunity(); // parent unresolved (absent dir / perm) → can't prove anything
     }
     const parentRel = relative(repoReal, parentReal);
-    if (parentRel.startsWith("..") || isAbsolute(parentRel)) return f; // escapes repo
+    if (parentRel.startsWith("..") || isAbsolute(parentRel)) return noOpportunity(); // escapes repo
     const leaf = join(parentReal, file.slice(file.lastIndexOf("/") + 1));
     // Open with O_NOFOLLOW so a symlink-swapped leaf fails CLOSED (ELOOP) instead of
     // following OUT of the repo, then fstat + read THROUGH the same fd — no path
@@ -162,17 +189,17 @@ export function validateFindingFacts(
     try {
       fd = openSync(leaf, constants.O_RDONLY | constants.O_NOFOLLOW);
     } catch {
-      return f;
+      return noOpportunity();
     }
     let text: string;
     try {
       const st = fstatSync(fd);
-      if (!st.isFile() || st.size > MAX_READ_BYTES) return f; // dir/special/oversize → skip
+      if (!st.isFile() || st.size > MAX_READ_BYTES) return noOpportunity(); // dir/special/oversize → skip
       const buf = Buffer.alloc(st.size);
       if (st.size > 0) readSync(fd, buf, 0, st.size, 0);
       text = buf.toString("utf8");
     } catch {
-      return f; // unreadable (e.g. binary perms) → fail-safe
+      return noOpportunity(); // unreadable (e.g. binary perms) → fail-safe
     } finally {
       try {
         closeSync(fd);
@@ -181,16 +208,53 @@ export function validateFindingFacts(
       }
     }
     const lines = lineCount(text);
-    if (f.line_start <= lines) return f; // cited line exists → real finding, untouched
+    if (f.line_start <= lines) {
+      return (
+        transitionFinding({
+          ...runtimeInput,
+          passId: "evidence.fact-location",
+          finding: f,
+          opportunity: true,
+          matched: false,
+          reasonCode: "location-out-of-range",
+          action: "demoted",
+          proposed: () => f,
+        }) ?? f
+      );
+    }
     // Out of range. Before calling it a fabrication, consult the reviewer's OWN quoted evidence —
     // f.evidence_line is UNTRUSTED reviewer-supplied input, so this is a match against real file
     // content already read above, never a trust decision made from the quote alone: a quote that
     // matches a real line of THIS file proves the reviewer read the code and mis-numbered it,
     // which is not what this pass exists to catch.
     const repaired = reanchorByEvidence(f, text);
-    if (repaired !== null) return repaired;
+    if (repaired !== null) {
+      return (
+        transitionFinding({
+          ...runtimeInput,
+          passId: "evidence.fact-location",
+          finding: f,
+          opportunity: true,
+          matched: true,
+          reasonCode: "evidence-line-reanchored",
+          action: "reanchored",
+          proposed: () => repaired,
+        }) ?? f
+      );
+    }
     const note = `\n\n[reviewgate fact-check] cited location ${file}:${f.line_start} does not exist in the working tree (file has ${lines} line${lines === 1 ? "" : "s"}) — almost certainly hallucinated; demoted to advisory. Verify before treating as real.`;
-    return demote(f, note);
+    return (
+      transitionFinding({
+        ...runtimeInput,
+        passId: "evidence.fact-location",
+        finding: f,
+        opportunity: true,
+        matched: true,
+        reasonCode: "location-out-of-range",
+        action: "demoted",
+        proposed: () => demote(f, note),
+      }) ?? f
+    );
   });
 }
 
