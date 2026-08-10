@@ -52,6 +52,7 @@ import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { NO_PANEL_REVIEWER_ID } from "../schemas/pending-report.ts";
+import type { PolicySummary, PolicyTrace } from "../schemas/policy-trace.ts";
 import type { PassLedger, ReviewedSnapshot } from "../schemas/state.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
@@ -97,6 +98,10 @@ import { orderForBudget, renderLoreBlock, selectForDiff } from "./lore/render.ts
 import { classifyEntry } from "./lore/staleness.ts";
 import { type LoreEntryParsed, loadLore } from "./lore/store.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
+import type { PolicyExecutionOptions } from "./policy/replay.ts";
+import { resolvePolicyExecutionOptions } from "./policy/replay.ts";
+import { OrderedResponseHashes } from "./policy/response-hashes.ts";
+import { PolicyTraceRecorder } from "./policy/trace.ts";
 import {
   HIGH_PRECISION_FLOOR,
   PROTECT_MIN_DECISIONS,
@@ -233,6 +238,9 @@ export interface OrchestratorInput {
   // Benchmark-only reliability control. Runtime callers omit this and retain
   // exactly one critic completion attempt.
   criticMaxAttempts?: number;
+  // Internal-only policy instrumentation/ablation. Normal Gate construction omits
+  // this and resolves to persist with an AuditLogger; direct/tests resolve off.
+  policyExecution?: PolicyExecutionOptions;
 }
 
 // P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
@@ -306,6 +314,10 @@ export interface IterationResult {
   // — a documented v1 boundary: the canon-guard finding fires on the NEXT gate
   // run instead, see docs/superpowers/specs/2026-07-09-lore-design.md).
   loreOutcomes?: { reminderEmittedId?: string; promotions: string[] };
+  // Server-owned policy telemetry. Physical persistence and compact summary
+  // binding are added by Task 7; memory mode exposes only the complete trace.
+  policyTrace?: PolicyTrace;
+  policySummary?: PolicySummary;
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -717,6 +729,10 @@ export class Orchestrator {
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
+    const policyExecution = resolvePolicyExecutionOptions(
+      this.input.policyExecution,
+      this.input.audit !== undefined,
+    );
     // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
     // untrusted diff fence) AND hashed into the behavior cache key below.
     const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
@@ -802,6 +818,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -822,6 +839,7 @@ export class Orchestrator {
           criticCostUsd: 0,
           findings: [],
           runs: [],
+          policyTraceStatus: "not-run",
         }),
       };
     }
@@ -870,6 +888,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [f],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -1447,6 +1466,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -1488,6 +1508,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -2203,6 +2224,7 @@ export class Orchestrator {
           criticCostUsd: 0,
           findings: [],
           runs: reviewerOutcomes,
+          policyTraceStatus: "not-run",
         }),
       };
     }
@@ -2217,6 +2239,23 @@ export class Orchestrator {
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
     const symbolFindings = await this.applySymbolSignatures(rawFindings);
+    const reviewerResponseHashes = new OrderedResponseHashes();
+    if (policyExecution.trace !== "off") {
+      for (const [ordinal, run] of settled.entries()) {
+        reviewerResponseHashes.record(`reviewer:${run.provider}`, ordinal, run.res.rawText);
+      }
+    }
+    const rawResponseSha256 = reviewerResponseHashes.values();
+    // One recorder owns the complete policy lifecycle. It is deliberately
+    // created at the last boundary before the first outcome-changing pass.
+    const policyRuntime =
+      policyExecution.trace === "off"
+        ? undefined
+        : PolicyTraceRecorder.start({
+            runId: opts.runId,
+            iter: opts.iter,
+            ablated: policyExecution.policyAblations,
+          });
     // Deterministic fact-check BEFORE grounding: a finding whose cited file:line
     // provably does not exist in the working tree (file empty / line out of range) is
     // a hallucination — demote it to advisory so a singleton reviewer can't hard-FAIL
@@ -2227,21 +2266,32 @@ export class Orchestrator {
       symbolFindings,
       this.input.repoRoot,
       parseDeletedPaths(this.input.diff),
+      policyRuntime,
     );
     // #1 (field report 2026-06-17): demote a finding whose OWN conclusion retracts it
     // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
     // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
     // signal → category-independent; deterministic, demote-only, fail-safe.
+    const selfRefutationEnabled = this.input.config.phases.review.selfRefutationFilter !== false;
+    if (!selfRefutationEnabled) {
+      policyRuntime?.markInactive("evidence.self-refutation", "configured-off");
+    }
     const selfScreenedFindings = demoteSelfRefuting(
       factCheckedFindings,
-      this.input.config.phases.review.selfRefutationFilter !== false,
+      selfRefutationEnabled,
+      policyRuntime,
     );
     // non-convergence #2: demote a CRITICAL the reviewer's own text frames as currently-safe /
     // hypothetical / future fragility (no present defect) one step to WARN — pre-aggregate, like
     // self-refutation/grounding. One-step, security/correctness-exempt, fail-safe.
+    const hypotheticalEnabled = this.input.config.phases.review.hypotheticalSeverityGuard !== false;
+    if (!hypotheticalEnabled) {
+      policyRuntime?.markInactive("judgment.hypothetical", "configured-off");
+    }
     const allFindings = demoteHypotheticalCriticals(
       selfScreenedFindings,
-      this.input.config.phases.review.hypotheticalSeverityGuard !== false,
+      hypotheticalEnabled,
+      policyRuntime,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
@@ -2253,7 +2303,7 @@ export class Orchestrator {
     const groundingCorpus = `${this.input.diff}\n${fileContext ?? ""}`;
     // Layer 1 (deterministic, no LLM): demote a CRITICAL citing a code-shaped token absent
     // from the corpus.
-    let groundedFindings = groundFindings(allFindings, groundingCorpus);
+    let groundedFindings = groundFindings(allFindings, groundingCorpus, policyRuntime);
     // Layer 2 (LLM judge, opt-in via phases.grounding): demote a CRITICAL whose claim is
     // SEMANTICALLY fabricated (e.g. an invented `outerHTML` XSS sink where the code only sets
     // a React aria-label). Only fires when there is a CRITICAL to judge; any error → no demote.
@@ -2264,7 +2314,7 @@ export class Orchestrator {
         | ProviderConfig
         | undefined;
       if (gAdapter && gProviderCfg) {
-        const { map } = await judgeGrounding(
+        const { map, rawResponseSha256: groundingResponseSha256 } = await judgeGrounding(
           gAdapter,
           {
             model: groundingCfg.model ?? gProviderCfg.model,
@@ -2279,8 +2329,13 @@ export class Orchestrator {
           groundedFindings,
           groundingCorpus,
         );
-        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map);
+        if (groundingResponseSha256 !== undefined) {
+          rawResponseSha256.push(groundingResponseSha256);
+        }
+        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
       }
+    } else if (groundingCfg === null || groundingCfg === undefined) {
+      policyRuntime?.markInactive("judgment.grounding-llm", "configured-off");
     }
 
     // --- Optional critic phase (demote-only) ---
@@ -2340,6 +2395,7 @@ export class Orchestrator {
         );
         criticMap = r.map.size > 0 ? r.map : undefined;
         criticInfo = r.info;
+        if (r.rawResponseSha256 !== undefined) rawResponseSha256.push(r.rawResponseSha256);
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
       }
@@ -2480,6 +2536,7 @@ export class Orchestrator {
       // (one-shot plan reviews have no decision cycle to bind regions to). The same
       // value feeds regionsSegment in the cache key above.
       ...(activeRegions ? { rejectedRegions: activeRegions } : {}),
+      ...(policyRuntime === undefined ? {} : { policyRuntime }),
     });
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
@@ -2680,6 +2737,11 @@ export class Orchestrator {
       loreFindingsBuilt.length > 0
         ? { ...agg.counts, info: agg.counts.info + loreFindingsBuilt.length }
         : agg.counts;
+    const policyTrace = policyRuntime?.finalize({
+      rawResponseSha256,
+      verdict: agg.verdict,
+      finalFindings: reportFindings,
+    });
     // Banner data for invalid/broad/zero-match entries + the render-budget drop
     // count — render-only (report-writer.ts), never affects the verdict.
     const loreBanner =
@@ -2871,6 +2933,7 @@ export class Orchestrator {
             },
           }
         : {}),
+      ...(policyTrace === undefined || policyTrace === null ? {} : { policyTrace }),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",

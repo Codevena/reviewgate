@@ -23,6 +23,9 @@ export interface BuildRunSummaryInput {
   // #6 instrumentation: count of uncited project/house-rule findings this run. Omitted on the
   // non-panel paths (skip/cache/error) where no reviewer findings were produced.
   ruleUncited?: number;
+  policyTraceStatus?: RunSummary["policy_trace_status"];
+  policyTraceRef?: string;
+  policyTraceSha256?: string;
 }
 
 function isDemoted(f: Finding): boolean {
@@ -97,5 +100,12 @@ export function buildRunSummary(input: BuildRunSummaryInput): RunSummary {
       (f) => f.reputation_corroboration_required === true,
     ).length,
     ...(input.ruleUncited !== undefined ? { rule_uncited: input.ruleUncited } : {}),
+    ...(input.policyTraceStatus !== undefined
+      ? { policy_trace_status: input.policyTraceStatus }
+      : {}),
+    ...(input.policyTraceRef !== undefined ? { policy_trace_ref: input.policyTraceRef } : {}),
+    ...(input.policyTraceSha256 !== undefined
+      ? { policy_trace_sha256: input.policyTraceSha256 }
+      : {}),
   };
 }
