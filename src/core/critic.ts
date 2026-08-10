@@ -13,6 +13,9 @@ export interface CriticVerdict {
 export interface CriticRunResult {
   map: Map<string, CriticVerdict>;
   info: { provider: string; status: "ran" | "error" | "empty" | "misconfigured"; verdicts: number };
+  /** Ordered hashes of every completion text that actually returned. */
+  rawResponseSha256s?: string[];
+  /** Last returned response hash, retained for additive caller compatibility. */
   rawResponseSha256?: string;
 }
 
@@ -62,6 +65,7 @@ export async function runCritic(
   const prompt = buildCriticPrompt(findings);
   let finalStatus: "error" | "empty" = "empty";
   let rawResponseSha256: string | undefined;
+  const rawResponseSha256s: string[] = [];
   for (let attempt = 1; attempt <= attemptLimit; attempt++) {
     try {
       // Force reasoning OFF: the critic is a keep/demote classification that needs
@@ -71,11 +75,13 @@ export async function runCritic(
       // flag ignore it.
       const text = await adapter.complete(prompt, { ...opts, disableReasoning: true });
       rawResponseSha256 = createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+      rawResponseSha256s.push(rawResponseSha256);
       const map = parseCriticOutput(text);
       if (map.size > 0) {
         return {
           map,
           info: { provider, status: "ran", verdicts: map.size },
+          rawResponseSha256s,
           rawResponseSha256,
         };
       }
@@ -87,6 +93,7 @@ export async function runCritic(
   return {
     map: new Map(),
     info: { provider, status: finalStatus, verdicts: 0 },
+    ...(rawResponseSha256s.length === 0 ? {} : { rawResponseSha256s }),
     ...(rawResponseSha256 === undefined ? {} : { rawResponseSha256 }),
   };
 }

@@ -5,6 +5,7 @@
 // model can only emit {verdict,findings} and never the critic's {verdicts:[...]}
 // shape → parseCriticOutput sees nothing → a silent no-op (zero demotions).
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { runCritic } from "../../src/core/critic.ts";
 import type { CompleteOptions, ProviderAdapter } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
@@ -29,6 +30,10 @@ function mkFinding(over: Partial<Finding> = {}): Finding {
 }
 
 const OPTS: CompleteOptions = { model: "m" };
+
+function sha256(text: string): string {
+  return createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
+}
 
 describe("runCritic", () => {
   it("returns only the SHA-256 of the successful raw critic response", async () => {
@@ -136,18 +141,27 @@ describe("runCritic", () => {
 
   it("retries empty/unparseable output and stops at the first non-empty verdict map", async () => {
     let calls = 0;
+    const responses = [
+      "not critic json",
+      JSON.stringify({ verdicts: [{ signature: "sig-1", verdict: "likely_fp" }] }),
+    ];
     const adapter: Pick<ProviderAdapter, "complete"> = {
       complete: async () => {
         calls++;
-        return calls === 1
-          ? "not critic json"
-          : JSON.stringify({ verdicts: [{ signature: "sig-1", verdict: "likely_fp" }] });
+        return responses[calls - 1] ?? "";
       },
     };
-    const { map, info } = await runCritic(adapter, "openrouter", OPTS, [mkFinding()], 3);
+    const { map, info, rawResponseSha256s } = await runCritic(
+      adapter,
+      "openrouter",
+      OPTS,
+      [mkFinding()],
+      3,
+    );
     expect(calls).toBe(2);
     expect(info.status).toBe("ran");
     expect(map.get("sig-1")?.verdict).toBe("likely_fp");
+    expect(rawResponseSha256s).toEqual(responses.map(sha256));
   });
 
   it("does not spend a retry after the first parseable non-empty verdict map", async () => {

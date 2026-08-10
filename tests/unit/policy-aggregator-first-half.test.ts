@@ -92,6 +92,49 @@ const ABLATED_BLOCKING_PRESERVED = [1, 1, 1, 0, 0, 0, 1, 0] as const;
 const PROTECTED_BLOCKING_PRESERVED = [1, 1, 1, 0, 1, 0, 1, 0] as const;
 
 describe("aggregator policy numeric contracts, orders 60-100", () => {
+  it("marks fully inactive Critic and scope passes not-run without evaluations", () => {
+    const recorder = runtime("inactive-first-half");
+    aggregate({
+      findings: [finding()],
+      reviewersTotal: 1,
+      policyRuntime: recorder,
+      policyInactive: {
+        "judgment.critic": "configured-off",
+        "scope.diff": "configured-off",
+        "scope.delta": "stage-precondition-miss",
+        "scope.session": "stage-precondition-miss",
+      },
+    });
+
+    expect(recorder.summary("judgment.critic")).toEqual({
+      pass_id: "judgment.critic",
+      status: "not-run",
+      reason_code: "configured-off",
+    });
+    expect(recorder.summary("scope.diff")).toEqual({
+      pass_id: "scope.diff",
+      status: "not-run",
+      reason_code: "configured-off",
+    });
+    expect(recorder.summary("scope.delta")).toEqual({
+      pass_id: "scope.delta",
+      status: "not-run",
+      reason_code: "stage-precondition-miss",
+    });
+    expect(recorder.summary("scope.session")).toEqual({
+      pass_id: "scope.session",
+      status: "not-run",
+      reason_code: "stage-precondition-miss",
+    });
+    expect(
+      recorder
+        .evaluations()
+        .filter((row) =>
+          ["judgment.critic", "scope.diff", "scope.delta", "scope.session"].includes(row.pass_id),
+        ),
+    ).toEqual([]);
+  });
+
   it("records redaction no-opportunity, miss, active, ablated, and protected tuples", () => {
     const info = run("redaction-info", {
       findings: [

@@ -63,7 +63,7 @@ import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
 import { type Adjudication, renderAdjudications } from "./adjudications.ts";
 import { recurrenceNotesForFindings } from "./agent-lessons/recurrence.ts";
-import { aggregate } from "./aggregator.ts";
+import { type AggregateInput, aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
 import type { EmbedOptions, Embedder } from "./brain/embeddings.ts";
@@ -2331,11 +2331,17 @@ export class Orchestrator {
         );
         if (groundingResponseSha256 !== undefined) {
           rawResponseSha256.push(groundingResponseSha256);
+          groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
+        } else {
+          policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
         }
-        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
+      } else {
+        policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
       }
     } else if (groundingCfg === null || groundingCfg === undefined) {
       policyRuntime?.markInactive("judgment.grounding-llm", "configured-off");
+    } else {
+      policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
     }
 
     // --- Optional critic phase (demote-only) ---
@@ -2354,6 +2360,7 @@ export class Orchestrator {
     // (no usage envelope). Kept as a named field for the IterationResult shape.
     const criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
+    let criticAttempted = false;
     if (criticCfg && groundedFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
       const cProviderCfg = this.input.config.providers[criticCfg.provider] as
@@ -2376,6 +2383,7 @@ export class Orchestrator {
         // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter/ollama
         // and makes the critic a silent no-op. No cost is attributed: complete()
         // returns only text (no usage envelope), so the critic phase is $0 here.
+        criticAttempted = true;
         const r = await runCritic(
           criticAdapter,
           criticCfg.provider,
@@ -2393,9 +2401,13 @@ export class Orchestrator {
           groundedFindings,
           this.input.criticMaxAttempts ?? 1,
         );
-        criticMap = r.map.size > 0 ? r.map : undefined;
+        criticMap = r.map;
         criticInfo = r.info;
-        if (r.rawResponseSha256 !== undefined) rawResponseSha256.push(r.rawResponseSha256);
+        if (r.rawResponseSha256s !== undefined) {
+          rawResponseSha256.push(...r.rawResponseSha256s);
+        } else if (r.rawResponseSha256 !== undefined) {
+          rawResponseSha256.push(r.rawResponseSha256);
+        }
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
       }
@@ -2498,6 +2510,29 @@ export class Orchestrator {
           })
         : undefined;
 
+    const policyInactive: NonNullable<AggregateInput["policyInactive"]> = {};
+    if (criticCfg === null || criticCfg === undefined) {
+      policyInactive["judgment.critic"] = "configured-off";
+    } else if (!criticAttempted) {
+      policyInactive["judgment.critic"] = "stage-precondition-miss";
+    }
+    if (this.input.config.phases.review.scopeToDiff === false) {
+      policyInactive["scope.diff"] = "configured-off";
+    } else if (this.input.reportMode === "one-shot") {
+      policyInactive["scope.diff"] = "stage-precondition-miss";
+    }
+    if (this.input.config.phases.review.deltaReview === false) {
+      policyInactive["scope.delta"] = "configured-off";
+    } else if (deltaScope === null) {
+      policyInactive["scope.delta"] = "stage-precondition-miss";
+    }
+    if (!this.input.foreignFiles || this.input.foreignFiles.size === 0) {
+      policyInactive["scope.session"] =
+        this.input.config.phases.review.scopeToSession === false
+          ? "configured-off"
+          : "stage-precondition-miss";
+    }
+
     const agg = aggregate({
       findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
@@ -2537,6 +2572,7 @@ export class Orchestrator {
       // value feeds regionsSegment in the cache key above.
       ...(activeRegions ? { rejectedRegions: activeRegions } : {}),
       ...(policyRuntime === undefined ? {} : { policyRuntime }),
+      ...(policyRuntime === undefined ? {} : { policyInactive }),
     });
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
@@ -2740,7 +2776,7 @@ export class Orchestrator {
     const policyTrace = policyRuntime?.finalize({
       rawResponseSha256,
       verdict: agg.verdict,
-      finalFindings: reportFindings,
+      finalFindings,
     });
     // Banner data for invalid/broad/zero-match entries + the render-budget drop
     // count — render-only (report-writer.ts), never affects the verdict.

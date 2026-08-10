@@ -102,6 +102,7 @@ async function run(
   withAudit = false,
   reviewOverrides: Partial<ReviewgateConfig["phases"]["review"]> = {},
   reportMode: OrchestratorInput["reportMode"] = "gate",
+  grounding: ReviewgateConfig["phases"]["grounding"] = null,
 ): Promise<{
   repo: string;
   calls: string[];
@@ -134,7 +135,7 @@ async function run(
       brain: null,
       critic: null,
       fpLedger: null,
-      grounding: null,
+      grounding,
       implicitOutcomes: null,
       lore: null,
       triage: null,
@@ -254,35 +255,44 @@ describe("policy trace lifecycle equivalence", () => {
     writeFileSync(join(repo, "a.ts"), "export const value = 1;\n");
     const reviewerRaw = '{"verdict":"FAIL","findings":[{"source":"reviewer"}]}';
     const groundingRaw = '{"verdicts":[{"signature":"ordered-signature","grounded":true}]}';
-    const criticRaw = '{"verdicts":[{"signature":"ordered-signature","verdict":"keep"}]}';
+    const criticRaw = ["not critic json", '{"verdicts":[]}'];
     const critical: Finding = {
       ...finding("codex"),
       signature: "ordered-signature",
       severity: "CRITICAL",
       message: "The changed `value` needs review",
     };
-    const completionAdapter = (id: "gemini" | "opencode", response: string): ProviderAdapter => ({
-      id,
-      async preflight() {
-        return { available: true, version: "fixture", authMode: "oauth", error: null };
-      },
-      async review(input) {
-        return {
-          reviewerId: input.reviewerId,
-          verdict: "PASS",
-          findings: [],
-          usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
-          durationMs: 1,
-          exitCode: 0,
-          rawEventsPath: "",
-          rawText: "",
-          status: "ok",
-        } satisfies ReviewResult;
-      },
-      async complete() {
-        return response;
-      },
-    });
+    const completionAdapter = (
+      id: "gemini" | "opencode",
+      response: string | readonly string[],
+    ): ProviderAdapter => {
+      let calls = 0;
+      return {
+        id,
+        async preflight() {
+          return { available: true, version: "fixture", authMode: "oauth", error: null };
+        },
+        async review(input) {
+          return {
+            reviewerId: input.reviewerId,
+            verdict: "PASS",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: 1,
+            exitCode: 0,
+            rawEventsPath: "",
+            rawText: "",
+            status: "ok",
+          } satisfies ReviewResult;
+        },
+        async complete() {
+          if (typeof response === "string") return response;
+          const value = response[calls] ?? "";
+          calls += 1;
+          return value;
+        },
+      };
+    };
     const reviewer: ProviderAdapter = {
       id: "codex",
       async preflight() {
@@ -340,6 +350,7 @@ describe("policy trace lifecycle equivalence", () => {
       diff: DIFF,
       reasonOnFailEnabled: true,
       disableLastResortFailover: true,
+      criticMaxAttempts: 2,
       policyExecution: {
         trace: "memory",
         policyAblations: new Set(),
@@ -355,8 +366,11 @@ describe("policy trace lifecycle equivalence", () => {
     expect(result.policyTrace?.raw_response_sha256).toEqual([
       sha256(reviewerRaw),
       sha256(groundingRaw),
-      sha256(criticRaw),
+      ...criticRaw.map(sha256),
     ]);
+    expect(
+      result.policyTrace?.passes.find((pass) => pass.pass_id === "judgment.critic")?.status,
+    ).toBe("ran");
   });
 
   it("marks configured-inactive pre-aggregation passes not-run without evaluations", async () => {
@@ -374,6 +388,36 @@ describe("policy trace lifecycle equivalence", () => {
     expect(status.get("evidence.self-refutation")).toEqual(["not-run", "configured-off"]);
     expect(status.get("judgment.hypothetical")).toEqual(["not-run", "configured-off"]);
     expect(status.get("judgment.grounding-llm")).toEqual(["not-run", "configured-off"]);
+    expect(status.get("judgment.critic")).toEqual(["not-run", "configured-off"]);
+    expect(status.get("scope.delta")).toEqual(["not-run", "stage-precondition-miss"]);
+    expect(status.get("scope.session")).toEqual(["not-run", "stage-precondition-miss"]);
+  });
+
+  it("distinguishes configured-off scopes from stage-precondition misses", async () => {
+    const configuredOff = await run("memory", false, {
+      scopeToDiff: false,
+      deltaReview: false,
+      scopeToSession: false,
+    });
+    const noCritical = await run("memory", false, {}, "gate", { provider: "gemini" });
+    const configuredOffStatus = new Map(
+      configuredOff.result.policyTrace?.passes.map((pass) => [
+        pass.pass_id,
+        [pass.status, "reason_code" in pass ? pass.reason_code : undefined],
+      ]),
+    );
+    const grounding = noCritical.result.policyTrace?.passes.find(
+      (pass) => pass.pass_id === "judgment.grounding-llm",
+    );
+
+    expect(configuredOffStatus.get("scope.diff")).toEqual(["not-run", "configured-off"]);
+    expect(configuredOffStatus.get("scope.delta")).toEqual(["not-run", "configured-off"]);
+    expect(configuredOffStatus.get("scope.session")).toEqual(["not-run", "configured-off"]);
+    expect(grounding).toEqual({
+      pass_id: "judgment.grounding-llm",
+      status: "not-run",
+      reason_code: "stage-precondition-miss",
+    });
   });
 
   it("preserves the exact production demotion when recorder validation fails", async () => {

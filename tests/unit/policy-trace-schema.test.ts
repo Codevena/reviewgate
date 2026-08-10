@@ -970,6 +970,124 @@ describe("PolicyTraceSchema", () => {
     ).toBe(false);
   });
 
+  it("accepts only an additive INFO Lore suffix outside policy cluster lineage", () => {
+    const trace = traceWithSingleFinal("INFO");
+    const loreSignature = "lore:canon-promotion:entry-one";
+    const final = {
+      ...trace.final,
+      counts: { critical: 0, warn: 0, info: 2 },
+      finding_signatures: [...trace.final.finding_signatures, loreSignature],
+      finding_severities: [
+        ...trace.final.finding_severities,
+        { signature: loreSignature, severity: "INFO" as const },
+      ],
+    };
+
+    expect(PolicyTraceSchema.safeParse({ ...trace, final }).success).toBe(true);
+  });
+
+  it("rejects arbitrary, blocking, interleaved, and unknown-kind Lore-like finals", () => {
+    const trace = traceWithWarnAndInfoFinals();
+    const suffix = (signature: string, severity: "WARN" | "INFO" = "INFO") => ({
+      ...trace.final,
+      counts: {
+        critical: 0,
+        warn: trace.final.counts.warn + (severity === "WARN" ? 1 : 0),
+        info: trace.final.counts.info + (severity === "INFO" ? 1 : 0),
+      },
+      finding_signatures: [...trace.final.finding_signatures, signature],
+      finding_severities: [...trace.final.finding_severities, { signature, severity }],
+    });
+
+    expect(
+      PolicyTraceSchema.safeParse({ ...trace, final: suffix("arbitrary-extra") }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        final: suffix("lore:reminder:entry-one", "WARN"),
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        final: {
+          ...suffix("lore:reminder:entry-one"),
+          finding_signatures: ["sig-info", "lore:reminder:entry-one", "sig-warn"],
+          finding_severities: [
+            { signature: "sig-info", severity: "INFO" },
+            { signature: "lore:reminder:entry-one", severity: "INFO" },
+            { signature: "sig-warn", severity: "WARN" },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        final: suffix("lore:unknown-kind:entry-one"),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects Lore signatures used as evaluation lineage or cluster-output masks", () => {
+    const trace = traceWithSingleFinal("INFO");
+    const loreSignature = "lore:reminder:entry-one";
+    const withLore = {
+      ...trace,
+      final: {
+        ...trace.final,
+        counts: { critical: 0, warn: 0, info: 2 },
+        finding_signatures: [...trace.final.finding_signatures, loreSignature],
+        finding_severities: [
+          ...trace.final.finding_severities,
+          { signature: loreSignature, severity: "INFO" as const },
+        ],
+      },
+    };
+
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...withLore,
+        evaluations: withLore.evaluations.map((evaluation, index) =>
+          index === 0 ? { ...evaluation, final_signature: loreSignature } : evaluation,
+        ),
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...withLore,
+        stages: [
+          ...withLore.stages.slice(0, -1),
+          {
+            stage_id: "aggregation.cluster",
+            order: 65,
+            reason_code: "singleton",
+            member_count: 1,
+            input_signatures: [loreSignature],
+            output_signature: loreSignature,
+          },
+          withLore.stages.at(-1),
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...withLore,
+        stages: withLore.stages.map((stage) =>
+          stage.stage_id === "aggregation.cluster"
+            ? {
+                ...stage,
+                reason_code: "clustered",
+                member_count: 2,
+                input_signatures: ["sig-a", loreSignature],
+              }
+            : stage,
+        ),
+      }).success,
+    ).toBe(false);
+  });
+
   it("cross-checks applied and would-apply evaluations against the ablation set", () => {
     const applied = traceWithSingleFinal("INFO");
     const appliedSummary = {

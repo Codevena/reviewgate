@@ -13,10 +13,14 @@ import { ruleIdToken0 } from "./fp-ledger/clusters.ts";
 import type { PolicyProtectionCode, PolicyReasonCode } from "./policy/catalog.ts";
 import { type PolicyRuntime, mergePolicyEffects, transitionFinding } from "./policy/trace.ts";
 
+type FirstHalfPolicyPassId = "judgment.critic" | "scope.diff" | "scope.delta" | "scope.session";
+type InactivePolicyReason = Extract<PolicyReasonCode, "configured-off" | "stage-precondition-miss">;
+
 export interface AggregateInput {
   findings: Finding[];
   reviewersTotal: number;
   policyRuntime?: PolicyRuntime;
+  policyInactive?: Partial<Record<FirstHalfPolicyPassId, InactivePolicyReason>>;
   critic?: Map<string, CriticVerdict>;
   // M5 Part A: per-file changed new-file line ranges. When provided and
   // scopeToDiff !== false, findings outside the changed hunks are demoted to INFO.
@@ -326,6 +330,17 @@ function sourceSignatures(f: Finding): string[] {
 // outside the changed hunks. Paths on both sides are normalized so a reviewer's
 // "./src/x.ts" matches the canonical "src/x.ts" diff key.
 function scopeFindings(survivors: Finding[], input: AggregateInput): Finding[] {
+  const inactiveReason =
+    input.policyInactive?.["scope.diff"] ??
+    (input.scopeToDiff === false
+      ? "configured-off"
+      : input.changedRanges === undefined
+        ? "stage-precondition-miss"
+        : undefined);
+  if (inactiveReason !== undefined) {
+    input.policyRuntime?.markInactive("scope.diff", inactiveReason);
+    return survivors;
+  }
   const enabled = input.scopeToDiff !== false && input.changedRanges !== undefined;
   if (!enabled && input.policyRuntime === undefined) return survivors;
   const normalizedRanges = new Map<string, Range[]>();
@@ -689,6 +704,12 @@ export function aggregate(input: AggregateInput): AggregateResult {
       : deduped;
 
   const critic = input.critic;
+  const criticInactiveReason =
+    input.policyInactive?.["judgment.critic"] ??
+    (critic === undefined ? "stage-precondition-miss" : undefined);
+  if (criticInactiveReason !== undefined) {
+    input.policyRuntime?.markInactive("judgment.critic", criticInactiveReason);
+  }
   const criticAblated = input.policyRuntime?.isAblated("judgment.critic") ?? false;
   // #4: a BLOCKING finding whose every contributing base provider is high-precision is
   // protected from the SOFT demoters. Never protects a self_refuted (T1) or INFO finding —
@@ -703,6 +724,10 @@ export function aggregate(input: AggregateInput): AggregateResult {
   const survivors: Finding[] = [];
   const criticDropped: Finding[] = [];
   for (const f of taggedFindings) {
+    if (criticInactiveReason !== undefined) {
+      survivors.push(f);
+      continue;
+    }
     // Scan the representative AND every merged member signature (mirror the
     // fp_ledger_match pass): the critic may have keyed its verdict on a member's
     // signature, not the promoted representative's — checking only f.signature
@@ -820,67 +845,60 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // blocking; §4.3 pinned recurrences stay; inert when no deltaScope was computed
   // (missing/corrupt snapshot, iteration 1, one-shot mode, incomplete diff).
   const deltaScope = input.deltaScope;
+  const deltaInactiveReason =
+    input.policyInactive?.["scope.delta"] ??
+    (deltaScope === null || deltaScope === undefined ? "stage-precondition-miss" : undefined);
+  if (deltaInactiveReason !== undefined) {
+    input.policyRuntime?.markInactive("scope.delta", deltaInactiveReason);
+  }
   const deltaScoped: Finding[] =
-    deltaScope !== null && deltaScope !== undefined
-      ? scoped.map((f) => {
-          const opportunity = f.severity !== "INFO";
-          const matched = opportunity && !deltaScope.has(normalizeRepoPath(f.file));
-          let protectedBy: PolicyProtectionCode | undefined;
-          if (matched && f.claimed_fixed_recurred) {
-            protectedBy = "claimed-fixed-pin";
-          } else if (matched && touchesSecurityOrCorrectness(f)) {
-            protectedBy = "security-correctness-floor";
-          } else if (matched && f.demoted_from_critical === true) {
-            // G0 alignment: a from-CRITICAL WARN remains decision-required.
-            protectedBy = "critical-floor";
-          } else if (matched) {
-            // Honor the same cross-file escape hatch as diff/session scope.
-            const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
-            const hatch = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
-            if (memberCats.some((category) => hatch.has(category))) {
-              protectedBy = "out-of-diff-blocking-hatch";
+    deltaInactiveReason !== undefined
+      ? scoped
+      : deltaScope !== null && deltaScope !== undefined
+        ? scoped.map((f) => {
+            const opportunity = f.severity !== "INFO";
+            const matched = opportunity && !deltaScope.has(normalizeRepoPath(f.file));
+            let protectedBy: PolicyProtectionCode | undefined;
+            if (matched && f.claimed_fixed_recurred) {
+              protectedBy = "claimed-fixed-pin";
+            } else if (matched && touchesSecurityOrCorrectness(f)) {
+              protectedBy = "security-correctness-floor";
+            } else if (matched && f.demoted_from_critical === true) {
+              // G0 alignment: a from-CRITICAL WARN remains decision-required.
+              protectedBy = "critical-floor";
+            } else if (matched) {
+              // Honor the same cross-file escape hatch as diff/session scope.
+              const memberCats = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+              const hatch = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+              if (memberCats.some((category) => hatch.has(category))) {
+                protectedBy = "out-of-diff-blocking-hatch";
+              }
             }
-          }
 
-          return (
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "scope.delta",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "outside-delta-scope",
-              action: "demoted",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                const note =
-                  "\n\n↓ on content already reviewed in an earlier iteration and unchanged since — advisory only (delta scope).";
-                return {
-                  ...f,
-                  severity: "INFO" as const,
-                  delta_scope_demoted: true,
-                  details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                };
-              },
-            }) ?? f
-          );
-        })
-      : input.policyRuntime
-        ? scoped.map(
-            (f) =>
+            return (
               transitionFinding({
                 ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
                 passId: "scope.delta",
                 finding: f,
-                opportunity: false,
-                matched: false,
+                opportunity,
+                matched,
                 reasonCode: "outside-delta-scope",
                 action: "demoted",
+                ...(protectedBy === undefined ? {} : { protectedBy }),
                 sourceSignatures: sourceSignatures(f),
-                proposed: () => f,
-              }) ?? f,
-          )
+                proposed: () => {
+                  const note =
+                    "\n\n↓ on content already reviewed in an earlier iteration and unchanged since — advisory only (delta scope).";
+                  return {
+                    ...f,
+                    severity: "INFO" as const,
+                    delta_scope_demoted: true,
+                    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+                  };
+                },
+              }) ?? f
+            );
+          })
         : scoped;
 
   // Slice A (P1) — session-ownership demote. A blocking finding on a file FOREIGN to this
@@ -893,68 +911,61 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // foreign (still tagged, so the agent can dispose it via an out-of-scope decision). Done as
   // an INDEPENDENT pass (not inside scopeFindings, which early-returns when scopeToDiff is off).
   const foreignFiles = input.foreignFiles;
+  const sessionInactiveReason =
+    input.policyInactive?.["scope.session"] ??
+    (!foreignFiles || foreignFiles.size === 0 ? "stage-precondition-miss" : undefined);
+  if (sessionInactiveReason !== undefined) {
+    input.policyRuntime?.markInactive("scope.session", sessionInactiveReason);
+  }
   const sessionAblated = input.policyRuntime?.isAblated("scope.session") ?? false;
   const foreignScoped: Finding[] =
-    foreignFiles && foreignFiles.size > 0
-      ? deltaScoped.map((f) => {
-          const opportunity = f.severity !== "INFO";
-          const isForeign = foreignFiles.has(normalizeRepoPath(f.file));
-          const matched = opportunity && isForeign;
-          const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
-          const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
-          const protectedBy =
-            matched && categories.some((category) => blocking.has(category))
-              ? "out-of-diff-blocking-hatch"
-              : undefined;
-          const transitioned =
-            transitionFinding({
-              ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
-              passId: "scope.session",
-              finding: f,
-              opportunity,
-              matched,
-              reasonCode: "foreign-to-session",
-              action: "demoted",
-              ...(protectedBy === undefined ? {} : { protectedBy }),
-              sourceSignatures: sourceSignatures(f),
-              proposed: () => {
-                const note =
-                  "\n\n↓ on a file this session did not author (parallel agent / pre-existing) — advisory only.";
-                return {
-                  ...f,
-                  severity: "INFO" as const,
-                  foreign_to_session: true,
-                  details: `${f.details.slice(0, 2000 - note.length)}${note}`,
-                };
-              },
-            }) ?? f;
-          // The legacy INFO marker is explanatory rather than a blocking policy
-          // transition. A protected blocking finding is likewise tagged so the
-          // out-of-scope disposition remains available.
-          if (
-            !sessionAblated &&
-            isForeign &&
-            (f.severity === "INFO" || protectedBy !== undefined)
-          ) {
-            return { ...transitioned, foreign_to_session: true };
-          }
-          return transitioned;
-        })
-      : input.policyRuntime
-        ? deltaScoped.map(
-            (f) =>
+    sessionInactiveReason !== undefined
+      ? deltaScoped
+      : foreignFiles && foreignFiles.size > 0
+        ? deltaScoped.map((f) => {
+            const opportunity = f.severity !== "INFO";
+            const isForeign = foreignFiles.has(normalizeRepoPath(f.file));
+            const matched = opportunity && isForeign;
+            const categories = [f.category, ...(f.members?.map((m) => m.category) ?? [])];
+            const blocking = new Set<FindingCategory>(input.outOfDiffBlocking ?? []);
+            const protectedBy =
+              matched && categories.some((category) => blocking.has(category))
+                ? "out-of-diff-blocking-hatch"
+                : undefined;
+            const transitioned =
               transitionFinding({
                 ...(input.policyRuntime === undefined ? {} : { runtime: input.policyRuntime }),
                 passId: "scope.session",
                 finding: f,
-                opportunity: false,
-                matched: false,
+                opportunity,
+                matched,
                 reasonCode: "foreign-to-session",
                 action: "demoted",
+                ...(protectedBy === undefined ? {} : { protectedBy }),
                 sourceSignatures: sourceSignatures(f),
-                proposed: () => f,
-              }) ?? f,
-          )
+                proposed: () => {
+                  const note =
+                    "\n\n↓ on a file this session did not author (parallel agent / pre-existing) — advisory only.";
+                  return {
+                    ...f,
+                    severity: "INFO" as const,
+                    foreign_to_session: true,
+                    details: `${f.details.slice(0, 2000 - note.length)}${note}`,
+                  };
+                },
+              }) ?? f;
+            // The legacy INFO marker is explanatory rather than a blocking policy
+            // transition. A protected blocking finding is likewise tagged so the
+            // out-of-scope disposition remains available.
+            if (
+              !sessionAblated &&
+              isForeign &&
+              (f.severity === "INFO" || protectedBy !== undefined)
+            ) {
+              return { ...transitioned, foreign_to_session: true };
+            }
+            return transitioned;
+          })
         : deltaScoped;
 
   // M5 Part B1 — reactive FP-ledger demote: a finding whose representative

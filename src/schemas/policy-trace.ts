@@ -42,6 +42,7 @@ const NON_MATERIAL_REASON_CODES = new Set([
   "stage-precondition-miss",
   PASS_ERROR_REASON_CODE,
 ]);
+const LORE_FINAL_SIGNATURE = /^lore:(?:reminder|canon-promotion):[a-z0-9][a-z0-9-]*$/;
 const VERDICT_BY_REASON = {
   "hard-critical": "FAIL",
   "corroborated-warn": "FAIL",
@@ -716,6 +717,34 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
   let priorEvaluationOrder = -1;
   const evaluationsByPass = new Map<PolicyPassId, PolicyEvaluation[]>();
   const finalSignatures = new Set(trace.final.finding_signatures);
+  const firstLoreIndex = trace.final.finding_signatures.findIndex((signature) =>
+    LORE_FINAL_SIGNATURE.test(signature),
+  );
+  const policyFinalSignatures =
+    firstLoreIndex < 0
+      ? trace.final.finding_signatures
+      : trace.final.finding_signatures.slice(0, firstLoreIndex);
+  const policyFinalSignatureSet = new Set(policyFinalSignatures);
+  if (firstLoreIndex >= 0) {
+    for (let index = firstLoreIndex; index < trace.final.finding_signatures.length; index += 1) {
+      const signature = trace.final.finding_signatures[index];
+      const severity = trace.final.finding_severities[index]?.severity;
+      if (signature === undefined || !LORE_FINAL_SIGNATURE.test(signature)) {
+        addIssue(
+          ctx,
+          ["final", "finding_signatures", index],
+          "server-owned Lore findings must form one closed suffix",
+        );
+      }
+      if (severity !== "INFO") {
+        addIssue(
+          ctx,
+          ["final", "finding_severities", index, "severity"],
+          "server-owned Lore findings must remain INFO",
+        );
+      }
+    }
+  }
   for (const [index, evaluation] of trace.evaluations.entries()) {
     if (evaluation.order < priorEvaluationOrder) {
       addIssue(ctx, ["evaluations", index, "order"], "evaluations must remain in catalog order");
@@ -739,6 +768,16 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
       !finalSignatures.has(evaluation.final_signature)
     ) {
       addIssue(ctx, ["evaluations", index, "final_signature"], "unknown final signature");
+    }
+    if (
+      evaluation.final_signature !== undefined &&
+      LORE_FINAL_SIGNATURE.test(evaluation.final_signature)
+    ) {
+      addIssue(
+        ctx,
+        ["evaluations", index, "final_signature"],
+        "Lore findings cannot mask policy evaluation lineage",
+      );
     }
   }
 
@@ -798,12 +837,26 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
     }
     priorStageOrder = stage.order;
     if (stage.stage_id === "aggregation.cluster" && stage.output_signature !== undefined) {
+      if (LORE_FINAL_SIGNATURE.test(stage.output_signature)) {
+        addIssue(
+          ctx,
+          ["stages", index, "output_signature"],
+          "Lore findings cannot be policy cluster outputs",
+        );
+      }
       if (clusterOutputSet.has(stage.output_signature)) {
         addIssue(ctx, ["stages", index, "output_signature"], "duplicate cluster output");
       }
       clusterOutputs.push(stage.output_signature);
       clusterOutputSet.add(stage.output_signature);
       for (const [inputIndex, input] of stage.input_signatures.entries()) {
+        if (LORE_FINAL_SIGNATURE.test(input)) {
+          addIssue(
+            ctx,
+            ["stages", index, "input_signatures", inputIndex],
+            "Lore findings cannot be policy cluster inputs",
+          );
+        }
         if (clusterOutputByInput.has(input)) {
           addIssue(
             ctx,
@@ -830,7 +883,7 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
     addIssue(ctx, ["stages"], "a complete trace requires exactly one verdict.compute row");
   }
 
-  if (!isOrderedSubsequence(trace.final.finding_signatures, clusterOutputs)) {
+  if (!isOrderedSubsequence(policyFinalSignatures, clusterOutputs)) {
     addIssue(ctx, ["stages"], "final finding signatures must preserve cluster output order");
   }
 
@@ -861,7 +914,7 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
     const [output] = lineageOutputs;
     if (output === undefined) continue;
     const appliedDrop = evaluation.result === "applied" && evaluation.after === null;
-    const survives = finalSignatures.has(output);
+    const survives = policyFinalSignatureSet.has(output);
 
     if (appliedDrop) {
       if (survives) {
@@ -899,7 +952,7 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
   }
 
   for (const [index, signature] of clusterOutputs.entries()) {
-    if (!finalSignatures.has(signature) && !droppedOutputs.has(signature)) {
+    if (!policyFinalSignatureSet.has(signature) && !droppedOutputs.has(signature)) {
       addIssue(ctx, ["stages", index], "a non-final cluster output requires a later applied drop");
     }
   }
