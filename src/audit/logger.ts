@@ -4,17 +4,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node
 import { join } from "node:path";
 import type { AuditEvent, EventType, Trigger } from "../schemas/audit-event.ts";
 import { AuditEventSchema } from "../schemas/audit-event.ts";
+import type { PolicyTrace } from "../schemas/policy-trace.ts";
+import { canonicalJson } from "./canonical.ts";
+import { type PolicyTraceWriteResult, writePolicyTrace } from "./policy-trace-store.ts";
 
 function sha256(s: string): string {
   return createHash("sha256").update(s).digest("hex");
-}
-
-function canonical(o: unknown): string {
-  // Stable stringify with sorted keys at every level.
-  if (o === null || typeof o !== "object") return JSON.stringify(o);
-  if (Array.isArray(o)) return `[${o.map(canonical).join(",")}]`;
-  const keys = Object.keys(o as Record<string, unknown>).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical((o as Record<string, unknown>)[k])}`).join(",")}}`;
 }
 
 export type AuditEventInput = {
@@ -27,6 +22,7 @@ export type AuditEventInput = {
 export class AuditLogger {
   private lastHash = "";
   private filePath: string | null = null;
+  private partitionDate: Date | null = null;
   private pruned = false;
 
   // `retentionDays` enforces config's `audit.retentionDays` (previously declared
@@ -41,6 +37,18 @@ export class AuditLogger {
   currentFilePath(): string {
     if (!this.filePath) this.filePath = this.computePath();
     return this.filePath;
+  }
+
+  writePolicyTrace(trace: PolicyTrace): PolicyTraceWriteResult {
+    try {
+      return writePolicyTrace({
+        auditDir: this.auditDir,
+        trace,
+        now: this.selectedPartitionDate(),
+      });
+    } catch {
+      return { status: "error" };
+    }
   }
 
   // Prune whole day-partition directories (audit/YYYY/MM/DD) whose date is older
@@ -83,7 +91,7 @@ export class AuditLogger {
   }
 
   private computePath(): string {
-    const now = new Date();
+    const now = this.selectedPartitionDate();
     const y = now.getUTCFullYear();
     const m = String(now.getUTCMonth() + 1).padStart(2, "0");
     const d = String(now.getUTCDate()).padStart(2, "0");
@@ -102,6 +110,11 @@ export class AuditLogger {
     return join(dir, `${stamp}-p${process.pid}-${randomBytes(16).toString("hex")}.jsonl`);
   }
 
+  private selectedPartitionDate(): Date {
+    if (this.partitionDate === null) this.partitionDate = new Date();
+    return this.partitionDate;
+  }
+
   async append(input: AuditEventInput): Promise<AuditEvent> {
     // Enforce retention before writing (once per logger lifetime). Pruning happens
     // ON write so the log can't grow forever between sessions without ever being
@@ -116,7 +129,7 @@ export class AuditLogger {
     };
     const forHash = { ...base };
     (forHash as { this_event_hash?: unknown }).this_event_hash = undefined;
-    const h = sha256(canonical(forHash));
+    const h = sha256(canonicalJson(forHash));
     const event = AuditEventSchema.parse({ ...base, this_event_hash: h });
     appendFileSync(this.currentFilePath(), `${JSON.stringify(event)}\n`, { mode: 0o600 });
     this.lastHash = h;

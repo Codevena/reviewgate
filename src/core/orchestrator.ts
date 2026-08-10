@@ -52,7 +52,11 @@ import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { NO_PANEL_REVIEWER_ID } from "../schemas/pending-report.ts";
-import type { PolicySummary, PolicyTrace } from "../schemas/policy-trace.ts";
+import {
+  type PolicySummary,
+  PolicySummarySchema,
+  type PolicyTrace,
+} from "../schemas/policy-trace.ts";
 import type { PassLedger, ReviewedSnapshot } from "../schemas/state.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
@@ -98,6 +102,7 @@ import { orderForBudget, renderLoreBlock, selectForDiff } from "./lore/render.ts
 import { classifyEntry } from "./lore/staleness.ts";
 import { type LoreEntryParsed, loadLore } from "./lore/store.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASSES } from "./policy/catalog.ts";
 import type { PolicyExecutionOptions } from "./policy/replay.ts";
 import { resolvePolicyExecutionOptions } from "./policy/replay.ts";
 import { OrderedResponseHashes } from "./policy/response-hashes.ts";
@@ -2778,6 +2783,46 @@ export class Orchestrator {
       verdict: agg.verdict,
       finalFindings,
     });
+    let policySummary: PolicySummary | undefined;
+    if (policyExecution.trace === "persist") {
+      // Keep the gate's abort boundary ahead of all persistence. The complete
+      // trace is stored before pending.*, so every report/run summary can bind
+      // one identical content address.
+      opts.signal?.throwIfAborted();
+      const stored =
+        policyTrace === undefined || policyTrace === null || this.input.audit === undefined
+          ? ({ status: "error" } as const)
+          : this.input.audit.writePolicyTrace(policyTrace);
+      const candidate = {
+        catalog_version: POLICY_CATALOG_VERSION,
+        status: stored.status,
+        passes:
+          policyTrace?.passes ??
+          POLICY_PASSES.map(
+            (pass) =>
+              policyRuntime?.summary(pass.id) ?? {
+                pass_id: pass.id,
+                status: "error" as const,
+                reason_code: "instrumentation-error" as const,
+              },
+          ),
+        ...(stored.status === "complete"
+          ? { policy_trace_ref: stored.ref, policy_trace_sha256: stored.sha256 }
+          : {}),
+      };
+      const parsed = PolicySummarySchema.safeParse(candidate);
+      policySummary = parsed.success
+        ? parsed.data
+        : PolicySummarySchema.parse({
+            catalog_version: POLICY_CATALOG_VERSION,
+            status: "error",
+            passes: POLICY_PASSES.map((pass) => ({
+              pass_id: pass.id,
+              status: "error",
+              reason_code: "instrumentation-error",
+            })),
+          });
+    }
     // Banner data for invalid/broad/zero-match entries + the render-budget drop
     // count — render-only (report-writer.ts), never affects the verdict.
     const loreBanner =
@@ -2810,6 +2855,7 @@ export class Orchestrator {
       triage.riskClass === "docs",
       wholeDiffAttributable,
       loreBanner,
+      policySummary,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2970,6 +3016,7 @@ export class Orchestrator {
           }
         : {}),
       ...(policyTrace === undefined || policyTrace === null ? {} : { policyTrace }),
+      ...(policySummary === undefined ? {} : { policySummary }),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",
@@ -2979,6 +3026,17 @@ export class Orchestrator {
         findings: finalFindings,
         runs: reviewerOutcomes,
         ruleUncited,
+        ...(policySummary === undefined
+          ? {}
+          : {
+              policyTraceStatus: policySummary.status,
+              ...(policySummary.policy_trace_ref === undefined
+                ? {}
+                : { policyTraceRef: policySummary.policy_trace_ref }),
+              ...(policySummary.policy_trace_sha256 === undefined
+                ? {}
+                : { policyTraceSha256: policySummary.policy_trace_sha256 }),
+            }),
       }),
     };
   }
@@ -3263,6 +3321,7 @@ export class Orchestrator {
       zero_match: string[];
       dropped: number;
     },
+    policySummary?: PolicySummary,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -3339,6 +3398,7 @@ export class Orchestrator {
           ? { whole_diff_attributable: wholeDiffAttributable }
           : {}),
         ...(loreBanner ? { lore_banner: loreBanner } : {}),
+        ...(policySummary ? { policy_summary: policySummary } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

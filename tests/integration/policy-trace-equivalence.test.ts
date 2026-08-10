@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuditLogger } from "../../src/audit/logger.ts";
+import { verifyPolicyTraceReference } from "../../src/audit/policy-trace-store.ts";
 import { defaultConfig } from "../../src/config/defaults.ts";
 import type { ReviewgateConfig } from "../../src/config/define-config.ts";
 import {
@@ -242,12 +243,32 @@ describe("policy trace lifecycle equivalence", () => {
     expect(traced.result.summary.policy_trace_sha256).toBeUndefined();
   });
 
-  it("defaults the ordinary AuditLogger path to persist mode with an empty internal ablation set", async () => {
+  it("defaults AuditLogger to persist mode and binds one verified compact identity", async () => {
     const production = await run(undefined, true);
+    const policySummary = production.result.policySummary;
 
     expect(production.result.policyTrace).toBeDefined();
     expect(production.result.policyTrace?.ablated).toEqual([]);
-    expect(production.result.policySummary).toBeUndefined();
+    expect(policySummary?.status).toBe("complete");
+    expect((production.report as { policy_summary?: unknown }).policy_summary).toEqual(
+      policySummary,
+    );
+    expect(production.result.summary.policy_trace_status).toBe(policySummary?.status);
+    expect(production.result.summary.policy_trace_ref).toBe(policySummary?.policy_trace_ref);
+    expect(production.result.summary.policy_trace_sha256).toBe(policySummary?.policy_trace_sha256);
+    if (
+      policySummary?.policy_trace_ref === undefined ||
+      policySummary.policy_trace_sha256 === undefined
+    ) {
+      throw new Error("persist mode did not produce a complete trace identity");
+    }
+    expect(
+      verifyPolicyTraceReference({
+        auditDir: join(production.repo, ".reviewgate", "audit"),
+        ref: policySummary.policy_trace_ref,
+        sha256: policySummary.policy_trace_sha256,
+      }).ok,
+    ).toBe(true);
   });
 
   it("orders reviewer, grounding, and critic response hashes by logical call order", async () => {

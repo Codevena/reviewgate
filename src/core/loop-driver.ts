@@ -9,7 +9,7 @@ import {
   SETUP_BUDGET_MS_DEFAULT,
 } from "../config/budgets.ts";
 import type { ReviewgateConfig } from "../config/define-config.ts";
-import type { RunSummary } from "../schemas/audit-event.ts";
+import { type RunSummary, RunSummarySchema } from "../schemas/audit-event.ts";
 import { type DecisionEntry, DecisionEntrySchema } from "../schemas/decision.ts";
 import { type Finding, FindingSchema } from "../schemas/finding.ts";
 import {
@@ -1900,13 +1900,29 @@ export class LoopDriver {
     // run.complete audit event. Wrapped in .catch so a logging failure can never
     // affect the verdict. Emitted on the iteration path only (not on the early
     // allow/escalation branches, which never run an iteration).
+    const auditRunSummary = (() => {
+      try {
+        const policySummary = result.policySummary;
+        if (policySummary === undefined) return result.summary;
+        return RunSummarySchema.parse({
+          ...result.summary,
+          policy_trace_status: policySummary.status,
+          policy_trace_ref: policySummary.policy_trace_ref,
+          policy_trace_sha256: policySummary.policy_trace_sha256,
+        });
+      } catch {
+        // Audit identity binding is telemetry. A malformed optional summary may
+        // lose that binding, but it must never change the already-computed verdict.
+        return result.summary;
+      }
+    })();
     await this.i.audit
       .append({
         event: "run.complete",
         run_id: state.session_id,
         iter: nextIter,
         trigger: "stop-hook",
-        run_summary: result.summary,
+        run_summary: auditRunSummary,
       })
       .catch(() => {});
 

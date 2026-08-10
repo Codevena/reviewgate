@@ -1,9 +1,16 @@
 // tests/unit/report-writer.test.ts
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ReportWriter } from "../../src/core/report-writer.ts";
+import { AuditLogger } from "../../src/audit/logger.ts";
+import { verifyPolicyTraceReference } from "../../src/audit/policy-trace-store.ts";
+import { defaultConfig } from "../../src/config/defaults.ts";
+import { Orchestrator } from "../../src/core/orchestrator.ts";
+import { POLICY_PASSES } from "../../src/core/policy/catalog.ts";
+import { ReportWriter, findingBadges } from "../../src/core/report-writer.ts";
+import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
+import type { Finding } from "../../src/schemas/finding.ts";
 import type { PendingReport } from "../../src/schemas/pending-report.ts";
 
 const baseReport: PendingReport = {
@@ -59,6 +66,39 @@ describe("ReportWriter", () => {
     expect(md).toContain("src/db.ts:42"); // single-line finding → plain line
     expect(json.run_id).toBe("r1");
     expect(json.findings[0].id).toBe("F-001");
+  });
+
+  it("adds the compact policy summary to JSON without changing one Markdown byte", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "rg-rep-policy-summary-"));
+    const writer = new ReportWriter(dir);
+    await writer.write(baseReport);
+    const legacyMarkdown = readFileSync(join(dir, ".reviewgate", "pending.md"));
+    const policySummary = {
+      catalog_version: "reviewgate.policy-catalog.v1" as const,
+      status: "complete" as const,
+      passes: POLICY_PASSES.map((pass) => ({
+        pass_id: pass.id,
+        status: "ran" as const,
+        considered: 0,
+        opportunities: 0,
+        would_apply: 0,
+        applied: 0,
+        protected: 0,
+        blocking_removed: 0,
+        blocking_preserved: 0,
+        dropped: 0,
+      })),
+      policy_trace_ref: "2026/08/10/policy/aaaaaaaaaaaa-i1-bbbbbbbbbbbb.json",
+      policy_trace_sha256: "b".repeat(64),
+    };
+
+    await writer.write({ ...baseReport, policy_summary: policySummary });
+    const tracedMarkdown = readFileSync(join(dir, ".reviewgate", "pending.md"));
+    const pending = JSON.parse(
+      readFileSync(join(dir, ".reviewgate", "pending.json"), "utf8"),
+    ) as PendingReport;
+    expect(tracedMarkdown.equals(legacyMarkdown)).toBe(true);
+    expect(pending.policy_summary).toEqual(policySummary);
   });
 
   it("renders a line RANGE for a multi-line finding (line_start-line_end)", async () => {
@@ -288,6 +328,52 @@ describe("ReportWriter", () => {
       expect(badgeLine).toContain("🎯");
     });
 
+    it("derives existing badge copy from policy effects with legacy marker fallback", () => {
+      const markerFinding = {
+        ...f0,
+        severity: "INFO" as const,
+        low_confidence: true,
+      };
+      const tracedFinding = {
+        ...f0,
+        severity: "INFO" as const,
+        policy_effects: [
+          {
+            pass_id: "judgment.confidence" as const,
+            order: 140,
+            action: "demoted" as const,
+            before: "WARN" as const,
+            after: "INFO" as const,
+            reason_code: "below-confidence-floor" as const,
+            source_signatures: [f0.signature],
+          },
+        ],
+      };
+      expect(findingBadges(tracedFinding)).toBe(findingBadges(markerFinding));
+      expect(findingBadges(tracedFinding)).toContain("🎯 below confidence floor");
+    });
+
+    it("derives existing high-precision protection copy from a protected effect", () => {
+      const markerFinding = { ...f0, severity: "WARN" as const, protected_high_precision: true };
+      const tracedFinding = {
+        ...f0,
+        severity: "WARN" as const,
+        policy_effects: [
+          {
+            pass_id: "judgment.critic" as const,
+            order: 70,
+            action: "protected" as const,
+            before: "WARN" as const,
+            after: "WARN" as const,
+            reason_code: "critic-likely-fp" as const,
+            protected_by: "high-precision-reviewer" as const,
+            source_signatures: [f0.signature],
+          },
+        ],
+      };
+      expect(findingBadges(tracedFinding)).toBe(findingBadges(markerFinding));
+    });
+
     it("claimed_fixed_recurred (blocking CRITICAL/WARN) → asserts the fix did not resolve it", async () => {
       const md = await renderFinding({ claimed_fixed_recurred: { iter: 2 } });
       expect(md).toContain("claimed fixed @ iter 2");
@@ -344,5 +430,144 @@ describe("ReportWriter", () => {
       const md = readFileSync(join(dir, ".reviewgate", "pending.md"), "utf8");
       expect(md).not.toContain("Single effective reviewer");
     });
+  });
+});
+
+const POLICY_DIFF = [
+  "diff --git a/a.ts b/a.ts",
+  "--- a/a.ts",
+  "+++ b/a.ts",
+  "@@ -1 +1 @@",
+  "-export const value = 0;",
+  "+export const value = 1;",
+  "",
+].join("\n");
+
+function policyAdapter(): ProviderAdapter {
+  const finding: Finding = {
+    id: "F-001",
+    signature: "a".repeat(64),
+    severity: "INFO",
+    category: "quality",
+    rule_id: "fixture",
+    file: "a.ts",
+    line_start: 1,
+    line_end: 1,
+    message: "fixture advisory",
+    details: "fixture advisory",
+    reviewer: { provider: "codex", model: "fixture", persona: "quality" },
+    confidence: 0.9,
+    consensus: "singleton",
+  };
+  return {
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "fixture", authMode: "oauth", error: null };
+    },
+    async review(input) {
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "PASS",
+        findings: [finding],
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 0,
+        rawEventsPath: "",
+        rawText: '{"verdict":"PASS","findings":[]}',
+        status: "ok",
+      } satisfies ReviewResult;
+    },
+  };
+}
+
+function policyConfig() {
+  return {
+    ...defaultConfig,
+    cache: { enabled: false, reviewTtlDays: 7 },
+    phases: {
+      ...defaultConfig.phases,
+      review: {
+        ...defaultConfig.phases.review,
+        reviewers: [{ provider: "codex" as const, persona: "quality" }],
+        providerPrecisionContext: false,
+      },
+      brain: null,
+      critic: null,
+      fpLedger: null,
+      grounding: null,
+      implicitOutcomes: null,
+      lore: null,
+      triage: null,
+    },
+  };
+}
+
+describe("Orchestrator persisted policy identity", () => {
+  it("uses one compact identity in Pending, IterationResult, and RunSummary", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-policy-persist-"));
+    writeFileSync(join(repo, "a.ts"), "export const value = 1;\n");
+    const auditDir = join(repo, ".reviewgate", "audit");
+    const result = await new Orchestrator({
+      repoRoot: repo,
+      config: policyConfig(),
+      audit: new AuditLogger(auditDir),
+      adapters: { codex: policyAdapter() },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: POLICY_DIFF,
+      reasonOnFailEnabled: true,
+      disableLastResortFailover: true,
+    }).runIteration({ runId: "RUN-PERSISTED-POLICY", iter: 1 });
+    const pending = JSON.parse(
+      readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"),
+    ) as PendingReport;
+
+    expect(result.policySummary).toEqual(pending.policy_summary);
+    expect(result.policySummary?.status).toBe("complete");
+    expect(result.summary.policy_trace_status).toBe(result.policySummary?.status);
+    expect(result.summary.policy_trace_ref).toBe(result.policySummary?.policy_trace_ref);
+    expect(result.summary.policy_trace_sha256).toBe(result.policySummary?.policy_trace_sha256);
+    if (
+      result.policySummary?.policy_trace_ref === undefined ||
+      result.policySummary.policy_trace_sha256 === undefined
+    ) {
+      throw new Error("complete persistence identity missing");
+    }
+    expect(
+      verifyPolicyTraceReference({
+        auditDir,
+        ref: result.policySummary.policy_trace_ref,
+        sha256: result.policySummary.policy_trace_sha256,
+      }).ok,
+    ).toBe(true);
+  });
+
+  it("keeps the production verdict/findings when trace persistence fails", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-orch-policy-error-"));
+    writeFileSync(join(repo, "a.ts"), "export const value = 1;\n");
+    const blockedAudit = join(repo, "blocked-audit");
+    writeFileSync(blockedAudit, "not a directory");
+    const result = await new Orchestrator({
+      repoRoot: repo,
+      config: policyConfig(),
+      audit: new AuditLogger(blockedAudit),
+      adapters: { codex: policyAdapter() },
+      sandboxMode: "off",
+      hostTier: "opus",
+      diff: POLICY_DIFF,
+      reasonOnFailEnabled: true,
+      disableLastResortFailover: true,
+    }).runIteration({ runId: "RUN-PERSISTENCE-FAILS", iter: 1 });
+    const pending = JSON.parse(
+      readFileSync(join(repo, ".reviewgate", "pending.json"), "utf8"),
+    ) as PendingReport;
+
+    expect(result.verdict).toBe("PASS");
+    expect(pending.verdict).toBe("PASS");
+    expect(pending.findings).toHaveLength(1);
+    expect(result.policySummary?.status).toBe("error");
+    expect(result.summary.policy_trace_status).toBe("error");
+    expect(result.summary.policy_trace_ref).toBeUndefined();
+    expect(result.summary.policy_trace_sha256).toBeUndefined();
   });
 });
