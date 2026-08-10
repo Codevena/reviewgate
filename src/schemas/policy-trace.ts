@@ -33,12 +33,14 @@ const EvaluationResultSchema = z.enum([
 const TraceVerdictSchema = z.enum(["PASS", "SOFT-PASS", "FAIL", "ERROR"]);
 const StageVerdictSchema = z.enum(["PASS", "SOFT-PASS", "FAIL"]);
 
-const INACTIVE_REASON_CODES = new Set(["configured-off", "stage-precondition-miss"]);
+const NOT_RUN_REASON_CODES = new Set(["configured-off", "stage-precondition-miss"]);
+const PASS_ERROR_REASON_CODE = "instrumentation-error" as const;
 const NON_MATERIAL_REASON_CODES = new Set([
   "ineligible-starting-state",
   "predicate-miss",
   "configured-off",
   "stage-precondition-miss",
+  PASS_ERROR_REASON_CODE,
 ]);
 const VERDICT_BY_REASON = {
   "hard-critical": "FAIL",
@@ -356,8 +358,11 @@ export const PolicyPassSummarySchema = z
     const pass = policyPass(summary.pass_id);
 
     if (summary.status !== "ran") {
-      if (!INACTIVE_REASON_CODES.has(summary.reason_code)) {
-        addIssue(ctx, ["reason_code"], "inactive summaries require a closed inactive reason");
+      if (summary.status === "not-run" && !NOT_RUN_REASON_CODES.has(summary.reason_code)) {
+        addIssue(ctx, ["reason_code"], "not-run summaries require a closed inactivity reason");
+      }
+      if (summary.status === "error" && summary.reason_code !== PASS_ERROR_REASON_CODE) {
+        addIssue(ctx, ["reason_code"], `error summaries require ${PASS_ERROR_REASON_CODE}`);
       }
       return;
     }
@@ -517,6 +522,13 @@ export const PolicyStageEvaluationSchema = PolicyStageEvaluationObjectSchema.sup
 
 export type PolicyStageEvaluation = z.infer<typeof PolicyStageEvaluationSchema>;
 
+const PolicyFinalFindingSeveritySchema = z
+  .object({
+    signature: z.string().min(1),
+    severity: PolicySeveritySchema,
+  })
+  .strict();
+
 export const PolicyTraceFinalSchema = z
   .object({
     verdict: TraceVerdictSchema,
@@ -528,12 +540,44 @@ export const PolicyTraceFinalSchema = z
       })
       .strict(),
     finding_signatures: UniqueSignaturesSchema,
+    finding_severities: z.array(PolicyFinalFindingSeveritySchema),
   })
   .strict()
   .superRefine((final, ctx) => {
     const count = final.counts.critical + final.counts.warn + final.counts.info;
     if (count !== final.finding_signatures.length) {
       addIssue(ctx, ["finding_signatures"], "final counts must match final finding signatures");
+    }
+    if (final.finding_severities.length !== final.finding_signatures.length) {
+      addIssue(
+        ctx,
+        ["finding_severities"],
+        "final severity evidence must match final finding cardinality",
+      );
+    }
+    for (const [index, signature] of final.finding_signatures.entries()) {
+      if (final.finding_severities[index]?.signature !== signature) {
+        addIssue(
+          ctx,
+          ["finding_severities", index, "signature"],
+          "final severity evidence must preserve finding signature order",
+        );
+      }
+    }
+    const derivedCounts = { critical: 0, warn: 0, info: 0 };
+    for (const finding of final.finding_severities) {
+      if (finding.severity === "CRITICAL") derivedCounts.critical += 1;
+      else if (finding.severity === "WARN") derivedCounts.warn += 1;
+      else derivedCounts.info += 1;
+    }
+    for (const severity of ["critical", "warn", "info"] as const) {
+      if (final.counts[severity] !== derivedCounts[severity]) {
+        addIssue(
+          ctx,
+          ["counts", severity],
+          `${severity} count disagrees with final severity evidence`,
+        );
+      }
     }
     const blocking = final.counts.critical + final.counts.warn;
     if (final.verdict === "PASS" && blocking !== 0) {
@@ -602,6 +646,17 @@ export const PolicySummarySchema = z
   .superRefine((summary, ctx) => {
     validateOrderedPassRows(summary.passes, ctx, ["passes"]);
     validateArtifactState(summary, ctx);
+    if (summary.status === "not-run") {
+      for (const [index, pass] of summary.passes.entries()) {
+        if (pass.status !== "not-run") {
+          addIssue(
+            ctx,
+            ["passes", index, "status"],
+            "a not-run policy summary requires every pass to be not-run",
+          );
+        }
+      }
+    }
   });
 
 export type PolicySummary = z.infer<typeof PolicySummarySchema>;
@@ -645,7 +700,6 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
   let priorEvaluationOrder = -1;
   const evaluationsByPass = new Map<PolicyPassId, PolicyEvaluation[]>();
   const finalSignatures = new Set(trace.final.finding_signatures);
-  const droppedEvaluations: Array<{ index: number; source_signatures: string[] }> = [];
   for (const [index, evaluation] of trace.evaluations.entries()) {
     if (evaluation.order < priorEvaluationOrder) {
       addIssue(ctx, ["evaluations", index, "order"], "evaluations must remain in catalog order");
@@ -663,9 +717,6 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
         ["evaluations", index, "result"],
         "would-apply requires the pass to be ablated",
       );
-    }
-    if (evaluation.result === "applied" && evaluation.after === null) {
-      droppedEvaluations.push({ index, source_signatures: evaluation.source_signatures });
     }
     if (
       evaluation.final_signature !== undefined &&
@@ -721,6 +772,7 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
   let priorStageOrder = -1;
   const clusterOutputs: string[] = [];
   const clusterOutputSet = new Set<string>();
+  const clusterOutputByInput = new Map<string, string>();
   let verdictRows = 0;
   let verdictStage: PolicyStageEvaluation | undefined;
   let verdictStageIndex = -1;
@@ -735,6 +787,17 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
       }
       clusterOutputs.push(stage.output_signature);
       clusterOutputSet.add(stage.output_signature);
+      for (const [inputIndex, input] of stage.input_signatures.entries()) {
+        if (clusterOutputByInput.has(input)) {
+          addIssue(
+            ctx,
+            ["stages", index, "input_signatures", inputIndex],
+            "a cluster input must map to exactly one output",
+          );
+        } else {
+          clusterOutputByInput.set(input, stage.output_signature);
+        }
+      }
     }
     if (stage.stage_id === "verdict.compute") {
       verdictRows += 1;
@@ -754,48 +817,91 @@ export const PolicyTraceSchema = PolicyTraceObjectSchema.superRefine((trace, ctx
   if (!isOrderedSubsequence(trace.final.finding_signatures, clusterOutputs)) {
     addIssue(ctx, ["stages"], "final finding signatures must preserve cluster output order");
   }
-  const droppedSources = new Set(
-    droppedEvaluations.flatMap((evaluation) => evaluation.source_signatures),
-  );
-  for (const [index, signature] of clusterOutputs.entries()) {
-    if (!finalSignatures.has(signature) && !droppedSources.has(signature)) {
-      addIssue(ctx, ["stages", index], "a non-final cluster output requires a later applied drop");
+
+  const droppedOutputs = new Map<string, number>();
+  for (const [index, evaluation] of trace.evaluations.entries()) {
+    const lineageOutputs = new Set<string>();
+    for (const [sourceIndex, source] of evaluation.source_signatures.entries()) {
+      const output = clusterOutputByInput.get(source);
+      if (output === undefined) {
+        addIssue(
+          ctx,
+          ["evaluations", index, "source_signatures", sourceIndex],
+          "evaluation lineage must reference an aggregation cluster input",
+        );
+      } else {
+        lineageOutputs.add(output);
+      }
     }
-  }
-  for (const dropped of droppedEvaluations) {
-    const matchingOutputs = dropped.source_signatures.filter((signature) =>
-      clusterOutputSet.has(signature),
-    );
-    if (matchingOutputs.length !== 1) {
+    if (lineageOutputs.size !== 1) {
       addIssue(
         ctx,
-        ["evaluations", dropped.index, "source_signatures"],
-        "a dropped lineage requires exactly one aggregation cluster output",
+        ["evaluations", index, "source_signatures"],
+        "evaluation lineage must resolve to exactly one cluster output",
+      );
+      continue;
+    }
+
+    const [output] = lineageOutputs;
+    if (output === undefined) continue;
+    const appliedDrop = evaluation.result === "applied" && evaluation.after === null;
+    const survives = finalSignatures.has(output);
+
+    if (appliedDrop) {
+      if (survives) {
+        addIssue(
+          ctx,
+          ["evaluations", index, "source_signatures"],
+          "an applied-drop cluster output cannot remain in final findings",
+        );
+      }
+      if (droppedOutputs.has(output)) {
+        addIssue(
+          ctx,
+          ["evaluations", index, "source_signatures"],
+          "a cluster output can have only one applied drop",
+        );
+      } else {
+        droppedOutputs.set(output, index);
+      }
+    }
+
+    if (survives && evaluation.final_signature !== output) {
+      addIssue(
+        ctx,
+        ["evaluations", index, "final_signature"],
+        "a surviving evaluation must name its resolved cluster output",
+      );
+    }
+    if (!survives && evaluation.final_signature !== undefined) {
+      addIssue(
+        ctx,
+        ["evaluations", index, "final_signature"],
+        "a non-surviving evaluation cannot name a final signature",
       );
     }
   }
 
+  for (const [index, signature] of clusterOutputs.entries()) {
+    if (!finalSignatures.has(signature) && !droppedOutputs.has(signature)) {
+      addIssue(ctx, ["stages", index], "a non-final cluster output requires a later applied drop");
+    }
+  }
+
   if (verdictStage !== undefined) {
-    const blockingCount = trace.final.counts.critical + trace.final.counts.warn;
-    if (verdictStage.input_signatures.length !== blockingCount) {
+    const blockingSignatures = trace.final.finding_severities
+      .filter((finding) => finding.severity !== "INFO")
+      .map((finding) => finding.signature);
+    if (
+      verdictStage.input_signatures.length !== blockingSignatures.length ||
+      verdictStage.input_signatures.some(
+        (signature, index) => signature !== blockingSignatures[index],
+      )
+    ) {
       addIssue(
         ctx,
         ["stages", verdictStageIndex, "input_signatures"],
-        "verdict inputs must equal the final blocking count",
-      );
-    }
-    if (!verdictStage.input_signatures.every((signature) => finalSignatures.has(signature))) {
-      addIssue(
-        ctx,
-        ["stages", verdictStageIndex, "input_signatures"],
-        "verdict inputs must reference final findings",
-      );
-    }
-    if (!isOrderedSubsequence(verdictStage.input_signatures, trace.final.finding_signatures)) {
-      addIssue(
-        ctx,
-        ["stages", verdictStageIndex, "input_signatures"],
-        "verdict inputs must preserve final finding order",
+        "verdict inputs must exactly equal ordered final blocking signatures",
       );
     }
     if (verdictStage.reason_code === "hard-critical" && trace.final.counts.critical === 0) {

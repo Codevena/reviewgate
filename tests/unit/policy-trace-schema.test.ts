@@ -89,6 +89,7 @@ function emptyTrace() {
       verdict: "PASS" as const,
       counts: { critical: 0, warn: 0, info: 0 },
       finding_signatures: [],
+      finding_severities: [],
     },
   };
 }
@@ -152,6 +153,72 @@ function traceWithSingleFinal(severity: "CRITICAL" | "WARN" | "INFO") {
       verdict: blocking ? ("SOFT-PASS" as const) : ("PASS" as const),
       counts,
       finding_signatures: ["sig-a"],
+      finding_severities: [{ signature: "sig-a", severity }],
+    },
+  };
+}
+
+function traceWithWarnAndInfoFinals() {
+  const trace = emptyTrace();
+  return {
+    ...trace,
+    passes: PASS_IDS.map((passId) => ({
+      ...emptyRanSummary(passId),
+      considered: 2,
+    })),
+    evaluations: PASS_IDS.flatMap((passId, index) => [
+      {
+        pass_id: passId,
+        order: (index + 1) * 10,
+        result: "no-opportunity" as const,
+        before: "INFO" as const,
+        after: "INFO" as const,
+        reason_code: "ineligible-starting-state" as const,
+        source_signatures: ["sig-info"],
+        final_signature: "sig-info",
+      },
+      {
+        pass_id: passId,
+        order: (index + 1) * 10,
+        result: "no-opportunity" as const,
+        before: "WARN" as const,
+        after: "WARN" as const,
+        reason_code: "ineligible-starting-state" as const,
+        source_signatures: ["sig-warn"],
+        final_signature: "sig-warn",
+      },
+    ]),
+    stages: [
+      {
+        stage_id: "aggregation.cluster" as const,
+        order: 65,
+        reason_code: "singleton" as const,
+        input_signatures: ["sig-info"],
+        output_signature: "sig-info",
+      },
+      {
+        stage_id: "aggregation.cluster" as const,
+        order: 65,
+        reason_code: "singleton" as const,
+        input_signatures: ["sig-warn"],
+        output_signature: "sig-warn",
+      },
+      {
+        stage_id: "verdict.compute" as const,
+        order: 190,
+        reason_code: "blocking-present" as const,
+        input_signatures: ["sig-warn"],
+        verdict: "SOFT-PASS" as const,
+      },
+    ],
+    final: {
+      verdict: "SOFT-PASS" as const,
+      counts: { critical: 0, warn: 1, info: 1 },
+      finding_signatures: ["sig-info", "sig-warn"],
+      finding_severities: [
+        { signature: "sig-info", severity: "INFO" as const },
+        { signature: "sig-warn", severity: "WARN" as const },
+      ],
     },
   };
 }
@@ -549,6 +616,27 @@ describe("PolicyPassSummarySchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("binds inactive pass reasons to not-run versus instrumentation error", () => {
+    const notRun = {
+      pass_id: "judgment.confidence",
+      status: "not-run",
+      reason_code: "configured-off",
+    };
+    expect(PolicyPassSummarySchema.safeParse(notRun).success).toBe(true);
+    expect(
+      PolicyPassSummarySchema.safeParse({
+        ...notRun,
+        status: "error",
+        reason_code: "instrumentation-error",
+      }).success,
+    ).toBe(true);
+    expect(PolicyPassSummarySchema.safeParse({ ...notRun, status: "error" }).success).toBe(false);
+    expect(
+      PolicyPassSummarySchema.safeParse({ ...notRun, reason_code: "instrumentation-error" })
+        .success,
+    ).toBe(false);
+  });
 });
 
 describe("PolicyStageEvaluationSchema", () => {
@@ -631,12 +719,49 @@ describe("PolicyTraceFinalSchema", () => {
       verdict: "PASS",
       counts: { critical: 0, warn: 0, info: 2 },
       finding_signatures: ["sig-z", "sig-a"],
+      finding_severities: [
+        { signature: "sig-z", severity: "INFO" },
+        { signature: "sig-a", severity: "INFO" },
+      ],
     };
     expect(PolicyTraceFinalSchema.safeParse(final).success).toBe(true);
     expect(
       PolicyTraceFinalSchema.safeParse({
         ...final,
         finding_signatures: ["sig-a", "sig-a"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires ordered one-to-one severity evidence and derives final counts from it", () => {
+    const final = {
+      verdict: "SOFT-PASS" as const,
+      counts: { critical: 0, warn: 1, info: 1 },
+      finding_signatures: ["sig-warn", "sig-info"],
+      finding_severities: [
+        { signature: "sig-warn", severity: "WARN" as const },
+        { signature: "sig-info", severity: "INFO" as const },
+      ],
+    };
+
+    expect(PolicyTraceFinalSchema.safeParse(final).success).toBe(true);
+    expect(
+      PolicyTraceFinalSchema.safeParse({
+        verdict: final.verdict,
+        counts: final.counts,
+        finding_signatures: final.finding_signatures,
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceFinalSchema.safeParse({
+        ...final,
+        finding_severities: [final.finding_severities[1], final.finding_severities[0]],
+      }).success,
+    ).toBe(false);
+    expect(
+      PolicyTraceFinalSchema.safeParse({
+        ...final,
+        counts: { critical: 0, warn: 2, info: 0 },
       }).success,
     ).toBe(false);
   });
@@ -650,21 +775,21 @@ describe("PolicySummarySchema", () => {
     expect(
       PolicySummarySchema.safeParse({
         catalog_version: "reviewgate.policy-catalog.v1",
-        status: "not-run",
+        status: "error",
         passes,
       }).success,
     ).toBe(true);
     expect(
       PolicySummarySchema.safeParse({
         catalog_version: "reviewgate.policy-catalog.v1",
-        status: "not-run",
+        status: "error",
         passes: passes.slice(0, -1),
       }).success,
     ).toBe(false);
     expect(
       PolicySummarySchema.safeParse({
         catalog_version: "reviewgate.policy-catalog.v1",
-        status: "not-run",
+        status: "error",
         passes: [passes[1], passes[0], ...passes.slice(2)],
       }).success,
     ).toBe(false);
@@ -696,6 +821,28 @@ describe("PolicySummarySchema", () => {
         policy_trace_sha256: hash,
       }).success,
     ).toBe(false);
+  });
+
+  it("requires a top-level not-run summary to contain only not-run pass rows", () => {
+    expect(
+      PolicySummarySchema.safeParse({
+        catalog_version: "reviewgate.policy-catalog.v1",
+        status: "not-run",
+        passes,
+      }).success,
+    ).toBe(false);
+
+    expect(
+      PolicySummarySchema.safeParse({
+        catalog_version: "reviewgate.policy-catalog.v1",
+        status: "not-run",
+        passes: PASS_IDS.map((pass_id) => ({
+          pass_id,
+          status: "not-run",
+          reason_code: "stage-precondition-miss",
+        })),
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -757,6 +904,7 @@ describe("PolicyTraceSchema", () => {
           verdict: "PASS",
           counts: { critical: 0, warn: 0, info: 1 },
           finding_signatures: ["sig-a"],
+          finding_severities: [{ signature: "sig-a", severity: "INFO" }],
         },
       }).success,
     ).toBe(false);
@@ -772,6 +920,7 @@ describe("PolicyTraceSchema", () => {
           verdict: "PASS",
           counts: { critical: 0, warn: 0, info: 1 },
           finding_signatures: ["sig-a"],
+          finding_severities: [{ signature: "sig-a", severity: "INFO" }],
         },
       }).success,
     ).toBe(false);
@@ -866,6 +1015,80 @@ describe("PolicyTraceSchema", () => {
       PolicyTraceSchema.safeParse({
         ...droppedTrace,
         stages: trace.stages,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a dropped cluster output that remains in the final findings", () => {
+    const trace = emptyTrace();
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        passes: passesWithOnly("judgment.critic", {
+          ...emptyRanSummary("judgment.critic"),
+          considered: 1,
+          opportunities: 1,
+          would_apply: 1,
+          applied: 1,
+          dropped: 1,
+        }),
+        evaluations: [
+          {
+            pass_id: "judgment.critic",
+            order: 70,
+            result: "applied",
+            before: "INFO",
+            after: null,
+            reason_code: "critic-likely-fp",
+            source_signatures: ["sig-a"],
+          },
+        ],
+        stages: [
+          {
+            stage_id: "aggregation.cluster",
+            order: 65,
+            reason_code: "singleton",
+            input_signatures: ["sig-a"],
+            output_signature: "sig-a",
+          },
+          ...trace.stages,
+        ],
+        final: {
+          verdict: "PASS",
+          counts: { critical: 0, warn: 0, info: 1 },
+          finding_signatures: ["sig-a"],
+          finding_severities: [{ signature: "sig-a", severity: "INFO" }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires each evaluation lineage and final signature to resolve to one cluster output", () => {
+    const trace = traceWithWarnAndInfoFinals();
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        evaluations: trace.evaluations.map((evaluation, index) =>
+          index === 0 ? { ...evaluation, final_signature: "sig-warn" } : evaluation,
+        ),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a cluster input assigned to more than one output", () => {
+    const trace = traceWithWarnAndInfoFinals();
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        stages: [
+          trace.stages[0],
+          {
+            ...trace.stages[1],
+            reason_code: "clustered",
+            input_signatures: ["sig-info", "sig-warn"],
+          },
+          trace.stages[2],
+        ],
       }).success,
     ).toBe(false);
   });
@@ -983,6 +1206,10 @@ describe("PolicyTraceSchema", () => {
         verdict: "SOFT-PASS" as const,
         counts: { critical: 0, warn: 2, info: 0 },
         finding_signatures: ["sig-a", "sig-b"],
+        finding_severities: [
+          { signature: "sig-a", severity: "WARN" as const },
+          { signature: "sig-b", severity: "WARN" as const },
+        ],
       },
     };
     expect(PolicyTraceSchema.safeParse(trace).success).toBe(true);
@@ -993,6 +1220,20 @@ describe("PolicyTraceSchema", () => {
           trace.stages[0],
           trace.stages[1],
           { ...trace.stages[2], input_signatures: ["sig-a"] },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a verdict stage that swaps an INFO signature for a blocking signature", () => {
+    const trace = traceWithWarnAndInfoFinals();
+    expect(
+      PolicyTraceSchema.safeParse({
+        ...trace,
+        stages: [
+          trace.stages[0],
+          trace.stages[1],
+          { ...trace.stages[2], input_signatures: ["sig-info"] },
         ],
       }).success,
     ).toBe(false);

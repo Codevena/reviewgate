@@ -171,6 +171,20 @@ describe("policy catalog", () => {
     ]);
   });
 
+  it("keeps protection guards outside opportunity eligibility", () => {
+    const opportunities = Object.fromEntries(
+      POLICY_PASSES.map((pass) => [pass.id, pass.opportunity]),
+    );
+    expect(opportunities["evidence.self-refutation"]).toBe("blocking finding");
+    expect(opportunities["judgment.hypothetical"]).toBe("CRITICAL finding");
+    expect(opportunities["judgment.confidence"]).toBe(
+      "blocking finding while the confidence floor is positive",
+    );
+    expect(opportunities["judgment.reputation"]).toBe(
+      "blocking finding while unreliable reviewers exist",
+    );
+  });
+
   it("is a versioned JSON-data catalog with no executable entries", () => {
     expect(POLICY_CATALOG_VERSION).toBe("reviewgate.policy-catalog.v1");
     expect(POLICY_PASS_IDS).toHaveLength(18);
