@@ -641,12 +641,6 @@ describe("aggregation cluster lineage", () => {
       },
     ]);
 
-    recorder.recordStage({
-      stageId: "verdict.compute",
-      reasonCode: "corroborated-warn",
-      inputSignatures: [finalFinding.signature],
-      verdict: result.verdict,
-    });
     const trace = recorder.finalize({
       rawResponseSha256: [],
       verdict: result.verdict,
@@ -692,13 +686,6 @@ describe("aggregation cluster lineage", () => {
     });
     const finalFinding = result.dedupedFindings[0];
     if (finalFinding === undefined) throw new Error("expected singleton output");
-    recorder.recordStage({
-      stageId: "verdict.compute",
-      reasonCode: "blocking-present",
-      inputSignatures: [finalFinding.signature],
-      verdict: result.verdict,
-    });
-
     const trace = recorder.finalize({
       rawResponseSha256: [],
       verdict: result.verdict,
@@ -730,13 +717,6 @@ describe("aggregation cluster lineage", () => {
     });
     const finalFinding = result.dedupedFindings[0];
     if (finalFinding === undefined) throw new Error("expected a shared-signature cluster");
-    recorder.recordStage({
-      stageId: "verdict.compute",
-      reasonCode: "corroborated-warn",
-      inputSignatures: [finalFinding.signature],
-      verdict: result.verdict,
-    });
-
     const trace = recorder.finalize({
       rawResponseSha256: [],
       verdict: result.verdict,
