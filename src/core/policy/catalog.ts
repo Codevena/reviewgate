@@ -156,6 +156,7 @@ export const POLICY_PASSES = [
         after: "INFO",
       },
       { reason_code: "location-out-of-range", action: "demoted", before: "WARN", after: "INFO" },
+      { reason_code: "location-out-of-range", action: "demoted", before: "INFO", after: "INFO" },
       {
         reason_code: "evidence-line-reanchored",
         action: "reanchored",

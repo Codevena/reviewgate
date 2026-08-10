@@ -260,4 +260,15 @@ describe("policy catalog", () => {
       ),
     ).toBe(false);
   });
+
+  it("registers the legacy INFO fact-invalid mutation as an exact closed transition", () => {
+    const factLocation = POLICY_PASSES.find((pass) => pass.id === "evidence.fact-location");
+
+    expect(factLocation?.material_transitions).toContainEqual({
+      reason_code: "location-out-of-range",
+      action: "demoted",
+      before: "INFO",
+      after: "INFO",
+    });
+  });
 });

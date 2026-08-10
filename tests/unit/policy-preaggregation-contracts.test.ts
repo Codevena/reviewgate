@@ -189,6 +189,66 @@ describe("pre-aggregation policy numeric contracts", () => {
     });
   });
 
+  it("records an INFO fact-invalid mutation without invalidating trace or ablation", () => {
+    const dir = factRepo();
+    const finding = mkFinding({
+      signature: "sig-fact-info",
+      severity: "INFO",
+      file: "one-line.ts",
+      line_start: 9,
+      line_end: 9,
+    });
+    const activeRuntime = runtime("fact-info-active");
+    const ablatedRuntime = runtime("fact-info-ablated", ["evidence.fact-location"]);
+
+    const legacy = validateFindingFacts([finding], dir, new Set());
+    const active = validateFindingFacts([finding], dir, new Set(), activeRuntime);
+    const ablated = validateFindingFacts([finding], dir, new Set(), ablatedRuntime);
+
+    expect(stripPolicyEffects(active[0])).toEqual(legacy[0]);
+    expect(active[0]).toMatchObject({ severity: "INFO", fact_invalid: true });
+    expect(activeRuntime.telemetryError).toBe(false);
+    expect(numericSummary(activeRuntime, "evidence.fact-location")).toEqual([
+      1, 1, 1, 1, 0, 0, 0, 0,
+    ]);
+    expect(activeRuntime.evaluations()).toEqual([
+      {
+        pass_id: "evidence.fact-location",
+        order: 10,
+        result: "applied",
+        before: "INFO",
+        after: "INFO",
+        reason_code: "location-out-of-range",
+        source_signatures: ["sig-fact-info"],
+      },
+    ]);
+    expectEffect(active[0], {
+      pass_id: "evidence.fact-location",
+      order: 10,
+      action: "demoted",
+      before: "INFO",
+      after: "INFO",
+      reason_code: "location-out-of-range",
+    });
+
+    expect(ablated[0]).toEqual(finding);
+    expect(ablatedRuntime.telemetryError).toBe(false);
+    expect(numericSummary(ablatedRuntime, "evidence.fact-location")).toEqual([
+      1, 1, 1, 0, 0, 0, 0, 0,
+    ]);
+    expect(ablatedRuntime.evaluations()).toEqual([
+      {
+        pass_id: "evidence.fact-location",
+        order: 10,
+        result: "would-apply",
+        before: "INFO",
+        after: "INFO",
+        reason_code: "location-out-of-range",
+        source_signatures: ["sig-fact-info"],
+      },
+    ]);
+  });
+
   it("records self-refutation no-opportunity and predicate-miss rows", () => {
     const infoRuntime = runtime("self-info");
     const ordinaryRuntime = runtime("self-ordinary");
