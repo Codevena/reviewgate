@@ -456,6 +456,7 @@ const PolicyStageEvaluationObjectSchema = z
     stage_id: PolicyStageIdSchema,
     order: z.number().int().positive(),
     reason_code: PolicyReasonCodeSchema,
+    member_count: z.number().int().positive().optional(),
     input_signatures: UniqueSignaturesSchema,
     output_signature: z.string().min(1).optional(),
     verdict: StageVerdictSchema.optional(),
@@ -473,6 +474,15 @@ export const PolicyStageEvaluationSchema = PolicyStageEvaluationObjectSchema.sup
     }
 
     if (evaluation.stage_id === "aggregation.cluster") {
+      if (evaluation.member_count === undefined) {
+        addIssue(ctx, ["member_count"], "a cluster stage requires member_count");
+      } else if (evaluation.member_count < evaluation.input_signatures.length) {
+        addIssue(
+          ctx,
+          ["member_count"],
+          "member_count cannot be smaller than the unique input signature count",
+        );
+      }
       if (evaluation.input_signatures.length === 0) {
         addIssue(ctx, ["input_signatures"], "a cluster stage requires input signatures");
       }
@@ -484,15 +494,21 @@ export const PolicyStageEvaluationSchema = PolicyStageEvaluationObjectSchema.sup
       if (evaluation.verdict !== undefined) {
         addIssue(ctx, ["verdict"], "a cluster stage cannot carry a verdict");
       }
-      if (evaluation.reason_code === "singleton" && evaluation.input_signatures.length !== 1) {
-        addIssue(ctx, ["reason_code"], "singleton requires exactly one input signature");
+      if (evaluation.reason_code === "singleton" && evaluation.member_count !== 1) {
+        addIssue(ctx, ["reason_code"], "singleton requires member_count 1");
       }
-      if (evaluation.reason_code === "clustered" && evaluation.input_signatures.length < 2) {
-        addIssue(ctx, ["reason_code"], "clustered requires at least two input signatures");
+      if (
+        evaluation.reason_code === "clustered" &&
+        (evaluation.member_count === undefined || evaluation.member_count < 2)
+      ) {
+        addIssue(ctx, ["reason_code"], "clustered requires member_count at least 2");
       }
       return;
     }
 
+    if (evaluation.member_count !== undefined) {
+      addIssue(ctx, ["member_count"], "the verdict stage cannot carry member_count");
+    }
     if (evaluation.output_signature !== undefined) {
       addIssue(ctx, ["output_signature"], "the verdict stage cannot carry an output signature");
     }

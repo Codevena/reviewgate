@@ -138,6 +138,7 @@ function traceWithSingleFinal(severity: "CRITICAL" | "WARN" | "INFO") {
         stage_id: "aggregation.cluster" as const,
         order: 65,
         reason_code: "singleton" as const,
+        member_count: 1,
         input_signatures: ["sig-a"],
         output_signature: "sig-a",
       },
@@ -193,6 +194,7 @@ function traceWithWarnAndInfoFinals() {
         stage_id: "aggregation.cluster" as const,
         order: 65,
         reason_code: "singleton" as const,
+        member_count: 1,
         input_signatures: ["sig-info"],
         output_signature: "sig-info",
       },
@@ -200,6 +202,7 @@ function traceWithWarnAndInfoFinals() {
         stage_id: "aggregation.cluster" as const,
         order: 65,
         reason_code: "singleton" as const,
+        member_count: 1,
         input_signatures: ["sig-warn"],
         output_signature: "sig-warn",
       },
@@ -640,12 +643,51 @@ describe("PolicyPassSummarySchema", () => {
 });
 
 describe("PolicyStageEvaluationSchema", () => {
+  it("requires cluster member_count and derives singleton versus clustered from it", () => {
+    const singleton = {
+      stage_id: "aggregation.cluster",
+      order: 65,
+      reason_code: "singleton",
+      member_count: 1,
+      input_signatures: ["sig-a"],
+      output_signature: "sig-a",
+    };
+    expect(PolicyStageEvaluationSchema.safeParse(singleton).success).toBe(true);
+    expect(
+      PolicyStageEvaluationSchema.safeParse({ ...singleton, member_count: undefined }).success,
+    ).toBe(false);
+    expect(
+      PolicyStageEvaluationSchema.safeParse({
+        ...singleton,
+        reason_code: "clustered",
+        member_count: 2,
+      }).success,
+    ).toBe(true);
+    expect(
+      PolicyStageEvaluationSchema.safeParse({ ...singleton, reason_code: "clustered" }).success,
+    ).toBe(false);
+    expect(PolicyStageEvaluationSchema.safeParse({ ...singleton, member_count: 2 }).success).toBe(
+      false,
+    );
+    expect(
+      PolicyStageEvaluationSchema.safeParse({
+        stage_id: "verdict.compute",
+        order: 190,
+        reason_code: "blocking-present",
+        member_count: 1,
+        input_signatures: ["sig-a"],
+        verdict: "SOFT-PASS",
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts closed cluster and verdict stage rows", () => {
     expect(
       PolicyStageEvaluationSchema.safeParse({
         stage_id: "aggregation.cluster",
         order: 65,
         reason_code: "clustered",
+        member_count: 2,
         input_signatures: ["sig-a", "sig-b"],
         output_signature: "sig-a",
       }).success,
@@ -675,7 +717,8 @@ describe("PolicyStageEvaluationSchema", () => {
       PolicyStageEvaluationSchema.safeParse({
         stage_id: "aggregation.cluster",
         order: 65,
-        reason_code: "singleton",
+        reason_code: "clustered",
+        member_count: 2,
         input_signatures: ["sig-a", "sig-b"],
         output_signature: "sig-c",
       }).success,
@@ -889,6 +932,7 @@ describe("PolicyTraceSchema", () => {
             stage_id: "aggregation.cluster",
             order: 65,
             reason_code: "singleton",
+            member_count: 1,
             input_signatures: ["sig-a"],
             output_signature: "sig-a",
           },
@@ -999,6 +1043,7 @@ describe("PolicyTraceSchema", () => {
         stage_id: "aggregation.cluster" as const,
         order: 65,
         reason_code: "singleton" as const,
+        member_count: 1,
         input_signatures: ["sig-a"],
         output_signature: "sig-a",
       },
@@ -1048,6 +1093,7 @@ describe("PolicyTraceSchema", () => {
             stage_id: "aggregation.cluster",
             order: 65,
             reason_code: "singleton",
+            member_count: 1,
             input_signatures: ["sig-a"],
             output_signature: "sig-a",
           },
@@ -1184,6 +1230,7 @@ describe("PolicyTraceSchema", () => {
           stage_id: "aggregation.cluster" as const,
           order: 65,
           reason_code: "singleton" as const,
+          member_count: 1,
           input_signatures: ["sig-a"],
           output_signature: "sig-a",
         },
@@ -1191,6 +1238,7 @@ describe("PolicyTraceSchema", () => {
           stage_id: "aggregation.cluster" as const,
           order: 65,
           reason_code: "singleton" as const,
+          member_count: 1,
           input_signatures: ["sig-b"],
           output_signature: "sig-b",
         },

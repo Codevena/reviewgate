@@ -338,6 +338,53 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
     });
   });
 
+  it("protects a G0-clamped WARN from critic likely_fp in active and ablated runs", () => {
+    const clamped = finding({
+      signature: "sig-critic-critical-floor",
+      severity: "WARN",
+      demoted_from_critical: true,
+    });
+    const input = {
+      findings: [clamped],
+      reviewersTotal: 1,
+      critic: new Map([[clamped.signature, { verdict: "likely_fp" as const }]]),
+    };
+    const active = run("critic-critical-floor-active", input);
+    const ablated = run("critic-critical-floor-ablated", input, ["judgment.critic"]);
+
+    expect(active.recorder.telemetryError).toBe(false);
+    expect(ablated.recorder.telemetryError).toBe(false);
+    expect(numericSummary(active.recorder, "judgment.critic")).toEqual(
+      PROTECTED_BLOCKING_PRESERVED,
+    );
+    expect(numericSummary(ablated.recorder, "judgment.critic")).toEqual(
+      PROTECTED_BLOCKING_PRESERVED,
+    );
+    expectSingleEffect(active.result.dedupedFindings[0], {
+      pass_id: "judgment.critic",
+      order: 70,
+      action: "protected",
+      before: "WARN",
+      after: "WARN",
+      reason_code: "critic-likely-fp",
+      protected_by: "critical-floor",
+    });
+    expectSingleEffect(ablated.result.dedupedFindings[0], {
+      pass_id: "judgment.critic",
+      order: 70,
+      action: "protected",
+      before: "WARN",
+      after: "WARN",
+      reason_code: "critic-likely-fp",
+      protected_by: "critical-floor",
+    });
+    for (const output of [active, ablated]) {
+      expect(output.result.dedupedFindings[0]?.critic_verdict).toBeUndefined();
+      expect(output.result.dedupedFindings[0]?.critic_reason).toBeUndefined();
+      expect(output.result.dedupedFindings[0]?.protected_high_precision).toBeUndefined();
+    }
+  });
+
   it("records diff-scope no-opportunity, miss, active, ablated, and protected tuples", () => {
     const ranges = new Map([["src/a.ts", [[10, 14]] as Array<[number, number]>]]);
     const noLine = run("diff-no-line", {
@@ -612,6 +659,7 @@ describe("aggregation cluster lineage", () => {
         stage_id: "aggregation.cluster",
         order: 65,
         reason_code: "clustered",
+        member_count: 2,
         input_signatures: [artifact.signature, representative.signature],
         output_signature: representative.signature,
       },
@@ -660,8 +708,49 @@ describe("aggregation cluster lineage", () => {
       stage_id: "aggregation.cluster",
       order: 65,
       reason_code: "singleton",
+      member_count: 1,
       input_signatures: [singleton.signature],
       output_signature: singleton.signature,
+    });
+  });
+
+  it("records duplicate-signature reviewer contributions as a two-member cluster", () => {
+    const sharedSignature = "sig-shared-contribution";
+    const first = finding({
+      signature: sharedSignature,
+      reviewer: { provider: "codex", model: "m", persona: "quality" },
+    });
+    const second = finding({
+      signature: sharedSignature,
+      reviewer: { provider: "gemini", model: "m", persona: "quality" },
+    });
+    const { recorder, result } = run("cluster-shared-signature", {
+      findings: [first, second],
+      reviewersTotal: 2,
+    });
+    const finalFinding = result.dedupedFindings[0];
+    if (finalFinding === undefined) throw new Error("expected a shared-signature cluster");
+    recorder.recordStage({
+      stageId: "verdict.compute",
+      reasonCode: "corroborated-warn",
+      inputSignatures: [finalFinding.signature],
+      verdict: result.verdict,
+    });
+
+    const trace = recorder.finalize({
+      rawResponseSha256: [],
+      verdict: result.verdict,
+      finalFindings: result.dedupedFindings,
+    });
+
+    expect(finalFinding.members).toHaveLength(2);
+    expect(trace?.stages[0]).toEqual({
+      stage_id: "aggregation.cluster",
+      order: 65,
+      reason_code: "clustered",
+      member_count: 2,
+      input_signatures: [sharedSignature],
+      output_signature: sharedSignature,
     });
   });
 });

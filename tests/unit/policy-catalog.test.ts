@@ -90,6 +90,7 @@ describe("policy catalog", () => {
         protections: [
           "claimed-fixed-pin",
           "self-refutation-visibility",
+          "critical-floor",
           "security-correctness-floor",
           "corroborated-majority",
           "corroborated-unanimous",

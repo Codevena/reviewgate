@@ -41,13 +41,23 @@ export interface TransitionInput {
   readonly proposed: () => Finding | null;
 }
 
-export interface RecordPolicyStageInput {
-  readonly stageId: PolicyStageId;
-  readonly reasonCode: PolicyReasonCode;
-  readonly inputSignatures: readonly string[];
-  readonly outputSignature?: string;
-  readonly verdict?: Exclude<TraceVerdict, "ERROR">;
-}
+export type RecordPolicyStageInput =
+  | {
+      readonly stageId: Extract<PolicyStageId, "aggregation.cluster">;
+      readonly reasonCode: PolicyReasonCode;
+      readonly memberCount: number;
+      readonly inputSignatures: readonly string[];
+      readonly outputSignature: string;
+      readonly verdict?: never;
+    }
+  | {
+      readonly stageId: Extract<PolicyStageId, "verdict.compute">;
+      readonly reasonCode: PolicyReasonCode;
+      readonly memberCount?: never;
+      readonly inputSignatures: readonly string[];
+      readonly outputSignature?: never;
+      readonly verdict: Exclude<TraceVerdict, "ERROR">;
+    };
 
 export interface FinalizePolicyTraceInput {
   readonly rawResponseSha256: readonly string[];
@@ -306,6 +316,7 @@ export class PolicyTraceRecorder implements PolicyRuntime {
         stage_id: input.stageId,
         order: stage.order,
         reason_code: input.reasonCode,
+        ...(input.memberCount === undefined ? {} : { member_count: input.memberCount }),
         input_signatures: uniqueInOrder(input.inputSignatures),
         ...(input.outputSignature === undefined ? {} : { output_signature: input.outputSignature }),
         ...(input.verdict === undefined ? {} : { verdict: input.verdict }),

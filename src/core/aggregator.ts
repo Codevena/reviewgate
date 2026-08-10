@@ -652,7 +652,8 @@ export function aggregate(input: AggregateInput): AggregateResult {
     const inputSignatures = sourceSignatures(representative);
     input.policyRuntime?.recordStage({
       stageId: "aggregation.cluster",
-      reasonCode: inputSignatures.length === 1 ? "singleton" : "clustered",
+      reasonCode: members.length === 1 ? "singleton" : "clustered",
+      memberCount: members.length,
       inputSignatures,
       outputSignature: representative.signature,
     });
@@ -720,6 +721,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
       // #1: a self-refuted finding (T1) is already advisory INFO. The critic's
       // INFO+likely_fp → DROP must not erase its visible attribution.
       protectedBy = "self-refutation-visibility";
+    } else if (matched && f.severity === "WARN" && f.demoted_from_critical === true) {
+      // G0: a prior value-judgment CRITICAL→WARN clamp is already at its floor.
+      // Treat the critic's attempted second demotion as protection, not an
+      // applied WARN→WARN mutation (which is neither material nor catalog-valid).
+      protectedBy = "critical-floor";
     }
 
     let isSecurityProtected = false;

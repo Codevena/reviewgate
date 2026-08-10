@@ -415,6 +415,7 @@ export const POLICY_PASSES = [
     protection_codes: [
       "claimed-fixed-pin",
       "self-refutation-visibility",
+      "critical-floor",
       "security-correctness-floor",
       "corroborated-majority",
       "corroborated-unanimous",
@@ -460,6 +461,11 @@ export const POLICY_PASSES = [
         reason_code: "critic-likely-fp",
         protected_by: "self-refutation-visibility",
         before: "INFO",
+      },
+      {
+        reason_code: "critic-likely-fp",
+        protected_by: "critical-floor",
+        before: "WARN",
       },
       {
         reason_code: "critic-likely-fp",

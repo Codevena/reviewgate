@@ -473,6 +473,42 @@ describe("policy effect merging", () => {
 });
 
 describe("PolicyTraceRecorder finalization", () => {
+  it("records contributor cardinality separately from unique cluster lineage", () => {
+    const runtime = PolicyTraceRecorder.start({ runId: "run-member-count", iter: 1, ablated: [] });
+    const finalWarn = { ...warnFinding, signature: "sig-shared" } satisfies Finding;
+
+    runtime.recordStage({
+      stageId: "aggregation.cluster",
+      reasonCode: "clustered",
+      memberCount: 2,
+      inputSignatures: ["sig-shared"],
+      outputSignature: "sig-shared",
+    });
+    runtime.linkFinal(["sig-shared"], "sig-shared");
+    runtime.recordStage({
+      stageId: "verdict.compute",
+      reasonCode: "blocking-present",
+      inputSignatures: ["sig-shared"],
+      verdict: "SOFT-PASS",
+    });
+
+    const trace = runtime.finalize({
+      rawResponseSha256: [],
+      verdict: "SOFT-PASS",
+      finalFindings: [finalWarn],
+    });
+
+    expect(runtime.telemetryError).toBe(false);
+    expect(trace?.stages[0]).toEqual({
+      stage_id: "aggregation.cluster",
+      order: 65,
+      reason_code: "clustered",
+      member_count: 2,
+      input_signatures: ["sig-shared"],
+      output_signature: "sig-shared",
+    });
+  });
+
   it("links cluster lineage and derives ordered final severity evidence", () => {
     const runtime = PolicyTraceRecorder.start({ runId: "run-final", iter: 2, ablated: [] });
     const finalWarn = {
@@ -502,12 +538,14 @@ describe("PolicyTraceRecorder finalization", () => {
     runtime.recordStage({
       stageId: "aggregation.cluster",
       reasonCode: "clustered",
+      memberCount: 2,
       inputSignatures: ["sig-z-final", "sig-member"],
       outputSignature: "sig-z-final",
     });
     runtime.recordStage({
       stageId: "aggregation.cluster",
       reasonCode: "singleton",
+      memberCount: 1,
       inputSignatures: ["sig-a-final"],
       outputSignature: "sig-a-final",
     });
