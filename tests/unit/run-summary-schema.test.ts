@@ -27,6 +27,7 @@ const valid = {
 describe("RunSummarySchema", () => {
   it("validates a complete run summary", () => {
     expect(RunSummarySchema.parse(valid).providers[0]?.provider).toBe("codex");
+    expect(RunSummarySchema.parse(valid).policy_trace_status).toBeUndefined();
   });
   it("accepts an empty (skipped/cache) summary", () => {
     expect(
@@ -47,5 +48,44 @@ describe("RunSummarySchema", () => {
     expect(() =>
       RunSummarySchema.parse({ ...valid, providers: [{ ...valid.providers[0], provider: "x" }] }),
     ).toThrow();
+  });
+
+  it("accepts a complete content-addressed policy trace", () => {
+    const parsed = RunSummarySchema.parse({
+      ...valid,
+      policy_trace_status: "complete",
+      policy_trace_ref: "audit/2026/08/10/policy/trace.json",
+      policy_trace_sha256: "a".repeat(64),
+    });
+    expect(parsed.policy_trace_status).toBe("complete");
+  });
+
+  it("rejects inconsistent complete/ref/hash states", () => {
+    expect(RunSummarySchema.safeParse({ ...valid, policy_trace_status: "complete" }).success).toBe(
+      false,
+    );
+    expect(
+      RunSummarySchema.safeParse({
+        ...valid,
+        policy_trace_status: "error",
+        policy_trace_ref: "trace.json",
+        policy_trace_sha256: "a".repeat(64),
+      }).success,
+    ).toBe(false);
+    expect(
+      RunSummarySchema.safeParse({
+        ...valid,
+        policy_trace_ref: "trace.json",
+        policy_trace_sha256: "a".repeat(64),
+      }).success,
+    ).toBe(false);
+    expect(
+      RunSummarySchema.safeParse({
+        ...valid,
+        policy_trace_status: "complete",
+        policy_trace_ref: "trace.json",
+        policy_trace_sha256: "A".repeat(64),
+      }).success,
+    ).toBe(false);
   });
 });

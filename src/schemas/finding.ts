@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PolicyEffectsSchema } from "./policy-trace.ts";
 
 export const Severity = z.enum(["CRITICAL", "WARN", "INFO"]);
 export type Severity = z.infer<typeof Severity>;
@@ -76,6 +77,9 @@ export const FindingSchema = z.object({
   consensus: Consensus,
   critic_verdict: z.enum(["keep", "likely_fp"]).optional(),
   critic_reason: z.string().optional(),
+  // Policy Accountability Slice 1: compact, server-authored material effects only.
+  // Reviewer output cannot supply this field because REVIEW_OUTPUT_SCHEMA remains closed.
+  policy_effects: PolicyEffectsSchema.optional(),
   // M5 Part A: set true when the aggregator demoted this finding to INFO because
   // its range falls outside the changed hunks (advisory, non-blocking).
   scope_demoted: z.boolean().optional(),

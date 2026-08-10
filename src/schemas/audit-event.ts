@@ -1,6 +1,7 @@
 // src/schemas/audit-event.ts
 import { z } from "zod";
 import { Severity } from "./finding.ts";
+import { PolicySha256Schema, PolicyTraceStatusSchema } from "./policy-trace.ts";
 
 export const EventType = z.enum([
   "session.start",
@@ -90,7 +91,7 @@ export const ProviderStatSchema = z.object({
   duration_ms: z.number().int().nonnegative(),
 });
 
-export const RunSummarySchema = z.object({
+const RunSummaryObjectSchema = z.object({
   verdict: z.enum(["PASS", "SOFT-PASS", "FAIL", "ERROR"]),
   // "content-cache" (T5/R3, field report 2026-07-03): PASS served because every diff
   // file is byte-identical to the pass_ledger (content that already passed a clean
@@ -122,6 +123,45 @@ export const RunSummarySchema = z.object({
   // demoted CRITICAL→WARN this run. Pure observability (feeds the decision whether to
   // extend the clamp with audit-precision evidence later); never read by gating logic.
   corroboration_clamped: z.number().int().nonnegative().optional(),
+  // Policy traces are additive to the existing reviewgate.audit.v1 event. A complete
+  // status is content-addressed; every non-complete status deliberately has no artifact.
+  policy_trace_status: PolicyTraceStatusSchema.optional(),
+  policy_trace_ref: z.string().min(1).optional(),
+  policy_trace_sha256: PolicySha256Schema.optional(),
+});
+export const RunSummarySchema = RunSummaryObjectSchema.superRefine((summary, ctx) => {
+  if (summary.policy_trace_status === "complete") {
+    if (summary.policy_trace_ref === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["policy_trace_ref"],
+        message: "complete requires policy_trace_ref",
+      });
+    }
+    if (summary.policy_trace_sha256 === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["policy_trace_sha256"],
+        message: "complete requires policy_trace_sha256",
+      });
+    }
+    return;
+  }
+
+  if (summary.policy_trace_ref !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["policy_trace_ref"],
+      message: "policy_trace_ref is only valid for complete",
+    });
+  }
+  if (summary.policy_trace_sha256 !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["policy_trace_sha256"],
+      message: "policy_trace_sha256 is only valid for complete",
+    });
+  }
 });
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type ProviderStat = z.infer<typeof ProviderStatSchema>;
