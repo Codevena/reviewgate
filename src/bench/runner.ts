@@ -21,6 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalJson } from "../audit/canonical.ts";
+import { verifyPolicyTraceReference, writePolicyTrace } from "../audit/policy-trace-store.ts";
 import { buildAdapters } from "../cli/build-adapters.ts";
 import { defaultConfig } from "../config/defaults.ts";
 import { ConfigSchema, type ReviewgateConfig } from "../config/define-config.ts";
@@ -397,14 +398,22 @@ export function validateAuthoritativeTracePair(
     if (run.traceRef === undefined || run.traceSha256 === undefined) {
       return invalidTracePair(
         "trace-reference",
-        `${label} complete policy trace is missing its inline reference or hash`,
+        `${label} complete policy trace is missing its persisted reference or hash`,
       );
     }
     const actualSha256 = sha256Text(canonicalJson(trace));
     if (run.traceSha256 !== actualSha256) {
       return invalidTracePair("trace-hash", `${label} policy trace content hash mismatches`);
     }
-    if (run.traceRef !== `inline-policy-trace/${actualSha256}.json`) {
+    const refMatch = run.traceRef.match(
+      /^artifacts\/policy-traces\/\d{4}\/\d{2}\/\d{2}\/policy\/([0-9a-f]{12})-i(0|[1-9]\d*)-([0-9a-f]{12})\.json$/,
+    );
+    if (
+      refMatch === null ||
+      refMatch[1] !== sha256Text(trace.run_id).slice(0, 12) ||
+      Number(refMatch[2]) !== trace.iter ||
+      refMatch[3] !== actualSha256.slice(0, 12)
+    ) {
       return invalidTracePair("trace-reference", `${label} policy trace reference mismatches`);
     }
   }
@@ -429,6 +438,8 @@ export interface RunBenchCaseInput {
   criticMaxAttempts?: number;
   /** Bench/Rig-only trace and ablation control. Normal gate/config paths never set this. */
   policyExecution?: PolicyExecutionOptions;
+  /** Matrix-owned contained store for authoritative trace artifacts. */
+  policyTraceStore?: { root: string; refPrefix: string; now?: Date };
 }
 
 function buildAuthoritativeTraceRun(input: {
@@ -439,6 +450,7 @@ function buildAuthoritativeTraceRun(input: {
   diffPatch: string;
   report: PendingReport;
   verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR";
+  traceStore?: { root: string; refPrefix: string; now?: Date };
 }): AuthoritativeTraceRun {
   const requestedAblations = [...input.execution.policyAblations].sort(
     (left, right) => POLICY_PASS_IDS.indexOf(left) - POLICY_PASS_IDS.indexOf(right),
@@ -471,7 +483,7 @@ function buildAuthoritativeTraceRun(input: {
   );
   if (input.trace === undefined) {
     return {
-      authoritative: input.execution.authoritative,
+      authoritative: false,
       status: "not-run",
       catalogVersion: POLICY_CATALOG_VERSION,
       requestedAblations,
@@ -481,14 +493,57 @@ function buildAuthoritativeTraceRun(input: {
     };
   }
   const traceSha256 = sha256Text(canonicalJson(input.trace));
+  if (input.traceStore === undefined) {
+    return {
+      authoritative: false,
+      status: "error",
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  const stored = writePolicyTrace({
+    auditDir: input.traceStore.root,
+    trace: input.trace,
+    ...(input.traceStore.now === undefined ? {} : { now: input.traceStore.now }),
+  });
+  if (stored.status !== "complete") {
+    return {
+      authoritative: false,
+      status: stored.status,
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  const verified = verifyPolicyTraceReference({
+    auditDir: input.traceStore.root,
+    ref: stored.ref,
+    sha256: stored.sha256,
+  });
+  if (!verified.ok || stored.sha256 !== traceSha256) {
+    return {
+      authoritative: false,
+      status: "error",
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
   return {
     authoritative: input.execution.authoritative,
     status: "complete",
     catalogVersion: input.trace.catalog_version,
     requestedAblations,
     trace: input.trace,
-    traceRef: `inline-policy-trace/${traceSha256}.json`,
-    traceSha256,
+    traceRef: `${input.traceStore.refPrefix}/${stored.ref}`,
+    traceSha256: stored.sha256,
     requestIdentitySha256,
     effectiveConfigSha256,
     finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
@@ -708,6 +763,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
             diffPatch,
             report,
             verdict: result.verdict,
+            ...(input.policyTraceStore === undefined ? {} : { traceStore: input.policyTraceStore }),
           });
 
     return {

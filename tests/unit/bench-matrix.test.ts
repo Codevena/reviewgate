@@ -6,7 +6,15 @@
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
@@ -15,10 +23,21 @@ import {
   type AuthoritativeTraceRun,
   validateAuthoritativeTracePair,
 } from "../../src/bench/runner.ts";
-import { runBenchMatrix } from "../../src/cli/commands/bench.ts";
+import {
+  captureThrowableSnapshot,
+  replayThrowableSnapshot,
+  runBenchMatrix,
+  verifyBenchArtifactReference,
+} from "../../src/cli/commands/bench.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
-import { BenchMatrixSchema, BenchResultSchema } from "../../src/schemas/bench-result.ts";
+import { SandboxUnavailableError } from "../../src/sandbox/errors.ts";
+import {
+  BenchMatrixSchema,
+  BenchPolicyTraceSetSchema,
+  BenchResponseManifestSchema,
+  BenchResultSchema,
+} from "../../src/schemas/bench-result.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import type { PolicyTrace } from "../../src/schemas/policy-trace.ts";
 
@@ -218,7 +237,7 @@ function traceRun(ablated: PolicyTrace["ablated"]): AuthoritativeTraceRun {
     catalogVersion: POLICY_CATALOG_VERSION,
     requestedAblations: ablated,
     trace,
-    traceRef: `inline-policy-trace/${traceSha256}.json`,
+    traceRef: `artifacts/policy-traces/2026/07/01/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`,
     traceSha256,
     requestIdentitySha256: "c".repeat(64),
     effectiveConfigSha256: "d".repeat(64),
@@ -257,10 +276,10 @@ describe("runBenchMatrix", () => {
     expect(ablated?.delta?.precision).toBeCloseTo(0.5, 10);
     expect(ablated?.delta?.clean_fp_rate).toBeCloseTo(-1, 10);
     const baselineResult = BenchResultSchema.parse(
-      JSON.parse(readFileSync(join(corpus, "baseline.result.json"), "utf8")),
+      JSON.parse(readFileSync(join(corpus, m.artifacts?.baseline.path ?? "missing"), "utf8")),
     );
     const ablatedResult = BenchResultSchema.parse(
-      JSON.parse(readFileSync(join(corpus, "no-judgment.confidence.result.json"), "utf8")),
+      JSON.parse(readFileSync(join(corpus, m.artifacts?.variants[0]?.path ?? "missing"), "utf8")),
     );
     expect(baselineResult.provenance.config_hash).toBe(ablatedResult.provenance.config_hash);
     expect(baselineResult.provenance.phases.confidence_floor).toBeGreaterThan(0);
@@ -271,9 +290,385 @@ describe("runBenchMatrix", () => {
     expect(baseline?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.ablated_pass_id).toBe("judgment.confidence");
+    const resultRefs = [m.artifacts?.baseline, ...(m.artifacts?.variants ?? [])];
+    for (const resultRef of resultRefs) {
+      expect(resultRef).toBeDefined();
+      if (!resultRef) continue;
+      const persisted = BenchResultSchema.parse(
+        JSON.parse(readFileSync(join(corpus, resultRef.path), "utf8")),
+      );
+      for (const row of persisted.cases) {
+        expect(row.policy_trace?.trace_ref).toStartWith("artifacts/policy-traces/");
+        expect(existsSync(join(corpus, row.policy_trace?.trace_ref ?? "missing"))).toBe(true);
+        if (
+          row.policy_trace?.trace_ref !== undefined &&
+          row.policy_trace.trace_sha256 !== undefined
+        ) {
+          expect(
+            verifyBenchArtifactReference({
+              root: corpus,
+              ref: row.policy_trace.trace_ref,
+              sha256: row.policy_trace.trace_sha256,
+              kind: "policy-trace",
+            }),
+          ).toMatchObject({ ok: true });
+          expect(readFileSync(join(corpus, row.policy_trace.trace_ref), "utf8")).toBe(
+            canonicalJson(row.policy_trace.trace),
+          );
+        }
+      }
+    }
+    const traceSetRef = (
+      m.artifacts as typeof m.artifacts & {
+        policy_trace_set?: { path: string; sha256: string };
+      }
+    )?.policy_trace_set;
+    expect(traceSetRef).toBeDefined();
+    expect(existsSync(join(corpus, traceSetRef?.path ?? "missing"))).toBe(true);
+    if (traceSetRef) {
+      const traceSetBytes = readFileSync(join(corpus, traceSetRef.path), "utf8");
+      const traceSet = BenchPolicyTraceSetSchema.parse(JSON.parse(traceSetBytes));
+      expect(traceSetBytes).toBe(canonicalJson(traceSet));
+      expect(
+        verifyBenchArtifactReference({
+          root: corpus,
+          ref: traceSetRef.path,
+          sha256: traceSetRef.sha256,
+          kind: "policy-trace-set",
+        }),
+      ).toMatchObject({ ok: true });
+      expect(traceSet.runs.map((run) => run.ablated_pass_id)).toEqual([
+        null,
+        "judgment.confidence",
+      ]);
+      expect(traceSet.response_manifest.sha256).toBe(
+        m.artifacts?.reviewer_responses.sha256 ?? "missing",
+      );
+      const tamperedTraceSet = {
+        ...traceSet,
+        runs: traceSet.runs.map((run, index) =>
+          index === 1 ? { ...run, label: `${run.label}-tampered` } : run,
+        ),
+      };
+      writeFileSync(join(corpus, traceSetRef.path), canonicalJson(tamperedTraceSet));
+      expect(
+        verifyBenchArtifactReference({
+          root: corpus,
+          ref: traceSetRef.path,
+          sha256: traceSetRef.sha256,
+          kind: "policy-trace-set",
+        }),
+      ).toEqual({ ok: false, reason: "hash-mismatch" });
+    }
     // The Δ table renders.
     expect(res.stdout).toContain("ablation");
     expect(res.stdout.toLowerCase()).toContain("baseline");
+  });
+
+  it("fails closed when a published trace path is replaced by a symlink", async () => {
+    const corpus = newCorpus();
+    const artifactDir = join(corpus, "symlink-attack");
+    const firstOut = join(artifactDir, "first.json");
+    const first = await runBenchMatrix({
+      repoRoot: corpus,
+      corpus,
+      out: firstOut,
+      ablate: ["confidence-floor"],
+      adapters: { codex: stub() },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(first.exitCode).toBe(0);
+    const firstMatrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(firstOut, "utf8")));
+    const baselineResult = BenchResultSchema.parse(
+      JSON.parse(
+        readFileSync(join(artifactDir, firstMatrix.artifacts?.baseline.path ?? "missing"), "utf8"),
+      ),
+    );
+    const traceRef = baselineResult.cases[0]?.policy_trace?.trace_ref;
+    expect(traceRef).toBeDefined();
+    if (traceRef === undefined) return;
+    const tracePath = join(artifactDir, traceRef);
+    const outside = join(corpus, "outside-trace.json");
+    writeFileSync(outside, readFileSync(tracePath));
+    unlinkSync(tracePath);
+    symlinkSync(outside, tracePath);
+
+    const attacked = await runBenchMatrix({
+      repoRoot: corpus,
+      corpus,
+      out: join(artifactDir, "attacked.json"),
+      ablate: ["confidence-floor"],
+      adapters: { codex: stub() },
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+    expect(attacked.exitCode).toBe(4);
+    expect(attacked.stdout).toBe("");
+    expect(attacked.stderr).toContain("policy trace artifact");
+    expect(existsSync(join(artifactDir, "attacked.json"))).toBe(false);
+  });
+
+  it("rejects missing, tampered, non-canonical, wrong-hash, traversing and symlink artifacts", () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-bench-artifact-verifier-"));
+    const manifest = BenchResponseManifestSchema.parse({
+      schema: "reviewgate.bench.provider-response-hashes.v2",
+      entries: [],
+    });
+    const canonical = canonicalJson(manifest);
+    const canonicalSha = sha256(canonical);
+    const canonicalRef = `artifacts/responses/${canonicalSha}.json`;
+    mkdirSync(join(root, "artifacts", "responses"), { recursive: true });
+    writeFileSync(join(root, canonicalRef), canonical, { mode: 0o600 });
+
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: canonicalRef,
+        sha256: canonicalSha,
+        kind: "response-manifest",
+      }),
+    ).toMatchObject({ ok: true });
+
+    const missingSha = "1".repeat(64);
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: `artifacts/responses/${missingSha}.json`,
+        sha256: missingSha,
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "missing" });
+
+    const tamperedSha = "2".repeat(64);
+    const tamperedRef = `artifacts/responses/${tamperedSha}.json`;
+    writeFileSync(join(root, tamperedRef), canonical, { mode: 0o600 });
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: tamperedRef,
+        sha256: tamperedSha,
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "hash-mismatch" });
+
+    const pretty = JSON.stringify(manifest, null, 2);
+    const prettySha = sha256(pretty);
+    const prettyRef = `artifacts/responses/${prettySha}.json`;
+    writeFileSync(join(root, prettyRef), pretty, { mode: 0o600 });
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: prettyRef,
+        sha256: prettySha,
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "non-canonical" });
+
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: canonicalRef,
+        sha256: "3".repeat(64),
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "identity-mismatch" });
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: "../outside.json",
+        sha256: canonicalSha,
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "invalid-reference" });
+
+    const symlinkManifest = BenchResponseManifestSchema.parse({
+      schema: "reviewgate.bench.provider-response-hashes.v2",
+      entries: [
+        {
+          provider: "codex",
+          kind: "review",
+          ordinal: 0,
+          request_sha256: "5".repeat(64),
+          response_sha256: "6".repeat(64),
+          outcome: "return",
+        },
+      ],
+    });
+    const symlinkBytes = canonicalJson(symlinkManifest);
+    const symlinkSha = sha256(symlinkBytes);
+    const symlinkRef = `artifacts/responses/${symlinkSha}.json`;
+    const symlinkTarget = join(root, "symlink-target.json");
+    writeFileSync(symlinkTarget, symlinkBytes, { mode: 0o600 });
+    symlinkSync(symlinkTarget, join(root, symlinkRef));
+    expect(
+      verifyBenchArtifactReference({
+        root,
+        ref: symlinkRef,
+        sha256: symlinkSha,
+        kind: "response-manifest",
+      }),
+    ).toEqual({ ok: false, reason: "not-a-file" });
+  });
+
+  it("captures and reconstructs exact immutable throwable snapshots without cross-variant aliasing", () => {
+    const sandbox = captureThrowableSnapshot(new SandboxUnavailableError("sandbox unavailable"));
+    expect(sandbox.ok).toBe(true);
+    if (!sandbox.ok) return;
+    const sandboxA = replayThrowableSnapshot(sandbox.snapshot);
+    const sandboxB = replayThrowableSnapshot(sandbox.snapshot);
+    expect(sandboxA).toBeInstanceOf(SandboxUnavailableError);
+    expect(sandboxB).toBeInstanceOf(SandboxUnavailableError);
+    expect(sandboxA).not.toBe(sandboxB);
+    expect((sandboxA as Error).message).toBe("sandbox unavailable");
+    expect(Object.isFrozen(sandbox.snapshot)).toBe(true);
+
+    const cause = new Error("root cause");
+    const ordinary = new Error("outer failure", { cause }) as Error & {
+      code: string;
+      retryable: boolean;
+      context: { attempt: number; labels: string[] };
+    };
+    ordinary.code = "E_RETRY";
+    ordinary.retryable = true;
+    ordinary.context = { attempt: 2, labels: ["critic", "retry"] };
+    const captured = captureThrowableSnapshot(ordinary);
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) return;
+    const first = replayThrowableSnapshot(captured.snapshot) as typeof ordinary;
+    const second = replayThrowableSnapshot(captured.snapshot) as typeof ordinary;
+    expect(first).toBeInstanceOf(Error);
+    expect(first).not.toBe(second);
+    expect(first.cause).toBeInstanceOf(Error);
+    expect(first.cause).not.toBe(second.cause);
+    expect(first.code).toBe("E_RETRY");
+    expect(first.retryable).toBe(true);
+    expect(first.context).toEqual({ attempt: 2, labels: ["critic", "retry"] });
+
+    const changedCode = new Error("outer failure") as Error & { code: string };
+    changedCode.code = "E_OTHER";
+    const changed = captureThrowableSnapshot(changedCode);
+    expect(changed.ok).toBe(true);
+    if (changed.ok) expect(changed.sha256).not.toBe(captured.sha256);
+
+    for (const primitive of ["plain throw", undefined, null] as const) {
+      const primitiveCapture = captureThrowableSnapshot(primitive);
+      expect(primitiveCapture.ok).toBe(true);
+      if (primitiveCapture.ok) {
+        expect(replayThrowableSnapshot(primitiveCapture.snapshot)).toBe(primitive);
+      }
+    }
+  });
+
+  it("fails closed for non-reconstructable or sensitive thrown values", () => {
+    class CustomError extends Error {}
+    expect(captureThrowableSnapshot(new CustomError("custom"))).toMatchObject({
+      ok: false,
+      reason: "unsupported-error-type",
+    });
+    const secret = new Error("failed") as Error & { apiToken: string };
+    secret.apiToken = "secret-value";
+    expect(captureThrowableSnapshot(secret)).toMatchObject({
+      ok: false,
+      reason: "sensitive-field",
+    });
+    expect(
+      captureThrowableSnapshot(new Error("failed at /Users/alice/private/file")),
+    ).toMatchObject({
+      ok: false,
+      reason: "unsafe-string",
+    });
+    const unsupported = new Error("failed") as Error & { debugPayload: { requestId: string } };
+    unsupported.debugPayload = { requestId: "request-1" };
+    expect(captureThrowableSnapshot(unsupported)).toMatchObject({
+      ok: false,
+      reason: "unsupported-field",
+    });
+  });
+
+  it("replays typed review and complete throws in full order across multiple variants", async () => {
+    const corpus = newCorpus();
+    const artifactDir = join(corpus, "typed-throws");
+    const out = join(artifactDir, "matrix.json");
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    let criticCalls = 0;
+    const primary: ProviderAdapter = {
+      ...stub(),
+      async review() {
+        primaryCalls++;
+        throw new SandboxUnavailableError("sandbox unavailable");
+      },
+    };
+    const fallbackBase = stub();
+    const fallback: ProviderAdapter = {
+      ...fallbackBase,
+      id: "gemini",
+      async review(input) {
+        fallbackCalls++;
+        return fallbackBase.review(input);
+      },
+    };
+    const critic: ProviderAdapter = {
+      id: "openrouter",
+      async preflight() {
+        return { available: true, version: "stub-1", authMode: "openrouter", error: null };
+      },
+      async review() {
+        throw new Error("critic must use complete");
+      },
+      async complete() {
+        criticCalls++;
+        const error = new Error("critic failed", {
+          cause: new Error("upstream failed"),
+        }) as Error & {
+          code: string;
+          retryable: boolean;
+        };
+        error.code = "E_CRITIC";
+        error.retryable = true;
+        throw error;
+      },
+    };
+
+    const result = await runBenchMatrix({
+      repoRoot: corpus,
+      corpus,
+      out,
+      ablate: ["confidence-floor", "judgment.hypothetical"],
+      criticProvider: "openrouter",
+      maxProviderCalls: 10,
+      adapters: { codex: primary, gemini: fallback, openrouter: critic },
+      providerAvailable: () => true,
+      now: () => new Date("2026-07-01T00:00:00Z"),
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(primaryCalls).toBe(2);
+    expect(fallbackCalls).toBe(2);
+    expect(criticCalls).toBe(2);
+    const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(matrix.variants).toHaveLength(3);
+    const manifestPath = join(artifactDir, matrix.artifacts?.reviewer_responses.path ?? "missing");
+    const manifestBytes = readFileSync(manifestPath, "utf8");
+    const manifest = BenchResponseManifestSchema.parse(JSON.parse(manifestBytes));
+    expect(manifest.entries.map((entry) => [entry.kind, entry.outcome])).toEqual([
+      ["review", "throw"],
+      ["review", "return"],
+      ["complete", "throw"],
+      ["review", "throw"],
+      ["review", "return"],
+      ["complete", "throw"],
+    ]);
+    expect(
+      manifest.entries
+        .filter((entry) => entry.throw_snapshot?.kind === "error")
+        .map((entry) =>
+          entry.throw_snapshot?.kind === "error" ? entry.throw_snapshot.error_type : null,
+        ),
+    ).toEqual(["SandboxUnavailableError", "Error", "SandboxUnavailableError", "Error"]);
+    expect(manifestBytes).not.toContain("stack");
+    expect(manifestBytes).not.toContain("sourceURL");
+    expect(manifestBytes).not.toContain("/Users/");
   });
 
   it("rejects every non-authoritative trace-pair boundary with a precise closed reason", () => {
@@ -494,18 +889,27 @@ describe("runBenchMatrix", () => {
     expect(res.exitCode).toBe(0);
     expect(reviewCalls).toBe(2); // baseline only; the variant is deterministic replay
     expect(criticCalls).toBe(2);
-    expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(true);
-    expect(existsSync(join(artifactDir, "no-judgment.critic.result.json"))).toBe(true);
-    const manifest = JSON.parse(
-      readFileSync(join(artifactDir, "reviewer-responses.sha256.json"), "utf8"),
-    ) as { entries: Array<{ request_sha256: string; response_sha256: string }> };
+    const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
+    expect(existsSync(join(artifactDir, matrix.artifacts?.baseline.path ?? "missing"))).toBe(true);
+    expect(existsSync(join(artifactDir, matrix.artifacts?.variants[0]?.path ?? "missing"))).toBe(
+      true,
+    );
+    const manifest = BenchResponseManifestSchema.parse(
+      JSON.parse(
+        readFileSync(
+          join(artifactDir, matrix.artifacts?.reviewer_responses.path ?? "missing"),
+          "utf8",
+        ),
+      ),
+    );
     expect(manifest.entries).toHaveLength(4);
     expect(manifest.entries.every((e) => e.request_sha256.length === 64)).toBe(true);
     expect(manifest.entries.every((e) => e.response_sha256.length === 64)).toBe(true);
-    const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
-    expect(matrix.artifacts?.baseline.path).toBe("baseline.result.json");
-    expect(matrix.artifacts?.variants[0]?.path).toBe("no-judgment.critic.result.json");
-    expect(matrix.artifacts?.reviewer_responses.path).toBe("reviewer-responses.sha256.json");
+    expect(matrix.artifacts?.baseline.path).toMatch(/^artifacts\/results\/[0-9a-f]{64}\.json$/);
+    expect(matrix.artifacts?.variants[0]?.path).toMatch(/^artifacts\/results\/[0-9a-f]{64}\.json$/);
+    expect(matrix.artifacts?.reviewer_responses.path).toMatch(
+      /^artifacts\/responses\/[0-9a-f]{64}\.json$/,
+    );
   });
 
   it("replays reviewer retry attempts in the same order as the captured baseline", async () => {
@@ -549,19 +953,29 @@ describe("runBenchMatrix", () => {
 
     expect(res.exitCode).toBe(0);
     expect(reviewCalls).toBe(3);
+    const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
     const baseline = BenchResultSchema.parse(
-      JSON.parse(readFileSync(join(artifactDir, "baseline.result.json"), "utf8")),
+      JSON.parse(
+        readFileSync(join(artifactDir, matrix.artifacts?.baseline.path ?? "missing"), "utf8"),
+      ),
     );
     const variant = BenchResultSchema.parse(
-      JSON.parse(readFileSync(join(artifactDir, "no-judgment.confidence.result.json"), "utf8")),
+      JSON.parse(
+        readFileSync(join(artifactDir, matrix.artifacts?.variants[0]?.path ?? "missing"), "utf8"),
+      ),
     );
     expect(baseline.providers[0]?.coverage.value).toBe(1);
     expect(variant.providers[0]?.coverage.value).toBe(1);
     expect(baseline.provenance.integrity?.provider_calls_used).toBe(3);
     expect(baseline.provenance.integrity?.reviewer_max_attempts).toBe(2);
-    const manifest = JSON.parse(
-      readFileSync(join(artifactDir, "reviewer-responses.sha256.json"), "utf8"),
-    ) as { entries: unknown[] };
+    const manifest = BenchResponseManifestSchema.parse(
+      JSON.parse(
+        readFileSync(
+          join(artifactDir, matrix.artifacts?.reviewer_responses.path ?? "missing"),
+          "utf8",
+        ),
+      ),
+    );
     expect(manifest.entries).toHaveLength(3);
   });
 
@@ -613,8 +1027,8 @@ describe("runBenchMatrix", () => {
     expect(res.exitCode).toBe(4);
     expect(res.stderr).toContain("variant corpus commit differs from baseline");
     expect(res.stderr).toContain("variant source commit differs from baseline");
-    expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(true);
-    expect(existsSync(join(artifactDir, "no-judgment.critic.result.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(false);
+    expect(existsSync(join(artifactDir, "no-judgment.critic.result.json"))).toBe(false);
     expect(existsSync(join(artifactDir, "matrix.json"))).toBe(false);
   });
 
@@ -683,11 +1097,16 @@ describe("runBenchMatrix", () => {
 
   it("never makes live critic completions in a replay variant", async () => {
     const corpus = newCorpus();
+    let preflightCalls = 0;
     let reviewCalls = 0;
     let criticCalls = 0;
     const reviewer = stub();
     const countedReviewer: ProviderAdapter = {
       ...reviewer,
+      async preflight(config) {
+        preflightCalls++;
+        return reviewer.preflight(config);
+      },
       async review(input) {
         reviewCalls++;
         return reviewer.review(input);
@@ -729,6 +1148,7 @@ describe("runBenchMatrix", () => {
     });
 
     expect(res.exitCode).toBe(0);
+    expect(preflightCalls).toBe(1);
     expect(reviewCalls).toBe(2);
     expect(criticCalls).toBe(2);
   });
@@ -783,9 +1203,17 @@ describe("runBenchMatrix", () => {
     expect(res.exitCode).toBe(0);
     expect(primaryCalls).toBe(2);
     expect(fallbackCalls).toBe(2);
-    const manifest = JSON.parse(
-      readFileSync(join(artifactDir, "reviewer-responses.sha256.json"), "utf8"),
-    ) as { entries: Array<{ provider: string }> };
+    const matrix = BenchMatrixSchema.parse(
+      JSON.parse(readFileSync(join(artifactDir, "matrix.json"), "utf8")),
+    );
+    const manifest = BenchResponseManifestSchema.parse(
+      JSON.parse(
+        readFileSync(
+          join(artifactDir, matrix.artifacts?.reviewer_responses.path ?? "missing"),
+          "utf8",
+        ),
+      ),
+    );
     expect(manifest.entries.filter((entry) => entry.provider === "codex")).toHaveLength(2);
     expect(manifest.entries.filter((entry) => entry.provider === "gemini")).toHaveLength(2);
   });
