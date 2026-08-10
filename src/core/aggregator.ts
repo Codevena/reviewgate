@@ -689,6 +689,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
       : deduped;
 
   const critic = input.critic;
+  const criticAblated = input.policyRuntime?.isAblated("judgment.critic") ?? false;
   // #4: a BLOCKING finding whose every contributing base provider is high-precision is
   // protected from the SOFT demoters. Never protects a self_refuted (T1) or INFO finding —
   // only a real, blocking finding from a trusted reviewer. Anti-suppression by construction.
@@ -789,11 +790,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
       criticDropped.push(f); // INFO likely_fp dropped entirely — keep it attributable
       continue;
     }
-    if (matched && protectedBy === "high-precision-reviewer") {
+    if (!criticAblated && matched && protectedBy === "high-precision-reviewer") {
       survivors.push({ ...transitioned, protected_high_precision: true });
       continue;
     }
-    if (matched && (isSecurityProtected || isCorroborated)) {
+    if (!criticAblated && matched && (isSecurityProtected || isCorroborated)) {
       survivors.push({ ...transitioned, critic_verdict: "keep" });
       continue;
     }
@@ -892,6 +893,7 @@ export function aggregate(input: AggregateInput): AggregateResult {
   // foreign (still tagged, so the agent can dispose it via an out-of-scope decision). Done as
   // an INDEPENDENT pass (not inside scopeFindings, which early-returns when scopeToDiff is off).
   const foreignFiles = input.foreignFiles;
+  const sessionAblated = input.policyRuntime?.isAblated("scope.session") ?? false;
   const foreignScoped: Finding[] =
     foreignFiles && foreignFiles.size > 0
       ? deltaScoped.map((f) => {
@@ -929,7 +931,11 @@ export function aggregate(input: AggregateInput): AggregateResult {
           // The legacy INFO marker is explanatory rather than a blocking policy
           // transition. A protected blocking finding is likewise tagged so the
           // out-of-scope disposition remains available.
-          if (isForeign && (f.severity === "INFO" || protectedBy !== undefined)) {
+          if (
+            !sessionAblated &&
+            isForeign &&
+            (f.severity === "INFO" || protectedBy !== undefined)
+          ) {
             return { ...transitioned, foreign_to_session: true };
           }
           return transitioned;

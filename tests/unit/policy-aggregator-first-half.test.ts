@@ -375,6 +375,143 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
     }
   });
 
+  it("removes the high-precision Critic marker when its protected match is ablated", () => {
+    const protectedFinding = finding({ signature: "sig-critic-high-precision-ablated" });
+    const critic = new Map([
+      [protectedFinding.signature, { verdict: "likely_fp" as const, reason: "not actionable" }],
+    ]);
+    const input = {
+      findings: [protectedFinding],
+      reviewersTotal: 1,
+      protectedReviewers: new Set(["codex"]),
+      critic,
+    };
+    const legacy = aggregate(input);
+    const active = run("critic-high-precision-active", input);
+    const ablated = run("critic-high-precision-ablated", input, ["judgment.critic"]);
+    const control = aggregate({
+      findings: [protectedFinding],
+      reviewersTotal: 1,
+      protectedReviewers: input.protectedReviewers,
+    });
+
+    expect(legacy.dedupedFindings[0]).toMatchObject({ protected_high_precision: true });
+    expect(active.result.dedupedFindings[0]).toMatchObject({ protected_high_precision: true });
+    expect(numericSummary(active.recorder, "judgment.critic")).toEqual(
+      PROTECTED_BLOCKING_PRESERVED,
+    );
+    expect(numericSummary(ablated.recorder, "judgment.critic")).toEqual(ABLATED_BLOCKING_PRESERVED);
+    expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+    expect(ablated.result.dedupedFindings[0]).toMatchObject({
+      details: protectedFinding.details,
+    });
+    expect(ablated.result.dedupedFindings[0]?.protected_high_precision).toBeUndefined();
+    expect(ablated.result.dedupedFindings[0]?.critic_verdict).toBeUndefined();
+    expect(ablated.result.dedupedFindings[0]?.critic_reason).toBeUndefined();
+    expect(ablated.result.dedupedFindings[0]?.policy_effects).toBeUndefined();
+    expect(
+      ablated.recorder
+        .evaluations()
+        .filter((evaluation) => evaluation.pass_id === "judgment.critic"),
+    ).toEqual([
+      {
+        pass_id: "judgment.critic",
+        order: 70,
+        result: "would-apply",
+        before: "WARN",
+        after: "WARN",
+        reason_code: "critic-likely-fp",
+        source_signatures: [protectedFinding.signature],
+      },
+    ]);
+  });
+
+  it("removes security and corroboration Critic keep markers when protected matches are ablated", () => {
+    const security = finding({
+      signature: "sig-critic-security-ablated",
+      severity: "CRITICAL",
+      category: "security",
+    });
+    const corroboratedA = finding({
+      signature: "sig-critic-corroborated-a",
+      reviewer: { provider: "codex", model: "m", persona: "quality" },
+    });
+    const corroboratedB = finding({
+      signature: "sig-critic-corroborated-b",
+      reviewer: { provider: "gemini", model: "m", persona: "quality" },
+    });
+    const cases: Array<{
+      name: string;
+      findings: Finding[];
+      reviewersTotal: number;
+      criticSignature: string;
+      severity: Finding["severity"];
+    }> = [
+      {
+        name: "security",
+        findings: [security],
+        reviewersTotal: 1,
+        criticSignature: security.signature,
+        severity: "CRITICAL",
+      },
+      {
+        name: "corroboration",
+        findings: [corroboratedA, corroboratedB],
+        reviewersTotal: 3,
+        criticSignature: corroboratedB.signature,
+        severity: "WARN",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const critic = new Map([[testCase.criticSignature, { verdict: "likely_fp" as const }]]);
+      const input = {
+        findings: testCase.findings,
+        reviewersTotal: testCase.reviewersTotal,
+        critic,
+      };
+      const legacy = aggregate(input);
+      const active = run(`critic-${testCase.name}-active`, input);
+      const ablated = run(`critic-${testCase.name}-ablated`, input, ["judgment.critic"]);
+      const control = aggregate({
+        findings: testCase.findings,
+        reviewersTotal: testCase.reviewersTotal,
+      });
+
+      expect(legacy.dedupedFindings[0]).toMatchObject({ critic_verdict: "keep" });
+      expect(active.result.dedupedFindings[0]).toMatchObject({ critic_verdict: "keep" });
+      expect(numericSummary(active.recorder, "judgment.critic")).toEqual(
+        PROTECTED_BLOCKING_PRESERVED,
+      );
+      expect(numericSummary(ablated.recorder, "judgment.critic")).toEqual(
+        ABLATED_BLOCKING_PRESERVED,
+      );
+      expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+      expect(ablated.result.dedupedFindings[0]).toMatchObject({
+        details: testCase.findings[0]?.details,
+      });
+      expect(ablated.result.dedupedFindings[0]?.critic_verdict).toBeUndefined();
+      expect(ablated.result.dedupedFindings[0]?.critic_reason).toBeUndefined();
+      expect(ablated.result.dedupedFindings[0]?.protected_high_precision).toBeUndefined();
+      expect(ablated.result.dedupedFindings[0]?.policy_effects).toBeUndefined();
+      expect(
+        ablated.recorder
+          .evaluations()
+          .filter((evaluation) => evaluation.pass_id === "judgment.critic"),
+      ).toEqual([
+        {
+          pass_id: "judgment.critic",
+          order: 70,
+          result: "would-apply",
+          before: testCase.severity,
+          after: testCase.severity,
+          reason_code: "critic-likely-fp",
+          source_signatures: testCase.findings.map((item) => item.signature),
+        },
+      ]);
+    }
+  });
+
   it("records diff-scope no-opportunity, miss, active, ablated, and protected tuples", () => {
     const ranges = new Map([["src/a.ts", [[10, 14]] as Array<[number, number]>]]);
     const noLine = run("diff-no-line", {
@@ -591,6 +728,48 @@ describe("aggregator policy numeric contracts, orders 60-100", () => {
       reason_code: "foreign-to-session",
       protected_by: "out-of-diff-blocking-hatch",
     });
+  });
+
+  it("removes the foreign-session hatch marker when its protected match is ablated", () => {
+    const protectedFinding = finding({ signature: "sig-session-hatch-ablated" });
+    const input = {
+      findings: [protectedFinding],
+      reviewersTotal: 1,
+      foreignFiles: new Set([protectedFinding.file]),
+      outOfDiffBlocking: [protectedFinding.category],
+    };
+    const legacy = aggregate(input);
+    const active = run("session-hatch-active", input);
+    const ablated = run("session-hatch-ablated", input, ["scope.session"]);
+    const control = aggregate({
+      findings: [protectedFinding],
+      reviewersTotal: 1,
+      outOfDiffBlocking: input.outOfDiffBlocking,
+    });
+
+    expect(legacy.dedupedFindings[0]).toMatchObject({ foreign_to_session: true });
+    expect(active.result.dedupedFindings[0]).toMatchObject({ foreign_to_session: true });
+    expect(numericSummary(active.recorder, "scope.session")).toEqual(PROTECTED_BLOCKING_PRESERVED);
+    expect(numericSummary(ablated.recorder, "scope.session")).toEqual(ABLATED_BLOCKING_PRESERVED);
+    expect(ablated.result.dedupedFindings[0]).toEqual(control.dedupedFindings[0]);
+    expect(ablated.result.dedupedFindings[0]).toMatchObject({
+      details: protectedFinding.details,
+    });
+    expect(ablated.result.dedupedFindings[0]?.foreign_to_session).toBeUndefined();
+    expect(ablated.result.dedupedFindings[0]?.policy_effects).toBeUndefined();
+    expect(
+      ablated.recorder.evaluations().filter((evaluation) => evaluation.pass_id === "scope.session"),
+    ).toEqual([
+      {
+        pass_id: "scope.session",
+        order: 100,
+        result: "would-apply",
+        before: "WARN",
+        after: "WARN",
+        reason_code: "foreign-to-session",
+        source_signatures: [protectedFinding.signature],
+      },
+    ]);
   });
 });
 
