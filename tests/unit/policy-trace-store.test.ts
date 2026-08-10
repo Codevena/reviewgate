@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -47,8 +50,10 @@ function tmp(prefix = "rg-policy-store-"): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-function sha256(bytes: string): string {
-  return createHash("sha256").update(Buffer.from(bytes, "utf8")).digest("hex");
+function sha256(bytes: string | Buffer): string {
+  return createHash("sha256")
+    .update(typeof bytes === "string" ? Buffer.from(bytes, "utf8") : bytes)
+    .digest("hex");
 }
 
 function emptyRanSummary(pass_id: (typeof PASS_IDS)[number], considered = 0) {
@@ -147,6 +152,26 @@ function allDescendants(root: string): string[] {
   });
 }
 
+function writeUncheckedArtifact(
+  auditDir: string,
+  trace: PolicyTrace,
+  bytes: Buffer,
+): { ref: string; sha256: string; path: string } {
+  const contentSha256 = sha256(bytes);
+  const ref = `2026/08/10/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${contentSha256.slice(0, 12)}.json`;
+  const path = join(auditDir, ...ref.split("/"));
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, bytes);
+  return { ref, sha256: contentSha256, path };
+}
+
+function artifactDescriptor(auditDir: string, trace: PolicyTrace) {
+  const canonical = canonicalJson(trace);
+  const sha = sha256(canonical);
+  const ref = `2026/08/10/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${sha.slice(0, 12)}.json`;
+  return { canonical, ref, sha256: sha, path: join(auditDir, ...ref.split("/")) };
+}
+
 describe("canonical policy trace storage", () => {
   it("keeps the audit canonicalizer sorted recursively and byte-stable", () => {
     expect(canonicalJson({ z: 1, a: { d: 4, b: 2 }, c: [2, { y: 1, x: 0 }] })).toBe(
@@ -216,6 +241,94 @@ describe("canonical policy trace storage", () => {
     });
     expect(allDescendants(auditDir).some((path) => path.endsWith(".tmp"))).toBe(false);
   });
+
+  it("rejects a symlinked year parent before creating a policy path outside the audit root", () => {
+    const root = tmp();
+    const auditDir = join(root, "audit");
+    const outside = join(root, "outside");
+    mkdirSync(auditDir);
+    mkdirSync(outside);
+    symlinkSync(outside, join(auditDir, "2026"));
+
+    expect(writePolicyTrace({ auditDir, trace: emptyTrace(), now: NOW })).toEqual({
+      status: "error",
+    });
+    expect(existsSync(join(outside, "08"))).toBe(false);
+    expect(existsSync(join(auditDir, "2026", "08", "10", "policy"))).toBe(false);
+    expect(allDescendants(outside)).toEqual([]);
+  });
+
+  it("rejects a symlinked audit root without mutating its target", () => {
+    const root = tmp();
+    const outside = join(root, "outside");
+    const auditDir = join(root, "audit");
+    mkdirSync(outside);
+    symlinkSync(outside, auditDir);
+
+    expect(writePolicyTrace({ auditDir, trace: emptyTrace(), now: NOW })).toEqual({
+      status: "error",
+    });
+    expect(allDescendants(outside)).toEqual([]);
+  });
+
+  it("never follows or replaces a pre-existing final symlink, hardlink, or wrong file", () => {
+    const trace = emptyTrace();
+
+    const symlinkRoot = tmp();
+    const symlinkAudit = join(symlinkRoot, "audit");
+    const symlinkArtifact = artifactDescriptor(symlinkAudit, trace);
+    const symlinkVictim = join(symlinkRoot, "victim.json");
+    mkdirSync(dirname(symlinkArtifact.path), { recursive: true });
+    writeFileSync(symlinkVictim, "victim-must-not-change");
+    symlinkSync(symlinkVictim, symlinkArtifact.path);
+    expect(writePolicyTrace({ auditDir: symlinkAudit, trace, now: NOW })).toEqual({
+      status: "error",
+    });
+    expect(lstatSync(symlinkArtifact.path).isSymbolicLink()).toBe(true);
+    expect(readFileSync(symlinkVictim, "utf8")).toBe("victim-must-not-change");
+
+    const hardlinkRoot = tmp();
+    const hardlinkAudit = join(hardlinkRoot, "audit");
+    const hardlinkArtifact = artifactDescriptor(hardlinkAudit, trace);
+    const hardlinkVictim = join(hardlinkRoot, "victim.json");
+    mkdirSync(dirname(hardlinkArtifact.path), { recursive: true });
+    writeFileSync(hardlinkVictim, "hardlink-must-not-change");
+    linkSync(hardlinkVictim, hardlinkArtifact.path);
+    expect(writePolicyTrace({ auditDir: hardlinkAudit, trace, now: NOW })).toEqual({
+      status: "error",
+    });
+    expect(readFileSync(hardlinkArtifact.path, "utf8")).toBe("hardlink-must-not-change");
+    expect(readFileSync(hardlinkVictim, "utf8")).toBe("hardlink-must-not-change");
+
+    const wrongRoot = tmp();
+    const wrongAudit = join(wrongRoot, "audit");
+    const wrongArtifact = artifactDescriptor(wrongAudit, trace);
+    mkdirSync(dirname(wrongArtifact.path), { recursive: true });
+    writeFileSync(wrongArtifact.path, "wrong-existing-content");
+    const wrongInode = statSync(wrongArtifact.path).ino;
+    expect(writePolicyTrace({ auditDir: wrongAudit, trace, now: NOW })).toEqual({
+      status: "error",
+    });
+    expect(readFileSync(wrongArtifact.path, "utf8")).toBe("wrong-existing-content");
+    expect(statSync(wrongArtifact.path).ino).toBe(wrongInode);
+  });
+
+  it("reuses a pre-existing exact regular artifact without replacing its inode", () => {
+    const auditDir = join(tmp(), "audit");
+    const trace = emptyTrace();
+    const artifact = artifactDescriptor(auditDir, trace);
+    mkdirSync(dirname(artifact.path), { recursive: true });
+    writeFileSync(artifact.path, artifact.canonical, { mode: 0o600 });
+    const inode = statSync(artifact.path).ino;
+
+    expect(writePolicyTrace({ auditDir, trace, now: NOW })).toEqual({
+      status: "complete",
+      ref: artifact.ref,
+      sha256: artifact.sha256,
+    });
+    expect(statSync(artifact.path).ino).toBe(inode);
+    expect(readFileSync(artifact.path, "utf8")).toBe(artifact.canonical);
+  });
 });
 
 describe("policy trace reference security", () => {
@@ -279,5 +392,84 @@ describe("policy trace reference security", () => {
     expect(writePolicyTrace({ auditDir: join(tmp(), "above"), trace: above, now: NOW })).toEqual({
       status: "overflow",
     });
+  });
+
+  it("rejects invalid UTF-8 even when the raw hash, filename, and lossy JSON are consistent", () => {
+    const auditDir = join(tmp(), "audit");
+    const trace = emptyTrace("invalid-\uFFFD-byte");
+    const canonical = Buffer.from(canonicalJson(trace), "utf8");
+    const replacement = Buffer.from("\uFFFD", "utf8");
+    const replacementAt = canonical.indexOf(replacement);
+    expect(replacementAt).toBeGreaterThan(-1);
+    const raw = Buffer.concat([
+      canonical.subarray(0, replacementAt),
+      Buffer.from([0xff]),
+      canonical.subarray(replacementAt + replacement.length),
+    ]);
+    expect(raw.toString("utf8")).toBe(canonical.toString("utf8"));
+    const artifact = writeUncheckedArtifact(auditDir, trace, raw);
+
+    const verified = verifyPolicyTraceReference({
+      auditDir,
+      ref: artifact.ref,
+      sha256: artifact.sha256,
+    });
+    expect(verified.ok).toBe(false);
+    if (!verified.ok) expect(verified.reason).toBe("invalid-encoding");
+  });
+
+  it("rejects a schema-valid hash-consistent artifact above the verification byte limit", () => {
+    const auditDir = join(tmp(), "audit");
+    const trace = maximumSignatureTrace(170);
+    const bytes = Buffer.from(canonicalJson(trace), "utf8");
+    expect(bytes.length).toBe(1_053_027);
+    const artifact = writeUncheckedArtifact(auditDir, trace, bytes);
+
+    const verified = verifyPolicyTraceReference({
+      auditDir,
+      ref: artifact.ref,
+      sha256: artifact.sha256,
+    });
+    expect(verified.ok).toBe(false);
+    if (!verified.ok) expect(verified.reason).toBe("too-large");
+  });
+
+  it("rejects final policy files that are symlinks or have another hardlink", () => {
+    const symlinkAudit = join(tmp(), "audit");
+    const symlinkStored = writePolicyTrace({
+      auditDir: symlinkAudit,
+      trace: emptyTrace(),
+      now: NOW,
+    });
+    if (symlinkStored.status !== "complete") throw new Error("fixture trace did not persist");
+    const symlinkArtifact = join(symlinkAudit, ...symlinkStored.ref.split("/"));
+    const containedTarget = join(symlinkAudit, "contained-copy.json");
+    writeFileSync(containedTarget, readFileSync(symlinkArtifact));
+    rmSync(symlinkArtifact);
+    symlinkSync(containedTarget, symlinkArtifact);
+    const symlinkVerified = verifyPolicyTraceReference({
+      auditDir: symlinkAudit,
+      ref: symlinkStored.ref,
+      sha256: symlinkStored.sha256,
+    });
+    expect(symlinkVerified.ok).toBe(false);
+    if (!symlinkVerified.ok) expect(symlinkVerified.reason).toBe("not-a-file");
+
+    const hardlinkAudit = join(tmp(), "audit");
+    const hardlinkStored = writePolicyTrace({
+      auditDir: hardlinkAudit,
+      trace: emptyTrace(),
+      now: NOW,
+    });
+    if (hardlinkStored.status !== "complete") throw new Error("fixture trace did not persist");
+    const hardlinkArtifact = join(hardlinkAudit, ...hardlinkStored.ref.split("/"));
+    linkSync(hardlinkArtifact, join(hardlinkAudit, "alias.json"));
+    const hardlinkVerified = verifyPolicyTraceReference({
+      auditDir: hardlinkAudit,
+      ref: hardlinkStored.ref,
+      sha256: hardlinkStored.sha256,
+    });
+    expect(hardlinkVerified.ok).toBe(false);
+    if (!hardlinkVerified.ok) expect(hardlinkVerified.reason).toBe("not-a-file");
   });
 });
