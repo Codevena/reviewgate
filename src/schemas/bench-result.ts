@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import { canonicalJson } from "../audit/canonical.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
+import { PolicyTraceSchema } from "./policy-trace.ts";
 
 // reviewgate bench — result schema (spec §5, §7.2). What `bench run` writes and
 // `bench report` reads. Every rate carries its raw numerator/denominator + a Wilson
@@ -184,6 +188,100 @@ export const CaseCriticSchema = z
     }
   });
 
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const PolicyPassIdSchema = z.enum(POLICY_PASS_IDS);
+
+export const BenchPolicyTraceRunSchema = z
+  .object({
+    authoritative: z.boolean(),
+    status: z.enum(["complete", "not-run", "error", "overflow"]),
+    catalog_version: z.string().min(1),
+    requested_ablations: z.array(PolicyPassIdSchema),
+    trace: PolicyTraceSchema.optional(),
+    trace_ref: z.string().min(1).optional(),
+    trace_sha256: Sha256Schema.optional(),
+    request_identity_sha256: Sha256Schema,
+    effective_config_sha256: Sha256Schema,
+    final_identity_sha256: Sha256Schema,
+    reason: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const completeFields = [value.trace, value.trace_ref, value.trace_sha256];
+    if (value.status === "complete") {
+      if (completeFields.some((field) => field === undefined)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["trace"],
+          message: "complete policy trace requires trace/ref/hash",
+        });
+      }
+      if (value.trace !== undefined && value.trace_sha256 !== undefined) {
+        const actualSha256 = createHash("sha256")
+          .update(Buffer.from(canonicalJson(value.trace), "utf8"))
+          .digest("hex");
+        if (value.trace_sha256 !== actualSha256) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_sha256"],
+            message: "embedded policy trace hash mismatch",
+          });
+        }
+        if (value.trace_ref !== `inline-policy-trace/${actualSha256}.json`) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: "embedded policy trace reference mismatch",
+          });
+        }
+        const finalSha256 = createHash("sha256")
+          .update(Buffer.from(canonicalJson(value.trace.final), "utf8"))
+          .digest("hex");
+        if (value.final_identity_sha256 !== finalSha256) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["final_identity_sha256"],
+            message: "embedded policy final identity mismatch",
+          });
+        }
+        if (
+          value.requested_ablations.length !== value.trace.ablated.length ||
+          value.requested_ablations.some((passId, index) => passId !== value.trace?.ablated[index])
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["requested_ablations"],
+            message: "requested ablations must equal the embedded trace profile",
+          });
+        }
+      }
+    } else if (completeFields.some((field) => field !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["trace"],
+        message: `${value.status} policy trace forbids trace/ref/hash`,
+      });
+    }
+    if (value.authoritative !== (value.status === "complete" && value.reason === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authoritative"],
+        message: "authoritative requires complete trace and no invalidity reason",
+      });
+    }
+    if (
+      value.authoritative &&
+      (value.catalog_version !== POLICY_CATALOG_VERSION ||
+        value.trace?.catalog_version !== POLICY_CATALOG_VERSION)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["catalog_version"],
+        message: "authoritative trace requires the current policy catalog",
+      });
+    }
+  });
+
 export const CaseResultSchema = z
   .object({
     id: z.string(),
@@ -211,6 +309,9 @@ export const CaseResultSchema = z
     latency_ms: z.number().nonnegative().nullable(),
     error: z.string().nullable(),
     critic: CaseCriticSchema.optional(),
+    // Additive: legacy BenchResult v1 rows without traces remain parseable, but
+    // exact policy matrix runs require this block before they can be scored.
+    policy_trace: BenchPolicyTraceRunSchema.optional(),
   })
   .strict();
 
@@ -398,6 +499,51 @@ export const MatrixVariantSchema = z
     authoritative: z.boolean().optional(),
     result_ref: z.string().optional(),
     result_sha256: z.string().optional(),
+    policy: z
+      .object({
+        catalog_version: z.string().min(1),
+        ablated_pass_id: PolicyPassIdSchema.nullable(),
+        trace_status: z.enum(["complete", "not-run", "error", "overflow"]),
+        trace_ref: z.string().min(1).optional(),
+        trace_sha256: Sha256Schema.optional(),
+        raw_response_sha256: z.array(Sha256Schema),
+        authoritative: z.boolean(),
+        reason: z.string().min(1).nullable(),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if (value.authoritative && value.catalog_version !== POLICY_CATALOG_VERSION) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["catalog_version"],
+            message: "authoritative matrix policy requires the current catalog",
+          });
+        }
+        const hasIdentity = value.trace_ref !== undefined && value.trace_sha256 !== undefined;
+        const hasAnyIdentity = value.trace_ref !== undefined || value.trace_sha256 !== undefined;
+        if (value.trace_status === "complete" && !hasIdentity) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: "complete matrix policy requires trace ref/hash",
+          });
+        }
+        if (value.trace_status !== "complete" && hasAnyIdentity) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: `${value.trace_status} matrix policy forbids trace ref/hash`,
+          });
+        }
+        if (value.authoritative !== (value.trace_status === "complete" && value.reason === null)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["authoritative"],
+            message: "authoritative matrix policy requires complete trace and no reason",
+          });
+        }
+      })
+      .optional(),
   })
   .strict();
 
@@ -426,6 +572,7 @@ export type BenchMatrix = z.infer<typeof BenchMatrixSchema>;
 export type PhasesSnapshot = z.infer<typeof PhasesSnapshotSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type CaseResult = z.infer<typeof CaseResultSchema>;
+export type BenchPolicyTraceRun = z.infer<typeof BenchPolicyTraceRunSchema>;
 export type SpreadStat = z.infer<typeof SpreadStatSchema>;
 export type Stability = z.infer<typeof StabilitySchema>;
 export type ProviderResult = z.infer<typeof ProviderResultSchema>;

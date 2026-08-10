@@ -21,16 +21,25 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { canonicalJson } from "../../audit/canonical.ts";
 import type { MatchResult } from "../../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../../bench/metrics.ts";
 import { isAuthoritative, renderBenchMatrix, renderBenchReport } from "../../bench/report.ts";
 import {
+  type AuthoritativeTraceRun,
   type CaseRunOutcome,
   type SuppressorConfig,
   buildBenchConfig,
   runBenchCase,
+  validateAuthoritativeTracePair,
 } from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
+import {
+  POLICY_CATALOG_VERSION,
+  POLICY_PASS_IDS,
+  type PolicyPassId,
+} from "../../core/policy/catalog.ts";
+import type { PolicyExecutionOptions } from "../../core/policy/replay.ts";
 import type {
   OpenRouterProviderRouting,
   ProviderAdapter,
@@ -142,6 +151,8 @@ export interface BenchRunInput {
   now?: () => Date;
   /** injectable quota-failover availability probe (tests); production probes real CLIs. */
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
+  /** Internal matrix-only policy trace/ablation options. */
+  policyExecution?: PolicyExecutionOptions;
 }
 
 export interface BenchRunnerInfo {
@@ -427,6 +438,25 @@ function outcomeToCaseResult(
     latency_ms: out.latencyMs,
     error: out.error,
     ...(out.critic ? { critic: out.critic } : {}),
+    ...(out.policy
+      ? {
+          policy_trace: {
+            authoritative: out.policy.authoritative,
+            status: out.policy.status,
+            catalog_version: out.policy.catalogVersion,
+            requested_ablations: out.policy.requestedAblations,
+            ...(out.policy.trace === undefined ? {} : { trace: out.policy.trace }),
+            ...(out.policy.traceRef === undefined ? {} : { trace_ref: out.policy.traceRef }),
+            ...(out.policy.traceSha256 === undefined
+              ? {}
+              : { trace_sha256: out.policy.traceSha256 }),
+            request_identity_sha256: out.policy.requestIdentitySha256,
+            effective_config_sha256: out.policy.effectiveConfigSha256,
+            final_identity_sha256: out.policy.finalIdentitySha256,
+            reason: out.policy.authoritative ? null : `policy trace status ${out.policy.status}`,
+          },
+        }
+      : {}),
   };
 }
 
@@ -690,6 +720,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
           ? { criticMaxAttempts: input.criticMaxAttempts }
           : {}),
         ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+        ...(input.policyExecution === undefined ? {} : { policyExecution: input.policyExecution }),
       });
       caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome, r));
 
@@ -993,15 +1024,19 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
 
 // --- bench matrix (spec §8 ablation) ---------------------------------------
 
-/** The ablatable layers → the suppressor override that turns each OFF, tagged by
- * class (A = post-review suppressor; B = input/prompt-stage). `scopeToDiff` is
- * applied by the aggregator after raw reviews, so it is class A in production. */
-const MATRIX_ABLATIONS: Record<string, { klass: "A" | "B"; off: SuppressorConfig }> = {
-  critic: { klass: "A", off: { critic: null } },
-  "confidence-floor": { klass: "A", off: { confidenceFloor: 0 } },
-  reputation: { klass: "A", off: { reputation: false } },
-  "scope-to-diff": { klass: "A", off: { scopeToDiff: false } },
+/** Legacy CLI labels accepted at the boundary and normalized to the closed policy catalog. */
+const MATRIX_ABLATION_ALIASES: Readonly<Record<string, PolicyPassId>> = {
+  critic: "judgment.critic",
+  "confidence-floor": "judgment.confidence",
+  reputation: "judgment.reputation",
+  "scope-to-diff": "scope.diff",
 };
+
+function normalizeMatrixAblation(value: string): PolicyPassId | null {
+  const alias = MATRIX_ABLATION_ALIASES[value];
+  if (alias !== undefined) return alias;
+  return (POLICY_PASS_IDS as readonly string[]).includes(value) ? (value as PolicyPassId) : null;
+}
 
 export interface BenchMatrixInput {
   repoRoot: string;
@@ -1192,16 +1227,21 @@ export function validateMatrixPreregistration(
 
 interface CapturedReviewEntry {
   provider: ProviderId;
-  reviewer_id: string;
+  kind: "review" | "complete";
   ordinal: number;
   request_sha256: string;
   response_sha256: string;
+  outcome: "return" | "throw";
 }
 
 interface ReviewCaptureState {
   entries: CapturedReviewEntry[];
-  responses: Map<string, ReviewResult>;
-  ordinals: Map<ProviderId, number>;
+  responses: Map<
+    number,
+    { kind: "review"; value: ReviewResult } | { kind: "complete"; value: string }
+  >;
+  errors: Map<number, string>;
+  nextOrdinal: number;
   mismatch: string | null;
 }
 
@@ -1214,8 +1254,10 @@ function normalizedReview(result: ReviewResult): ReviewResult {
     durationMs: result.durationMs,
     exitCode: result.exitCode,
     rawEventsPath: "",
+    ...(result.rawText === undefined ? {} : { rawText: result.rawText }),
     status: result.status,
     ...(result.statusDetail ? { statusDetail: result.statusDetail } : {}),
+    ...(result.quotaInferred === undefined ? {} : { quotaInferred: result.quotaInferred }),
   };
 }
 
@@ -1246,36 +1288,108 @@ function reviewRequestHash(
   );
 }
 
+function completionRequestHash(
+  provider: ProviderId,
+  ordinal: number,
+  prompt: string,
+  opts: Parameters<NonNullable<ProviderAdapter["complete"]>>[1],
+): string {
+  return sha256(
+    stableJson({
+      provider,
+      kind: "complete",
+      ordinal,
+      prompt_sha256: sha256(prompt),
+      options: {
+        model: opts.model,
+        apiKeyEnv: opts.apiKeyEnv ?? null,
+        timeoutMs: opts.timeoutMs ?? null,
+        maxTokens: opts.maxTokens ?? null,
+        auth: opts.auth ?? null,
+        openrouterProvider: opts.openrouterProvider ?? null,
+        baseUrl: opts.baseUrl ?? null,
+        disableReasoning: opts.disableReasoning ?? null,
+      },
+    }),
+  );
+}
+
 function captureReviewerAdapters(
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
-  reviewers: ReadonlySet<ProviderId>,
   state: ReviewCaptureState,
 ): Partial<Record<ProviderId, ProviderAdapter>> {
-  const out: Partial<Record<ProviderId, ProviderAdapter>> = { ...adapters };
-  for (const provider of reviewers) {
-    const adapter = adapters[provider];
+  const out: Partial<Record<ProviderId, ProviderAdapter>> = {};
+  for (const [provider, adapter] of Object.entries(adapters) as Array<
+    [ProviderId, ProviderAdapter | undefined]
+  >) {
     if (!adapter) continue;
     const complete = adapter.complete?.bind(adapter);
     out[provider] = {
       id: adapter.id,
       preflight: (cfg) => adapter.preflight(cfg),
       async review(input) {
-        const ordinal = (state.ordinals.get(provider) ?? 0) + 1;
-        state.ordinals.set(provider, ordinal);
+        const ordinal = state.nextOrdinal++;
         const requestHash = reviewRequestHash(provider, ordinal, input);
-        const response = normalizedReview(await adapter.review(input));
-        const responseHash = sha256(stableJson(response));
-        state.responses.set(requestHash, response);
-        state.entries.push({
-          provider,
-          reviewer_id: input.reviewerId,
-          ordinal,
-          request_sha256: requestHash,
-          response_sha256: responseHash,
-        });
-        return structuredClone(response);
+        try {
+          const response = normalizedReview(await adapter.review(input));
+          const responseHash = sha256(stableJson(response));
+          state.responses.set(ordinal, { kind: "review", value: response });
+          state.entries.push({
+            provider,
+            kind: "review",
+            ordinal,
+            request_sha256: requestHash,
+            response_sha256: responseHash,
+            outcome: "return",
+          });
+          return structuredClone(response);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          state.errors.set(ordinal, message);
+          state.entries.push({
+            provider,
+            kind: "review",
+            ordinal,
+            request_sha256: requestHash,
+            response_sha256: sha256(message),
+            outcome: "throw",
+          });
+          throw error;
+        }
       },
-      ...(complete ? { complete: (prompt, opts) => complete(prompt, opts) } : {}),
+      ...(complete
+        ? {
+            async complete(prompt, opts) {
+              const ordinal = state.nextOrdinal++;
+              const requestHash = completionRequestHash(provider, ordinal, prompt, opts);
+              try {
+                const response = await complete(prompt, opts);
+                state.responses.set(ordinal, { kind: "complete", value: response });
+                state.entries.push({
+                  provider,
+                  kind: "complete",
+                  ordinal,
+                  request_sha256: requestHash,
+                  response_sha256: sha256(response),
+                  outcome: "return",
+                });
+                return response;
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                state.errors.set(ordinal, message);
+                state.entries.push({
+                  provider,
+                  kind: "complete",
+                  ordinal,
+                  request_sha256: requestHash,
+                  response_sha256: sha256(message),
+                  outcome: "throw",
+                });
+                throw error;
+              }
+            },
+          }
+        : {}),
     };
   }
   return out;
@@ -1283,28 +1397,32 @@ function captureReviewerAdapters(
 
 function replayReviewerAdapters(
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
-  reviewers: ReadonlySet<ProviderId>,
   capture: ReviewCaptureState,
-): Partial<Record<ProviderId, ProviderAdapter>> {
-  const out: Partial<Record<ProviderId, ProviderAdapter>> = { ...adapters };
-  const ordinals = new Map<ProviderId, number>();
-  for (const provider of reviewers) {
-    const adapter = adapters[provider];
+): { adapters: Partial<Record<ProviderId, ProviderAdapter>>; consumed: () => boolean } {
+  const out: Partial<Record<ProviderId, ProviderAdapter>> = {};
+  let cursor = 0;
+  const mismatch = (message: string): void => {
+    capture.mismatch ??= message;
+  };
+  for (const [provider, adapter] of Object.entries(adapters) as Array<
+    [ProviderId, ProviderAdapter | undefined]
+  >) {
     if (!adapter) continue;
-    const complete = adapter.complete?.bind(adapter);
     out[provider] = {
       id: adapter.id,
       preflight: (cfg) => adapter.preflight(cfg),
       async review(input) {
-        const ordinal = (ordinals.get(provider) ?? 0) + 1;
-        ordinals.set(provider, ordinal);
+        const ordinal = cursor++;
         const requestHash = reviewRequestHash(provider, ordinal, input);
-        const expected = capture.entries.find(
-          (entry) => entry.provider === provider && entry.ordinal === ordinal,
-        );
-        const response = expected ? capture.responses.get(expected.request_sha256) : undefined;
-        if (!expected || expected.request_sha256 !== requestHash || !response) {
-          capture.mismatch = `${provider} reviewer request ${ordinal} did not match baseline`;
+        const expected = capture.entries[ordinal];
+        const stored = capture.responses.get(ordinal);
+        if (
+          !expected ||
+          expected.kind !== "review" ||
+          expected.provider !== provider ||
+          expected.request_sha256 !== requestHash
+        ) {
+          mismatch(`${provider} review request ${ordinal} did not match baseline order/identity`);
           return {
             reviewerId: input.reviewerId,
             verdict: "ERROR",
@@ -1314,15 +1432,71 @@ function replayReviewerAdapters(
             exitCode: 1,
             rawEventsPath: "",
             status: "error",
-            statusDetail: capture.mismatch,
+            statusDetail: capture.mismatch ?? "replay mismatch",
           };
         }
-        return structuredClone(response);
+        if (expected.outcome === "throw") throw new Error(capture.errors.get(ordinal));
+        if (
+          stored?.kind !== "review" ||
+          sha256(stableJson(stored.value)) !== expected.response_sha256
+        ) {
+          mismatch(`${provider} review response ${ordinal} failed baseline hash validation`);
+          return {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: 0,
+            exitCode: 1,
+            rawEventsPath: "",
+            status: "error",
+            statusDetail: capture.mismatch ?? "replay response mismatch",
+          };
+        }
+        return structuredClone(stored.value);
       },
-      ...(complete ? { complete: (prompt, opts) => complete(prompt, opts) } : {}),
+      ...(adapter.complete
+        ? {
+            async complete(prompt, opts) {
+              const ordinal = cursor++;
+              const requestHash = completionRequestHash(provider, ordinal, prompt, opts);
+              const expected = capture.entries[ordinal];
+              const stored = capture.responses.get(ordinal);
+              if (
+                !expected ||
+                expected.kind !== "complete" ||
+                expected.provider !== provider ||
+                expected.request_sha256 !== requestHash
+              ) {
+                mismatch(
+                  `${provider} complete request ${ordinal} did not match baseline order/identity`,
+                );
+                throw new Error(capture.mismatch ?? "replay mismatch");
+              }
+              if (expected.outcome === "throw") throw new Error(capture.errors.get(ordinal));
+              if (
+                stored?.kind !== "complete" ||
+                sha256(stored.value) !== expected.response_sha256
+              ) {
+                mismatch(
+                  `${provider} complete response ${ordinal} failed baseline hash validation`,
+                );
+                throw new Error(capture.mismatch ?? "replay response mismatch");
+              }
+              return stored.value;
+            },
+          }
+        : {}),
     };
   }
-  return out;
+  return {
+    adapters: out,
+    consumed: () => {
+      if (cursor === capture.entries.length) return true;
+      mismatch(`replay consumed ${cursor}/${capture.entries.length} captured provider responses`);
+      return false;
+    },
+  };
 }
 
 function relativeArtifact(fromDir: string, path: string): string {
@@ -1351,6 +1525,77 @@ function matrixVariantProvenanceMismatch(baseline: BenchResult, variant: BenchRe
   return reasons;
 }
 
+function authoritativeTraceRunFromCase(caseResult: CaseResult): AuthoritativeTraceRun | null {
+  const policy = caseResult.policy_trace;
+  if (policy === undefined) return null;
+  return {
+    authoritative: policy.authoritative,
+    status: policy.status,
+    catalogVersion: policy.catalog_version,
+    requestedAblations: [...policy.requested_ablations],
+    ...(policy.trace === undefined ? {} : { trace: policy.trace }),
+    ...(policy.trace_ref === undefined ? {} : { traceRef: policy.trace_ref }),
+    ...(policy.trace_sha256 === undefined ? {} : { traceSha256: policy.trace_sha256 }),
+    requestIdentitySha256: policy.request_identity_sha256,
+    effectiveConfigSha256: policy.effective_config_sha256,
+    finalIdentitySha256: policy.final_identity_sha256,
+  };
+}
+
+function validateBenchResultTracePairs(
+  baseline: BenchResult,
+  counterfactual: BenchResult,
+): { ok: true } | { ok: false; reason: string } {
+  if (baseline.cases.length !== counterfactual.cases.length) {
+    return { ok: false, reason: "case identity mismatch: result cardinality differs" };
+  }
+  for (const [index, baselineCase] of baseline.cases.entries()) {
+    const counterfactualCase = counterfactual.cases[index];
+    if (
+      counterfactualCase === undefined ||
+      baselineCase.id !== counterfactualCase.id ||
+      (baselineCase.repeat ?? 1) !== (counterfactualCase.repeat ?? 1) ||
+      baselineCase.content_hash !== counterfactualCase.content_hash
+    ) {
+      return { ok: false, reason: `case identity mismatch at row ${index}` };
+    }
+    const baselineTrace = authoritativeTraceRunFromCase(baselineCase);
+    const counterfactualTrace = authoritativeTraceRunFromCase(counterfactualCase);
+    if (baselineTrace === null || counterfactualTrace === null) {
+      return { ok: false, reason: `missing-trace: case ${baselineCase.id}` };
+    }
+    const validation = validateAuthoritativeTracePair(baselineTrace, counterfactualTrace);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: `${validation.code}: case ${baselineCase.id}: ${validation.reason}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function matrixPolicyProvenance(result: BenchResult, ablatedPassId: PolicyPassId | null) {
+  const policyRows = result.cases.map((caseResult) => caseResult.policy_trace);
+  const complete = policyRows.length > 0 && policyRows.every((row) => row?.authoritative === true);
+  const rawResponseSha256 = policyRows.flatMap((row) => row?.trace?.raw_response_sha256 ?? []);
+  const traceSha256 = sha256(canonicalJson(policyRows));
+  return {
+    catalog_version: POLICY_CATALOG_VERSION,
+    ablated_pass_id: ablatedPassId,
+    trace_status: complete ? ("complete" as const) : ("not-run" as const),
+    ...(complete
+      ? {
+          trace_ref: `inline-policy-trace-set/${traceSha256}.json`,
+          trace_sha256: traceSha256,
+        }
+      : {}),
+    raw_response_sha256: rawResponseSha256,
+    authoritative: complete,
+    reason: complete ? null : "one or more case traces are non-authoritative",
+  };
+}
+
 /**
  * Ablation matrix (spec §8): run the corpus once as a BASELINE (full suppression)
  * and once per `--ablate` layer with that ONE layer turned off, then report the
@@ -1361,23 +1606,26 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
   if (input.ablate.length === 0) {
     return { exitCode: 2, stdout: "", stderr: "bench matrix: --ablate needs at least one layer\n" };
   }
-  const unknown = input.ablate.filter((a) => !(a in MATRIX_ABLATIONS));
+  const normalizedAblations = input.ablate.map(normalizeMatrixAblation);
+  const unknown = input.ablate.filter((_value, index) => normalizedAblations[index] === null);
   if (unknown.length > 0) {
     return {
       exitCode: 2,
       stdout: "",
-      stderr: `bench matrix: unknown ablation(s): ${unknown.join(",")} (known: ${Object.keys(MATRIX_ABLATIONS).join(",")})\n`,
+      stderr: `bench matrix: unknown ablation(s): ${unknown.join(",")} (known catalog IDs plus aliases: ${Object.keys(MATRIX_ABLATION_ALIASES).join(",")})\n`,
     };
   }
-  if (input.authoritative && (input.ablate.length !== 1 || input.ablate[0] !== "critic")) {
+  const ablatedPassIds = normalizedAblations.filter(
+    (value): value is PolicyPassId => value !== null,
+  );
+  if (new Set(ablatedPassIds).size !== ablatedPassIds.length) {
     return {
       exitCode: 2,
       stdout: "",
-      stderr:
-        "bench matrix: authoritative paired mode currently supports exactly --ablate critic\n",
+      stderr: "bench matrix: duplicate ablations resolve to the same policy catalog ID\n",
     };
   }
-  if (input.ablate.includes("critic") && !input.criticProvider) {
+  if (ablatedPassIds.includes("judgment.critic") && !input.criticProvider) {
     return {
       exitCode: 2,
       stdout: "",
@@ -1392,7 +1640,7 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
   const baselinePath = join(artifactDir, "baseline.result.json");
   const responseManifestPath = join(artifactDir, "reviewer-responses.sha256.json");
   const variantPaths = new Map(
-    input.ablate.map((layer) => [layer, join(artifactDir, `no-${layer}.result.json`)]),
+    ablatedPassIds.map((passId) => [passId, join(artifactDir, `no-${passId}.result.json`)]),
   );
   for (const path of [matrixPath, baselinePath, responseManifestPath, ...variantPaths.values()]) {
     if (existsSync(path)) {
@@ -1457,31 +1705,22 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       };
     }
   }
-  // Capture the whole declared slot chain, not just primaries. A quota response
-  // from a primary can make a fallback the actual reviewer; replaying only the
-  // primary would silently call that fallback live in every matrix variant.
-  const reviewerIds = new Set(
-    baselineConfig.phases.review.reviewers.flatMap((reviewer) => [
-      reviewer.provider,
-      ...(reviewer.fallback ?? []),
-    ]),
-  );
   const underlying = buildAdapters(baselineConfig, input.adapters);
   const capture: ReviewCaptureState = {
     entries: [],
     responses: new Map(),
-    ordinals: new Map(),
+    errors: new Map(),
+    nextOrdinal: 0,
     mismatch: null,
   };
-  const capturingAdapters = captureReviewerAdapters(underlying, reviewerIds, capture);
+  const capturingAdapters = captureReviewerAdapters(underlying, capture);
   const budget = createCallBudget(input.maxProviderCalls);
   const runnerInfo = input.runnerInfo ?? detectRunnerInfo(input.adapters);
   const work = mkdtempSync(join(tmpdir(), "rg-bench-matrix-"));
   try {
     const runVariant = async (
       label: string,
-      suppressors: SuppressorConfig,
-      ablationLabels: string[],
+      requestedAblations: PolicyPassId[],
       adapters: Partial<Record<ProviderId, ProviderAdapter>>,
       countProviderCalls: boolean,
     ): Promise<{ result?: BenchResult; output: BenchRunOutput; tempPath: string }> => {
@@ -1518,12 +1757,17 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         authoritative: input.authoritative ?? false,
         callBudget: budget,
         countProviderCalls,
-        // Reviewer samples are replayed in-memory, but non-critic variants still
-        // make live critic calls and those must consume the shared hard ceiling.
-        countCompletionCalls: true,
+        // Baseline is the sole live path. Variants replay review + every judge/
+        // critic completion from the same captured logical response sequence.
+        countCompletionCalls: countProviderCalls,
         runnerInfo,
-        suppressors,
-        ablationLabels,
+        suppressors: baselineSuppressors,
+        ablationLabels: requestedAblations,
+        policyExecution: {
+          trace: "memory",
+          policyAblations: new Set(requestedAblations),
+          authoritative: true,
+        },
       });
       if (!existsSync(out)) return { output, tempPath: out };
       return {
@@ -1533,13 +1777,7 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       };
     };
 
-    const baselineRun = await runVariant(
-      "baseline",
-      baselineSuppressors,
-      [],
-      capturingAdapters,
-      true,
-    );
+    const baselineRun = await runVariant("baseline", [], capturingAdapters, true);
     if (baselineRun.output.exitCode !== 0 || !baselineRun.result) {
       if (existsSync(baselineRun.tempPath)) {
         mkdirSync(artifactDir, { recursive: true });
@@ -1548,12 +1786,11 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       return baselineRun.output;
     }
     const baseline = baselineRun.result;
+    capture.entries.sort((left, right) => left.ordinal - right.ordinal);
 
     const manifest = {
       schema: "reviewgate.bench.reviewer-response-hashes.v1",
-      entries: [...capture.entries].sort(
-        (a, b) => a.provider.localeCompare(b.provider) || a.ordinal - b.ordinal,
-      ),
+      entries: [...capture.entries],
     };
     const responseManifestTempPath = join(work, "reviewer-responses.sha256.json");
     writeFileSync(responseManifestTempPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -1572,24 +1809,18 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         authoritative: isAuthoritative(baseline).ok,
         result_ref: relativeArtifact(artifactDir, baselinePath),
         result_sha256: baselineHash,
+        policy: matrixPolicyProvenance(baseline, null),
       },
     ];
     const variantArtifactRefs: Array<{ path: string; sha256: string }> = [];
     const completedVariantArtifacts: Array<{ tempPath: string; finalPath: string }> = [];
 
-    for (const layer of input.ablate) {
-      const spec = MATRIX_ABLATIONS[layer];
-      if (!spec) continue; // validated above
-      const replayAdapters = replayReviewerAdapters(underlying, reviewerIds, capture);
-      const variantRun = await runVariant(
-        `no-${layer}`,
-        { ...baselineSuppressors, ...spec.off },
-        [layer],
-        replayAdapters,
-        false,
-      );
-      const finalPath = variantPaths.get(layer);
-      if (!finalPath) throw new Error(`missing artifact path for ${layer}`);
+    for (const passId of ablatedPassIds) {
+      const replay = replayReviewerAdapters(underlying, capture);
+      const variantRun = await runVariant(`no-${passId}`, [passId], replay.adapters, false);
+      replay.consumed();
+      const finalPath = variantPaths.get(passId);
+      if (!finalPath) throw new Error(`missing artifact path for ${passId}`);
       if (variantRun.output.exitCode !== 0 || !variantRun.result || capture.mismatch) {
         mkdirSync(artifactDir, { recursive: true });
         writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
@@ -1618,6 +1849,20 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
           stderr: `bench matrix: benchmark-invalid — ${provenanceMismatch.join("; ")}\n`,
         };
       }
+      const traceValidation = validateBenchResultTracePairs(baseline, r);
+      if (!traceValidation.ok) {
+        mkdirSync(artifactDir, { recursive: true });
+        writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
+        writeFileSync(responseManifestPath, readFileSync(responseManifestTempPath));
+        if (existsSync(variantRun.tempPath)) {
+          writeFileSync(finalPath, readFileSync(variantRun.tempPath));
+        }
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — ${traceValidation.reason}\n`,
+        };
+      }
       const resultHash = sha256File(variantRun.tempPath);
       completedVariantArtifacts.push({ tempPath: variantRun.tempPath, finalPath });
       variantArtifactRefs.push({
@@ -1625,9 +1870,9 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         sha256: resultHash,
       });
       variants.push({
-        label: `-${layer}`,
-        ablation: layer,
-        class: spec.klass,
+        label: `-${passId}`,
+        ablation: passId,
+        class: "A",
         precision: r.aggregate.precision,
         recall: r.aggregate.recall,
         clean_fp_rate: r.aggregate.clean_fp_rate,
@@ -1639,6 +1884,7 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         authoritative: isAuthoritative(r).ok,
         result_ref: relativeArtifact(artifactDir, finalPath),
         result_sha256: resultHash,
+        policy: matrixPolicyProvenance(r, passId),
       });
     }
 

@@ -1,5 +1,66 @@
 import { describe, expect, it } from "bun:test";
-import { BenchResultSchema } from "../../src/schemas/bench-result.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../../src/audit/canonical.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
+import { BenchMatrixSchema, BenchResultSchema } from "../../src/schemas/bench-result.ts";
+
+function emptyPolicyTrace(ablated: string[] = []) {
+  return {
+    schema: "reviewgate.policy-trace.v1",
+    catalog_version: POLICY_CATALOG_VERSION,
+    run_id: "bench-case",
+    iter: 1,
+    ablated,
+    raw_response_sha256: ["a".repeat(64)],
+    passes: POLICY_PASS_IDS.map((passId) => ({
+      pass_id: passId,
+      status: "ran",
+      considered: 0,
+      opportunities: 0,
+      would_apply: 0,
+      applied: 0,
+      protected: 0,
+      blocking_removed: 0,
+      blocking_preserved: 0,
+      dropped: 0,
+    })),
+    evaluations: [],
+    stages: [
+      {
+        stage_id: "verdict.compute",
+        order: 190,
+        reason_code: "no-blocking-findings",
+        input_signatures: [],
+        verdict: "PASS",
+      },
+    ],
+    final: {
+      verdict: "PASS",
+      counts: { critical: 0, warn: 0, info: 0 },
+      finding_signatures: [],
+      finding_severities: [],
+    },
+  };
+}
+
+function completePolicyRecord() {
+  const trace = emptyPolicyTrace();
+  const traceSha256 = createHash("sha256").update(canonicalJson(trace)).digest("hex");
+  const finalIdentitySha256 = createHash("sha256").update(canonicalJson(trace.final)).digest("hex");
+  return {
+    authoritative: true,
+    status: "complete",
+    catalog_version: POLICY_CATALOG_VERSION,
+    requested_ablations: [],
+    trace,
+    trace_ref: `inline-policy-trace/${traceSha256}.json`,
+    trace_sha256: traceSha256,
+    request_identity_sha256: "c".repeat(64),
+    effective_config_sha256: "d".repeat(64),
+    final_identity_sha256: finalIdentitySha256,
+    reason: null,
+  };
+}
 
 const validResult = {
   schema: "reviewgate.bench.result.v1",
@@ -74,6 +135,126 @@ describe("BenchResultSchema", () => {
     const r = BenchResultSchema.safeParse(validResult);
     if (!r.success) console.error(r.error);
     expect(r.success).toBe(true);
+  });
+
+  it("accepts complete embedded policy trace provenance additively", () => {
+    const parsed = BenchResultSchema.safeParse({
+      ...validResult,
+      cases: [{ ...validResult.cases[0], policy_trace: completePolicyRecord() }],
+    });
+    if (!parsed.success) console.error(parsed.error);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps legacy BenchResult v1 artifacts explicitly parseable without policy traces", () => {
+    expect(BenchResultSchema.safeParse(validResult).success).toBe(true);
+  });
+
+  it("rejects complete trace provenance with a missing ref/hash instead of defaulting it", () => {
+    const policy = completePolicyRecord();
+    const { trace_ref: _missing, ...withoutRef } = policy;
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: withoutRef }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a tampered embedded trace whose immutable hash/ref no longer match", () => {
+    const policy = completePolicyRecord();
+    policy.trace.raw_response_sha256 = ["f".repeat(64)];
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: policy }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing ran-pass counter rather than coercing it to zero", () => {
+    const policy = completePolicyRecord();
+    const first = policy.trace.passes[0];
+    if (first) Reflect.deleteProperty(first, "opportunities");
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: policy }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("strictly validates normalized matrix policy provenance", () => {
+    const metric = validResult.aggregate.precision;
+    const matrix = {
+      schema: "reviewgate.bench.matrix.v1",
+      provenance: validResult.provenance,
+      variants: [
+        {
+          label: "-judgment.confidence",
+          ablation: "judgment.confidence",
+          class: "A",
+          precision: metric,
+          recall: metric,
+          clean_fp_rate: metric,
+          delta: { precision: 0, recall: 0, clean_fp_rate: 0 },
+          policy: {
+            catalog_version: POLICY_CATALOG_VERSION,
+            ablated_pass_id: "judgment.confidence",
+            trace_status: "complete",
+            trace_ref: `inline-policy-trace-set/${"f".repeat(64)}.json`,
+            trace_sha256: "f".repeat(64),
+            raw_response_sha256: ["a".repeat(64)],
+            authoritative: true,
+            reason: null,
+          },
+        },
+      ],
+    };
+    expect(BenchMatrixSchema.safeParse(matrix).success).toBe(true);
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: { ...matrix.variants[0]?.policy, ablated_pass_id: "confidence-floor" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: {
+              ...matrix.variants[0]?.policy,
+              catalog_version: "reviewgate.policy-catalog.v0",
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: {
+              ...matrix.variants[0]?.policy,
+              authoritative: false,
+              trace_status: "error",
+              trace_sha256: undefined,
+              reason: "trace failed",
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts Alpha.12 integrity, critic coverage and honest unknown costs additively", () => {

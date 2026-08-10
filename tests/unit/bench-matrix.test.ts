@@ -5,13 +5,22 @@
 // baseline floor and survives when the floor is ablated → a real Δ.
 import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalJson } from "../../src/audit/canonical.ts";
+import {
+  type AuthoritativeTraceInvalidityCode,
+  type AuthoritativeTraceRun,
+  validateAuthoritativeTracePair,
+} from "../../src/bench/runner.ts";
 import { runBenchMatrix } from "../../src/cli/commands/bench.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import { BenchMatrixSchema, BenchResultSchema } from "../../src/schemas/bench-result.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
+import type { PolicyTrace } from "../../src/schemas/policy-trace.ts";
 
 const DB_DIFF = [
   "diff --git a/src/db.ts b/src/db.ts",
@@ -148,8 +157,77 @@ function initGitRepo(dir: string): void {
   execFileSync("git", ["commit", "-m", "initial"], { cwd: dir, stdio: "ignore" });
 }
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function emptyTrace(ablated: PolicyTrace["ablated"]): PolicyTrace {
+  const passes = POLICY_PASS_IDS.map((passId) =>
+    passId === "judgment.confidence"
+      ? {
+          pass_id: passId,
+          status: "ran" as const,
+          considered: 0,
+          opportunities: 0,
+          would_apply: 0,
+          applied: 0,
+          protected: 0,
+          blocking_removed: 0,
+          blocking_preserved: 0,
+          dropped: 0,
+        }
+      : {
+          pass_id: passId,
+          status: "not-run" as const,
+          reason_code: "configured-off" as const,
+        },
+  );
+  return {
+    schema: "reviewgate.policy-trace.v1",
+    catalog_version: POLICY_CATALOG_VERSION,
+    run_id: "bench-case",
+    iter: 1,
+    ablated,
+    raw_response_sha256: ["a".repeat(64), "b".repeat(64)],
+    passes,
+    evaluations: [],
+    stages: [
+      {
+        stage_id: "verdict.compute",
+        order: 190,
+        reason_code: "no-blocking-findings",
+        input_signatures: [],
+        verdict: "PASS",
+      },
+    ],
+    final: {
+      verdict: "PASS",
+      counts: { critical: 0, warn: 0, info: 0 },
+      finding_signatures: [],
+      finding_severities: [],
+    },
+  };
+}
+
+function traceRun(ablated: PolicyTrace["ablated"]): AuthoritativeTraceRun {
+  const trace = emptyTrace(ablated);
+  const traceSha256 = sha256(canonicalJson(trace));
+  return {
+    authoritative: true,
+    status: "complete",
+    catalogVersion: POLICY_CATALOG_VERSION,
+    requestedAblations: ablated,
+    trace,
+    traceRef: `inline-policy-trace/${traceSha256}.json`,
+    traceSha256,
+    requestIdentitySha256: "c".repeat(64),
+    effectiveConfigSha256: "d".repeat(64),
+    finalIdentitySha256: sha256(canonicalJson(trace.final)),
+  };
+}
+
 describe("runBenchMatrix", () => {
-  it("reports the confidence-floor ablation Δ (baseline demotes a low-conf FP; ablated keeps it)", async () => {
+  it("ablates confidence internally while effective config and captured responses remain identical", async () => {
     const corpus = newCorpus();
     const out = join(corpus, "matrix.json");
     const res = await runBenchMatrix({
@@ -160,11 +238,12 @@ describe("runBenchMatrix", () => {
       adapters: { codex: stub() },
       now: () => new Date("2026-07-01T00:00:00Z"),
     });
+    expect(res.stderr).toBe("");
     expect(res.exitCode).toBe(0);
     const m = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
     expect(m.variants).toHaveLength(2);
     const baseline = m.variants[0];
-    const ablated = m.variants.find((v) => v.ablation === "confidence-floor");
+    const ablated = m.variants.find((v) => v.ablation === "judgment.confidence");
     expect(baseline?.ablation).toBe("");
     expect(baseline?.delta).toBeNull();
     // baseline: floor demotes the low-conf FP → clean-FP 0, precision 1.
@@ -177,9 +256,167 @@ describe("runBenchMatrix", () => {
     expect(ablated?.class).toBe("A");
     expect(ablated?.delta?.precision).toBeCloseTo(0.5, 10);
     expect(ablated?.delta?.clean_fp_rate).toBeCloseTo(-1, 10);
+    const baselineResult = BenchResultSchema.parse(
+      JSON.parse(readFileSync(join(corpus, "baseline.result.json"), "utf8")),
+    );
+    const ablatedResult = BenchResultSchema.parse(
+      JSON.parse(readFileSync(join(corpus, "no-judgment.confidence.result.json"), "utf8")),
+    );
+    expect(baselineResult.provenance.config_hash).toBe(ablatedResult.provenance.config_hash);
+    expect(baselineResult.provenance.phases.confidence_floor).toBeGreaterThan(0);
+    expect(ablatedResult.provenance.phases.confidence_floor).toBe(
+      baselineResult.provenance.phases.confidence_floor,
+    );
+    expect(baseline?.policy?.raw_response_sha256).toEqual(ablated?.policy?.raw_response_sha256);
+    expect(baseline?.policy?.authoritative).toBe(true);
+    expect(ablated?.policy?.authoritative).toBe(true);
+    expect(ablated?.policy?.ablated_pass_id).toBe("judgment.confidence");
     // The Δ table renders.
     expect(res.stdout).toContain("ablation");
     expect(res.stdout.toLowerCase()).toContain("baseline");
+  });
+
+  it("rejects every non-authoritative trace-pair boundary with a precise closed reason", () => {
+    const baseline = traceRun([]);
+    const counterfactual = traceRun(["judgment.confidence"]);
+    expect(validateAuthoritativeTracePair(baseline, counterfactual)).toEqual({ ok: true });
+
+    const cases: Array<{
+      name: string;
+      mutate: (base: AuthoritativeTraceRun, variant: AuthoritativeTraceRun) => void;
+      code: AuthoritativeTraceInvalidityCode;
+    }> = [
+      {
+        name: "missing trace",
+        mutate: (_base, variant) => {
+          variant.trace = undefined;
+        },
+        code: "missing-trace",
+      },
+      {
+        name: "missing configured pass row",
+        mutate: (_base, variant) => {
+          if (variant.trace) variant.trace.passes = variant.trace.passes.slice(1);
+        },
+        code: "missing-pass-row",
+      },
+      {
+        name: "ablated pass not run",
+        mutate: (_base, variant) => {
+          if (variant.trace) {
+            variant.trace.passes = variant.trace.passes.map((row) =>
+              row.pass_id === "judgment.confidence"
+                ? {
+                    pass_id: "judgment.confidence",
+                    status: "not-run",
+                    reason_code: "configured-off",
+                  }
+                : row,
+            );
+          }
+        },
+        code: "pass-not-run",
+      },
+      {
+        name: "trace error",
+        mutate: (_base, variant) => {
+          variant.status = "error";
+        },
+        code: "trace-status",
+      },
+      {
+        name: "trace overflow",
+        mutate: (_base, variant) => {
+          variant.status = "overflow";
+        },
+        code: "trace-status",
+      },
+      {
+        name: "missing content ref",
+        mutate: (_base, variant) => {
+          variant.traceRef = undefined;
+        },
+        code: "trace-reference",
+      },
+      {
+        name: "content hash mismatch",
+        mutate: (_base, variant) => {
+          variant.traceSha256 = "e".repeat(64);
+        },
+        code: "trace-hash",
+      },
+      {
+        name: "catalog mismatch",
+        mutate: (_base, variant) => {
+          variant.catalogVersion = "reviewgate.policy-catalog.v0";
+        },
+        code: "catalog-mismatch",
+      },
+      {
+        name: "requested pass mismatch",
+        mutate: (_base, variant) => {
+          variant.requestedAblations = ["judgment.critic"];
+        },
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "ordered response mismatch",
+        mutate: (_base, variant) => {
+          if (variant.trace) variant.trace.raw_response_sha256.reverse();
+        },
+        code: "response-hash-mismatch",
+      },
+      {
+        name: "request mismatch",
+        mutate: (_base, variant) => {
+          variant.requestIdentitySha256 = "f".repeat(64);
+        },
+        code: "request-identity-mismatch",
+      },
+      {
+        name: "config mismatch",
+        mutate: (_base, variant) => {
+          variant.effectiveConfigSha256 = "1".repeat(64);
+        },
+        code: "config-mismatch",
+      },
+      {
+        name: "final identity mismatch",
+        mutate: (_base, variant) => {
+          variant.finalIdentitySha256 = "2".repeat(64);
+        },
+        code: "final-identity-mismatch",
+      },
+      {
+        name: "non-authoritative execution",
+        mutate: (_base, variant) => {
+          variant.authoritative = false;
+        },
+        code: "non-authoritative-execution",
+      },
+      {
+        name: "missing counters",
+        mutate: (_base, variant) => {
+          const row = variant.trace?.passes.find(
+            (candidate) => candidate.pass_id === "judgment.confidence",
+          );
+          if (row?.status === "ran") Reflect.deleteProperty(row, "opportunities");
+        },
+        code: "missing-counter",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const nextBaseline = structuredClone(baseline);
+      const nextVariant = structuredClone(counterfactual);
+      testCase.mutate(nextBaseline, nextVariant);
+      const result = validateAuthoritativeTracePair(nextBaseline, nextVariant);
+      expect(result.ok, testCase.name).toBe(false);
+      if (!result.ok) {
+        expect(result.code, testCase.name).toBe(testCase.code);
+        expect(result.reason.length, testCase.name).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("exits 2 with no --ablate layers", async () => {
@@ -253,20 +490,21 @@ describe("runBenchMatrix", () => {
       now: () => new Date("2026-07-01T00:00:00Z"),
     });
 
+    expect(res.stderr).toBe("");
     expect(res.exitCode).toBe(0);
     expect(reviewCalls).toBe(2); // baseline only; the variant is deterministic replay
     expect(criticCalls).toBe(2);
     expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(true);
-    expect(existsSync(join(artifactDir, "no-critic.result.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "no-judgment.critic.result.json"))).toBe(true);
     const manifest = JSON.parse(
       readFileSync(join(artifactDir, "reviewer-responses.sha256.json"), "utf8"),
     ) as { entries: Array<{ request_sha256: string; response_sha256: string }> };
-    expect(manifest.entries).toHaveLength(2);
+    expect(manifest.entries).toHaveLength(4);
     expect(manifest.entries.every((e) => e.request_sha256.length === 64)).toBe(true);
     expect(manifest.entries.every((e) => e.response_sha256.length === 64)).toBe(true);
     const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
     expect(matrix.artifacts?.baseline.path).toBe("baseline.result.json");
-    expect(matrix.artifacts?.variants[0]?.path).toBe("no-critic.result.json");
+    expect(matrix.artifacts?.variants[0]?.path).toBe("no-judgment.critic.result.json");
     expect(matrix.artifacts?.reviewer_responses.path).toBe("reviewer-responses.sha256.json");
   });
 
@@ -315,7 +553,7 @@ describe("runBenchMatrix", () => {
       JSON.parse(readFileSync(join(artifactDir, "baseline.result.json"), "utf8")),
     );
     const variant = BenchResultSchema.parse(
-      JSON.parse(readFileSync(join(artifactDir, "no-confidence-floor.result.json"), "utf8")),
+      JSON.parse(readFileSync(join(artifactDir, "no-judgment.confidence.result.json"), "utf8")),
     );
     expect(baseline.providers[0]?.coverage.value).toBe(1);
     expect(variant.providers[0]?.coverage.value).toBe(1);
@@ -376,7 +614,7 @@ describe("runBenchMatrix", () => {
     expect(res.stderr).toContain("variant corpus commit differs from baseline");
     expect(res.stderr).toContain("variant source commit differs from baseline");
     expect(existsSync(join(artifactDir, "baseline.result.json"))).toBe(true);
-    expect(existsSync(join(artifactDir, "no-critic.result.json"))).toBe(true);
+    expect(existsSync(join(artifactDir, "no-judgment.critic.result.json"))).toBe(true);
     expect(existsSync(join(artifactDir, "matrix.json"))).toBe(false);
   });
 
@@ -440,10 +678,10 @@ describe("runBenchMatrix", () => {
 
     expect(res.exitCode).toBe(0);
     expect(adapter.reviewCalls).toBe(2);
-    expect(adapter.completeCalls).toBe(4);
+    expect(adapter.completeCalls).toBe(2);
   });
 
-  it("counts live critic completions in reviewer-replay variants against the hard call ceiling", async () => {
+  it("never makes live critic completions in a replay variant", async () => {
     const corpus = newCorpus();
     let reviewCalls = 0;
     let criticCalls = 0;
@@ -483,17 +721,16 @@ describe("runBenchMatrix", () => {
       criticModel: "deepseek/deepseek-v4-flash",
       criticOpenrouterProvider: { only: ["alibaba"] },
       maxOutputTokens: 128,
-      // baseline = 2 reviewer + 2 critic calls; the replay variant has two more
-      // live critic calls. The second one must be refused, never hidden as replay.
-      maxProviderCalls: 5,
+      // Exactly the baseline's 2 reviewer + 2 critic calls fit. Any live call in
+      // the variant exhausts the ceiling and kills this contract test.
+      maxProviderCalls: 4,
       adapters: { codex: countedReviewer, openrouter: critic },
       now: () => new Date("2026-07-01T00:00:00Z"),
     });
 
-    expect(res.exitCode).toBe(4);
-    expect(res.stderr).toContain("provider-call ceiling exhausted");
+    expect(res.exitCode).toBe(0);
     expect(reviewCalls).toBe(2);
-    expect(criticCalls).toBe(3);
+    expect(criticCalls).toBe(2);
   });
 
   it("captures declared fallback reviewers and replays them without untracked live calls", async () => {
@@ -553,7 +790,7 @@ describe("runBenchMatrix", () => {
     expect(manifest.entries.filter((entry) => entry.provider === "gemini")).toHaveLength(2);
   });
 
-  it("classifies scope-to-diff as a deterministic post-review ablation", async () => {
+  it("fails authoritative pairing when the requested scope pass did not run", async () => {
     const corpus = newCorpus();
     const out = join(corpus, "scope-matrix", "matrix.json");
     const res = await runBenchMatrix({
@@ -565,10 +802,9 @@ describe("runBenchMatrix", () => {
       now: () => new Date("2026-07-01T00:00:00Z"),
     });
 
-    expect(res.exitCode).toBe(0);
-    const matrix = BenchMatrixSchema.parse(JSON.parse(readFileSync(out, "utf8")));
-    expect(matrix.variants.find((variant) => variant.ablation === "scope-to-diff")?.class).toBe(
-      "A",
-    );
+    expect(res.exitCode).toBe(4);
+    expect(res.stderr).toContain("pass-not-run");
+    expect(res.stderr).toContain("scope.diff");
+    expect(existsSync(out)).toBe(false);
   });
 });
