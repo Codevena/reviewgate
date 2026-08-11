@@ -9,14 +9,10 @@
 // 3 = ERROR (no reviewer completed anywhere) · 4 = benchmark-invalid.
 import { createHash } from "node:crypto";
 import {
-  constants,
-  closeSync,
   existsSync,
-  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -26,6 +22,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  type CanonicalArtifactWriteResult,
+  verifyCanonicalJsonArtifact,
+  writeCanonicalJsonArtifact,
+} from "../../artifacts/canonical-json.ts";
 import { canonicalJson } from "../../audit/canonical.ts";
 import { verifyPolicyTraceReference, writePolicyTrace } from "../../audit/policy-trace-store.ts";
 import type { MatchResult } from "../../bench/matcher.ts";
@@ -1517,20 +1518,11 @@ export type BenchArtifactVerification =
 const BENCH_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
 const FULL_SHA256 = /^[0-9a-f]{64}$/;
 
-function artifactRefFor(kind: Exclude<BenchArtifactKind, "policy-trace">, sha: string): string {
-  const dir =
-    kind === "policy-trace-set"
-      ? "policy-trace-sets"
-      : kind === "bench-result"
-        ? "results"
-        : "responses";
-  return `artifacts/${dir}/${sha}.json`;
-}
-
-function isContainedPath(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
+const BENCH_ARTIFACT_TYPES = {
+  "bench-result": { directory: "results", schema: BenchResultSchema },
+  "response-manifest": { directory: "responses", schema: BenchResponseManifestSchema },
+  "policy-trace-set": { directory: "policy-trace-sets", schema: BenchPolicyTraceSetSchema },
+} as const;
 
 export function verifyBenchArtifactReference(input: {
   root: string;
@@ -1558,104 +1550,37 @@ export function verifyBenchArtifactReference(input: {
     });
     return verified.ok ? { ok: true, value: verified.trace } : verified;
   }
-  if (input.ref !== artifactRefFor(input.kind, input.sha256)) {
-    return { ok: false, reason: "identity-mismatch" };
+  if (input.kind === "bench-result") {
+    const artifactType = BENCH_ARTIFACT_TYPES["bench-result"];
+    return verifyCanonicalJsonArtifact({
+      root: input.root,
+      directory: artifactType.directory,
+      schema: artifactType.schema,
+      ref: input.ref,
+      sha256: input.sha256,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
   }
-  const root = resolve(input.root);
-  const candidate = resolve(root, ...input.ref.split("/"));
-  if (!isContainedPath(root, candidate)) return { ok: false, reason: "path-escape" };
-  if (!existsSync(candidate)) return { ok: false, reason: "missing" };
-  let fd: number | undefined;
-  try {
-    const rootStat = lstatSync(root);
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
-      return { ok: false, reason: "path-escape" };
-    }
-    const realRoot = realpathSync(root);
-    let parent = root;
-    for (const component of input.ref.split("/").slice(0, -1)) {
-      parent = join(parent, component);
-      const parentStat = lstatSync(parent);
-      if (
-        parentStat.isSymbolicLink() ||
-        !parentStat.isDirectory() ||
-        !isContainedPath(realRoot, realpathSync(parent))
-      ) {
-        return { ok: false, reason: "path-escape" };
-      }
-    }
-    const before = lstatSync(candidate);
-    if (
-      before.isSymbolicLink() ||
-      !before.isFile() ||
-      before.nlink !== 1 ||
-      (before.mode & 0o7777) !== 0o600
-    ) {
-      return { ok: false, reason: "not-a-file" };
-    }
-    if (before.size > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
-    if (!isContainedPath(realRoot, realpathSync(candidate))) {
-      return { ok: false, reason: "path-escape" };
-    }
-    fd = openSync(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
-    const opened = fstatSync(fd);
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1 ||
-      (opened.mode & 0o7777) !== 0o600 ||
-      opened.dev !== before.dev ||
-      opened.ino !== before.ino
-    ) {
-      return { ok: false, reason: "not-a-file" };
-    }
-    if (opened.size > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
-    const bytes = readFileSync(fd);
-    if (bytes.length > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
-    const after = fstatSync(fd);
-    const pathAfter = lstatSync(candidate);
-    if (
-      after.dev !== opened.dev ||
-      after.ino !== opened.ino ||
-      after.size !== opened.size ||
-      after.mtimeMs !== opened.mtimeMs ||
-      after.ctimeMs !== opened.ctimeMs ||
-      pathAfter.isSymbolicLink() ||
-      !pathAfter.isFile() ||
-      pathAfter.nlink !== 1 ||
-      (after.mode & 0o7777) !== 0o600 ||
-      (pathAfter.mode & 0o7777) !== 0o600 ||
-      pathAfter.dev !== after.dev ||
-      pathAfter.ino !== after.ino
-    ) {
-      return { ok: false, reason: "read-error" };
-    }
-    if (sha256(bytes) !== input.sha256) return { ok: false, reason: "hash-mismatch" };
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      return { ok: false, reason: "invalid-encoding" };
-    }
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(text);
-    } catch {
-      return { ok: false, reason: "invalid-json" };
-    }
-    const parsed =
-      input.kind === "bench-result"
-        ? BenchResultSchema.safeParse(decoded)
-        : input.kind === "policy-trace-set"
-          ? BenchPolicyTraceSetSchema.safeParse(decoded)
-          : BenchResponseManifestSchema.safeParse(decoded);
-    if (!parsed.success) return { ok: false, reason: "invalid-schema" };
-    if (canonicalJson(parsed.data) !== text) return { ok: false, reason: "non-canonical" };
-    return { ok: true, value: parsed.data };
-  } catch {
-    return { ok: false, reason: "read-error" };
-  } finally {
-    if (fd !== undefined) closeSync(fd);
+  if (input.kind === "response-manifest") {
+    const artifactType = BENCH_ARTIFACT_TYPES["response-manifest"];
+    return verifyCanonicalJsonArtifact({
+      root: input.root,
+      directory: artifactType.directory,
+      schema: artifactType.schema,
+      ref: input.ref,
+      sha256: input.sha256,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
   }
+  const artifactType = BENCH_ARTIFACT_TYPES["policy-trace-set"];
+  return verifyCanonicalJsonArtifact({
+    root: input.root,
+    directory: artifactType.directory,
+    schema: artifactType.schema,
+    ref: input.ref,
+    sha256: input.sha256,
+    maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+  });
 }
 
 function ensureDirectoryWithoutSymlinks(path: string): boolean {
@@ -1687,70 +1612,42 @@ function ensureDirectoryWithoutSymlinks(path: string): boolean {
   }
 }
 
-function ensureContainedArtifactParent(root: string, ref: string): boolean {
-  if (!ensureDirectoryWithoutSymlinks(root)) return false;
-  try {
-    const realRoot = realpathSync(root);
-    let parent = resolve(root);
-    for (const component of ref.split("/").slice(0, -1)) {
-      parent = join(parent, component);
-      if (!existsSync(parent)) {
-        try {
-          mkdirSync(parent, { mode: 0o700 });
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
-        }
-      }
-      const stat = lstatSync(parent);
-      if (
-        stat.isSymbolicLink() ||
-        !stat.isDirectory() ||
-        !isContainedPath(realRoot, realpathSync(parent))
-      ) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
+type PersistedBenchArtifact = CanonicalArtifactWriteResult;
 
-type PersistedBenchArtifact =
-  | { ok: true; ref: string; sha256: string }
-  | { ok: false; reason: Exclude<BenchArtifactVerification, { ok: true }>["reason"] };
-
-function persistBenchArtifact(input: {
-  root: string;
-  kind: Exclude<BenchArtifactKind, "policy-trace">;
-  value: BenchResult | BenchResponseManifest | BenchPolicyTraceSet;
-}): PersistedBenchArtifact {
-  const parsed =
-    input.kind === "bench-result"
-      ? BenchResultSchema.safeParse(input.value)
-      : input.kind === "response-manifest"
-        ? BenchResponseManifestSchema.safeParse(input.value)
-        : BenchPolicyTraceSetSchema.safeParse(input.value);
-  if (!parsed.success) return { ok: false, reason: "invalid-schema" };
-  const canonical = canonicalJson(parsed.data);
-  const contentSha256 = sha256(canonical);
-  const ref = artifactRefFor(input.kind, contentSha256);
-  if (!ensureContainedArtifactParent(input.root, ref)) {
-    return { ok: false, reason: "path-escape" };
+function persistBenchArtifact(
+  input:
+    | { root: string; kind: "bench-result"; value: BenchResult }
+    | { root: string; kind: "response-manifest"; value: BenchResponseManifest }
+    | { root: string; kind: "policy-trace-set"; value: BenchPolicyTraceSet },
+): PersistedBenchArtifact {
+  if (input.kind === "bench-result") {
+    const artifactType = BENCH_ARTIFACT_TYPES["bench-result"];
+    return writeCanonicalJsonArtifact({
+      root: input.root,
+      directory: artifactType.directory,
+      schema: artifactType.schema,
+      value: input.value,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
   }
-  const destination = resolve(input.root, ...ref.split("/"));
-  try {
-    writeFileIfAbsent(destination, canonical, { mode: 0o600 });
-  } catch {
-    return { ok: false, reason: "read-error" };
+  if (input.kind === "response-manifest") {
+    const artifactType = BENCH_ARTIFACT_TYPES["response-manifest"];
+    return writeCanonicalJsonArtifact({
+      root: input.root,
+      directory: artifactType.directory,
+      schema: artifactType.schema,
+      value: input.value,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
   }
-  const verified = verifyBenchArtifactReference({
+  const artifactType = BENCH_ARTIFACT_TYPES["policy-trace-set"];
+  return writeCanonicalJsonArtifact({
     root: input.root,
-    ref,
-    sha256: contentSha256,
-    kind: input.kind,
+    directory: artifactType.directory,
+    schema: artifactType.schema,
+    value: input.value,
+    maxBytes: BENCH_ARTIFACT_MAX_BYTES,
   });
-  return verified.ok ? { ok: true, ref, sha256: contentSha256 } : verified;
 }
 
 interface CapturedReviewEntry {

@@ -95,7 +95,7 @@ task below is nevertheless an independently reviewable commit with its own execu
   - `verifyCanonicalJsonArtifact<T>(input): CanonicalArtifactVerification<T>`
   - unchanged public `verifyBenchArtifactReference(...)` behavior through a Bench wrapper.
 
-- [ ] **Step 1: Write the failing generic artifact tests**
+- [x] **Step 1: Write the failing generic artifact tests**
 
 ```ts
 import { z } from "zod";
@@ -135,13 +135,13 @@ Add named RED cases for a symlinked ancestor, final symlink, hardlink, `0644`, o
 invalid UTF-8, noncanonical JSON, hash mismatch, path traversal, and a file swapped between
 `lstat`/FD read/path recheck.
 
-- [ ] **Step 2: Run the RED tests**
+- [x] **Step 2: Run the RED tests**
 
 Run: `bun test tests/unit/canonical-json-artifact.test.ts`
 
 Expected: FAIL because `src/artifacts/canonical-json.ts` does not exist.
 
-- [ ] **Step 3: Implement the generic boundary**
+- [x] **Step 3: Implement the generic boundary**
 
 ```ts
 export type CanonicalArtifactReason =
@@ -194,7 +194,7 @@ export function writeCanonicalJsonArtifact<T>(input: {
 Move no behavior: Bench's response/result/trace-set paths remain byte-identical, and policy traces
 continue through `verifyPolicyTraceReference`.
 
-- [ ] **Step 4: Make Bench delegate to the shared boundary**
+- [x] **Step 4: Make Bench delegate to the shared boundary**
 
 ```ts
 const BENCH_ARTIFACT_TYPES = {
@@ -207,7 +207,7 @@ const BENCH_ARTIFACT_TYPES = {
 Keep `verifyBenchArtifactReference` exported as a compatibility wrapper and retain the special
 policy-trace branch.
 
-- [ ] **Step 5: Run focused GREEN and compatibility checks**
+- [x] **Step 5: Run focused GREEN and compatibility checks**
 
 Run:
 
@@ -219,13 +219,13 @@ bun run lint
 
 Expected: all pass; existing Bench artifact refs and bytes remain unchanged.
 
-- [ ] **Step 6: Kill artifact-boundary mutants**
+- [x] **Step 6: Kill artifact-boundary mutants**
 
 In a validated disposable copy, separately remove `O_NOFOLLOW`, accept `0644`, skip `nlink===1`,
 skip canonical-byte comparison, and reread for hashing after verification. Each mutant must fail its
 named test; restore and compare the two production-file SHA-256 values.
 
-- [ ] **Step 7: Review and commit**
+- [x] **Step 7: Review and commit**
 
 Stage only the four task paths above plus this plan ledger and commit:
 
