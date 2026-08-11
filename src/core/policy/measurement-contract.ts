@@ -40,6 +40,14 @@ export type PolicyClassification =
   | "harmful-candidate"
   | "inconclusive";
 
+export const POLICY_MEASUREMENT_STATEFUL_PASS_IDS = [
+  "history.fp-signature",
+  "history.cycle-rejected",
+  "history.fp-cluster",
+  "judgment.reputation",
+  "history.region-rejected",
+] as const satisfies readonly PolicyPassId[];
+
 const STATEFUL_ORDERS = new Set([110, 120, 130, 150, 160]);
 
 /** Primary lanes are derived from the catalog order, not maintained as a second pass registry. */

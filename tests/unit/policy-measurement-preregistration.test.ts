@@ -32,7 +32,16 @@ function preregistration(): Record<string, unknown> {
       seeded_bug: 14,
       repeats: 3,
       manifest_sha256: SHA,
-      content_sha256: { "case-01.json": SHA },
+      content_sha256: Object.fromEntries([
+        ...Array.from({ length: 16 }, (_, index) => [
+          `cases/clean-${String(index + 1).padStart(2, "0")}.json`,
+          SHA,
+        ]),
+        ...Array.from({ length: 14 }, (_, index) => [
+          `cases/seeded-${String(index + 1).padStart(2, "0")}.json`,
+          SHA,
+        ]),
+      ]),
     },
     roster: {
       reviewers: [
@@ -222,6 +231,12 @@ describe("policy measurement preregistration", () => {
       )[0];
       if (reviewer !== undefined) set(reviewer, "openrouter_provider", null);
     });
+    expectInvalid((value) => {
+      const reviewer = (
+        (value.roster as Record<string, unknown>).reviewers as Record<string, unknown>[]
+      )[0];
+      if (reviewer !== undefined) set(reviewer, "openrouter_provider", { allowFallbacks: false });
+    });
     expectInvalid((value) =>
       set(
         (value.roster as Record<string, unknown>).critic as Record<string, unknown>,
@@ -238,6 +253,31 @@ describe("policy measurement preregistration", () => {
     expectInvalid((value) =>
       set(value.execution as Record<string, unknown>, "max_output_tokens", 0),
     );
+  });
+
+  test("binds exactly thirty canonically named case hashes to the declared split", () => {
+    expectInvalid((value) => {
+      const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
+        string,
+        string
+      >;
+      delete hashes["cases/clean-16.json"];
+    });
+    expectInvalid((value) => {
+      const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
+        string,
+        string
+      >;
+      hashes["cases/seeded-15.json"] = SHA;
+    });
+    expectInvalid((value) => {
+      const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
+        string,
+        string
+      >;
+      hashes["other.json"] = SHA;
+      delete hashes["cases/seeded-14.json"];
+    });
   });
 
   test("requires unique immutable output paths below the named attempt root", () => {

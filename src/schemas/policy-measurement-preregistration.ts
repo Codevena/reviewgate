@@ -24,12 +24,11 @@ export const OpenRouterProviderRoutingSchema = z
   })
   .strict()
   .superRefine((route, ctx) => {
-    if (
-      route.only === undefined &&
-      route.order === undefined &&
-      route.allowFallbacks === undefined
-    ) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "OpenRouter route cannot be empty" });
+    if (route.only === undefined && route.order === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "OpenRouter route requires a non-empty only or order route",
+      });
     }
     for (const [key, values] of [
       ["only", route.only],
@@ -221,6 +220,22 @@ export const PolicyMeasurementPreregistrationSchema = z
 
     if (!sameStringList(value.pass_ids, POLICY_PASS_IDS)) {
       issue(["pass_ids"], "pass_ids must be the exact ordered policy catalog inventory");
+    }
+    const expectedCaseRefs = [
+      ...Array.from(
+        { length: 16 },
+        (_, index) => `cases/clean-${String(index + 1).padStart(2, "0")}.json`,
+      ),
+      ...Array.from(
+        { length: 14 },
+        (_, index) => `cases/seeded-${String(index + 1).padStart(2, "0")}.json`,
+      ),
+    ];
+    if (!sameStringList(Object.keys(value.corpus.content_sha256).sort(), expectedCaseRefs.sort())) {
+      issue(
+        ["corpus", "content_sha256"],
+        "content hashes must bind exactly the 16 clean and 14 seeded canonical cases",
+      );
     }
     const singleton = POLICY_PASS_IDS.map((passId) => [passId]);
     if (!hasExactGroups(value.profiles.singleton, singleton)) {
