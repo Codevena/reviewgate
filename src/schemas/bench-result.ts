@@ -262,7 +262,7 @@ function decodePercentToFixedPoint(value: string): string | null {
   for (let pass = 0; pass < MAX_PERCENT_DECODE_PASSES; pass += 1) {
     if (!PERCENT_ENCODED_BYTE.test(decoded)) return decoded;
     let invalidRun = false;
-    decoded = decoded.replace(PERCENT_ENCODED_RUN, (run) => {
+    const nextDecoded = decoded.replace(PERCENT_ENCODED_RUN, (run) => {
       try {
         return decodeURIComponent(run);
       } catch {
@@ -271,6 +271,7 @@ function decodePercentToFixedPoint(value: string): string | null {
       }
     });
     if (invalidRun) return null;
+    decoded = nextDecoded.normalize("NFKC");
   }
   return PERCENT_ENCODED_BYTE.test(decoded) ? null : decoded;
 }
