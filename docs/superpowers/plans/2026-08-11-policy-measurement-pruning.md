@@ -258,7 +258,7 @@ git commit -m "refactor(artifacts): share canonical JSON storage"
   `PolicyMeasurementInvalidityCodeSchema`, `PolicyMeasurementInvalidityCode`,
   `PolicyMeasurementSchema`, and `PolicyMeasurement`.
 
-- [ ] **Step 1: Write the missing-module RED tests**
+- [x] **Step 1: Write the missing-module RED tests**
 
 ```ts
 expect(POLICY_MEASUREMENT_SINGLETONS).toEqual(POLICY_PASS_IDS);
@@ -286,13 +286,13 @@ rules, missing/extra OpenRouter route, retry/output ceilings outside their bound
 interval/correction/candidate/veto literals, mutable/out-of-attempt/duplicate output paths,
 threshold drift, unbounded provider calls, and dogfood manifest/attestation refs without full SHA.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `bun test tests/unit/policy-measurement-preregistration.test.ts tests/unit/policy-measurement-schema.test.ts`
 
 Expected: FAIL on both missing modules.
 
-- [ ] **Step 3: Implement the fixed contract**
+- [x] **Step 3: Implement the fixed contract**
 
 ```ts
 export const POLICY_MEASUREMENT_SINGLETONS = POLICY_PASS_IDS;
@@ -326,7 +326,7 @@ export type PolicyClassification =
 Add a literal lane map: orders 110, 120, 130, 150, and 160 are `stateful-rig`; all others are
 `stateless-bench`.
 
-- [ ] **Step 4: Implement strict schemas**
+- [x] **Step 4: Implement strict schemas**
 
 `PolicyMeasurementPreregistrationSchema` must contain:
 
@@ -426,7 +426,7 @@ cutoff window. An attestation binds its own actor, timestamp, content-bound chal
 manifest SHA and explicit `tp`/`fp` rows. Legacy artifacts may omit all new additive fields, but a
 policy measurement result itself has no legacy/partial mode.
 
-- [ ] **Step 5: Run GREEN and schema regressions**
+- [x] **Step 5: Run GREEN and schema regressions**
 
 Run:
 
@@ -436,7 +436,7 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 6: Kill contract mutants**
+- [x] **Step 6: Kill contract mutants**
 
 Mutate exact pass order, delete one interaction member, change 8→7, 15→14, 3 repeats→2,
 10,000→1,000, allow `dogfood.until > registered_at`, drop route/retry/output binding, merge the two
@@ -444,7 +444,7 @@ correction families, loosen candidate/veto literals, allow an output outside the
 allow authoritative partial inventory. Each must fail a named schema/contract test; restore file
 hashes.
 
-- [ ] **Step 7: Review and commit**
+- [x] **Step 7: Review and commit**
 
 ```bash
 git commit -m "feat(policy): define measurement contracts"
