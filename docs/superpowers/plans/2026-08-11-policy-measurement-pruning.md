@@ -227,7 +227,7 @@ named test; restore and compare the two production-file SHA-256 values.
 
 - [ ] **Step 7: Review and commit**
 
-Stage only the four paths above and commit:
+Stage only the four task paths above plus this plan ledger and commit:
 
 ```bash
 git commit -m "refactor(artifacts): share canonical JSON storage"
@@ -250,6 +250,9 @@ git commit -m "refactor(artifacts): share canonical JSON storage"
   names: `PolicyMeasurementPreregistrationSchema`, `PolicyMeasurementPreregistration`,
   `PolicyBenchBundleSchema`, `PolicyBenchBundle`, `PolicyRigScenarioManifestSchema`,
   `PolicyRigScenarioManifest`, `PolicyDogfoodSnapshotSchema`, `PolicyDogfoodSnapshot`,
+  `PolicyDogfoodInputManifestSchema`, `PolicyDogfoodInputManifest`,
+  `PolicyDogfoodAdjudicationSchema`, `PolicyDogfoodAdjudication`,
+  `PolicyDogfoodAttestationSchema`, `PolicyDogfoodAttestation`,
   `PolicyRigEvidenceSchema`, `PolicyRigEvidence`, `PolicyPassEvidenceSchema`,
   `PolicyPassEvidence`, `PolicyPassClassificationSchema`, `PolicyPassClassification`,
   `PolicyMeasurementInvalidityCodeSchema`, `PolicyMeasurementInvalidityCode`,
@@ -279,7 +282,9 @@ expect(POLICY_MEASUREMENT_THRESHOLDS).toEqual({
 
 The preregistration tests must reject reordered/missing/duplicate pass IDs, altered groups, 29 or 31
 cases, repeats other than three, a dogfood `until` different from `registered_at`, non-clean-source
-rules, mutable output paths, threshold drift, and unbounded provider calls.
+rules, missing/extra OpenRouter route, retry/output ceilings outside their bounds, changed
+interval/correction/candidate/veto literals, mutable/out-of-attempt/duplicate output paths,
+threshold drift, unbounded provider calls, and dogfood manifest/attestation refs without full SHA.
 
 - [ ] **Step 2: Run RED**
 
@@ -340,24 +345,66 @@ Add a literal lane map: orders 110, 120, 130, 150, and 160 are `stateful-rig`; a
   catalog_version: "reviewgate.policy-catalog.v1";
   pass_ids: PolicyPassId[];
   corpus: { path: string; unique_cases: 30; clean: 16; seeded_bug: 14; repeats: 3; manifest_sha256: string; content_sha256: Record<string, string> };
-  roster: { reviewers: Array<{ provider: string; model: string; persona: string }>; critic: { provider: string; model: string; persona: string } | null; substitution_allowed: false };
+  roster: {
+    reviewers: Array<{ provider: string; model: string; persona: string; route: string | null }>;
+    critic: { provider: string; model: string; persona: string; route: string | null } | null;
+    substitution_allowed: false;
+  };
+  execution: {
+    reviewer_max_attempts: number;
+    critic_max_attempts: number;
+    max_output_tokens: number;
+  };
   profiles: { singleton: PolicyPassId[][]; interactions: PolicyPassId[][] };
   stateful: { manifest_ref: string; manifest_sha256: string; min_sequences_per_pass: 3; min_opportunity_turns: 2 };
-  dogfood: { since: string; until: string; audit_roots: string[]; min_dispositions: 5; min_runs: 3 };
-  analysis: { stateless_min_cases: 8; stateless_min_signatures: 15; bootstrap_resamples: 10000; seed: number; primary: "ground_truth_error"; correction: "holm" };
+  dogfood: {
+    since: string;
+    until: string;
+    input_manifest_ref: string;
+    input_manifest_sha256: string;
+    attestation_ref: string;
+    attestation_sha256: string;
+    min_dispositions: 5;
+    min_runs: 3;
+  };
+  analysis: {
+    stateless_min_cases: 8;
+    stateless_min_signatures: 15;
+    bootstrap_resamples: 10000;
+    seed: number;
+    primary: "ground_truth_error";
+    interval: "percentile-bootstrap-95";
+    correction: { singleton: "holm-18"; interaction: "holm-4" };
+    candidate_rules: "safety-first-two-phase-v1";
+    vetoes: ["unique-prevented-fp", "unique-preserved-tp", "required-backstop"];
+  };
   hard_gates: { maximum_provider_calls: number; maximum_failed_fraction: 0; reviewer_coverage: 1; eligible_critic_coverage: 1; immutable_artifacts: true; no_variant_provider_calls: true };
+  outputs: {
+    attempt_dir: string;
+    bench_bundle: string;
+    rig_bundle: string;
+    dogfood_snapshot: string;
+    result_json: string;
+    report_md: string;
+  };
   commands: { bench: string[]; stats: string[] };
   rerun_policy: { failed_attempts_are_preserved: true; overwrite_allowed: false; favorable_repeat_selection_allowed: false };
 }
 ```
 
 Use `superRefine` to require `dogfood.until === registered_at`, exact inventory/groups/thresholds,
-and exact singleton shape `[[pass1], [pass2], ...]`.
+exact singleton shape `[[pass1], [pass2], ...]`, positive bounded retry/output values, closed
+analysis/candidate/veto literals, and every output path as a unique repo-relative descendant of
+`bench/results/policy-measurement/<attempt>/`. Route is required exactly when the effective adapter
+uses an upstream route (including OpenRouter); Task 8 compares it before creating adapters.
 
-Define strict schemas for Bench profile bundles, Rig scenario manifests, dogfood snapshots, per-pass
-evidence, interactions, exclusions, artifacts, and final `reviewgate.policy-measurement.v1` results.
-Legacy artifacts may omit all new additive fields, but a policy measurement result itself has no
-legacy/partial mode.
+Define strict schemas for Bench profile bundles, Rig scenario manifests, dogfood input inventories,
+human attestations, dogfood snapshots, per-pass evidence, interactions, exclusions, artifacts, and
+final `reviewgate.policy-measurement.v1` results. A dogfood input manifest contains the closed,
+code-unit-sorted list of audit and trace refs with exact SHA-256, byte count, `(run_id, iter)` and
+cutoff window. An attestation binds its own actor, timestamp, content-bound challenge SHA, input
+manifest SHA and explicit `tp`/`fp` rows. Legacy artifacts may omit all new additive fields, but a
+policy measurement result itself has no legacy/partial mode.
 
 - [ ] **Step 5: Run GREEN and schema regressions**
 
@@ -372,8 +419,10 @@ bun run lint
 - [ ] **Step 6: Kill contract mutants**
 
 Mutate exact pass order, delete one interaction member, change 8→7, 15→14, 3 repeats→2,
-10,000→1,000, allow `dogfood.until > registered_at`, and allow authoritative partial inventory.
-Each must fail a named schema/contract test; restore file hashes.
+10,000→1,000, allow `dogfood.until > registered_at`, drop route/retry/output binding, merge the two
+correction families, loosen candidate/veto literals, allow an output outside the attempt root, and
+allow authoritative partial inventory. Each must fail a named schema/contract test; restore file
+hashes.
 
 - [ ] **Step 7: Review and commit**
 
@@ -388,6 +437,7 @@ git commit -m "feat(policy): define measurement contracts"
 **Files:**
 - Modify: `src/schemas/bench-result.ts:489-635,804-900`
 - Modify: `src/bench/runner.ts:205-260,700-790`
+- Modify: `src/cli/commands/bench.ts:441-479`
 - Modify: `tests/unit/bench-result-schema.test.ts`
 - Modify: `tests/unit/bench-runner.test.ts`
 - Modify: `tests/unit/bench-matrix.test.ts`
@@ -458,8 +508,11 @@ export const BenchPolicyTruthSchema = z.object({
 ```
 
 In `runBenchCase`, map `aggregatedMatch.findings[].findingId` back to the parsed report finding and
-persist its signature/severity. Sort truth findings by signature with `compareCodeUnits`; preserve
-matcher label indexes exactly.
+return it as `CaseRunOutcome.policyTruth`. In `outcomeToCaseResult()` in
+`src/cli/commands/bench.ts`, explicitly project `out.policyTruth` to persisted
+`CaseResult.policy_truth`. Sort truth findings by signature with `compareCodeUnits`; preserve matcher
+label indexes exactly. The focused Matrix test must parse the written Bench result and assert the
+persisted block, not only the in-memory runner value.
 
 - [ ] **Step 5: Generalize trace-pair validation**
 
@@ -474,6 +527,12 @@ export function validateAuthoritativeTracePair(
   baseline: AuthoritativeTraceRun,
   counterfactual: AuthoritativeTraceRun,
 ): AuthoritativeTracePairValidation {
+  if (counterfactual.requestedAblations.length !== 1) {
+    return invalidTracePair(
+      "requested-pass-mismatch",
+      "counterfactual must request exactly one policy ablation",
+    );
+  }
   return validateAuthoritativeTraceProfilePair(
     baseline,
     counterfactual,
@@ -483,7 +542,9 @@ export function validateAuthoritativeTracePair(
 ```
 
 The general validator must still bind config/request/response/final identities and every requested
-row's `status: ran`.
+row's `status: ran`. Add a compatibility regression in which the new group validator accepts a
+valid two-pass group while the legacy `validateAuthoritativeTracePair` rejects that same pair: WITH
+legacy guard = 1 rejection; WITHOUT it = 0 rejections.
 
 - [ ] **Step 6: Run GREEN and byte-neutral regressions**
 
@@ -621,7 +682,9 @@ expect(classifyPolicyPasses(onePass({ worsenedCases: ["a"], dogfoodSuppressedTp:
 expect(classifyPolicyPasses(coveredZeroEffectFixture)[targetIndex]?.classification)
   .toBe("delete-candidate");
 expect(classifyPolicyPasses(interactionVetoFixture)[targetIndex]?.classification)
-  .toBe("retain");
+  .toBe("inconclusive");
+expect(classifyPolicyPasses(interactionVetoFixture)[targetIndex]?.reasons)
+  .toContain("interaction-removal-harm");
 ```
 
 Add stateful 2-sequence/3-sequence boundary tests, dogfood 4/5 and 2/3 run boundaries, conflicting
@@ -642,7 +705,9 @@ export function classifyPolicyPasses(
 ): PolicyPassClassification[] {
   const retained = new Set<PolicyPassId>();
   // Phase 1: direct unique contribution and safety-retention vetoes only.
-  // Phase 2: harm, then deletion against the fixed retained set, else inconclusive.
+  // Phase 2: individual harm, then deletion against the fixed retained set.
+  // Group-only harm blocks deletion but is never allocated back as individual retain evidence.
+  // Every remaining pass, including a group-vetoed pass, is inconclusive.
 }
 
 export type PolicyPassEvidenceInput = PolicyPassEvidence;
@@ -666,7 +731,9 @@ type PolicyClassificationReason =
   | "dogfood-only";
 ```
 
-Never branch on p-value significance. Persist raw evidence refs for every reason.
+Never branch on p-value significance. Persist raw evidence refs for every reason. `retain` requires
+direct, pass-identifiable unique protection/backstop evidence; an interaction row may veto deletion
+and emit `interaction-removal-harm`, but cannot itself produce `retain`.
 
 - [ ] **Step 4: Run GREEN**
 
@@ -692,15 +759,18 @@ git commit -m "feat(stats): classify policy pass evidence"
 - Modify: `src/core/decision-outcome.ts:13-52`
 - Modify: `src/core/loop-driver.ts:513-542`
 - Modify: `src/audit/verifier.ts:1-75`
+- Create: `src/stats/policy/dogfood-attestation.ts`
 - Create: `src/stats/policy/dogfood.ts`
 - Modify: `tests/unit/decision-outcome.test.ts`
 - Modify: `tests/unit/loop-driver-emit-decisions.test.ts`
 - Create: `tests/unit/policy-dogfood.test.ts`
+- Create: `tests/unit/policy-dogfood-attestation.test.ts`
 - Modify: `tests/unit/audit-verify-corruption.test.ts`
 
 **Interfaces:**
 - Produces `findingSignatures(finding): string[]`, additive audit
-  `finding_signatures`, `verifyAuditBytes(...)`, and `harvestPolicyDogfood(...)`.
+  `finding_signatures`, `verifyAuditBytes(...)`, `createPolicyDogfoodInputManifest(...)`,
+  content-bound `attestPolicyDogfood(...)`, and `harvestPolicyDogfood(...)`.
 
 - [ ] **Step 1: Write RED for representative/member signatures**
 
@@ -718,17 +788,19 @@ Require code-unit sorting and deduplication. Keep `decision_outcome` bytes uncha
 
 - [ ] **Step 2: Write dogfood harvester RED cases**
 
-Build a real temporary audit chain and stored policy trace. Assert one joined `tp`, one joined `fp`,
-and exclusion counts for unsigned historical event, missing decision, incomplete trace, ambiguous
-run/iter, signature absent from lineage, malformed chain, changed source file, and dogfood event at
-or after `registered_at`.
+Build a real temporary audit chain and stored policy trace. Assert one human-attested joined `tp`,
+one human-attested joined `fp`, and exclusion counts for agent-only decision, missing attestation,
+attestation/input-manifest SHA mismatch, missing decision, incomplete trace, ambiguous run/iter,
+signature absent from lineage, malformed chain, changed source file, and dogfood event at or after
+`registered_at`. A legacy `decision.applied` row without human attestation must remain excluded even
+when its derived `decision_outcome.bucket` says `tp` or `fp`.
 
 - [ ] **Step 3: Run RED**
 
 Run:
 
 ```bash
-bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisions.test.ts tests/unit/policy-dogfood.test.ts
+bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisions.test.ts tests/unit/policy-dogfood-attestation.test.ts tests/unit/policy-dogfood.test.ts
 ```
 
 Expected: missing signatures/harvester APIs.
@@ -770,36 +842,80 @@ export async function verifyChain(path: string): Promise<VerifyResult> {
 
 Preserve current broken-line semantics and policy-trace reference checks.
 
-- [ ] **Step 6: Implement dogfood harvesting**
+- [ ] **Step 6: Freeze the source inventory before preregistration**
 
 ```ts
-export function harvestPolicyDogfood(input: {
+export function createPolicyDogfoodInputManifest(input: {
   auditRoots: readonly string[];
   since: string;
   until: string;
+}): PolicyDogfoodInputManifest;
+```
+
+Read each eligible audit JSONL exactly once through a stable no-follow FD, hash that exact Buffer,
+verify it with `verifyAuditBytes`, resolve every referenced complete trace, and emit a closed,
+code-unit-sorted inventory of audit/trace refs, SHA-256 values, byte counts and `(run_id, iter)`.
+The immutable input manifest is persisted through Task 1 before the policy preregistration is
+written; the preregistration binds its exact ref/SHA and identical `[since, until)` cutoff.
+
+- [ ] **Step 7: Require an explicit human attestation**
+
+```ts
+export function policyDogfoodAttestationPreflight(input: {
+  manifest: PolicyDogfoodInputManifest;
+  actor: string;
+  rows: readonly PolicyDogfoodAdjudication[];
+}): { rendered: string; challenge: `ATTEST ${string}`; candidateSha256: string };
+
+export function attestPolicyDogfood(input: {
+  manifest: PolicyDogfoodInputManifest;
+  actor: string;
+  rows: readonly PolicyDogfoodAdjudication[];
+  confirmation: string;
+  now: Date;
+}): PolicyDogfoodAttestation;
+```
+
+Mirror the existing Lore approval boundary: render and defang every disposition plus its source
+finding/trace identity, bind the challenge to the canonical manifest+rows bytes, require exact
+interactive confirmation, rerun the preflight before returning the strict attestation, and never
+echo a fresh challenge after mismatch. Task 10 wires this API to a TTY-only
+`stats policy attest-dogfood` command and persists the returned immutable artifact. Agent-authored
+decision files are candidate evidence only; without this content-bound human attestation they are
+never TP/FP labels.
+
+- [ ] **Step 8: Implement dogfood harvesting**
+
+```ts
+export function harvestPolicyDogfood(input: {
+  preregistration: PolicyMeasurementPreregistration;
+  inputManifest: PolicyDogfoodInputManifest;
+  attestation: PolicyDogfoodAttestation;
 }): PolicyDogfoodSnapshot;
 ```
 
-Read each JSONL once through a stable no-follow FD, hash that exact Buffer, verify it with
-`verifyAuditBytes`, join unique `(run_id, iter)` complete traces, and attribute evaluations/effects
-whose `source_signatures` intersect the decision signatures. Count every exclusion by a closed code.
-Write no files in this function.
+Verify the preregistered manifest/attestation refs and SHAs before opening any source, reverify every
+frozen source Buffer against the inventory, join unique `(run_id, iter)` complete traces, and
+attribute only attested evaluations/effects whose `source_signatures` intersect the attested
+decision signatures. Count every exclusion by a closed code. Write no files in this function and
+never rescan an audit root for later files.
 
-- [ ] **Step 7: Run GREEN and regressions**
+- [ ] **Step 9: Run GREEN and regressions**
 
 ```bash
-bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisions.test.ts tests/unit/policy-dogfood.test.ts tests/unit/audit-verify-corruption.test.ts tests/unit/stats-load.test.ts
+bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisions.test.ts tests/unit/policy-dogfood-attestation.test.ts tests/unit/policy-dogfood.test.ts tests/unit/audit-verify-corruption.test.ts tests/unit/stats-load.test.ts
 bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 8: Kill dogfood mutants**
+- [ ] **Step 10: Kill dogfood mutants**
 
-Emit representative only, locale-sort signatures, accept unsigned decisions, join by finding ID,
-skip trace verification, count missing decisions as FP, and reread audit bytes for hashing. Named
-tests must kill all mutants; restore SHAs.
+Emit representative only, locale-sort signatures, accept agent-only decisions, accept an
+attestation for a different manifest, join by finding ID, skip trace verification, count missing
+decisions as FP, rescan beyond the frozen inventory, and reread audit bytes for hashing. Named tests
+must kill all mutants; restore SHAs.
 
-- [ ] **Step 9: Review and commit**
+- [ ] **Step 11: Review and commit**
 
 ```bash
 git commit -m "feat(audit): bind decisions to policy signatures"
@@ -961,7 +1077,9 @@ identical ordered response hashes.
 
 Cover incomplete profile inventory, group member/order mismatch, one unconsumed response, changed
 request/config hash, a `not-run` requested pass, cross-repeat response reuse, non-authoritative case,
-tampered truth block, output already exists, and a preregistration mismatch before adapter creation.
+tampered truth block, output already exists, and preregistration mismatches for route,
+reviewer/critic retry ceilings, max output tokens, candidate/veto/correction literals, and every
+output path before adapter creation. A provider factory spy must remain at zero for every mismatch.
 
 - [ ] **Step 3: Run RED**
 
@@ -994,7 +1112,9 @@ async function runCapturedProfiles(
 
 Capture the baseline once with `repeat: 3`; sort captured calls by global logical ordinal; replay a
 fresh fully consumed adapter view per profile. `runBenchMatrix` passes baseline plus its requested
-singletons. `runBenchPolicy` loads the preregistration and passes the exact closed 23 profiles.
+singletons. `runBenchPolicy` loads the preregistration, verifies source/corpus/roster/routes/retries/
+output ceiling/analysis rules/output paths against the effective run before adapter creation, and
+passes the exact closed 23 profiles.
 
 - [ ] **Step 5: Persist the strict Bench policy bundle**
 
@@ -1013,8 +1133,9 @@ bun run lint
 - [ ] **Step 7: Kill schedule/pairing mutants**
 
 Drop one singleton, drop one group, reuse only the final repeat, allow a variant preflight, compare
-response hashes as sets, skip full consumption, ignore truth tamper, and default a `not-run` pass to
-zero opportunities. Each must fail a named test; restore SHAs.
+response hashes as sets, skip full consumption, ignore truth tamper, default a `not-run` pass to
+zero opportunities, and construct an adapter before rejecting each route/retry/output/output-path
+mismatch. Each must fail a named test; restore SHAs.
 
 - [ ] **Step 8: Review and commit**
 
@@ -1138,6 +1259,8 @@ git commit -m "feat(stats): assemble authoritative policy evidence"
 
 **Interfaces:**
 - Produces `runPolicyStats(...)`, `renderPolicyMeasurement(...)`, `bench policy`, and `stats policy`.
+- Produces the TTY-only `stats policy attest-dogfood` write boundary for Task 6's immutable human
+  attestation; non-TTY/EOF/mismatch writes nothing and exits nonzero.
 - Preserves `runStats(...)` and default `reviewgate stats` bytes.
 
 - [ ] **Step 1: Write RED for report parity**
@@ -1163,12 +1286,15 @@ Assert:
 expect(runCli(["stats", "--json"]).stdout).toBe(existingStatsGolden);
 expect(runCli(["bench", "policy", "--help"]).code).toBe(0);
 expect(runCli(["stats", "policy", "--help"]).code).toBe(0);
+expect(runCli(["stats", "policy", "attest-dogfood", "--help"]).code).toBe(0);
 expect(runCli(["stats", "policy", "--preregistration", bad, "--bench", b, "--rig", r, "--out", out]).code).toBe(4);
 expect(existsSync(out)).toBe(false);
 ```
 
 Required flags are parser-level required and help names the no-provider counterfactual and exit-4
-authority boundary.
+authority boundary. Add TTY controls proving that the full candidate dossier is rendered before the
+challenge, matching confirmation writes one content-addressed `0600` attestation, and non-TTY,
+EOF, mismatch, or a manifest swap writes zero artifacts.
 
 - [ ] **Step 3: Run RED**
 
@@ -1210,8 +1336,11 @@ directory; never touch source artifacts. Catch only `PolicyMeasurementAuthorityE
 - [ ] **Step 6: Wire commands without changing default Stats**
 
 Add `bench policy` with required `--preregistration` and `--out`. Add `stats policy` with required
-`--preregistration`, `--bench`, `--rig`, and `--out`. Keep the existing Stats args/run as the default
-path and add the child command using Citty's supported `subCommands` field.
+`--preregistration`, `--bench`, `--rig`, and `--out`, plus `stats policy attest-dogfood` with
+required frozen input manifest, adjudication draft, actor, and output root. The latter must use a
+real TTY/readline boundary in production and the Task 6 preflight/attestation API; it never infers a
+human actor from a DecisionEntry. Keep the existing Stats args/run as the default path and add the
+child command using Citty's supported `subCommands` field.
 
 - [ ] **Step 7: Run GREEN and compiled-help preparation**
 
@@ -1224,8 +1353,9 @@ bun run lint
 - [ ] **Step 8: Kill publication/CLI mutants**
 
 Write the report before validation, publish files separately, accept an existing output directory,
-map authority errors to exit 1, omit a required CLI flag, and route bare `stats` into policy mode.
-Named tests must kill all six; restore SHAs.
+map authority errors to exit 1, omit a required CLI flag, route bare `stats` into policy mode,
+accept a non-TTY/EOF/mismatched attestation, and skip the preflight rerun after manifest swap. Named
+tests must kill every mutant; restore SHAs.
 
 - [ ] **Step 9: Review and commit**
 
@@ -1266,8 +1396,11 @@ Document:
 
 ```markdown
 Slice 2A implementation is complete. No policy pass changed and no paid measurement ran.
-Next: choose and cost the concrete provider roster, write a committed attempt-specific
-reviewgate.policy-measurement.preregistration.v1, review it, then run exactly one registered capture.
+Next: author and dry-validate the 15 real stateful scenarios (three independent two-opportunity
+sequences for each of five stateful passes); accrue explicit dogfood decisions with complete traces;
+freeze the audit/trace inventory; obtain the TTY human attestation; then choose and cost the concrete
+provider roster. Only after those inputs exist, write and review one committed attempt-specific
+reviewgate.policy-measurement.preregistration.v1 and run exactly one registered capture.
 Qwen remains a separate parked measurement stream.
 ```
 
@@ -1410,6 +1543,69 @@ remain outside the commit.
 
 ---
 
+## Numeric guard witnesses
+
+Every new guard and mutation named in Tasks 1–10 is bound to a literal quantity below. “WITH” is
+the intended implementation; “WITHOUT” is the single named guard bypass/mutant while all other
+inputs remain fixed. The implementing test must assert both columns before its task commit.
+
+| Task / guarded quantity | WITH mechanism | WITHOUT / named mutant |
+|---|---:|---:|
+| T1 valid canonical artifact accepted | 1/1 | 1/1 control |
+| T1 symlink/final-link/hardlink/0644/oversize/UTF-8/noncanonical/hash/traversal/swap invalidities rejected | 10/10 | 9/10 for each single bypass |
+| T1 exact Buffer is both hashed and parsed | 1 Buffer read | 2 Buffer reads after reread mutant |
+| T2 exact pass inventory positions valid | 18/18 | 17/18 after deletion; 0/18 valid after reorder/duplicate |
+| T2 interaction members valid | 15/15 declared member positions | 14/15 after one member deletion |
+| T2 corpus split and repeats valid | 30 = 16+14, repeats = 3 | 29 or 31 cases, or repeats = 2 |
+| T2 stateless thresholds valid | cases = 8, signatures = 15 | cases = 7 or signatures = 14 |
+| T2 stateful/dogfood/bootstrap thresholds valid | 3 sequences, 2 turns, 5 dispositions, 3 runs, 10,000 resamples | exactly one altered value per mutant |
+| T2 closed route/retry/output/analysis/output-path fixtures rejected | 12/12 invalid fixtures | 11/12 for each bypass |
+| T3 persisted truth identities | 1 expected truth block with 1 finding | 0 blocks when persistence is dropped; 0 matching signatures when IDs are substituted |
+| T3 malformed truth rows rejected | 6/6 | 5/6 for each schema bypass |
+| T3 group missing/extra/reordered/duplicate/not-run rows rejected | 5/5 | 4/5 for each validator bypass |
+| T3 valid two-pass group | group validator accepts 1/1; legacy wrapper rejects 1/1 | legacy wrapper rejects 0/1 when its singleton guard is removed |
+| T3 ordered response mismatch rejected | 1/1 | 0/1 under multiset comparison |
+| T4 independent samples after repeat collapse | 2 cases | 6 pseudo-samples when repeats are counted |
+| T4 fixed bootstrap and seed | 10,000 resamples; same-seed distinct outputs = 1 | 1,000 resamples or same-seed distinct outputs > 1 |
+| T4 exact two-sided sign test `[1,1,1,1]` | p = 0.125 | p = 0.0625 one-sided |
+| T4 Holm `[0.01,0.04,0.03]` | `[0.03,0.06,0.06]` | at least one element differs when cumulative maxima are removed |
+| T4 correction family cardinality | 18 singleton + 4 interaction | one combined family of 22 |
+| T5 stateless boundary | 8 cases and 15 signatures sufficient | 7 cases or 14 signatures insufficient |
+| T5 stateful boundary | 3 sequences × 2 opportunity turns sufficient | 2 sequences or 1 opportunity turn insufficient |
+| T5 dogfood boundary | 5 dispositions from 3 runs corroborating | 4 dispositions or 2 runs insufficient |
+| T5 unique contribution precedence | 1 direct unique event → retain | 0 retained when veto is removed |
+| T5 harm precedence | 2 ground-truth harms, or 1 ground-truth + 1 dogfood TP → harmful | 0 harmful when precedence is inverted |
+| T5 group-only removal harm | 1 deletion veto + classification inconclusive | 1 incorrect retain or delete when group attribution/guard is bypassed |
+| T5 coverage | 1 retained overlapping pass may cover benefit | 0 valid cover from an inconclusive pass |
+| T6 representative/member signature identity | 3 sorted unique signatures | 1 representative-only signature |
+| T6 frozen input inventory | N preregistered audit/trace refs consumed, 0 extras | N+1 after root rescan mutant |
+| T6 human provenance | 2/2 attested TP/FP rows eligible | 0/2 eligible without matching human attestation |
+| T6 dogfood exclusion matrix | 10/10 excluded | 9/10 for each provenance/join/trace/source bypass |
+| T6 audit read identity | 1 stable Buffer read per source | 2 reads under hash reread mutant |
+| T7 stateful scenario sufficiency | 5/5 passes have 3 sequences × 2 opportunity turns | 0/5 sufficient at 2 sequences or 1 opportunity turn |
+| T7 four-history profile order | 4/4 IDs in catalog order | 3/4 when one member is omitted |
+| T7 branch persistence | turn-2 baseline/counterfactual digests differ in 5/5 seeded pass fixtures | 0/5 differ under fresh-pair/share/import mutants |
+| T7 opportunity carrier | 2/2 turns have opportunities | 0/2 valid when only `ran` with zero opportunities is supplied |
+| T7 final identity output | baseline + counterfactual findings present in 2/2 branches | 1/2 after one branch output is dropped |
+| T8 exact profile schedule | 23 profiles = 1 + 18 + 4 | 22 after one singleton/group drop |
+| T8 two-case/three-repeat provider ceiling | review = 6, complete = 6, preflight = 1 | review = 138, complete = 138, preflight = 23 if all 23 profiles call live |
+| T8 response consumption/order | all captured entries consumed exactly once; mismatches = 0 | leftovers or order mismatches = 1 |
+| T8 repeat isolation | 3 distinct response-manifest SHAs | 1 SHA reused across repeats |
+| T8 authority invalidity matrix | 16/16 rejected before publication | 15/16 for each single bypass |
+| T9 final catalog rows and interactions | 18 pass rows + 4 interaction rows | 17 pass rows or 3 interactions accepted by mutant |
+| T9 fail-closed authority matrix | 16/16 rejected, published outputs = 0 | 15/16 rejected or published outputs = 1 under each bypass |
+| T9 opportunity conditioning | considered rows with opportunities = counted; `ran`/0-opportunity rows counted = 0 | `ran`/0-opportunity rows counted = 1 |
+| T9 correction families | 18 singleton + 4 interaction | one merged family of 22 |
+| T9 raw evidence completeness | missing refs = 0 | missing refs = 1 when one evidence ref is dropped |
+| T10 renderer classification parity | 18/18 JSON rows equal Markdown rows | 17/18 after one row omission |
+| T10 default Stats compatibility | existing golden bytes differ at 0 positions | at least 1 byte differs if bare Stats routes to policy mode |
+| T10 authority failure publication | exit = 4, named outputs = 0 | exit = 1 or named outputs = 1 under mutant |
+| T10 atomic publication | one same-filesystem directory rename | more than one named publish operation under split-write mutant |
+| T10 human-attestation boundary | matching TTY challenge writes 1 artifact; non-TTY/EOF/mismatch/swap write 0 | at least 1 unauthorized artifact under each bypass |
+| T10 parser-required flags | 6 required policy flag omissions rejected | 5/6 if one required marker is removed |
+
+---
+
 ## Definition of Done
 
 - Every task commit is focused, reviewed, and mutation-protected.
@@ -1449,3 +1645,20 @@ Type names are fixed in Task 2 and reused verbatim in Tasks 5–10. `runBenchPol
 `assemblePolicyMeasurement` is the only function that combines them into `PolicyMeasurement`.
 No approved requirement is deferred to Slice 2B except actual pass deletion/consolidation, exactly
 as required by the design.
+
+## Plan-gate findings mapping
+
+### Round 1 — `FAIL`, addressed for delta review
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C1 Task 3 lacked the persisted `CaseResult` projection path | Added `src/cli/commands/bench.ts:441-479`, `CaseRunOutcome.policyTruth` → `policy_truth`, and a written-result assertion | Task 3 |
+| C2 legacy singleton validator would accept groups | Preserved an explicit `requestedAblations.length === 1` guard and added the same-pair group/legacy 1-accept/1-reject witness | Task 3 |
+| C3 preregistration omitted run-/cost-/result-affecting inputs | Added route, retry ceilings, output-token ceiling, interval/correction/candidate/veto literals, immutable output paths, and pre-adapter effective-run comparison | Tasks 2, 8 |
+| C4 group harm was incorrectly classified as individual `retain` | Group-only harm now vetoes deletion but yields `inconclusive`; only direct unique protection/backstop evidence yields `retain` | Task 5 |
+| C5 agent decisions were treated as human ground truth | Added a content-bound, TTY-only human attestation artifact; unattested agent decisions are excluded | Tasks 2, 6, 10 |
+| C6 dogfood sources were not frozen before registration | Added a canonical audit/trace inventory with refs/SHAs/bytes/run identities, bound by exact prereg ref/SHA and reverified without root rescans | Tasks 2, 6, 9 |
+| C7 guard tests lacked literal WITH/WITHOUT values | Added the binding numeric witness table for every guard/mutation family, including provider calls 6/6/1 versus 138/138/23 | Tasks 1–10 |
+
+Round 2 must inspect only these deltas, their finding mappings, and their side effects. It must not
+re-litigate already-passed plan areas or promote new implementation-detail nice-to-haves.
