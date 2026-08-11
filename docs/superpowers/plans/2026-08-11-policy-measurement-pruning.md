@@ -346,8 +346,26 @@ Add a literal lane map: orders 110, 120, 130, 150, and 160 are `stateful-rig`; a
   pass_ids: PolicyPassId[];
   corpus: { path: string; unique_cases: 30; clean: 16; seeded_bug: 14; repeats: 3; manifest_sha256: string; content_sha256: Record<string, string> };
   roster: {
-    reviewers: Array<{ provider: string; model: string; persona: string; route: string | null }>;
-    critic: { provider: string; model: string; persona: string; route: string | null } | null;
+    reviewers: Array<{
+      provider: string;
+      model: string;
+      persona: string;
+      openrouter_provider: {
+        only?: string[];
+        order?: string[];
+        allowFallbacks?: boolean;
+      } | null;
+    }>;
+    critic: {
+      provider: string;
+      model: string;
+      persona: string;
+      openrouter_provider: {
+        only?: string[];
+        order?: string[];
+        allowFallbacks?: boolean;
+      } | null;
+    } | null;
     substitution_allowed: false;
   };
   execution: {
@@ -395,8 +413,10 @@ Add a literal lane map: orders 110, 120, 130, 150, and 160 are `stateful-rig`; a
 Use `superRefine` to require `dogfood.until === registered_at`, exact inventory/groups/thresholds,
 exact singleton shape `[[pass1], [pass2], ...]`, positive bounded retry/output values, closed
 analysis/candidate/veto literals, and every output path as a unique repo-relative descendant of
-`bench/results/policy-measurement/<attempt>/`. Route is required exactly when the effective adapter
-uses an upstream route (including OpenRouter); Task 8 compares it before creating adapters.
+`bench/results/policy-measurement/<attempt>/`. `openrouter_provider` reuses the strict structural
+`OpenRouterProviderRouting` contract (`only`, ordered `order`, `allowFallbacks`) and is non-null
+exactly for an effective OpenRouter route; Task 8 compares its canonical structure before creating
+adapters.
 
 Define strict schemas for Bench profile bundles, Rig scenario manifests, dogfood input inventories,
 human attestations, dogfood snapshots, per-pass evidence, interactions, exclusions, artifacts, and
@@ -1079,7 +1099,8 @@ Cover incomplete profile inventory, group member/order mismatch, one unconsumed 
 request/config hash, a `not-run` requested pass, cross-repeat response reuse, non-authoritative case,
 tampered truth block, output already exists, and preregistration mismatches for route,
 reviewer/critic retry ceilings, max output tokens, candidate/veto/correction literals, and every
-output path before adapter creation. A provider factory spy must remain at zero for every mismatch.
+output path before adapter creation. Routing fixtures independently alter `only`, `order`, and
+`allowFallbacks`. A provider factory spy must remain at zero for every mismatch.
 
 - [ ] **Step 3: Run RED**
 
@@ -1112,7 +1133,8 @@ async function runCapturedProfiles(
 
 Capture the baseline once with `repeat: 3`; sort captured calls by global logical ordinal; replay a
 fresh fully consumed adapter view per profile. `runBenchMatrix` passes baseline plus its requested
-singletons. `runBenchPolicy` loads the preregistration, verifies source/corpus/roster/routes/retries/
+singletons. `runBenchPolicy` loads the preregistration, verifies source/corpus/roster/structured
+OpenRouter routing (`only`, ordered `order`, `allowFallbacks`)/retries/
 output ceiling/analysis rules/output paths against the effective run before adapter creation, and
 passes the exact closed 23 profiles.
 
@@ -1554,11 +1576,14 @@ inputs remain fixed. The implementing test must assert both columns before its t
 | T1 valid canonical artifact accepted | 1/1 | 1/1 control |
 | T1 symlink/final-link/hardlink/0644/oversize/UTF-8/noncanonical/hash/traversal/swap invalidities rejected | 10/10 | 9/10 for each single bypass |
 | T1 exact Buffer is both hashed and parsed | 1 Buffer read | 2 Buffer reads after reread mutant |
-| T2 exact pass inventory positions valid | 18/18 | 17/18 after deletion; 0/18 valid after reorder/duplicate |
+| T2 exact pass inventory fixture accepted/rejected | valid fixture accepted = 1; reordered, missing, duplicate fixtures rejected = 3/3 | valid accepted = 0 after deletion; invalid rejected = 2/3 after each reorder/duplicate bypass |
 | T2 interaction members valid | 15/15 declared member positions | 14/15 after one member deletion |
 | T2 corpus split and repeats valid | 30 = 16+14, repeats = 3 | 29 or 31 cases, or repeats = 2 |
 | T2 stateless thresholds valid | cases = 8, signatures = 15 | cases = 7 or signatures = 14 |
-| T2 stateful/dogfood/bootstrap thresholds valid | 3 sequences, 2 turns, 5 dispositions, 3 runs, 10,000 resamples | exactly one altered value per mutant |
+| T2 stateful sequence threshold | 3 sequences sufficient | 2 sequences insufficient |
+| T2 stateful opportunity-turn threshold | 2 turns sufficient | 1 turn insufficient |
+| T2 dogfood thresholds | 5 dispositions from 3 runs sufficient | 4 dispositions or 2 runs insufficient |
+| T2 bootstrap threshold | 10,000 resamples valid | 1,000 resamples invalid |
 | T2 closed route/retry/output/analysis/output-path fixtures rejected | 12/12 invalid fixtures | 11/12 for each bypass |
 | T3 persisted truth identities | 1 expected truth block with 1 finding | 0 blocks when persistence is dropped; 0 matching signatures when IDs are substituted |
 | T3 malformed truth rows rejected | 6/6 | 5/6 for each schema bypass |
@@ -1566,19 +1591,19 @@ inputs remain fixed. The implementing test must assert both columns before its t
 | T3 valid two-pass group | group validator accepts 1/1; legacy wrapper rejects 1/1 | legacy wrapper rejects 0/1 when its singleton guard is removed |
 | T3 ordered response mismatch rejected | 1/1 | 0/1 under multiset comparison |
 | T4 independent samples after repeat collapse | 2 cases | 6 pseudo-samples when repeats are counted |
-| T4 fixed bootstrap and seed | 10,000 resamples; same-seed distinct outputs = 1 | 1,000 resamples or same-seed distinct outputs > 1 |
+| T4 fixed bootstrap and seed | 10,000 resamples; same-seed distinct outputs = 1 | resample count = 1,000; two injected `Math.random` streams produce distinct outputs = 2 |
 | T4 exact two-sided sign test `[1,1,1,1]` | p = 0.125 | p = 0.0625 one-sided |
-| T4 Holm `[0.01,0.04,0.03]` | `[0.03,0.06,0.06]` | at least one element differs when cumulative maxima are removed |
+| T4 Holm `[0.01,0.04,0.03]` | `[0.03,0.06,0.06]` | `[0.03,0.04,0.06]` when cumulative maxima are removed |
 | T4 correction family cardinality | 18 singleton + 4 interaction | one combined family of 22 |
 | T5 stateless boundary | 8 cases and 15 signatures sufficient | 7 cases or 14 signatures insufficient |
 | T5 stateful boundary | 3 sequences × 2 opportunity turns sufficient | 2 sequences or 1 opportunity turn insufficient |
 | T5 dogfood boundary | 5 dispositions from 3 runs corroborating | 4 dispositions or 2 runs insufficient |
 | T5 unique contribution precedence | 1 direct unique event → retain | 0 retained when veto is removed |
 | T5 harm precedence | 2 ground-truth harms, or 1 ground-truth + 1 dogfood TP → harmful | 0 harmful when precedence is inverted |
-| T5 group-only removal harm | 1 deletion veto + classification inconclusive | 1 incorrect retain or delete when group attribution/guard is bypassed |
+| T5 group-only removal harm | deletion vetoes = 1; classification = `inconclusive` | deletion vetoes = 0; classification = `delete-candidate` when interaction harm is ignored |
 | T5 coverage | 1 retained overlapping pass may cover benefit | 0 valid cover from an inconclusive pass |
 | T6 representative/member signature identity | 3 sorted unique signatures | 1 representative-only signature |
-| T6 frozen input inventory | N preregistered audit/trace refs consumed, 0 extras | N+1 after root rescan mutant |
+| T6 frozen input inventory fixture | 2 audit + 2 trace refs consumed = 4; extras = 0 | 5 refs consumed after one post-freeze audit is rescanned; extras = 1 |
 | T6 human provenance | 2/2 attested TP/FP rows eligible | 0/2 eligible without matching human attestation |
 | T6 dogfood exclusion matrix | 10/10 excluded | 9/10 for each provenance/join/trace/source bypass |
 | T6 audit read identity | 1 stable Buffer read per source | 2 reads under hash reread mutant |
@@ -1589,20 +1614,23 @@ inputs remain fixed. The implementing test must assert both columns before its t
 | T7 final identity output | baseline + counterfactual findings present in 2/2 branches | 1/2 after one branch output is dropped |
 | T8 exact profile schedule | 23 profiles = 1 + 18 + 4 | 22 after one singleton/group drop |
 | T8 two-case/three-repeat provider ceiling | review = 6, complete = 6, preflight = 1 | review = 138, complete = 138, preflight = 23 if all 23 profiles call live |
-| T8 response consumption/order | all captured entries consumed exactly once; mismatches = 0 | leftovers or order mismatches = 1 |
+| T8 response full consumption | 12/12 review+complete entries consumed; leftovers = 0 | 11/12 consumed; leftovers = 1 |
+| T8 response order | order mismatches = 0 | order mismatches = 1 under set/multiset comparison mutant |
 | T8 repeat isolation | 3 distinct response-manifest SHAs | 1 SHA reused across repeats |
 | T8 authority invalidity matrix | 16/16 rejected before publication | 15/16 for each single bypass |
 | T9 final catalog rows and interactions | 18 pass rows + 4 interaction rows | 17 pass rows or 3 interactions accepted by mutant |
-| T9 fail-closed authority matrix | 16/16 rejected, published outputs = 0 | 15/16 rejected or published outputs = 1 under each bypass |
+| T9 fail-closed authority matrix | invalid fixtures rejected = 16/16 | invalid fixtures rejected = 15/16 under each validation bypass |
+| T9 invalid-lane continuation | published outputs = 0 | published outputs = 1 when assembly continues after the invalid lane |
 | T9 opportunity conditioning | considered rows with opportunities = counted; `ran`/0-opportunity rows counted = 0 | `ran`/0-opportunity rows counted = 1 |
 | T9 correction families | 18 singleton + 4 interaction | one merged family of 22 |
 | T9 raw evidence completeness | missing refs = 0 | missing refs = 1 when one evidence ref is dropped |
 | T10 renderer classification parity | 18/18 JSON rows equal Markdown rows | 17/18 after one row omission |
-| T10 default Stats compatibility | existing golden bytes differ at 0 positions | at least 1 byte differs if bare Stats routes to policy mode |
-| T10 authority failure publication | exit = 4, named outputs = 0 | exit = 1 or named outputs = 1 under mutant |
-| T10 atomic publication | one same-filesystem directory rename | more than one named publish operation under split-write mutant |
-| T10 human-attestation boundary | matching TTY challenge writes 1 artifact; non-TTY/EOF/mismatch/swap write 0 | at least 1 unauthorized artifact under each bypass |
-| T10 parser-required flags | 6 required policy flag omissions rejected | 5/6 if one required marker is removed |
+| T10 default Stats compatibility | golden equality assertions = 1/1 | equality assertions = 0/1 if bare Stats routes to policy mode |
+| T10 authority exit mapping | authority fixture exit = 4 | authority fixture exit = 1 under mapping mutant |
+| T10 authority failure publication | named outputs = 0 | named outputs = 1 when report-before-validation mutant is active |
+| T10 atomic publication | named publish operations = 1 directory rename | named publish operations = 2 under split-write mutant |
+| T10 human-attestation boundary | matching TTY challenge writes = 1; non-TTY/EOF/mismatch/swap writes = 0/0/0/0 | the individually bypassed invalid case writes = 1 |
+| T10 parser-required flags | 10/10 omissions rejected (2 Bench + 4 Stats + 4 attestation) | 9/10 omissions rejected when one required marker is removed |
 
 ---
 
@@ -1654,7 +1682,7 @@ as required by the design.
 |---|---|---|
 | C1 Task 3 lacked the persisted `CaseResult` projection path | Added `src/cli/commands/bench.ts:441-479`, `CaseRunOutcome.policyTruth` → `policy_truth`, and a written-result assertion | Task 3 |
 | C2 legacy singleton validator would accept groups | Preserved an explicit `requestedAblations.length === 1` guard and added the same-pair group/legacy 1-accept/1-reject witness | Task 3 |
-| C3 preregistration omitted run-/cost-/result-affecting inputs | Added route, retry ceilings, output-token ceiling, interval/correction/candidate/veto literals, immutable output paths, and pre-adapter effective-run comparison | Tasks 2, 8 |
+| C3 preregistration omitted run-/cost-/result-affecting inputs | Added structural OpenRouter routing (`only`, ordered `order`, `allowFallbacks`), retry ceilings, output-token ceiling, interval/correction/candidate/veto literals, immutable output paths, and pre-adapter effective-run comparison | Tasks 2, 8 |
 | C4 group harm was incorrectly classified as individual `retain` | Group-only harm now vetoes deletion but yields `inconclusive`; only direct unique protection/backstop evidence yields `retain` | Task 5 |
 | C5 agent decisions were treated as human ground truth | Added a content-bound, TTY-only human attestation artifact; unattested agent decisions are excluded | Tasks 2, 6, 10 |
 | C6 dogfood sources were not frozen before registration | Added a canonical audit/trace inventory with refs/SHAs/bytes/run identities, bound by exact prereg ref/SHA and reverified without root rescans | Tasks 2, 6, 9 |
@@ -1662,3 +1690,14 @@ as required by the design.
 
 Round 2 must inspect only these deltas, their finding mappings, and their side effects. It must not
 re-litigate already-passed plan areas or promote new implementation-detail nice-to-haves.
+
+### Round 2 — `FAIL`, addressed for final delta review
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C3 routing was narrowed to `string \| null` | Replaced it with the existing strict `OpenRouterProviderRouting` structure and required canonical pre-adapter comparison of `only`, ordered `order`, and `allowFallbacks` | Tasks 2, 8 |
+| C7 several witnesses remained symbolic/inequality-based and CLI flags counted 6 instead of 10 | Replaced threshold, inventory, Holm, interaction, replay, Stats, publication, attestation and atomicity rows with literal fixture values; required flags are now 10/10 versus 9/10 | Tasks 1–10 |
+
+Round 3 is the final allowed plan-gate round. It checks only `20071b2` to the Round-2 fix commit,
+these two mappings, and their side effects. Any remaining judgment call is escalated to Markus
+instead of opening a fourth paper-perfection round.
