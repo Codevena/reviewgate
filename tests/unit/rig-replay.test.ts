@@ -1,7 +1,15 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
@@ -522,6 +530,20 @@ function replaceRawTrace(
   turn.policyReplay = { status: "complete", traces: [{ ref, sha256: hash }] };
 }
 
+function captureDistinctEnvelopeState(fixture: ReturnType<typeof exactRun>) {
+  const capturedRepo = mkdtempSync(join(tmpdir(), "rg-policy-envelope-state-"));
+  cpSync(fixture.stateRoot, join(capturedRepo, ".reviewgate"), { recursive: true });
+  writeFileSync(join(capturedRepo, ".reviewgate", "envelope-only.json"), '{"iter":1}\n', {
+    mode: 0o600,
+  });
+  const state = createPolicyStateSnapshot({
+    sourceRepoRoot: capturedRepo,
+    outputRoot: fixture.root,
+  });
+  replaceTrace(fixture, { ...fixture.envelope, state_sha256: state.stateSha256 });
+  return state;
+}
+
 function confidenceEnvelope(fixture: ReturnType<typeof exactRun>): PolicyReplayEnvelopeInput {
   const finding = {
     id: "confidence-1",
@@ -763,6 +785,53 @@ describe("rig replay — exact policy authority", () => {
       reputationRead.mockRestore();
       cycleRead.mockRestore();
     }
+  });
+
+  test("rejects a symlinked digest ancestor for a separately captured envelope state", () => {
+    const fixture = exactRun();
+    const state = captureDistinctEnvelopeState(fixture);
+    expect(state.stateSha256).not.toBe(fixture.manifest.policyReplay?.initialStateDigest);
+    expect(() =>
+      validateRigPolicyReplayArtifacts({
+        manifest: fixture.manifest,
+        manifestPath: fixture.manifestPath,
+      }),
+    ).not.toThrow();
+
+    const persistedDigestTree = join(fixture.root, "policy-state", state.stateSha256);
+    const outside = mkdtempSync(join(tmpdir(), "rg-policy-envelope-state-outside-"));
+    const externalDigestTree = join(outside, state.stateSha256);
+    renameSync(persistedDigestTree, externalDigestTree);
+    const outsideDigestBefore = digestPolicyState(join(externalDigestTree, ".reviewgate"));
+    symlinkSync(externalDigestTree, persistedDigestTree);
+
+    expect(() =>
+      validateRigPolicyReplayArtifacts({
+        manifest: fixture.manifest,
+        manifestPath: fixture.manifestPath,
+      }),
+    ).toThrow(expect.objectContaining({ code: "state-digest-mismatch", exitCode: 4 }));
+    expect(digestPolicyState(join(externalDigestTree, ".reviewgate"))).toBe(outsideDigestBefore);
+  });
+
+  test("rejects a direct state-root symlink for a separately captured envelope state", () => {
+    const fixture = exactRun();
+    const state = captureDistinctEnvelopeState(fixture);
+    const persistedDigestTree = join(fixture.root, "policy-state", state.stateSha256);
+    const persistedStateRoot = join(persistedDigestTree, ".reviewgate");
+    const outside = mkdtempSync(join(tmpdir(), "rg-policy-envelope-root-outside-"));
+    const externalStateRoot = join(outside, ".reviewgate");
+    renameSync(persistedStateRoot, externalStateRoot);
+    const outsideDigestBefore = digestPolicyState(externalStateRoot);
+    symlinkSync(externalStateRoot, persistedStateRoot);
+
+    expect(() =>
+      validateRigPolicyReplayArtifacts({
+        manifest: fixture.manifest,
+        manifestPath: fixture.manifestPath,
+      }),
+    ).toThrow(expect.objectContaining({ code: "state-digest-mismatch", exitCode: 4 }));
+    expect(digestPolicyState(externalStateRoot)).toBe(outsideDigestBefore);
   });
 
   test("matches logical response calls by identity when physical completion order reverses", () => {

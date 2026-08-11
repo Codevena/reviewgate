@@ -334,6 +334,19 @@ function exactContainedDirectoryChain(rootPath: string, components: string[]): s
   return current;
 }
 
+function readPersistedPolicyStateTree(
+  outputRoot: string,
+  stateSha256: string,
+): { stateRoot: string; entries: StateEntry[] } {
+  const components = ["policy-state", stateSha256, ".reviewgate"];
+  const stateRoot = exactContainedDirectoryChain(outputRoot, components);
+  const entries = collectStateEntries(stateRoot, true);
+  if (exactContainedDirectoryChain(outputRoot, components) !== stateRoot) {
+    throw new Error("policy state tree changed while reading");
+  }
+  return { stateRoot, entries };
+}
+
 function ensureContainedDirectory(
   rootPath: string,
   rootReal: string,
@@ -510,19 +523,9 @@ export function createPolicyStateSnapshot(input: {
     ]);
     copyEntries(entries, createdStateRoot);
   }
-  const stateDestinationReal = exactContainedDirectoryChain(outputReal, [
-    "policy-state",
-    stateSha256,
-    ".reviewgate",
-  ]);
-  if (stateDigest(collectStateEntries(stateDestinationReal, true)) !== stateSha256) {
+  const persistedState = readPersistedPolicyStateTree(outputReal, stateSha256);
+  if (stateDigest(persistedState.entries) !== stateSha256) {
     throw new Error("policy state snapshot digest mismatch");
-  }
-  if (
-    exactContainedDirectoryChain(outputReal, ["policy-state", stateSha256, ".reviewgate"]) !==
-    stateDestinationReal
-  ) {
-    throw new Error("policy state snapshot directory changed while reading");
   }
 
   const manifest: PolicyStateManifest = {
@@ -597,23 +600,10 @@ export function verifyPolicyStateSnapshot(input: {
   ) {
     throw new Error("policy state tree escapes root");
   }
-  const stateRootReal = exactContainedDirectoryChain(outputReal, [
-    "policy-state",
-    manifest.state_sha256,
-    ".reviewgate",
-  ]);
-  const entries = collectStateEntries(stateRootReal, true);
+  const persistedState = readPersistedPolicyStateTree(outputReal, manifest.state_sha256);
+  const entries = persistedState.entries;
   if (stateDigest(entries) !== manifest.state_sha256)
     throw new Error("policy state tree digest mismatch");
-  if (
-    exactContainedDirectoryChain(outputReal, [
-      "policy-state",
-      manifest.state_sha256,
-      ".reviewgate",
-    ]) !== stateRootReal
-  ) {
-    throw new Error("policy state tree changed while reading");
-  }
   const actualFiles = entries.map(({ path, size, sha256: contentSha256 }) => ({
     path,
     size,
@@ -622,7 +612,7 @@ export function verifyPolicyStateSnapshot(input: {
   if (canonicalJson(actualFiles) !== canonicalJson(manifest.files)) {
     throw new Error("policy state tree does not match manifest");
   }
-  return { stateRoot: stateRootReal, stateSha256: manifest.state_sha256 };
+  return { stateRoot: persistedState.stateRoot, stateSha256: manifest.state_sha256 };
 }
 
 function authority(code: RigAuthorityInvalidity, message: string): never {
@@ -805,12 +795,11 @@ export function validateRigPolicyReplayArtifacts(input: {
         return authority("invalid-trace", `duplicate replay identity ${identity}`);
       }
       identities.add(identity);
-      const stateRoot = resolve(outputRoot, `policy-state/${envelope.state_sha256}/.reviewgate`);
+      let stateRoot: string;
       try {
-        if (
-          !isContained(outputRoot, stateRoot) ||
-          stateDigest(collectStateEntries(stateRoot, true)) !== envelope.state_sha256
-        ) {
+        const persistedState = readPersistedPolicyStateTree(outputRoot, envelope.state_sha256);
+        stateRoot = persistedState.stateRoot;
+        if (stateDigest(persistedState.entries) !== envelope.state_sha256) {
           return authority(
             "state-digest-mismatch",
             `turn ${turn.index} trace ${trace.ref} state does not match`,
