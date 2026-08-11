@@ -259,9 +259,9 @@ describe("policy measurement preregistration", () => {
     expectInvalid((value) => {
       const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
         string,
-        string
+        string | undefined
       >;
-      delete hashes["cases/clean-16.json"];
+      hashes["cases/clean-16.json"] = undefined;
     });
     expectInvalid((value) => {
       const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
@@ -273,10 +273,10 @@ describe("policy measurement preregistration", () => {
     expectInvalid((value) => {
       const hashes = (value.corpus as Record<string, unknown>).content_sha256 as Record<
         string,
-        string
+        string | undefined
       >;
       hashes["other.json"] = SHA;
-      delete hashes["cases/seeded-14.json"];
+      hashes["cases/seeded-14.json"] = undefined;
     });
   });
 

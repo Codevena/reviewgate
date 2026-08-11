@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { POLICY_PASSES, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
+import { POLICY_MEASUREMENT_INTERACTIONS } from "../../src/core/policy/measurement-contract.ts";
 import {
   PolicyBenchBundleSchema,
   PolicyDogfoodAttestationSchema,
@@ -7,8 +10,6 @@ import {
   PolicyRigEvidenceSchema,
   PolicyRigScenarioManifestSchema,
 } from "../../src/schemas/policy-measurement.ts";
-import { POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
-import { POLICY_MEASUREMENT_INTERACTIONS } from "../../src/core/policy/measurement-contract.ts";
 
 const SHA = "b".repeat(64);
 
@@ -22,6 +23,19 @@ const STATEFUL = [
 
 function binding(ref: string): Record<string, string> {
   return { ref, sha256: SHA };
+}
+
+function catalogSnapshot(passId: string): Record<string, unknown> {
+  const pass = POLICY_PASSES.find((entry) => entry.id === passId);
+  if (pass === undefined) {
+    throw new Error(`missing catalog pass ${passId}`);
+  }
+  return {
+    order: pass.order,
+    class: pass.class,
+    overlaps_with: [...pass.overlaps_with],
+    opportunity_sha256: createHash("sha256").update(pass.opportunity).digest("hex"),
+  };
 }
 
 function scenarios(): Record<string, unknown> {
@@ -46,6 +60,7 @@ function passEvidence(
   return {
     pass_id: passId,
     lane,
+    catalog_snapshot: catalogSnapshot(passId),
     eligibility: { stateless: true, stateful: true, dogfood: true },
     authority: { stateless: true, stateful: true, dogfood: true },
     opportunities: { cases: 8, signatures: 15, turns: 2, runs: 3 },
@@ -84,6 +99,7 @@ function measurement(): Record<string, unknown> {
       artifact: binding(`interactions/${index}.json`),
       evidence: {
         authoritative: true,
+        authority: { stateless: true, stateful: true, dogfood: true },
         eligibility: { stateless: true, stateful: true, dogfood: true },
         opportunities: { cases: 8, signatures: 15, turns: 2, runs: 3 },
         exclusions: [],
@@ -106,8 +122,32 @@ function measurement(): Record<string, unknown> {
       sources: [binding("sources/preregistration.json")],
       exclusions: [],
       evidence: [binding("sources/preregistration.json")],
+      inventory: [
+        binding("evidence/a.json"),
+        ...POLICY_MEASUREMENT_INTERACTIONS.map((_, index) => binding(`interactions/${index}.json`)),
+      ],
     },
   };
+}
+
+function first<T>(values: readonly T[]): T {
+  const value = values[0];
+  if (value === undefined) {
+    throw new Error("expected a non-empty fixture collection");
+  }
+  return value;
+}
+
+function firstPass(value: Record<string, unknown>): Record<string, unknown> {
+  return first(value.passes as Record<string, unknown>[]);
+}
+
+function firstPassEvidence(value: Record<string, unknown>): Record<string, unknown> {
+  return firstPass(value).evidence as Record<string, unknown>;
+}
+
+function firstInteractionEvidence(value: Record<string, unknown>): Record<string, unknown> {
+  return first(value.interactions as Record<string, unknown>[]).evidence as Record<string, unknown>;
 }
 
 describe("policy measurement result contracts", () => {
@@ -168,9 +208,53 @@ describe("policy measurement result contracts", () => {
     const valid = measurement();
     expect(() => PolicyMeasurementSchema.parse(valid)).not.toThrow();
     const missing = measurement();
-    delete ((missing.passes as Record<string, unknown>[])[0]!.evidence as Record<string, unknown>)
-      .truth_effects;
+    firstPassEvidence(missing).truth_effects = undefined;
     expect(() => PolicyMeasurementSchema.parse(missing)).toThrow();
+  });
+
+  test("requires every pass to carry its exact catalog authority snapshot", () => {
+    const missing = measurement();
+    firstPassEvidence(missing).catalog_snapshot = undefined;
+    expect(() => PolicyMeasurementSchema.parse(missing)).toThrow();
+
+    const wrong = measurement();
+    (firstPassEvidence(wrong).catalog_snapshot as Record<string, unknown>).order = 999;
+    expect(() => PolicyMeasurementSchema.parse(wrong)).toThrow();
+
+    for (const [field, value] of [
+      ["class", "scope"],
+      ["overlaps_with", []],
+      ["opportunity_sha256", SHA],
+    ] as [string, unknown][]) {
+      const drifted = measurement();
+      (firstPassEvidence(drifted).catalog_snapshot as Record<string, unknown>)[field] = value;
+      expect(() => PolicyMeasurementSchema.parse(drifted)).toThrow();
+    }
+  });
+
+  test("rejects unknown or missing raw evidence inventory bindings", () => {
+    const unknown = measurement();
+    firstPassEvidence(unknown).raw_evidence_refs = ["evidence/unknown.json"];
+    firstPass(unknown).evidence_refs = ["evidence/unknown.json"];
+    expect(() => PolicyMeasurementSchema.parse(unknown)).toThrow();
+
+    const missing = measurement();
+    (missing.artifacts as Record<string, unknown>).inventory = [binding("interactions/0.json")];
+    expect(() => PolicyMeasurementSchema.parse(missing)).toThrow();
+  });
+
+  test("requires authority for every eligible interaction lane", () => {
+    const missing = measurement();
+    firstInteractionEvidence(missing).authority = undefined;
+    expect(() => PolicyMeasurementSchema.parse(missing)).toThrow();
+
+    const nonAuthoritative = measurement();
+    firstInteractionEvidence(nonAuthoritative).authority = {
+      stateless: false,
+      stateful: true,
+      dogfood: true,
+    };
+    expect(() => PolicyMeasurementSchema.parse(nonAuthoritative)).toThrow();
   });
 
   test("requires the closed five-pass, three-sequence, two-opportunity Rig manifest and evidence", () => {
@@ -194,6 +278,31 @@ describe("policy measurement result contracts", () => {
     };
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).not.toThrow();
     evidence.sequences.pop();
+    expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
+  });
+
+  test("rejects a Rig manifest scenario below two opportunity turns", () => {
+    const manifest = scenarios();
+    first(manifest.scenarios as Record<string, unknown>[]).expected_opportunity_turns = 1;
+    expect(() => PolicyRigScenarioManifestSchema.parse(manifest)).toThrow();
+  });
+
+  test("rejects Rig evidence below two opportunity turns", () => {
+    const evidence = {
+      schema: "reviewgate.policy-rig-evidence.v1",
+      scenario_manifest: binding("rig/scenarios.json"),
+      manifest: scenarios(),
+      authoritative: true,
+      sequences: (scenarios().scenarios as Record<string, unknown>[]).map((scenario) => ({
+        scenario_id: scenario.id,
+        pass_id: scenario.pass_id,
+        opportunity_turns: 2,
+        manifest: scenario.manifest,
+        initial_state: scenario.initial_state,
+        artifact: binding(`evidence/${scenario.id}.json`),
+      })),
+    };
+    first(evidence.sequences).opportunity_turns = 1;
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
   });
 
@@ -224,7 +333,7 @@ describe("policy measurement result contracts", () => {
       profiles,
     };
     expect(() => PolicyBenchBundleSchema.parse(bundle)).not.toThrow();
-    profiles[0]!.repeats = [1, 1, 1];
+    first(profiles).repeats = [1, 1, 1];
     expect(() => PolicyBenchBundleSchema.parse(bundle)).toThrow();
   });
 });

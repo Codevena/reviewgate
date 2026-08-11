@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASSES, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
@@ -33,6 +34,14 @@ const LaneEligibilitySchema = z
   .strict();
 const LaneAuthoritySchema = z
   .object({ stateless: z.boolean(), stateful: z.boolean(), dogfood: z.boolean() })
+  .strict();
+const CatalogSnapshotSchema = z
+  .object({
+    order: z.number().int().positive(),
+    class: z.enum(["evidence", "value-judgment", "scope", "history"]),
+    overlaps_with: z.array(PolicyPassIdSchema),
+    opportunity_sha256: Sha256Schema,
+  })
   .strict();
 const OpportunitySchema = z
   .object({
@@ -85,12 +94,29 @@ const StatisticsSchema = z
     }
   });
 function isCodeUnitSortedUnique(values: readonly string[]): boolean {
-  return values.every(
-    (value, index) => index === 0 || (values[index - 1] !== undefined && values[index - 1] < value),
-  );
+  return values.every((value, index) => {
+    const previous = values[index - 1];
+    return index === 0 || (previous !== undefined && previous < value);
+  });
 }
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function requireEligibleLaneAuthority(
+  eligibility: z.infer<typeof LaneEligibilitySchema>,
+  authority: z.infer<typeof LaneAuthoritySchema>,
+  ctx: z.RefinementCtx,
+  path: readonly (string | number)[],
+): void {
+  for (const lane of ["stateless", "stateful", "dogfood"] as const) {
+    if (eligibility[lane] && !authority[lane]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, lane],
+        message: "every eligible lane requires authoritative evidence",
+      });
+    }
+  }
 }
 const CodeUnitSortedUniqueStrings = z.array(z.string().min(1)).superRefine((values, ctx) => {
   for (const [index, value] of values.entries()) {
@@ -395,6 +421,7 @@ export const PolicyPassEvidenceSchema = z
   .object({
     pass_id: PolicyPassIdSchema,
     lane: PolicyMeasurementLaneSchema,
+    catalog_snapshot: CatalogSnapshotSchema,
     eligibility: LaneEligibilitySchema,
     authority: LaneAuthoritySchema,
     opportunities: OpportunitySchema,
@@ -419,19 +446,41 @@ export const PolicyPassEvidenceSchema = z
     ),
     raw_evidence_refs: CodeUnitSortedUniqueStrings,
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const pass = POLICY_PASSES.find((entry) => entry.id === value.pass_id);
+    if (
+      pass === undefined ||
+      value.catalog_snapshot.order !== pass.order ||
+      value.catalog_snapshot.class !== pass.class ||
+      !sameStringList(value.catalog_snapshot.overlaps_with, pass.overlaps_with) ||
+      value.catalog_snapshot.opportunity_sha256 !==
+        createHash("sha256").update(pass.opportunity).digest("hex")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["catalog_snapshot"],
+        message: "pass evidence must carry the exact catalog authority snapshot",
+      });
+    }
+    requireEligibleLaneAuthority(value.eligibility, value.authority, ctx, ["authority"]);
+  });
 
 const PolicyInteractionEvidenceSchema = z
   .object({
     authoritative: z.boolean(),
     eligibility: LaneEligibilitySchema,
+    authority: LaneAuthoritySchema,
     opportunities: OpportunitySchema,
     exclusions: z.array(ExclusionSchema),
     truth_effects: TruthEffectsSchema,
     statistics: StatisticsSchema,
     raw_evidence_refs: CodeUnitSortedUniqueStrings,
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    requireEligibleLaneAuthority(value.eligibility, value.authority, ctx, ["authority"]);
+  });
 
 export const PolicyPassClassificationSchema = z
   .object({
@@ -498,6 +547,7 @@ export const PolicyMeasurementSchema = z
         sources: z.array(ArtifactBindingSchema).min(1),
         exclusions: z.array(ExclusionSchema),
         evidence: z.array(ArtifactBindingSchema).min(1),
+        inventory: z.array(ArtifactBindingSchema).min(1),
       })
       .strict(),
   })
@@ -529,6 +579,32 @@ export const PolicyMeasurementSchema = z
         path: ["interactions"],
         message: "authoritative measurements require every registered interaction",
       });
+    }
+    const inventory = new Set<string>();
+    let previous = "";
+    for (const [index, artifact] of result.artifacts.inventory.entries()) {
+      if (artifact.ref <= previous || inventory.has(artifact.ref)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["artifacts", "inventory", index],
+          message: "global artifact inventory must be code-unit sorted and unique",
+        });
+      }
+      previous = artifact.ref;
+      inventory.add(artifact.ref);
+    }
+    const rawEvidenceRefs = [
+      ...result.passes.flatMap((pass) => pass.evidence.raw_evidence_refs),
+      ...result.interactions.flatMap((interaction) => interaction.evidence.raw_evidence_refs),
+    ];
+    for (const [index, ref] of rawEvidenceRefs.entries()) {
+      if (!inventory.has(ref)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["artifacts", "inventory"],
+          message: `raw evidence ref is absent from the global artifact inventory: ${ref}`,
+        });
+      }
     }
   });
 
