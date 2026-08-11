@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { AuditLogger } from "../audit/logger.ts";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
@@ -42,6 +42,7 @@ import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
 import { analyzeUiFiles } from "../research/ui-analysis.ts";
+import { createPolicyStateSnapshot } from "../rig/policy-replay-state.ts";
 import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import {
@@ -103,6 +104,10 @@ import { classifyEntry } from "./lore/staleness.ts";
 import { type LoreEntryParsed, loadLore } from "./lore/store.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASSES } from "./policy/catalog.ts";
+import {
+  capturePolicyReplayEnvelope,
+  serializePolicyReplayAggregateInputs,
+} from "./policy/replay-capture.ts";
 import type { PolicyExecutionOptions } from "./policy/replay.ts";
 import { resolvePolicyExecutionOptions } from "./policy/replay.ts";
 import { OrderedResponseHashes } from "./policy/response-hashes.ts";
@@ -246,6 +251,8 @@ export interface OrchestratorInput {
   // Internal-only policy instrumentation/ablation. Normal Gate construction omits
   // this and resolves to persist with an AuditLogger; direct/tests resolve off.
   policyExecution?: PolicyExecutionOptions;
+  /** Internal Rig sink only. It carries no pass/ablation controls. */
+  policyReplayCapture?: { sinkDir: string; sourceCommit: string };
 }
 
 // P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
@@ -738,6 +745,18 @@ export class Orchestrator {
       this.input.policyExecution,
       this.input.audit !== undefined,
     );
+    let policyReplayStateSha256: string | null = null;
+    if (this.input.policyReplayCapture !== undefined) {
+      try {
+        policyReplayStateSha256 = createPolicyStateSnapshot({
+          sourceRepoRoot: repo,
+          outputRoot: dirname(this.input.policyReplayCapture.sinkDir),
+        }).stateSha256;
+      } catch {
+        // Telemetry only: an exact snapshot failure must never change the Gate verdict.
+        policyReplayStateSha256 = null;
+      }
+    }
     // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
     // untrusted diff fence) AND hashed into the behavior cache key below.
     const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
@@ -2313,13 +2332,19 @@ export class Orchestrator {
     // SEMANTICALLY fabricated (e.g. an invented `outerHTML` XSS sink where the code only sets
     // a React aria-label). Only fires when there is a CRITICAL to judge; any error → no demote.
     const groundingCfg = this.input.config.phases.grounding;
+    let groundingVerdicts = new Map<string, { grounded: boolean; reason?: string | undefined }>();
+    let groundingLlmStatus: "ran" | "not-run" | "error" = "not-run";
     if (groundingCfg && groundedFindings.some((f) => f.severity === "CRITICAL")) {
       const gAdapter = this.input.adapters[groundingCfg.provider];
       const gProviderCfg = this.input.config.providers[groundingCfg.provider] as
         | ProviderConfig
         | undefined;
       if (gAdapter && gProviderCfg) {
-        const { map, rawResponseSha256: groundingResponseSha256 } = await judgeGrounding(
+        const {
+          map,
+          status: groundingStatus,
+          rawResponseSha256: groundingResponseSha256,
+        } = await judgeGrounding(
           gAdapter,
           {
             model: groundingCfg.model ?? gProviderCfg.model,
@@ -2334,6 +2359,9 @@ export class Orchestrator {
           groundedFindings,
           groundingCorpus,
         );
+        groundingVerdicts = map;
+        groundingLlmStatus =
+          groundingStatus === "ran" ? "ran" : groundingStatus === "error" ? "error" : "not-run";
         if (groundingResponseSha256 !== undefined) {
           rawResponseSha256.push(groundingResponseSha256);
           groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
@@ -2538,7 +2566,7 @@ export class Orchestrator {
           : "stage-precondition-miss";
     }
 
-    const agg = aggregate({
+    const aggregateInput: AggregateInput = {
       findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
       // (two slots → same provider:persona) must not satisfy the singleton-
@@ -2578,7 +2606,8 @@ export class Orchestrator {
       ...(activeRegions ? { rejectedRegions: activeRegions } : {}),
       ...(policyRuntime === undefined ? {} : { policyRuntime }),
       ...(policyRuntime === undefined ? {} : { policyInactive }),
-    });
+    };
+    const agg = aggregate(aggregateInput);
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
     // dedupedFindings, so filtering it alone undercounts the critic's activity.
@@ -2783,6 +2812,49 @@ export class Orchestrator {
       verdict: agg.verdict,
       finalFindings,
     });
+    if (
+      this.input.policyReplayCapture !== undefined &&
+      policyReplayStateSha256 !== null &&
+      policyTrace !== undefined &&
+      policyTrace !== null
+    ) {
+      try {
+        capturePolicyReplayEnvelope({
+          sinkDir: this.input.policyReplayCapture.sinkDir,
+          measuredRepoRoot: repo,
+          envelope: {
+            schema: "reviewgate.policy-replay-envelope.v1",
+            catalog_version: POLICY_CATALOG_VERSION,
+            run_id: opts.runId,
+            iter: opts.iter,
+            source_commit: this.input.policyReplayCapture.sourceCommit,
+            exact_diff: this.input.diff,
+            pre_policy_findings: structuredClone(symbolFindings),
+            grounding: {
+              corpus: groundingCorpus,
+              verdicts: [...groundingVerdicts]
+                .map(([signature, verdict]) => ({ signature, ...verdict }))
+                .sort((left, right) =>
+                  left.signature < right.signature ? -1 : left.signature > right.signature ? 1 : 0,
+                ),
+              llm_status: groundingLlmStatus,
+            },
+            aggregate: serializePolicyReplayAggregateInputs(aggregateInput),
+            policy_final_findings: structuredClone(agg.dedupedFindings),
+            pre_policy: {
+              self_refutation_enabled: selfRefutationEnabled,
+              hypothetical_enabled: hypotheticalEnabled,
+            },
+            state_sha256: policyReplayStateSha256,
+            raw_response_sha256: [...rawResponseSha256],
+            policy_trace: policyTrace,
+            lossless: true,
+          },
+        });
+      } catch {
+        // Capture and redaction are diagnostic telemetry. Never alter production behavior.
+      }
+    }
     let policySummary: PolicySummary | undefined;
     if (policyExecution.trace === "persist") {
       // Keep the gate's abort boundary ahead of all persistence. The complete

@@ -7,6 +7,7 @@ import type { AgentHostSelection } from "../hosts/hooks.ts";
 import { repoClaudeHookActive } from "../hosts/user-hooks.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import { SUPPRESSION_LAYERS, type SuppressionLayer, isSuppressionLayer } from "../rig/ablate.ts";
+import { RigAuthorityError } from "../rig/policy-replay-state.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
 import {
@@ -57,6 +58,16 @@ import { validateSince, validateWeek } from "./validate-time-args.ts";
 function failArg(message: string): never {
   process.stderr.write(`Error: ${message}\n`);
   process.exit(1);
+}
+
+async function runRigAuthorityCommand<T>(run: () => T | Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof RigAuthorityError)) throw error;
+    process.stderr.write(`${error.message}\n`);
+    process.exit(error.exitCode);
+  }
 }
 
 // The activity query the user-scoped shims call. Exit 0 = a repo-local Claude hook for
@@ -1061,12 +1072,14 @@ const rig = defineCommand({
         },
         out: { type: "string", description: "Write the result JSON here (default: stdout only)" },
       },
-      run({ args }) {
-        const result = runRigHarvest({
-          scriptPath: args.script as string,
-          manifestPath: args.manifest as string,
-          outPath: args.out as string | undefined,
-        });
+      async run({ args }) {
+        const result = await runRigAuthorityCommand(() =>
+          runRigHarvest({
+            scriptPath: args.script as string,
+            manifestPath: args.manifest as string,
+            outPath: args.out as string | undefined,
+          }),
+        );
         const p = result.provenance;
         const slope =
           result.metrics.fpBurdenSlope.slope === null
@@ -1117,7 +1130,7 @@ const rig = defineCommand({
       meta: {
         name: "ablate",
         description:
-          "Re-derive the metrics with one suppression layer switched off (default: all four, as a Δ matrix). Offline, free, and a pure function of the result — it never re-drives the agent.",
+          "Run exact closed-catalog policy ablations for traced runs; legacy four-layer results remain explicitly non-authoritative.",
       },
       args: {
         result: { type: "string", required: true, description: "result.json from `rig harvest`" },
@@ -1131,7 +1144,7 @@ const rig = defineCommand({
           description: `One of ${SUPPRESSION_LAYERS.join(" | ")} (default: all)`,
         },
       },
-      run({ args }) {
+      async run({ args }) {
         const layer = args.layer as string | undefined;
         if (layer !== undefined && !isSuppressionLayer(layer)) {
           console.error(
@@ -1140,11 +1153,14 @@ const rig = defineCommand({
           process.exit(2);
         }
         process.stdout.write(
-          runRigAblate({
-            resultPath: args.result as string,
-            scriptPath: args.script as string,
-            ...(layer === undefined ? {} : { layer: layer as SuppressionLayer }),
-          }),
+          await runRigAuthorityCommand(() =>
+            runRigAblate({
+              resultPath: args.result as string,
+              scriptPath: args.script as string,
+              sourceRepoRoot: process.cwd(),
+              ...(layer === undefined ? {} : { layer: layer as SuppressionLayer }),
+            }),
+          ),
         );
       },
     }),
@@ -1152,7 +1168,7 @@ const rig = defineCommand({
       meta: {
         name: "replay",
         description:
-          "Self-check of the HARNESS: re-derive a recorded run's metrics twice and assert they match (the acceptance test an aggregator refactor needs). Never a counterfactual, never re-drives the agent.",
+          "Validate exact policy envelopes and replay production policy in isolated checkouts without live provider calls; legacy runs get only the deterministic harness check.",
       },
       args: {
         manifest: { type: "string", required: true, description: "manifest.json from `rig run`" },
@@ -1162,12 +1178,15 @@ const rig = defineCommand({
           description: "Also check the recording's integrity (entry count, FIFO keys, bodies)",
         },
       },
-      run({ args }) {
-        const report = runRigReplay({
-          manifestPath: args.manifest as string,
-          scriptPath: args.script as string,
-          cassettePath: args.cassette as string | undefined,
-        });
+      async run({ args }) {
+        const report = await runRigAuthorityCommand(() =>
+          runRigReplay({
+            manifestPath: args.manifest as string,
+            scriptPath: args.script as string,
+            cassettePath: args.cassette as string | undefined,
+            sourceRepoRoot: process.cwd(),
+          }),
+        );
         process.stdout.write(`${report.text}\n`);
         // Non-zero on nondeterminism: this is a CHECK, and a check that always exits 0 is a
         // report. CI (or a refactor's acceptance step) must be able to gate on it.

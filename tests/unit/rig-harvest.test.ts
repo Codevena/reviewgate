@@ -734,6 +734,27 @@ describe("rig harvest", () => {
     const fx = canonicalFixture();
     const result = harvest(fx.manifestPath, fx.scriptPath);
     expect(() => RigResultSchema.parse(result)).not.toThrow();
+    expect(result.policyReplay).toEqual({
+      authoritative: false,
+      catalogVersion: null,
+      sourceCommit: null,
+      passIds: [],
+      reason:
+        "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
+    });
+    expect(() =>
+      RigResultSchema.parse({
+        ...result,
+        turns: result.turns.map((turn, index) =>
+          index === 0
+            ? {
+                ...turn,
+                policyReplay: { status: "complete", traces: [], reason: null },
+              }
+            : turn,
+        ),
+      }),
+    ).toThrow(/complete/i);
   });
 
   test("provenance names the panel it was measured on", () => {

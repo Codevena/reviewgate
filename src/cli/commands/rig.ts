@@ -4,8 +4,18 @@
 // layer (fp-ledger, reputation, region memory, lore, agent-lessons) inert. The rig measures
 // what that structurally cannot: the gate as an interactive loop, over a run whose history
 // accumulates.
-import { constants, accessSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import {
+  constants,
+  accessSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+} from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { POLICY_CATALOG_VERSION } from "../../core/policy/catalog.ts";
+import { resolvePolicyReplayCaptureSink } from "../../core/policy/replay-capture.ts";
 import {
   SUPPRESSION_LAYERS,
   type SuppressionLayer,
@@ -15,12 +25,18 @@ import {
 } from "../../rig/ablate.ts";
 import { type DriverRunManifest, runDriver } from "../../rig/driver.ts";
 import { harvest } from "../../rig/harvest.ts";
-import { renderReplayReport, replay } from "../../rig/replay.ts";
+import { createPolicyStateSnapshot } from "../../rig/policy-replay-state.ts";
+import {
+  renderPolicyAblationRows,
+  renderReplayReport,
+  replay,
+  replayPolicyAblations,
+} from "../../rig/replay.ts";
 import { renderRigReport } from "../../rig/report.ts";
 import { loadTurnScript } from "../../rig/turn-script.ts";
 import { type RigResult, RigResultSchema } from "../../schemas/rig-result.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
-import { workingTreeDirtyFiles } from "../../utils/git.ts";
+import { gitHeadSha, workingTreeDirtyFiles } from "../../utils/git.ts";
 
 export interface RigRunInput {
   scriptPath: string;
@@ -112,15 +128,62 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
       `rig run: ${input.repoRoot} has ${dirty.length} uncommitted change(s). This run would let an agent edit that directory with acceptEdits, driven by prompts from ${input.scriptPath}. Point it at a throwaway repo, or pass allowDirtyRepo once you have read the script and accept what it will do.`,
     );
   }
+  const repoReal = realpathSync(input.repoRoot);
+  const output = resolve(input.outDir);
+  mkdirSync(output, { recursive: true, mode: 0o700 });
+  const outputStat = lstatSync(output);
+  if (outputStat.isSymbolicLink() || !outputStat.isDirectory()) {
+    throw new Error("rig run: the output root must be an ordinary directory");
+  }
+  const outputReal = realpathSync(output);
+  const outputRelative = relative(repoReal, outputReal);
+  const repoRelative = relative(outputReal, repoReal);
+  const related = (value: string): boolean =>
+    value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
+  if (related(outputRelative) || related(repoRelative)) {
+    throw new Error(
+      "rig run: --out must be separate from the measured repository so replay artifacts cannot change the measured tree",
+    );
+  }
+  const replaySinkDir = resolve(outputReal, "policy-replay");
+  mkdirSync(replaySinkDir, { mode: 0o700 });
+  const captureSink = resolvePolicyReplayCaptureSink({
+    sinkDir: replaySinkDir,
+    measuredRepoRoot: repoReal,
+  });
+  if (captureSink === null || relative(outputReal, captureSink.sinkDir).startsWith("..")) {
+    throw new Error("rig run: policy replay sink is not contained by the Rig output root");
+  }
+  const initialState = createPolicyStateSnapshot({
+    sourceRepoRoot: repoReal,
+    outputRoot: outputReal,
+  });
+  const sourceCommit = await gitHeadSha(repoReal);
+  if (sourceCommit === null) throw new Error("rig run: could not resolve the source commit");
+  const emptyCassetteSha256 = new Bun.CryptoHasher("sha256").update("").digest("hex");
   process.stderr.write(
     `rig run: an agent will EDIT ${input.repoRoot} with acceptEdits, for ${script.turns.length} scripted turn(s).\n`,
   );
   return await runDriver({
     scriptPath: input.scriptPath,
-    outDir: input.outDir,
-    repoRoot: input.repoRoot,
+    outDir: outputReal,
+    repoRoot: repoReal,
     agentCmd: claudeAgentCmd,
     maxTurns: input.maxTurns ?? script.turns.length,
+    policyReplay: {
+      sinkDir: captureSink.sinkDir,
+      cassettePath,
+      metadata: {
+        catalogVersion: POLICY_CATALOG_VERSION,
+        sourceCommit,
+        initialStateRef: initialState.ref,
+        initialStateSha256: initialState.sha256,
+        initialStateDigest: initialState.stateSha256,
+        cassetteSha256: emptyCassetteSha256,
+        cassetteRef: "cassette.jsonl",
+        captureDir: "policy-replay",
+      },
+    },
   });
 }
 
@@ -144,36 +207,47 @@ export interface RigAblateInput {
   scriptPath: string;
   /** Omitted → every layer, as a matrix. */
   layer?: SuppressionLayer | undefined;
+  sourceRepoRoot?: string | undefined;
 }
 
 /**
- * Re-derive the metrics with one suppression layer switched off (or all four, as a matrix).
- *
- * Offline and pure — it reads two files and computes. No agent, no network, no `.reviewgate/`,
- * so the Δ is attributable to the layer and to nothing else.
+ * Exact traced results replay every closed-catalog pass in isolated branches. Legacy results
+ * retain the old four-layer heuristic with a mandatory non-authoritative label.
  */
-export function runRigAblate(input: RigAblateInput): string {
+export async function runRigAblate(input: RigAblateInput): Promise<string> {
   const base = loadResult(input.resultPath);
+  if (base.policyReplay?.authoritative === true) {
+    const siblingManifest = resolve(dirname(input.resultPath), "manifest.json");
+    const manifestPath = existsSync(siblingManifest)
+      ? siblingManifest
+      : base.provenance.manifest_path;
+    return renderPolicyAblationRows(
+      await replayPolicyAblations({
+        manifestPath,
+        sourceRepoRoot: input.sourceRepoRoot ?? process.cwd(),
+      }),
+    );
+  }
   const tags = seededTagsFromScript(input.scriptPath);
   const layers = input.layer === undefined ? [...SUPPRESSION_LAYERS] : [input.layer];
-  return renderAblationMatrix(
+  return `NON-AUTHORITATIVE LEGACY ANALYSIS — exact policy opportunities were not captured.\n${renderAblationMatrix(
     base,
     layers.map((l) => ablate(base, l, tags)),
-  );
+  )}`;
 }
 
 export interface RigReplayInput {
   manifestPath: string;
   scriptPath: string;
   cassettePath?: string | undefined;
+  sourceRepoRoot?: string | undefined;
 }
 
 /**
- * Harness self-check. Returns the rendered report plus whether it PASSED, so the CLI can
- * exit non-zero — a determinism check that always exits 0 cannot gate anything.
+ * Exact traced runs validate/counterfactually replay policy; legacy runs keep the harness check.
  */
-export function runRigReplay(input: RigReplayInput): { text: string; ok: boolean } {
-  const report = replay(input);
+export async function runRigReplay(input: RigReplayInput): Promise<{ text: string; ok: boolean }> {
+  const report = await replay(input);
   return { text: renderReplayReport(report), ok: report.deterministic };
 }
 

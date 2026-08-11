@@ -33,6 +33,7 @@ import { platform, release } from "node:os";
 import { dirname, join } from "node:path";
 import { matchesAnyTag } from "../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../bench/metrics.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import type { DecisionOutcome } from "../schemas/audit-event.ts";
 import type { Metric } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
@@ -53,6 +54,7 @@ import type { RigTurn } from "../schemas/rig-turn-script.ts";
 import type { LoadedRun } from "../stats/load.ts";
 import { loadAuditWindow } from "../stats/load.ts";
 import { RG_VERSION } from "../version.ts";
+import { validateRigPolicyReplayArtifacts } from "./policy-replay-state.ts";
 import { loadTurnScript } from "./turn-script.ts";
 
 /** Below this many defined FP-burden points the slope is not reported at all. */
@@ -523,6 +525,7 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
   const manifest = RigManifestSchema.parse(
     JSON.parse(readFileSync(manifestPath, "utf8")) as unknown,
   );
+  const policyReplay = validateRigPolicyReplayArtifacts({ manifest, manifestPath });
   const script = loadTurnScript(scriptPath);
   if (manifest.scriptId !== script.id) {
     throw new Error(
@@ -551,6 +554,21 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
       previous,
       warnings,
     );
+    const replayTraces = policyReplay?.turns.get(manifestTurn.index);
+    if (replayTraces !== undefined) {
+      turn.record.policyReplay = {
+        status: "complete",
+        reason: null,
+        traces: replayTraces.map(({ ref, sha256, envelope }) => ({
+          ref,
+          sha256,
+          runId: envelope.run_id,
+          iter: envelope.iter,
+          stateSha256: envelope.state_sha256,
+          lossless: envelope.lossless,
+        })),
+      };
+    }
     turns.push(turn);
     panelSlots.push(...panel);
     previous = cumulative;
@@ -659,6 +677,23 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
       },
       suppression,
     },
+    policyReplay:
+      policyReplay === null
+        ? {
+            authoritative: false,
+            catalogVersion: null,
+            sourceCommit: null,
+            passIds: [],
+            reason:
+              "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
+          }
+        : {
+            authoritative: true,
+            catalogVersion: POLICY_CATALOG_VERSION,
+            sourceCommit: policyReplay.sourceCommit,
+            passIds: [...POLICY_PASS_IDS],
+            reason: null,
+          },
     warnings,
   };
   // Validate what we are about to hand out: the null contracts in RigTurnRecordSchema are the

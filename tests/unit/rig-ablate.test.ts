@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { makeMetric, summarizeSpread } from "../../src/bench/metrics.ts";
+import { POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import { ablate, renderAblationMatrix } from "../../src/rig/ablate.ts";
+import { renderPolicyAblationRows } from "../../src/rig/replay.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import type { RigResult, RigTurnRecord } from "../../src/schemas/rig-result.ts";
 
@@ -86,6 +88,32 @@ function result(turns: RigTurnRecord[], over: Partial<RigResult> = {}): RigResul
 const NO_TAGS = new Map<number, string[]>();
 
 describe("rig ablate", () => {
+  test("exact rows use every closed catalog ID and keep Lore separate", () => {
+    const rendered = renderPolicyAblationRows(
+      POLICY_PASS_IDS.map((passId) => ({
+        passId,
+        authoritative: true,
+        reason: null,
+        envelopes: 1,
+        opportunities: 1,
+        applied: 1,
+        wouldApplyWithoutMutation: 1,
+        baselineBlocking: 0,
+        counterfactualBlocking: 1,
+      })),
+    );
+    for (const passId of POLICY_PASS_IDS) expect(rendered).toContain(passId);
+    expect(rendered).toContain("Lore is excluded");
+    expect(rendered).not.toMatch(/^\s+lore\s/m);
+  });
+
+  test("the four historical layers identify themselves as legacy and non-authoritative", () => {
+    const base = result([turn({ index: 1, findings: [] })]);
+    const legacy = ablate(base, "critic", NO_TAGS);
+    expect(legacy.authoritative).toBe(false);
+    expect(renderAblationMatrix(base, [legacy])).toContain("NON-AUTHORITATIVE LEGACY");
+  });
+
   // The smallest assertion that proves the toggle is wired to something real rather than to
   // nothing: one critic-demoted finding, one more blocking finding when the critic is off.
   test("ablating the critic raises the blocking count by exactly one", () => {

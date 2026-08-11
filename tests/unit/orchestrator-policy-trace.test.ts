@@ -56,4 +56,14 @@ describe("policy ablations stay internal", () => {
       expect(source, path).not.toContain("policyAblations");
     }
   });
+
+  it("lets Gate read only the Rig capture sink, never a pass or ablation control", () => {
+    const gate = readFileSync(join(REPO_ROOT, "src/cli/commands/gate.ts"), "utf8");
+    const replayEnvReads = [...gate.matchAll(/process\.env\.([A-Z0-9_]*RIG[A-Z0-9_]*)/g)].map(
+      (match) => match[1],
+    );
+    expect(replayEnvReads).toEqual(["REVIEWGATE_RIG_REPLAY_DIR"]);
+    expect(gate).not.toMatch(/REVIEWGATE_(?:POLICY_)?ABLATION/);
+    expect(gate).not.toMatch(/REVIEWGATE_POLICY_PASS/);
+  });
 });

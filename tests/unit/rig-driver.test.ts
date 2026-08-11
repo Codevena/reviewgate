@@ -11,7 +11,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runRigRun } from "../../src/cli/commands/rig.ts";
+import { POLICY_CATALOG_VERSION } from "../../src/core/policy/catalog.ts";
 import { runDriver } from "../../src/rig/driver.ts";
+import { createPolicyStateSnapshot } from "../../src/rig/policy-replay-state.ts";
 
 // The driver spawns a real agent process per turn. Every test here injects a FAKE agent
 // instead — a shell one-liner that writes a marker. A test that spent `claude -p` quota
@@ -55,6 +57,115 @@ const appendingAgent = (root: string) => (prompt: string) => [
 ];
 
 describe("rig driver", () => {
+  test("exports only the replay sink and records immutable trace/state identity outside the repo", async () => {
+    const { root, scriptPath } = sandbox(1);
+    execFileSync("git", ["init", "-q", "."], { cwd: root });
+    execFileSync("git", ["config", "user.email", "rig@example.invalid"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "rig"], { cwd: root });
+    writeFileSync(join(root, "tracked.ts"), "export const tracked = true;\n");
+    execFileSync("git", ["add", "tracked.ts"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "source"], { cwd: root });
+    const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const outDir = mkdtempSync(join(tmpdir(), "rg-rig-policy-out-"));
+    const state = createPolicyStateSnapshot({ sourceRepoRoot: root, outputRoot: outDir });
+    const sinkDir = join(outDir, "policy-replay");
+    mkdirSync(sinkDir, { mode: 0o700 });
+    const cassettePath = join(root, "cassette.jsonl");
+    writeFileSync(cassettePath, "", { mode: 0o600 });
+    const emptyHash = new Bun.CryptoHasher("sha256").update("").digest("hex");
+    const refs = [
+      `${"a".repeat(12)}-i10-${"b".repeat(12)}.json`,
+      `${"a".repeat(12)}-i2-${"c".repeat(12)}.json`,
+      `${"a".repeat(12)}-i1-${"d".repeat(12)}.json`,
+    ] as const;
+
+    const manifest = await runDriver({
+      scriptPath,
+      outDir,
+      repoRoot: root,
+      agentCmd: () => [
+        "bash",
+        "-c",
+        'test "$REVIEWGATE_RIG_REPLAY_DIR" = "$1"; sink="$1"; shift; for ref in "$@"; do printf "{}" > "$sink/$ref"; done',
+        "fake-agent",
+        sinkDir,
+        ...refs,
+      ],
+      maxTurns: 1,
+      policyReplay: {
+        sinkDir,
+        cassettePath,
+        metadata: {
+          catalogVersion: POLICY_CATALOG_VERSION,
+          sourceCommit,
+          initialStateRef: state.ref,
+          initialStateSha256: state.sha256,
+          initialStateDigest: state.stateSha256,
+          cassetteSha256: emptyHash,
+          cassetteRef: "cassette.jsonl",
+          captureDir: "policy-replay",
+        },
+      },
+    });
+
+    expect(manifest.policyReplay?.initialStateDigest).toBe(state.stateSha256);
+    expect(manifest.turns[0]?.policyReplay?.status).toBe("complete");
+    expect(manifest.turns[0]?.policyReplay?.traces.map((trace) => trace.ref)).toEqual([
+      refs[2],
+      refs[1],
+      refs[0],
+    ]);
+    expect(existsSync(join(outDir, "cassette.jsonl"))).toBe(true);
+    expect(existsSync(join(root, ".reviewgate", "policy-replay"))).toBe(false);
+  });
+
+  test("carries a capture overflow marker into the authoritative turn status", async () => {
+    const { root, scriptPath } = sandbox(1);
+    execFileSync("git", ["init", "-q", "."], { cwd: root });
+    execFileSync("git", ["config", "user.email", "rig@example.invalid"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "rig"], { cwd: root });
+    writeFileSync(join(root, "tracked.ts"), "export const tracked = true;\n");
+    execFileSync("git", ["add", "tracked.ts"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "source"], { cwd: root });
+    const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const outDir = mkdtempSync(join(tmpdir(), "rg-rig-policy-out-"));
+    const state = createPolicyStateSnapshot({ sourceRepoRoot: root, outputRoot: outDir });
+    const sinkDir = join(outDir, "policy-replay");
+    mkdirSync(sinkDir, { mode: 0o700 });
+    const cassettePath = join(root, "cassette.jsonl");
+    writeFileSync(cassettePath, "", { mode: 0o600 });
+    const emptyHash = new Bun.CryptoHasher("sha256").update("").digest("hex");
+    const marker = `${"a".repeat(12)}-i1.overflow`;
+    const manifest = await runDriver({
+      scriptPath,
+      outDir,
+      repoRoot: root,
+      agentCmd: () => ["bash", "-c", 'printf "{}" > "$1/$2"', "agent", sinkDir, marker],
+      maxTurns: 1,
+      policyReplay: {
+        sinkDir,
+        cassettePath,
+        metadata: {
+          catalogVersion: POLICY_CATALOG_VERSION,
+          sourceCommit,
+          initialStateRef: state.ref,
+          initialStateSha256: state.sha256,
+          initialStateDigest: state.stateSha256,
+          cassetteSha256: emptyHash,
+          cassetteRef: "cassette.jsonl",
+          captureDir: "policy-replay",
+        },
+      },
+    });
+    expect(manifest.turns[0]?.policyReplay).toEqual({ status: "overflow", traces: [] });
+  });
+
   test("runs one snapshot per turn and honours maxTurns", async () => {
     const { root, scriptPath } = sandbox(3);
     const manifest = await runDriver({

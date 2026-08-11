@@ -49,6 +49,8 @@ export function isSuppressionLayer(v: string): v is SuppressionLayer {
 }
 
 export interface RigAblation {
+  /** Historical post-hoc reconstruction is diagnostic only; exact rows come from traces. */
+  authoritative: false;
   layer: SuppressionLayer;
   /** true when the layer's effect is exactly recoverable, i.e. `lower` and `upper` agree */
   exact: boolean;
@@ -281,7 +283,15 @@ export function ablate(
       `${unrecoverable} of ${touched} finding(s) carry a SECOND suppressor, so switching off ${layer} alone may not have changed them. They widen the interval instead of being guessed.`,
     );
   }
-  return { layer, exact, lower, upper, counts: { touched, recovered, unrecoverable }, notes };
+  return {
+    authoritative: false,
+    layer,
+    exact,
+    lower,
+    upper,
+    counts: { touched, recovered, unrecoverable },
+    notes,
+  };
 }
 
 /** Seeded tags by turn index, read from the turn script that produced the run. */
@@ -300,7 +310,8 @@ export function seededTagsFromScript(scriptPath: string): Map<number, string[]> 
  */
 export function renderAblationMatrix(base: RigResult, ablations: RigAblation[]): string {
   const L: string[] = [];
-  L.push("Reviewgate rig — ablation matrix (baseline = full suppression)");
+  L.push("Reviewgate rig — NON-AUTHORITATIVE LEGACY ablation matrix");
+  L.push("(baseline = full suppression; missing policy opportunities are unknown, never zero)");
   L.push("");
   const fmtRange = (lo: number, hi: number): string =>
     lo === hi
