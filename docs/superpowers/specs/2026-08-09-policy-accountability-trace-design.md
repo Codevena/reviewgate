@@ -1,6 +1,34 @@
 # Policy Accountability & Pruning — Slice 1: Policy Trace & Replay
 
-_Written 2026-08-09. Status: approved by Markus; implementation planning in progress._
+_Written 2026-08-09. Status: Slice 1 core implementation is complete through `2355ac0`; the
+authoritative replay help contract is corrected in `fa68dfa`, and final documentation is this
+handoff commit._
+
+## Implementation status — 2026-08-11
+
+Slice 1 now implements the closed `reviewgate.policy-catalog.v1` inventory of 18 ablatable policy
+passes and the two non-ablatable explanatory stages `aggregation.cluster` and `verdict.compute`.
+Production uses the same predicates and precedence as before; the trace recorder, Audit binding,
+Bench Matrix and Rig replay observe or internally ablate that path rather than maintaining a shadow
+policy model.
+
+The implementation includes canonical content-addressed Audit/Bench artifacts, SHA-bound Rig state
+and Cassette evidence, strict hash/order/catalog/state identities, branch-local multi-turn replay
+and the 18-row production contract harness. Production trace instrumentation remains fail-open with
+respect to the already-computed policy outcome; authoritative measurement rejects incomplete or
+corrupt evidence with exit `4`.
+
+No pass was ranked, deleted or default-disabled in Slice 1. Lore remains additive and outside the 18
+demoters. Zero opportunities are not negative evidence, and stateful history passes require seeded
+multi-turn sequences. Replay preserves `ImplicitOutcomeStore` writes in each branch, but current
+production does not read that store into later policy inputs; its divergence therefore proves
+branch-local persistence, not a current downstream review effect.
+
+Final verification at this boundary covered the 173-test focused policy suite, TypeScript, Biome,
+the full 454-file suite (`3505 pass`, `12 skip`, `0 fail`), a fresh compiled build and the Bench,
+Rig and Audit help surfaces. The required commands and durable acceptance semantics live in
+`TEST_PLAN.md`; exact command output and the earlier pre-help baseline are retained in the ignored
+Task-11 execution report.
 
 ## Context
 
