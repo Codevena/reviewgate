@@ -974,6 +974,45 @@ describe("rig replay — exact policy authority", () => {
         },
       },
     });
+    const capturedBaselineRepo = mkdtempSync(join(tmpdir(), "rg-policy-baseline-capture-"));
+    cpSync(fixture.stateRoot, join(capturedBaselineRepo, ".reviewgate"), { recursive: true });
+    await new ImplicitOutcomeStore(capturedBaselineRepo).append(
+      [
+        {
+          schema: "reviewgate.implicit_outcome.v1",
+          signature: "confidence-sig",
+          reviewer_key: "codex:correctness",
+          category: "quality",
+          demote_reason: "low_confidence",
+          run_id: "exact-run",
+          iter: 1,
+          created_at: "2026-08-11T12:00:00.000Z",
+        },
+      ],
+      100,
+    );
+    writeFileSync(
+      join(capturedBaselineRepo, ".reviewgate", "exogenous.json"),
+      '{"source":"captured-iteration-2"}\n',
+      { mode: 0o600 },
+    );
+    const nextOutput = mkdtempSync(join(tmpdir(), "rg-policy-next-state-"));
+    const nextState = createPolicyStateSnapshot({
+      sourceRepoRoot: capturedBaselineRepo,
+      outputRoot: nextOutput,
+    });
+    const expectedCounterfactualRepo = mkdtempSync(join(tmpdir(), "rg-policy-cf-expected-"));
+    cpSync(fixture.stateRoot, join(expectedCounterfactualRepo, ".reviewgate"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(expectedCounterfactualRepo, ".reviewgate", "exogenous.json"),
+      '{"source":"captured-iteration-2"}\n',
+      { mode: 0o600 },
+    );
+    const expectedCounterfactualDigest = digestPolicyState(
+      join(expectedCounterfactualRepo, ".reviewgate"),
+    );
     const secondTrace = emptyPolicyTrace([...fixture.envelope.raw_response_sha256], {
       runId: "exact-run",
       iter: 2,
@@ -997,6 +1036,7 @@ describe("rig replay — exact policy authority", () => {
     const secondEnvelope = PolicyReplayEnvelopeSchema.parse({
       ...fixture.envelope,
       iter: 2,
+      state_sha256: nextState.stateSha256,
       exact_diff: [
         "diff --git a/src/x.ts b/src/x.ts",
         "--- a/src/x.ts",
@@ -1028,7 +1068,7 @@ describe("rig replay — exact policy authority", () => {
         },
         {
           envelope: secondEnvelope,
-          stateSnapshotRoot: fixture.stateRoot,
+          stateSnapshotRoot: join(nextOutput, nextState.stateRef),
         },
       ],
     });
@@ -1043,6 +1083,8 @@ describe("rig replay — exact policy authority", () => {
     expect(stateful[0]?.state.counterfactual.implicit_outcomes).toBe(0);
     expect(stateful[1]?.state.baseline.implicit_outcomes).toBe(1);
     expect(stateful[1]?.state.counterfactual.implicit_outcomes).toBe(0);
+    expect(stateful[1]?.state.baseline.digest).toBe(nextState.stateSha256);
+    expect(stateful[1]?.state.counterfactual.digest).toBe(expectedCounterfactualDigest);
     expect(stateful[1]?.state.baseline.digest).not.toBe(stateful[1]?.state.counterfactual.digest);
     expect(stateful[1]?.state.baseline.history_reads).toBeGreaterThan(0);
     expect(stateful[1]?.state.counterfactual.history_reads).toBeGreaterThan(0);

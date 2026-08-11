@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  cpSync,
   existsSync,
   linkSync,
   lstatSync,
@@ -10,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -501,6 +503,78 @@ describe("policy replay state isolation", () => {
       /symlink|escape|ordinary directory/i,
     );
     expect(readdirSync(outside)).toEqual([]);
+  });
+
+  test("create rejects existing digest-tree symlink ancestors even when the external tree is identical", () => {
+    for (const ancestor of ["state-digest", "state-root"] as const) {
+      const sourceRepoRoot = gitRepo();
+      const seedOutput = mkdtempSync(join(tmpdir(), "rg-policy-state-seed-"));
+      const seed = createPolicyStateSnapshot({ sourceRepoRoot, outputRoot: seedOutput });
+      const outside = mkdtempSync(join(tmpdir(), "rg-policy-state-identical-"));
+      const externalDigestTree = join(outside, seed.stateSha256);
+      cpSync(join(seedOutput, "policy-state", seed.stateSha256), externalDigestTree, {
+        recursive: true,
+      });
+      const outsideDigestBefore = digestPolicyState(join(externalDigestTree, ".reviewgate"));
+      const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-state-output-"));
+      mkdirSync(join(outputRoot, "policy-state"));
+      if (ancestor === "state-digest") {
+        symlinkSync(externalDigestTree, join(outputRoot, "policy-state", seed.stateSha256));
+      } else {
+        mkdirSync(join(outputRoot, "policy-state", seed.stateSha256));
+        symlinkSync(
+          join(externalDigestTree, ".reviewgate"),
+          join(outputRoot, "policy-state", seed.stateSha256, ".reviewgate"),
+        );
+      }
+
+      expect(() => createPolicyStateSnapshot({ sourceRepoRoot, outputRoot }), ancestor).toThrow(
+        /symlink|escape|ordinary directory/i,
+      );
+      expect(digestPolicyState(join(externalDigestTree, ".reviewgate")), ancestor).toBe(
+        outsideDigestBefore,
+      );
+    }
+  });
+
+  test("verify rejects digest-tree symlink ancestors even when manifest and external bytes match", () => {
+    for (const ancestor of ["state-digest", "state-root"] as const) {
+      const sourceRepoRoot = gitRepo();
+      const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-state-output-"));
+      const snapshot = createPolicyStateSnapshot({ sourceRepoRoot, outputRoot });
+      const persistedDigestTree = join(outputRoot, "policy-state", snapshot.stateSha256);
+      const outside = mkdtempSync(join(tmpdir(), "rg-policy-state-verify-identical-"));
+      const externalDigestTree = join(outside, snapshot.stateSha256);
+      if (ancestor === "state-digest") {
+        renameSync(persistedDigestTree, externalDigestTree);
+        symlinkSync(externalDigestTree, persistedDigestTree);
+      } else {
+        mkdirSync(externalDigestTree);
+        renameSync(
+          join(persistedDigestTree, ".reviewgate"),
+          join(externalDigestTree, ".reviewgate"),
+        );
+        symlinkSync(
+          join(externalDigestTree, ".reviewgate"),
+          join(persistedDigestTree, ".reviewgate"),
+        );
+      }
+      const outsideDigestBefore = digestPolicyState(join(externalDigestTree, ".reviewgate"));
+
+      expect(
+        () =>
+          verifyPolicyStateSnapshot({
+            outputRoot,
+            ref: snapshot.ref,
+            sha256: snapshot.sha256,
+            expectedStateSha256: snapshot.stateSha256,
+          }),
+        ancestor,
+      ).toThrow(/symlink|escape|ordinary directory/i);
+      expect(digestPolicyState(join(externalDigestTree, ".reviewgate")), ancestor).toBe(
+        outsideDigestBefore,
+      );
+    }
   });
 
   test("uses one code-unit order for traversal, digest, manifest, and verification", () => {

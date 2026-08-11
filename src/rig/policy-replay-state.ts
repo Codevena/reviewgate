@@ -96,6 +96,8 @@ export interface PolicyStateSnapshot {
 export interface ReplayBranch {
   checkoutRoot: string;
   startingStateSha256: string;
+  /** Files whose current presence or absence is causally owned by this replay branch. */
+  ownedStatePaths: Map<string, "present" | "absent">;
 }
 
 export interface ReplayBranches {
@@ -297,15 +299,48 @@ function mkdirIfMissing(path: string): void {
   }
 }
 
+function validateDirectoryComponentName(name: string): void {
+  if (name.length === 0 || name === "." || name === ".." || name.includes(sep)) {
+    throw new Error(`invalid policy state directory component: ${name}`);
+  }
+}
+
+/** Validate every already-existing directory component without following an ancestor symlink. */
+function exactContainedDirectoryChain(rootPath: string, components: string[]): string {
+  const rootReal = exactDirectory(rootPath);
+  let current = rootReal;
+  for (const component of components) {
+    validateDirectoryComponentName(component);
+    const candidate = join(current, component);
+    const before = lstatSync(candidate);
+    if (before.isSymbolicLink() || !before.isDirectory()) {
+      throw new Error(`expected an ordinary directory: ${candidate}`);
+    }
+    const candidateReal = realpathSync(candidate);
+    const after = lstatSync(candidate);
+    if (
+      after.isSymbolicLink() ||
+      !after.isDirectory() ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino
+    ) {
+      throw new Error(`policy state directory changed while validating: ${candidate}`);
+    }
+    if (!isContained(rootReal, candidateReal)) {
+      throw new Error(`policy state directory escapes real root: ${candidate}`);
+    }
+    current = candidateReal;
+  }
+  return current;
+}
+
 function ensureContainedDirectory(
   rootPath: string,
   rootReal: string,
   parent: string,
   name: string,
 ): string {
-  if (name.length === 0 || name === "." || name === ".." || name.includes(sep)) {
-    throw new Error(`invalid policy state directory component: ${name}`);
-  }
+  validateDirectoryComponentName(name);
   const parentReal = exactDirectory(parent);
   if (!isContained(rootReal, parentReal)) {
     throw new Error(`policy state directory parent escapes root: ${parent}`);
@@ -355,19 +390,41 @@ function copyEntries(entries: StateEntry[], destinationRoot: string): void {
   }
 }
 
-function sameStateEntry(left: StateEntry | undefined, right: StateEntry | undefined): boolean {
-  return left?.path === right?.path && left?.size === right?.size && left?.sha256 === right?.sha256;
+/** Record one real Store decision, including an absent result as an explicit tombstone. */
+export function recordReplayBranchStateDecision(branch: ReplayBranch, stateFilePath: string): void {
+  const stateRootPath = resolve(branch.checkoutRoot, ".reviewgate");
+  const stateRoot = exactDirectory(stateRootPath);
+  const unresolved = resolve(stateFilePath);
+  if (!isContained(stateRootPath, unresolved)) {
+    throw new Error("replay Store decision escapes branch-local policy state");
+  }
+  const relativePath = relative(stateRootPath, unresolved).split(sep).join("/");
+  validateRelativeStatePath(relativePath);
+  let status: "present" | "absent" = "absent";
+  try {
+    const entry = lstatSync(unresolved);
+    if (entry.isSymbolicLink() || !entry.isFile() || entry.nlink !== 1) {
+      throw new Error(`replay Store decision produced a non-private file: ${relativePath}`);
+    }
+    const targetReal = realpathSync(unresolved);
+    if (!isContained(stateRoot, targetReal)) {
+      throw new Error(`replay Store decision escapes branch-local policy state: ${relativePath}`);
+    }
+    readStableFile(unresolved);
+    status = "present";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  branch.ownedStatePaths.set(relativePath, status);
 }
 
 /**
- * Apply the recorded production-state transition without erasing branch-local writes.
- *
- * This is a file-level three-way merge: previous capture is the base, next capture supplies
- * exogenous production changes, and a branch-local change wins a same-file conflict. Store APIs
- * still own the bytes and schema; replay does not model or reinterpret any learning format.
+ * Advance one branch by importing only exogenous captured state. A Store-owned path retains the
+ * branch's current bytes, while an owned absence is a tombstone that prevents baseline capture
+ * bytes from leaking into the counterfactual. Untouched paths always advance to the next capture.
  */
 function advanceBranchState(input: {
-  checkoutRoot: string;
+  branch: ReplayBranch;
   previousStateSnapshotRoot: string;
   nextStateSnapshotRoot: string;
 }): void {
@@ -377,28 +434,32 @@ function advanceBranchState(input: {
   const next = new Map(
     collectStateEntries(input.nextStateSnapshotRoot).map((entry) => [entry.path, entry]),
   );
-  const branchStateRoot = join(input.checkoutRoot, ".reviewgate");
+  const branchStateRoot = join(input.branch.checkoutRoot, ".reviewgate");
   const branch = new Map(collectStateEntries(branchStateRoot).map((entry) => [entry.path, entry]));
-  const paths = [...new Set([...previous.keys(), ...next.keys(), ...branch.keys()])].sort(
-    compareCodeUnits,
-  );
+  const paths = [
+    ...new Set([
+      ...previous.keys(),
+      ...next.keys(),
+      ...branch.keys(),
+      ...input.branch.ownedStatePaths.keys(),
+    ]),
+  ].sort(compareCodeUnits);
   const merged: StateEntry[] = [];
   for (const path of paths) {
-    const baseEntry = previous.get(path);
     const nextEntry = next.get(path);
     const branchEntry = branch.get(path);
-    const branchChanged = !sameStateEntry(branchEntry, baseEntry);
-    const productionChanged = !sameStateEntry(nextEntry, baseEntry);
-    const selected =
-      branchChanged && productionChanged && !sameStateEntry(branchEntry, nextEntry)
-        ? branchEntry
-        : branchChanged
-          ? branchEntry
-          : nextEntry;
+    const ownership = input.branch.ownedStatePaths.get(path);
+    if (ownership !== undefined) {
+      const actual = branchEntry === undefined ? "absent" : "present";
+      if (actual !== ownership) {
+        throw new Error(`replay Store ownership drifted for ${path}`);
+      }
+    }
+    const selected = ownership === undefined ? nextEntry : branchEntry;
     if (selected !== undefined) merged.push(selected);
   }
   rmSync(branchStateRoot, { recursive: true, force: true });
-  ensureDirectoryChain(input.checkoutRoot, [".reviewgate"]);
+  ensureDirectoryChain(input.branch.checkoutRoot, [".reviewgate"]);
   copyEntries(merged, branchStateRoot);
 }
 
@@ -442,12 +503,26 @@ export function createPolicyStateSnapshot(input: {
     throw new Error("policy state output escapes root");
   if (!existsSync(stateDestination)) {
     ensureDirectoryChain(outputReal, ["policy-state", stateSha256, ".reviewgate"]);
-    copyEntries(entries, stateDestination);
-  } else {
-    exactDirectory(stateDestination);
+    const createdStateRoot = exactContainedDirectoryChain(outputReal, [
+      "policy-state",
+      stateSha256,
+      ".reviewgate",
+    ]);
+    copyEntries(entries, createdStateRoot);
   }
-  if (stateDigest(collectStateEntries(stateDestination, true)) !== stateSha256) {
+  const stateDestinationReal = exactContainedDirectoryChain(outputReal, [
+    "policy-state",
+    stateSha256,
+    ".reviewgate",
+  ]);
+  if (stateDigest(collectStateEntries(stateDestinationReal, true)) !== stateSha256) {
     throw new Error("policy state snapshot digest mismatch");
+  }
+  if (
+    exactContainedDirectoryChain(outputReal, ["policy-state", stateSha256, ".reviewgate"]) !==
+    stateDestinationReal
+  ) {
+    throw new Error("policy state snapshot directory changed while reading");
   }
 
   const manifest: PolicyStateManifest = {
@@ -464,7 +539,8 @@ export function createPolicyStateSnapshot(input: {
   const manifestSha256 = sha256(bytes);
   const ref = `policy-state/${manifestSha256}.json`;
   if (!STATE_MANIFEST_REF.test(ref)) throw new Error("invalid policy state manifest reference");
-  const destination = resolve(outputReal, ref);
+  const policyStateReal = exactContainedDirectoryChain(outputReal, ["policy-state"]);
+  const destination = resolve(policyStateReal, `${manifestSha256}.json`);
   if (!isContained(outputReal, destination)) throw new Error("policy state manifest escapes root");
   ensureDirectoryChain(outputReal, ["policy-state"]);
   if (!writeFileIfAbsent(destination, bytes, { mode: 0o600 })) {
@@ -490,7 +566,8 @@ export function verifyPolicyStateSnapshot(input: {
     throw new Error("invalid policy state snapshot reference");
   }
   const outputReal = exactDirectory(input.outputRoot);
-  const manifestPath = resolve(outputReal, input.ref);
+  const policyStateReal = exactContainedDirectoryChain(outputReal, ["policy-state"]);
+  const manifestPath = resolve(policyStateReal, basename(input.ref));
   if (!isContained(outputReal, manifestPath)) throw new Error("policy state manifest escapes root");
   const bytes = readStableFile(manifestPath, STATE_MAX_FILE_BYTES, true);
   if (sha256(bytes) !== input.sha256 || input.ref !== `policy-state/${input.sha256}.json`) {
@@ -520,9 +597,23 @@ export function verifyPolicyStateSnapshot(input: {
   ) {
     throw new Error("policy state tree escapes root");
   }
-  const entries = collectStateEntries(stateRoot, true);
+  const stateRootReal = exactContainedDirectoryChain(outputReal, [
+    "policy-state",
+    manifest.state_sha256,
+    ".reviewgate",
+  ]);
+  const entries = collectStateEntries(stateRootReal, true);
   if (stateDigest(entries) !== manifest.state_sha256)
     throw new Error("policy state tree digest mismatch");
+  if (
+    exactContainedDirectoryChain(outputReal, [
+      "policy-state",
+      manifest.state_sha256,
+      ".reviewgate",
+    ]) !== stateRootReal
+  ) {
+    throw new Error("policy state tree changed while reading");
+  }
   const actualFiles = entries.map(({ path, size, sha256: contentSha256 }) => ({
     path,
     size,
@@ -531,7 +622,7 @@ export function verifyPolicyStateSnapshot(input: {
   if (canonicalJson(actualFiles) !== canonicalJson(manifest.files)) {
     throw new Error("policy state tree does not match manifest");
   }
-  return { stateRoot, stateSha256: manifest.state_sha256 };
+  return { stateRoot: stateRootReal, stateSha256: manifest.state_sha256 };
 }
 
 function authority(code: RigAuthorityInvalidity, message: string): never {
@@ -841,7 +932,11 @@ function prepareBranch(input: {
     reverse: false,
     label: basename(input.destination),
   });
-  return { checkoutRoot: input.destination, startingStateSha256: input.expectedStateSha256 };
+  return {
+    checkoutRoot: input.destination,
+    startingStateSha256: input.expectedStateSha256,
+    ownedStatePaths: new Map(),
+  };
 }
 
 export function createReplayBranches(input: {
@@ -963,7 +1058,7 @@ export function advanceReplayBranches(input: {
       label: `${label}-next`,
     });
     advanceBranchState({
-      checkoutRoot: branch.checkoutRoot,
+      branch,
       previousStateSnapshotRoot: input.previousStateSnapshotRoot,
       nextStateSnapshotRoot: input.nextStateSnapshotRoot,
     });

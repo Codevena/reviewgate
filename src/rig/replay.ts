@@ -31,6 +31,7 @@ import type { PolicyTrace } from "../schemas/policy-trace.ts";
 import { RigManifestSchema } from "../schemas/rig-manifest.ts";
 import type { RigResult } from "../schemas/rig-result.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
+import { implicitOutcomesPath, knownFpPath, reputationJsonPath } from "../utils/paths.ts";
 import { type RigAblation, SUPPRESSION_LAYERS, ablate, seededTagsFromScript } from "./ablate.ts";
 import { harvest } from "./harvest.ts";
 import {
@@ -40,6 +41,7 @@ import {
   cleanupReplayBranches,
   createReplayBranches,
   digestPolicyState,
+  recordReplayBranchStateDecision,
   validateRigPolicyReplayArtifacts,
 } from "./policy-replay-state.ts";
 
@@ -230,12 +232,15 @@ async function assertBranchHistoryInputs(
 
 async function applyCapturedHumanLearning(
   envelope: PolicyReplayEnvelope,
-  checkoutRoot: string,
+  branch: ReplayBranches["baseline"],
 ): Promise<number> {
+  const checkoutRoot = branch.checkoutRoot;
   const state = await new StateStore(checkoutRoot).load();
   if (state.iteration < 1) return 0;
   let writes = 0;
   if (envelope.history.fp_ledger.enabled) {
+    const path = knownFpPath(checkoutRoot);
+    const before = readOptionalStateFile(path);
     const store = new FpLedgerStore(checkoutRoot);
     await learnFromDecisions({
       repoRoot: checkoutRoot,
@@ -246,9 +251,14 @@ async function applyCapturedHumanLearning(
       nowIso: envelope.history.fp_ledger.active_at,
     });
     await store.decayPass(envelope.history.fp_ledger.active_at);
+    if (!sameOptionalBytes(before, readOptionalStateFile(path))) {
+      recordReplayBranchStateDecision(branch, path);
+    }
     writes += 1;
   }
   if (envelope.history.reputation.enabled) {
+    const path = reputationJsonPath(checkoutRoot);
+    const before = readOptionalStateFile(path);
     await learnReputationFromDecisions({
       repoRoot: checkoutRoot,
       iter: state.iteration,
@@ -258,9 +268,25 @@ async function applyCapturedHumanLearning(
       nowIso: envelope.history.reputation.observed_at,
       halfLifeDays: envelope.history.reputation.half_life_days,
     });
+    if (!sameOptionalBytes(before, readOptionalStateFile(path))) {
+      recordReplayBranchStateDecision(branch, path);
+    }
     writes += 1;
   }
   return writes;
+}
+
+function readOptionalStateFile(path: string): Buffer | null {
+  try {
+    return readFileSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function sameOptionalBytes(left: Buffer | null, right: Buffer | null): boolean {
+  return left === null ? right === null : right !== null && left.equals(right);
 }
 
 function aggregateInputFromEnvelope(
@@ -431,7 +457,7 @@ function replayEnvelopeProductionPath(input: {
 
 async function persistBranchPolicyOutcomes(input: {
   envelope: PolicyReplayEnvelope;
-  checkoutRoot: string;
+  branch: ReplayBranches["baseline"];
   execution: ReplayPolicyExecution;
 }): Promise<number> {
   if (!input.envelope.history.implicit_outcomes.enabled) return 0;
@@ -444,10 +470,11 @@ async function persistBranchPolicyOutcomes(input: {
       nowIso: input.envelope.history.implicit_outcomes.created_at,
     },
   );
-  await new ImplicitOutcomeStore(input.checkoutRoot).append(
+  await new ImplicitOutcomeStore(input.branch.checkoutRoot).append(
     outcomes,
     input.envelope.history.implicit_outcomes.cap,
   );
+  recordReplayBranchStateDecision(input.branch, implicitOutcomesPath(input.branch.checkoutRoot));
   return outcomes.length;
 }
 
@@ -500,12 +527,12 @@ async function replayPolicyEnvelopeInBranches(input: {
     }
     const baselineOutcomeWrites = await persistBranchPolicyOutcomes({
       envelope: input.envelope,
-      checkoutRoot: input.branches.baseline.checkoutRoot,
+      branch: input.branches.baseline,
       execution: baselineExecution,
     });
     const counterfactualOutcomeWrites = await persistBranchPolicyOutcomes({
       envelope: input.envelope,
-      checkoutRoot: input.branches.counterfactual.checkoutRoot,
+      branch: input.branches.counterfactual,
       execution: counterfactualExecution,
     });
     return {
@@ -599,13 +626,10 @@ export async function replayPolicyEnvelopeSequence(input: {
         previous === undefined
           ? { baseline: 0, counterfactual: 0 }
           : {
-              baseline: await applyCapturedHumanLearning(
-                item.envelope,
-                branches.baseline.checkoutRoot,
-              ),
+              baseline: await applyCapturedHumanLearning(item.envelope, branches.baseline),
               counterfactual: await applyCapturedHumanLearning(
                 item.envelope,
-                branches.counterfactual.checkoutRoot,
+                branches.counterfactual,
               ),
             };
       const pair = await replayPolicyEnvelopeInBranches({
