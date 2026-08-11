@@ -6,9 +6,15 @@ import { makeMetric, summarizeSpread } from "../../src/bench/metrics.ts";
 import { RigLayerSelectorError, runRigAblate } from "../../src/cli/commands/rig.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import { ablate, renderAblationMatrix } from "../../src/rig/ablate.ts";
-import { renderPolicyAblationRows } from "../../src/rig/replay.ts";
+import { RigAuthorityError } from "../../src/rig/policy-replay-state.ts";
+import { assertRigResultManifestBinding, renderPolicyAblationRows } from "../../src/rig/replay.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
-import type { RigResult, RigTurnRecord } from "../../src/schemas/rig-result.ts";
+import { RigManifestSchema } from "../../src/schemas/rig-manifest.ts";
+import {
+  type RigResult,
+  RigResultSchema,
+  type RigTurnRecord,
+} from "../../src/schemas/rig-result.ts";
 
 const ZERO = { critic: 0, reputation: 0, fp_ledger: 0, lore: 0 };
 
@@ -91,7 +97,249 @@ function result(turns: RigTurnRecord[], over: Partial<RigResult> = {}): RigResul
 
 const NO_TAGS = new Map<number, string[]>();
 
+function exactManifest(runId: string, scriptId: string, sourceCommit: string) {
+  return {
+    schema: "reviewgate.rig.manifest.v1",
+    runId,
+    scriptId,
+    outDir: "/unused",
+    cassettePath: null,
+    policyReplay: {
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit,
+      initialStateRef: `policy-state/${"1".repeat(64)}.json`,
+      initialStateSha256: "2".repeat(64),
+      initialStateDigest: "3".repeat(64),
+      cassetteSha256: "4".repeat(64),
+      cassetteRef: "cassette.jsonl",
+      captureDir: "policy-replay",
+    },
+    turns: [
+      {
+        index: 1,
+        snapshotDir: "/unused/turn-01",
+        agentExitCode: 0,
+        wallMs: 1,
+        policyReplay: {
+          status: "complete",
+          traces: [{ ref: `${"a".repeat(12)}-i1-${"b".repeat(12)}.json`, sha256: "5".repeat(64) }],
+        },
+      },
+    ],
+  };
+}
+
+function exactResultForManifest(
+  manifest: ReturnType<typeof exactManifest>,
+  manifestSha256: string,
+) {
+  const firstTrace = manifest.turns[0]?.policyReplay.traces[0];
+  if (firstTrace === undefined) throw new Error("exact result fixture is missing its trace");
+  const base = result([
+    turn({
+      index: 1,
+      policyReplay: {
+        status: "complete",
+        traces: [
+          {
+            ...firstTrace,
+            runId: manifest.runId,
+            iter: 1,
+            stateSha256: manifest.policyReplay.initialStateDigest,
+            lossless: true,
+          },
+        ],
+        reason: null,
+      },
+    }),
+  ]);
+  return {
+    ...base,
+    runId: manifest.runId,
+    provenance: {
+      ...base.provenance,
+      run_id: manifest.runId,
+      script_id: manifest.scriptId,
+      manifest_path: "/unused/manifest-a.json",
+    },
+    policyReplay: {
+      authoritative: true,
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit: manifest.policyReplay.sourceCommit,
+      passIds: [...POLICY_PASS_IDS],
+      reason: null,
+      artifactBinding: {
+        manifestRef: "manifest.json",
+        manifestSha256,
+        scriptId: manifest.scriptId,
+        initialStateRef: manifest.policyReplay.initialStateRef,
+        initialStateSha256: manifest.policyReplay.initialStateSha256,
+        initialStateDigest: manifest.policyReplay.initialStateDigest,
+        cassetteRef: manifest.policyReplay.cassetteRef,
+        cassetteSha256: manifest.policyReplay.cassetteSha256,
+        turns: manifest.turns.map((entry) => ({
+          index: entry.index,
+          traces: entry.policyReplay.traces,
+        })),
+      },
+    },
+  };
+}
+
 describe("rig ablate", () => {
+  test("binds every authoritative source/state/cassette/turn inventory field", () => {
+    const manifestValue = exactManifest("run-a", "script-a", "c".repeat(40));
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifestValue)}\n`);
+    const manifest = RigManifestSchema.parse(manifestValue);
+    const validResult = RigResultSchema.parse(
+      exactResultForManifest(
+        manifestValue,
+        new Bun.CryptoHasher("sha256").update(manifestBytes).digest("hex"),
+      ),
+    );
+    const validate = (candidate: RigResult): void =>
+      assertRigResultManifestBinding({
+        result: candidate,
+        manifest,
+        manifestPath: "/artifact/manifest.json",
+        manifestBytes,
+        scriptId: "script-a",
+      });
+    expect(() => validate(validResult)).not.toThrow();
+
+    const authority = (candidate: RigResult) => {
+      const statement = candidate.policyReplay;
+      const binding = statement?.artifactBinding;
+      const firstTrace = binding?.turns[0]?.traces[0];
+      if (statement === undefined || binding === undefined || firstTrace === undefined) {
+        throw new Error("exact result fixture is missing authority fields");
+      }
+      return { statement, binding, firstTrace };
+    };
+
+    const mutations: Array<(candidate: RigResult) => void> = [
+      (candidate) => {
+        candidate.runId = "run-b";
+      },
+      (candidate) => {
+        authority(candidate).statement.sourceCommit = "d".repeat(40);
+      },
+      (candidate) => {
+        authority(candidate).binding.initialStateSha256 = "6".repeat(64);
+      },
+      (candidate) => {
+        authority(candidate).binding.cassetteSha256 = "7".repeat(64);
+      },
+      (candidate) => {
+        authority(candidate).firstTrace.sha256 = "8".repeat(64);
+      },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(validResult);
+      mutate(candidate);
+      try {
+        validate(candidate);
+        throw new Error("expected authority rejection");
+      } catch (error) {
+        expect(error).toBeInstanceOf(RigAuthorityError);
+        expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+      }
+    }
+  });
+
+  test("rejects an authoritative result combined with a different valid run manifest", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-exact-bind-"));
+    const sourceCommit = "c".repeat(40);
+    const manifestA = exactManifest("run-a", "script-a", sourceCommit);
+    const manifestB = exactManifest("run-b", "script-b", sourceCommit);
+    const manifestABytes = `${JSON.stringify(manifestA)}\n`;
+    const manifestBBytes = `${JSON.stringify(manifestB)}\n`;
+    const manifestAPath = join(root, "manifest-a.json");
+    writeFileSync(manifestAPath, manifestABytes);
+    writeFileSync(join(root, "manifest.json"), manifestBBytes);
+    const exact = exactResultForManifest(
+      manifestA,
+      new Bun.CryptoHasher("sha256").update(manifestABytes).digest("hex"),
+    );
+    exact.provenance.manifest_path = manifestAPath;
+    const resultPath = join(root, "result.json");
+    writeFileSync(resultPath, JSON.stringify(exact));
+    const scriptPath = join(root, "script-a.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "script-a",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+
+    try {
+      await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
+      throw new Error("expected authority rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RigAuthorityError);
+      expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+    }
+    const child = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "src/cli/index.ts",
+        "rig",
+        "ablate",
+        "--result",
+        resultPath,
+        "--script",
+        scriptPath,
+      ],
+      {
+        cwd: join(import.meta.dir, "..", ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(4);
+    expect(stderr).toContain("result-manifest-mismatch");
+    expect(stdout).not.toContain("exact policy ablation");
+  });
+
+  test("binds authoritative --script to the harvested script identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-exact-script-bind-"));
+    const manifest = exactManifest("run-a", "script-a", "c".repeat(40));
+    const manifestBytes = `${JSON.stringify(manifest)}\n`;
+    writeFileSync(join(root, "manifest.json"), manifestBytes);
+    const exact = exactResultForManifest(
+      manifest,
+      new Bun.CryptoHasher("sha256").update(manifestBytes).digest("hex"),
+    );
+    exact.provenance.manifest_path = join(root, "manifest.json");
+    const resultPath = join(root, "result.json");
+    writeFileSync(resultPath, JSON.stringify(exact));
+    const scriptPath = join(root, "script-b.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "script-b",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+
+    try {
+      await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
+      throw new Error("expected authority rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RigAuthorityError);
+      expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+    }
+  });
+
   test("keeps exact catalog selectors and legacy aliases in their own result modes", async () => {
     const root = mkdtempSync(join(tmpdir(), "rg-layer-selector-"));
     const scriptPath = join(root, "script.json");

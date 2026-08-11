@@ -28,9 +28,10 @@
 //     (`<turn>/reports/*-pending.json`), which is why that archiver is load-bearing rather
 //     than redundant with the final `pending.json` (a turn that ends green overwrites the
 //     report that caught the defect).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { platform, release } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { matchesAnyTag } from "../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../bench/metrics.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
@@ -522,9 +523,8 @@ function harvestTurn(
 }
 
 export function harvest(manifestPath: string, scriptPath: string): RigResult {
-  const manifest = RigManifestSchema.parse(
-    JSON.parse(readFileSync(manifestPath, "utf8")) as unknown,
-  );
+  const manifestBytes = readFileSync(manifestPath);
+  const manifest = RigManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")) as unknown);
   const policyReplay = validateRigPolicyReplayArtifacts({ manifest, manifestPath });
   const script = loadTurnScript(scriptPath);
   if (manifest.scriptId !== script.id) {
@@ -636,6 +636,44 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
     );
   }
 
+  const resultPolicyReplay: RigResult["policyReplay"] = (() => {
+    if (policyReplay === null) {
+      return {
+        authoritative: false,
+        catalogVersion: null,
+        sourceCommit: null,
+        passIds: [],
+        reason:
+          "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
+      };
+    }
+    const metadata = manifest.policyReplay;
+    if (metadata === undefined) {
+      throw new Error("rig harvest: validated policy replay is missing manifest metadata");
+    }
+    return {
+      authoritative: true,
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit: policyReplay.sourceCommit,
+      passIds: [...POLICY_PASS_IDS],
+      reason: null,
+      artifactBinding: {
+        manifestRef: basename(manifestPath),
+        manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+        scriptId: manifest.scriptId,
+        initialStateRef: metadata.initialStateRef,
+        initialStateSha256: metadata.initialStateSha256,
+        initialStateDigest: metadata.initialStateDigest,
+        cassetteRef: metadata.cassetteRef,
+        cassetteSha256: metadata.cassetteSha256,
+        turns: manifest.turns.map((turn) => ({
+          index: turn.index,
+          traces: turn.policyReplay?.traces ?? [],
+        })),
+      },
+    };
+  })();
+
   const result: RigResult = {
     schema: "reviewgate.rig.result.v1",
     runId: manifest.runId,
@@ -677,23 +715,7 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
       },
       suppression,
     },
-    policyReplay:
-      policyReplay === null
-        ? {
-            authoritative: false,
-            catalogVersion: null,
-            sourceCommit: null,
-            passIds: [],
-            reason:
-              "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
-          }
-        : {
-            authoritative: true,
-            catalogVersion: POLICY_CATALOG_VERSION,
-            sourceCommit: policyReplay.sourceCommit,
-            passIds: [...POLICY_PASS_IDS],
-            reason: null,
-          },
+    policyReplay: resultPolicyReplay,
     warnings,
   };
   // Validate what we are about to hand out: the null contracts in RigTurnRecordSchema are the

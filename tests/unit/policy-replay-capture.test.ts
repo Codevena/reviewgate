@@ -285,6 +285,97 @@ describe("policy replay envelope schema", () => {
 });
 
 describe("policy replay capture", () => {
+  test("preserves only the trusted matching Gate ULID identity despite its entropy", () => {
+    const measuredRepoRoot = gitRepo();
+    const runId = "01KZS1PT1A6VXW9VDGBNCTJ8KV";
+    const withRunId = (
+      message = "A real issue",
+      envelopeRunId = runId,
+      traceRunId = envelopeRunId,
+    ): PolicyReplayEnvelope => {
+      const candidate = envelope();
+      candidate.run_id = envelopeRunId;
+      candidate.policy_trace.run_id = traceRunId;
+      const prePolicyFinding = candidate.pre_policy_findings[0];
+      const aggregateFinding = candidate.aggregate.findings[0];
+      const finalFinding = candidate.policy_final_findings[0];
+      if (
+        prePolicyFinding === undefined ||
+        aggregateFinding === undefined ||
+        finalFinding === undefined
+      ) {
+        throw new Error("ULID fixture is missing its finding");
+      }
+      prePolicyFinding.message = message;
+      aggregateFinding.message = message;
+      finalFinding.message = message;
+      candidate.response_calls = candidate.response_calls.map((call) => ({
+        ...call,
+        call_id: policyReplayCallId({
+          runId: envelopeRunId,
+          iter: candidate.iter,
+          kind: call.kind,
+          provider: call.provider,
+          method: call.method,
+          key: call.key,
+          promptSha256: call.prompt_sha256,
+          ordinal: call.ordinal,
+          slot: call.slot,
+          attempt: call.attempt,
+          occurrence: call.occurrence,
+        }),
+      }));
+      return candidate;
+    };
+
+    const trustedSink = mkdtempSync(join(tmpdir(), "rg-policy-ulid-trusted-"));
+    const trusted = capturePolicyReplayEnvelope({
+      sinkDir: trustedSink,
+      measuredRepoRoot,
+      envelope: withRunId(),
+    });
+    expect(trusted).toMatchObject({ status: "complete" });
+    if (trusted.status !== "complete") throw new Error("capture failed");
+    expect(trusted.envelope.lossless).toBe(true);
+    expect(trusted.envelope.run_id).toBe(runId);
+    expect(trusted.envelope.policy_trace.run_id).toBe(runId);
+    expect(
+      verifyPolicyReplayEnvelope({
+        sinkDir: trustedSink,
+        ref: trusted.ref,
+        sha256: trusted.sha256,
+        authoritative: true,
+      }).ok,
+    ).toBe(true);
+
+    const untrustedSink = mkdtempSync(join(tmpdir(), "rg-policy-ulid-untrusted-"));
+    const untrusted = capturePolicyReplayEnvelope({
+      sinkDir: untrustedSink,
+      measuredRepoRoot,
+      envelope: withRunId(runId),
+    });
+    expect(untrusted.status).toBe("complete");
+    if (untrusted.status !== "complete") throw new Error("capture failed");
+    expect(untrusted.envelope.lossless).toBe(false);
+    expect(untrusted.envelope.pre_policy_findings[0]?.message).not.toBe(runId);
+
+    const invalidUlid = `8${runId.slice(1)}`;
+    expect(
+      capturePolicyReplayEnvelope({
+        sinkDir: mkdtempSync(join(tmpdir(), "rg-policy-ulid-invalid-")),
+        measuredRepoRoot,
+        envelope: withRunId("A real issue", invalidUlid),
+      }),
+    ).toEqual({ status: "error", reason: "invalid-envelope" });
+    expect(
+      capturePolicyReplayEnvelope({
+        sinkDir: mkdtempSync(join(tmpdir(), "rg-policy-ulid-mismatch-")),
+        measuredRepoRoot,
+        envelope: withRunId("A real issue", runId, "01KZS1PT1A6VXW9VDGBNCTJ8KW"),
+      }),
+    ).toEqual({ status: "error", reason: "invalid-envelope" });
+  });
+
   test("writes canonical mode-0600 data outside the measured repo and verifies its identity", () => {
     const measuredRepoRoot = gitRepo();
     const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-replay-output-"));

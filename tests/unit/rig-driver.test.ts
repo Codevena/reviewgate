@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -57,6 +58,82 @@ const appendingAgent = (root: string) => (prompt: string) => [
 ];
 
 describe("rig driver", () => {
+  test("rejects a symlinked authoritative cassette before the agent and copies no host bytes", async () => {
+    const { root, scriptPath } = sandbox(1);
+    const outDir = mkdtempSync(join(tmpdir(), "rg-rig-cassette-out-"));
+    const sinkDir = join(outDir, "policy-replay");
+    mkdirSync(sinkDir, { mode: 0o700 });
+    const victim = join(mkdtempSync(join(tmpdir(), "rg-rig-victim-")), "secret.txt");
+    writeFileSync(victim, "HOST-SECRET", { mode: 0o600 });
+    const cassettePath = join(root, "cassette.jsonl");
+    symlinkSync(victim, cassettePath);
+    const agentMarker = join(root, "agent-ran");
+
+    await expect(
+      runDriver({
+        scriptPath,
+        outDir,
+        repoRoot: root,
+        agentCmd: () => ["bash", "-c", 'printf ran > "$1"', "agent", agentMarker],
+        maxTurns: 1,
+        policyReplay: {
+          sinkDir,
+          cassettePath,
+          metadata: {
+            catalogVersion: POLICY_CATALOG_VERSION,
+            sourceCommit: "a".repeat(40),
+            initialStateRef: `policy-state/${"b".repeat(64)}.json`,
+            initialStateSha256: "c".repeat(64),
+            initialStateDigest: "d".repeat(64),
+            cassetteSha256: "e".repeat(64),
+            cassetteRef: "cassette.jsonl",
+            captureDir: "policy-replay",
+          },
+        },
+      }),
+    ).rejects.toThrow(/cassette|symlink/i);
+    expect(existsSync(agentMarker)).toBe(false);
+    expect(readFileSync(victim, "utf8")).toBe("HOST-SECRET");
+    expect(existsSync(join(outDir, "cassette.jsonl"))).toBe(false);
+  });
+
+  test("rejects a cassette swapped to a host symlink before the stable read", async () => {
+    const { root, scriptPath } = sandbox(1);
+    const outDir = mkdtempSync(join(tmpdir(), "rg-rig-cassette-swap-out-"));
+    const sinkDir = join(outDir, "policy-replay");
+    mkdirSync(sinkDir, { mode: 0o700 });
+    const victim = join(mkdtempSync(join(tmpdir(), "rg-rig-swap-victim-")), "secret.txt");
+    writeFileSync(victim, "HOST-SECRET", { mode: 0o600 });
+    const cassettePath = join(root, "cassette.jsonl");
+    writeFileSync(cassettePath, "", { mode: 0o600 });
+
+    await expect(
+      runDriver({
+        scriptPath,
+        outDir,
+        repoRoot: root,
+        agentCmd: () => ["bash", "-c", 'rm "$1"; ln -s "$2" "$1"', "agent", cassettePath, victim],
+        maxTurns: 1,
+        policyReplay: {
+          sinkDir,
+          cassettePath,
+          metadata: {
+            catalogVersion: POLICY_CATALOG_VERSION,
+            sourceCommit: "a".repeat(40),
+            initialStateRef: `policy-state/${"b".repeat(64)}.json`,
+            initialStateSha256: "c".repeat(64),
+            initialStateDigest: "d".repeat(64),
+            cassetteSha256: "e".repeat(64),
+            cassetteRef: "cassette.jsonl",
+            captureDir: "policy-replay",
+          },
+        },
+      }),
+    ).rejects.toThrow(/cassette|symlink/i);
+    expect(readFileSync(victim, "utf8")).toBe("HOST-SECRET");
+    expect(existsSync(join(outDir, "cassette.jsonl"))).toBe(false);
+  });
+
   test("exports only the replay sink and records immutable trace/state identity outside the repo", async () => {
     const { root, scriptPath } = sandbox(1);
     execFileSync("git", ["init", "-q", "."], { cwd: root });
@@ -118,8 +195,23 @@ describe("rig driver", () => {
       refs[1],
       refs[0],
     ]);
-    expect(existsSync(join(outDir, "cassette.jsonl"))).toBe(true);
+    const copiedCassette = readFileSync(join(outDir, "cassette.jsonl"));
+    const copiedHash = new Bun.CryptoHasher("sha256").update(copiedCassette).digest("hex");
+    expect(copiedHash).toBe(manifest.policyReplay?.cassetteSha256 ?? "");
     expect(existsSync(join(root, ".reviewgate", "policy-replay"))).toBe(false);
+  });
+
+  test("hashes and copies the same single stable cassette buffer", () => {
+    const source = readFileSync(
+      join(import.meta.dir, "..", "..", "src", "rig", "driver.ts"),
+      "utf8",
+    );
+    expect(source.match(/readPrivateCassette\(/g)).toHaveLength(1);
+    expect(source).toContain(".update(cassetteBytes)");
+    expect(source).toContain(
+      "writeFileAtomic(join(opts.outDir, manifest.policyReplay.cassetteRef), cassetteText",
+    );
+    expect(source).not.toContain("readFileSync(opts.policyReplay.cassettePath");
   });
 
   test("carries a capture overflow marker into the authoritative turn status", async () => {
@@ -517,6 +609,32 @@ describe("rig run cassette destination", () => {
     await expect(runRigRun(base("record:/nonexistent-dir-xyz/c.jsonl"))).rejects.toThrow(
       /does not exist/,
     );
+  });
+
+  test("rejects an existing cassette symlink before any run can follow it", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "rg-rig-link-repo-"));
+    execFileSync("git", ["init", "-q", "."], { cwd: repo });
+    writeFileSync(join(repo, "tracked.txt"), "safe\n");
+    execFileSync("git", ["add", "tracked.txt"], { cwd: repo });
+    execFileSync(
+      "git",
+      ["-c", "user.email=rig@example.invalid", "-c", "user.name=rig", "commit", "-qm", "init"],
+      { cwd: repo },
+    );
+    const victim = join(mkdtempSync(join(tmpdir(), "rg-rig-link-victim-")), "secret");
+    writeFileSync(victim, "HOST-SECRET", { mode: 0o600 });
+    const cassettePath = join(repo, "cassette.jsonl");
+    symlinkSync(victim, cassettePath);
+
+    await expect(
+      runRigRun({
+        scriptPath: join(import.meta.dir, "..", "..", "rig", "scripts", "pilot-01.json"),
+        outDir: mkdtempSync(join(tmpdir(), "rg-rig-link-out-")),
+        repoRoot: repo,
+        cassetteEnv: `record:${cassettePath}`,
+      }),
+    ).rejects.toThrow(/cassette.*already exists|private cassette|symlink/i);
+    expect(readFileSync(victim, "utf8")).toBe("HOST-SECRET");
   });
 });
 

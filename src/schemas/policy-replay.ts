@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { decodeTime } from "ulid";
 import { z } from "zod";
 import {
   POLICY_CATALOG_VERSION,
@@ -308,11 +309,48 @@ function visitStrings(
   walk(value, []);
 }
 
+export function isFormalPolicyReplayUlid(value: string): boolean {
+  if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) return false;
+  try {
+    decodeTime(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isTrustedPolicyReplayRunIdString(input: {
+  value: string;
+  path: readonly (string | number)[];
+  runId: string;
+  policyTraceRunId: string;
+}): boolean {
+  if (
+    input.runId !== input.policyTraceRunId ||
+    input.value !== input.runId ||
+    !isFormalPolicyReplayUlid(input.runId)
+  ) {
+    return false;
+  }
+  return (
+    (input.path.length === 1 && input.path[0] === "run_id") ||
+    (input.path.length === 2 && input.path[0] === "policy_trace" && input.path[1] === "run_id")
+  );
+}
+
 export const PolicyReplayEnvelopeSchema = PolicyReplayEnvelopeBaseSchema.superRefine(
   (value, ctx) => {
     if (value.lossless) {
       visitStrings(value, (stringValue, path) => {
-        if (!isAuthoritativeThrowableString(stringValue)) {
+        if (
+          !isAuthoritativeThrowableString(stringValue) &&
+          !isTrustedPolicyReplayRunIdString({
+            value: stringValue,
+            path,
+            runId: value.run_id,
+            policyTraceRunId: value.policy_trace.run_id,
+          })
+        ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path,

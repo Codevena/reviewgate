@@ -121,6 +121,7 @@ export type RigAuthorityInvalidity =
   | "cassette-hash-mismatch"
   | "invalid-cassette"
   | "source-state-alias"
+  | "result-manifest-mismatch"
   | "live-provider-call";
 
 export class RigAuthorityError extends Error {

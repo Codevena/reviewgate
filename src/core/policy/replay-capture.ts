@@ -18,6 +18,8 @@ import {
   type PolicyReplayEnvelopeInput,
   PolicyReplayEnvelopeInputSchema,
   PolicyReplayEnvelopeSchema,
+  isFormalPolicyReplayUlid,
+  isTrustedPolicyReplayRunIdString,
 } from "../../schemas/policy-replay.ts";
 import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import type { AggregateInput } from "../aggregator.ts";
@@ -131,12 +133,28 @@ function sanitizeString(value: string): { value: string; changed: boolean } {
   return { value, changed: false };
 }
 
-function sanitizeStrings(value: unknown): { value: unknown; changed: boolean } {
+function sanitizeStrings(
+  value: unknown,
+  path: readonly (string | number)[],
+  trustedRunId: string | null,
+): { value: unknown; changed: boolean } {
+  if (
+    typeof value === "string" &&
+    trustedRunId !== null &&
+    isTrustedPolicyReplayRunIdString({
+      value,
+      path,
+      runId: trustedRunId,
+      policyTraceRunId: trustedRunId,
+    })
+  ) {
+    return { value, changed: false };
+  }
   if (typeof value === "string") return sanitizeString(value);
   if (Array.isArray(value)) {
     let changed = false;
-    const out = value.map((entry) => {
-      const sanitized = sanitizeStrings(entry);
+    const out = value.map((entry, index) => {
+      const sanitized = sanitizeStrings(entry, [...path, index], trustedRunId);
       changed ||= sanitized.changed;
       return sanitized.value;
     });
@@ -146,7 +164,7 @@ function sanitizeStrings(value: unknown): { value: unknown; changed: boolean } {
     let changed = false;
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      const sanitized = sanitizeStrings(entry);
+      const sanitized = sanitizeStrings(entry, [...path, key], trustedRunId);
       changed ||= sanitized.changed;
       out[key] = sanitized.value;
     }
@@ -227,7 +245,12 @@ export function sanitizePolicyReplayEnvelope(
   input: PolicyReplayEnvelopeInput,
 ): PolicyReplayEnvelope {
   const structural = PolicyReplayEnvelopeInputSchema.parse(input);
-  const sanitized = sanitizeStrings(structural);
+  const trustedRunId =
+    structural.run_id === structural.policy_trace.run_id &&
+    isFormalPolicyReplayUlid(structural.run_id)
+      ? structural.run_id
+      : null;
+  const sanitized = sanitizeStrings(structural, [], trustedRunId);
   const value = sanitized.value as PolicyReplayEnvelopeInput;
   return PolicyReplayEnvelopeSchema.parse({
     ...value,

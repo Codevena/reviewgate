@@ -2,8 +2,9 @@
 // Exact new runs replay captured policy inputs through production pass functions in isolated
 // checkouts. Legacy runs retain the older deterministic harvest/heuristic self-check, explicitly
 // non-authoritative for policy ablation rather than pretending missing opportunities were zero.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { canonicalJson } from "../audit/canonical.ts";
 import { type AggregateInput, aggregate } from "../core/aggregator.ts";
 import { validateFindingFacts } from "../core/fact-check.ts";
@@ -28,7 +29,7 @@ import { parseDeletedPaths } from "../diff/hunks.ts";
 import { CassetteEntrySchema } from "../schemas/cassette.ts";
 import type { PolicyReplayEnvelope } from "../schemas/policy-replay.ts";
 import type { PolicyTrace } from "../schemas/policy-trace.ts";
-import { RigManifestSchema } from "../schemas/rig-manifest.ts";
+import { type RigManifest, RigManifestSchema } from "../schemas/rig-manifest.ts";
 import type { RigResult } from "../schemas/rig-result.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
 import { implicitOutcomesPath, knownFpPath, reputationJsonPath } from "../utils/paths.ts";
@@ -653,10 +654,19 @@ export async function replayPolicyAblations(input: {
   manifestPath: string;
   sourceRepoRoot: string;
   passId?: PolicyPassId;
+  authority?: { result: RigResult; scriptId: string };
 }): Promise<RigPolicyAblationRow[]> {
-  const manifest = RigManifestSchema.parse(
-    JSON.parse(readFileSync(input.manifestPath, "utf8")) as unknown,
-  );
+  const manifestBytes = readFileSync(input.manifestPath);
+  const manifest = RigManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")) as unknown);
+  if (input.authority !== undefined) {
+    assertRigResultManifestBinding({
+      result: input.authority.result,
+      manifest,
+      manifestPath: input.manifestPath,
+      manifestBytes,
+      scriptId: input.authority.scriptId,
+    });
+  }
   const validated = validateRigPolicyReplayArtifacts({
     manifest,
     manifestPath: input.manifestPath,
@@ -724,6 +734,70 @@ export async function replayPolicyAblations(input: {
     });
   }
   return rows;
+}
+
+function authorityMismatch(message: string): never {
+  throw new RigAuthorityError("result-manifest-mismatch", message);
+}
+
+/** Bind the harvested result and selected script to the exact manifest before any replay. */
+export function assertRigResultManifestBinding(input: {
+  result: RigResult;
+  manifest: RigManifest;
+  manifestPath: string;
+  manifestBytes: Buffer;
+  scriptId: string;
+}): void {
+  const statement = input.result.policyReplay;
+  const binding = statement?.artifactBinding;
+  const metadata = input.manifest.policyReplay;
+  if (statement?.authoritative !== true || binding === undefined || metadata === undefined) {
+    authorityMismatch("authoritative result is missing its content-addressed manifest binding");
+  }
+  if (
+    binding.manifestRef !== basename(input.manifestPath) ||
+    binding.manifestSha256 !== createHash("sha256").update(input.manifestBytes).digest("hex")
+  ) {
+    authorityMismatch("selected manifest does not match the harvested manifest content address");
+  }
+  if (
+    input.result.runId !== input.manifest.runId ||
+    input.result.provenance.run_id !== input.manifest.runId
+  ) {
+    authorityMismatch("result and manifest run ids differ");
+  }
+  if (
+    input.result.provenance.script_id !== input.manifest.scriptId ||
+    binding.scriptId !== input.manifest.scriptId ||
+    input.scriptId !== input.manifest.scriptId
+  ) {
+    authorityMismatch("selected script does not match the harvested manifest script id");
+  }
+  if (
+    statement.catalogVersion !== metadata.catalogVersion ||
+    statement.sourceCommit !== metadata.sourceCommit ||
+    binding.initialStateRef !== metadata.initialStateRef ||
+    binding.initialStateSha256 !== metadata.initialStateSha256 ||
+    binding.initialStateDigest !== metadata.initialStateDigest ||
+    binding.cassetteRef !== metadata.cassetteRef ||
+    binding.cassetteSha256 !== metadata.cassetteSha256
+  ) {
+    authorityMismatch("result and manifest source, state, catalog, or cassette identities differ");
+  }
+  const manifestInventory = input.manifest.turns.map((turn) => ({
+    index: turn.index,
+    traces: turn.policyReplay?.traces ?? [],
+  }));
+  const resultInventory = input.result.turns.map((turn) => ({
+    index: turn.index,
+    traces: turn.policyReplay?.traces.map(({ ref, sha256 }) => ({ ref, sha256 })) ?? [],
+  }));
+  if (
+    canonicalJson(binding.turns) !== canonicalJson(manifestInventory) ||
+    canonicalJson(binding.turns) !== canonicalJson(resultInventory)
+  ) {
+    authorityMismatch("result and manifest turn/trace inventories differ");
+  }
 }
 
 export function renderPolicyAblationRows(rows: RigPolicyAblationRow[]): string {

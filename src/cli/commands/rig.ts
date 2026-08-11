@@ -14,6 +14,7 @@ import {
   realpathSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { createPrivateCassette } from "../../cassette/store.ts";
 import {
   POLICY_CATALOG_VERSION,
   POLICY_PASS_IDS,
@@ -76,10 +77,9 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
   // nowhere, which is the exact failure the guard exists to prevent — discovered only after
   // a multi-turn run has already spent its quota. Check the destination is writable NOW.
   //
-  // BEST-EFFORT BY CONSTRUCTION, and deliberately so: the parent checks, but the CHILD
-  // writes the cassette (through the inherited env var), so the directory can still vanish
-  // in between. This is a pre-flight check that catches the common misconfiguration, not a
-  // guarantee — do not let a later reader mistake it for one (gate finding F-002).
+  // The parent validates the destination now and exclusively creates the private file after
+  // all other pre-flight checks. The child may only append through the no-follow Store path;
+  // Driver revalidates the same inode before every size/read/hash/copy operation.
   const cassettePath = input.cassetteEnv.slice("record:".length);
   // An absolute path is REQUIRED. `record:cassette.jsonl` has a dirname of ".", which
   // existsSync always accepts, and the file would then land relative to the SPAWNED
@@ -111,11 +111,25 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
   // rig's own results directory passed pre-flight and then produced twelve turns of nothing.
   // Cost three pilot attempts to find (field, 2026-08-05); mirror the recorder's rule here,
   // where it is still free to be wrong.
-  const repoPrefix = resolve(input.repoRoot) + sep;
-  if (!resolve(cassettePath).startsWith(repoPrefix)) {
+  const repoLexical = resolve(input.repoRoot);
+  const cassetteRelative = relative(repoLexical, resolve(cassettePath));
+  const repoReal = realpathSync(input.repoRoot);
+  const cassetteDirReal = realpathSync(cassetteDir);
+  const cassetteRealRelative = relative(repoReal, cassetteDirReal);
+  const isRelativeInside = (value: string): boolean =>
+    value === "" || (!value.startsWith(`..${sep}`) && value !== ".." && !isAbsolute(value));
+  if (!isRelativeInside(cassetteRelative) || !isRelativeInside(cassetteRealRelative)) {
     throw new Error(
       `rig run: REVIEWGATE_CASSETTE must point INSIDE the repo under review (${input.repoRoot}), but got "${cassettePath}". The recorder refuses to write outside it, and it refuses during the gate's SETUP phase — so every turn would complete with the agent's edits made and no review at all. Put the cassette in the sandbox and copy it out after the run.`,
     );
+  }
+  try {
+    lstatSync(cassettePath);
+    throw new Error(
+      `rig run: private cassette ${cassettePath} already exists; refusing to follow or overwrite it`,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   // Validate the script BEFORE spawning anything: a malformed script must stop the run
   // before it burns quota, not halfway through turn 7.
@@ -133,7 +147,6 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
       `rig run: ${input.repoRoot} has ${dirty.length} uncommitted change(s). This run would let an agent edit that directory with acceptEdits, driven by prompts from ${input.scriptPath}. Point it at a throwaway repo, or pass allowDirtyRepo once you have read the script and accept what it will do.`,
     );
   }
-  const repoReal = realpathSync(input.repoRoot);
   const output = resolve(input.outDir);
   mkdirSync(output, { recursive: true, mode: 0o700 });
   const outputStat = lstatSync(output);
@@ -165,6 +178,7 @@ export async function runRigRun(input: RigRunInput): Promise<DriverRunManifest> 
   });
   const sourceCommit = await gitHeadSha(repoReal);
   if (sourceCommit === null) throw new Error("rig run: could not resolve the source commit");
+  createPrivateCassette(cassettePath);
   const emptyCassetteSha256 = new Bun.CryptoHasher("sha256").update("").digest("hex");
   process.stderr.write(
     `rig run: an agent will EDIT ${input.repoRoot} with acceptEdits, for ${script.turns.length} scripted turn(s).\n`,
@@ -237,7 +251,11 @@ export async function runRigAblate(input: RigAblateInput): Promise<string> {
         `rig ablate: exact --layer must be one closed-catalog id: ${POLICY_PASS_IDS.join(", ")}`,
       );
     }
-    const siblingManifest = resolve(dirname(input.resultPath), "manifest.json");
+    const script = loadTurnScript(input.scriptPath);
+    const siblingManifest = resolve(
+      dirname(input.resultPath),
+      base.policyReplay.artifactBinding?.manifestRef ?? "manifest.json",
+    );
     const manifestPath = existsSync(siblingManifest)
       ? siblingManifest
       : base.provenance.manifest_path;
@@ -245,6 +263,7 @@ export async function runRigAblate(input: RigAblateInput): Promise<string> {
       await replayPolicyAblations({
         manifestPath,
         sourceRepoRoot: input.sourceRepoRoot ?? process.cwd(),
+        authority: { result: base, scriptId: script.id },
         ...(passId === undefined ? {} : { passId: passId as PolicyPassId }),
       }),
     );

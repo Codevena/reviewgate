@@ -15,6 +15,7 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { privateCassetteSize, readPrivateCassette } from "../cassette/store.ts";
 import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { collectDiff } from "../utils/git.ts";
@@ -375,6 +376,10 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
   const maxTurns = Math.max(1, Math.min(opts.maxTurns ?? script.turns.length, script.turns.length));
   const quiesceTimeoutMs = opts.quiesceTimeoutMs ?? QUIESCE_TIMEOUT_MS;
   const manifestPath = join(opts.outDir, "manifest.json");
+  if (opts.policyReplay !== undefined) {
+    // Authority starts before the agent: never let a hostile cassette path reach the child.
+    privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
+  }
   const manifest: DriverRunManifest = {
     schema: "reviewgate.rig.manifest.v1",
     // Not a random id: a run is identified by the script it ran and when it started, so a
@@ -382,7 +387,7 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     runId: `${script.id}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
     scriptId: script.id,
     outDir: opts.outDir,
-    cassettePath: recordingCassettePath(),
+    cassettePath: opts.policyReplay?.cassettePath ?? recordingCassettePath(),
     ...(opts.policyReplay === undefined ? {} : { policyReplay: opts.policyReplay.metadata }),
     turns: [],
   };
@@ -393,7 +398,10 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     const startedAt = Date.now();
     // Sampled BEFORE the agent runs: everything the cassette grows by during this turn is
     // this turn's reviewer traffic, which is what makes the entries addressable per turn.
-    const cassetteBefore = cassetteSize(manifest.cassettePath ?? null);
+    const cassetteBefore =
+      opts.policyReplay === undefined
+        ? cassetteSize(manifest.cassettePath ?? null)
+        : privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
     const auditBytesBefore = auditBytes(opts.repoRoot);
     const replayBefore =
       opts.policyReplay === undefined ? null : policyReplayInventory(opts.policyReplay.sinkDir);
@@ -426,7 +434,10 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     const src = reviewgateDir(opts.repoRoot);
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 
-    const cassetteAfter = cassetteSize(manifest.cassettePath ?? null);
+    const cassetteAfter =
+      opts.policyReplay === undefined
+        ? cassetteSize(manifest.cassettePath ?? null)
+        : privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
     const diffBytes = await captureTurnDiff(opts.repoRoot, snapshotDir);
     // Checked BEFORE the snapshot is declared good: an unreviewed turn is not a slow turn, it
     // is a turn that produced no measurement, and the run must not quietly accumulate them.
@@ -443,17 +454,17 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
       .filter(([ref]) => ref.endsWith(".json"))
       .map(([ref, sha256]) => ({ ref, sha256 }));
     if (manifest.policyReplay !== undefined && opts.policyReplay !== undefined) {
-      manifest.policyReplay.cassetteSha256 = sha256FileOrEmpty(opts.policyReplay.cassettePath);
-      try {
-        writeFileAtomic(
-          join(opts.outDir, manifest.policyReplay.cassetteRef),
-          readFileSync(opts.policyReplay.cassettePath, "utf8"),
-          { mode: 0o600 },
-        );
-      } catch {
-        // Missing/unreadable copy leaves the immutable hash bound but no artifact;
-        // authoritative replay reports the exact missing-cassette reason.
+      const cassetteBytes = readPrivateCassette(opts.policyReplay.cassettePath, opts.repoRoot);
+      const cassetteText = new TextDecoder("utf-8", { fatal: true }).decode(cassetteBytes);
+      if (!Buffer.from(cassetteText, "utf8").equals(cassetteBytes)) {
+        throw new Error("rig driver: cassette is not canonical UTF-8");
       }
+      manifest.policyReplay.cassetteSha256 = createHash("sha256")
+        .update(cassetteBytes)
+        .digest("hex");
+      writeFileAtomic(join(opts.outDir, manifest.policyReplay.cassetteRef), cassetteText, {
+        mode: 0o600,
+      });
     }
     manifest.turns.push({
       index: turn.index,

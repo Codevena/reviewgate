@@ -16,6 +16,38 @@ import { MetricSchema, SpreadStatSchema } from "./bench-result.ts";
 import { FindingSchema } from "./finding.ts";
 import { CriticInfoSchema } from "./pending-report.ts";
 
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const PolicyReplayTraceRefSchema = z
+  .string()
+  .regex(/^[0-9a-f]{12}-i(?:0|[1-9]\d*)-[0-9a-f]{12}\.json$/);
+
+/**
+ * Immutable identity copied from the exact manifest used by the harvester. Optional keeps
+ * pre-binding results parseable, but authoritative replay refuses to use one without it.
+ */
+export const RigPolicyReplayArtifactBindingSchema = z
+  .object({
+    manifestRef: z.string().regex(/^[^/\\]+$/),
+    manifestSha256: Sha256Schema,
+    scriptId: z.string().min(1),
+    initialStateRef: z.string().regex(/^policy-state\/[0-9a-f]{64}\.json$/),
+    initialStateSha256: Sha256Schema,
+    initialStateDigest: Sha256Schema,
+    cassetteRef: z.literal("cassette.jsonl"),
+    cassetteSha256: Sha256Schema,
+    turns: z.array(
+      z
+        .object({
+          index: z.number().int().positive(),
+          traces: z.array(
+            z.object({ ref: PolicyReplayTraceRefSchema, sha256: Sha256Schema }).strict(),
+          ),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 /**
  * M6 — which suppression layer removed or demoted how many findings.
  *
@@ -281,6 +313,7 @@ export const RigResultSchema = z
           .nullable(),
         passIds: z.array(z.enum(POLICY_PASS_IDS)),
         reason: z.string().nullable(),
+        artifactBinding: RigPolicyReplayArtifactBindingSchema.optional(),
       })
       .strict()
       .superRefine((value, ctx) => {
@@ -320,3 +353,4 @@ export type RigSlope = z.infer<typeof RigSlopeSchema>;
 export type RigMetrics = z.infer<typeof RigMetricsSchema>;
 export type RigProvenance = z.infer<typeof RigProvenanceSchema>;
 export type RigResult = z.infer<typeof RigResultSchema>;
+export type RigPolicyReplayArtifactBinding = z.infer<typeof RigPolicyReplayArtifactBindingSchema>;
