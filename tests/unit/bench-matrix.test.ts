@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -509,6 +510,32 @@ describe("runBenchMatrix", () => {
     ).toEqual({ ok: false, reason: "not-a-file" });
   });
 
+  it("rejects a hash-valid Bench artifact unless its mode remains exactly 0600", () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-bench-artifact-mode-"));
+    const manifest = BenchResponseManifestSchema.parse({
+      schema: "reviewgate.bench.provider-response-hashes.v2",
+      entries: [],
+    });
+    const canonical = canonicalJson(manifest);
+    const canonicalSha = sha256(canonical);
+    const canonicalRef = `artifacts/responses/${canonicalSha}.json`;
+    mkdirSync(join(root, "artifacts", "responses"), { recursive: true });
+    writeFileSync(join(root, canonicalRef), canonical, { mode: 0o600 });
+
+    for (const unsafeMode of [0o644, 0o4600]) {
+      execFileSync("/bin/chmod", [unsafeMode.toString(8), join(root, canonicalRef)]);
+      expect(lstatSync(join(root, canonicalRef)).mode & 0o7777).toBe(unsafeMode);
+      expect(
+        verifyBenchArtifactReference({
+          root,
+          ref: canonicalRef,
+          sha256: canonicalSha,
+          kind: "response-manifest",
+        }),
+      ).toEqual({ ok: false, reason: "not-a-file" });
+    }
+  });
+
   it("captures and reconstructs exact immutable throwable snapshots without cross-variant aliasing", () => {
     const sandbox = captureThrowableSnapshot(new SandboxUnavailableError("sandbox unavailable"));
     expect(sandbox.ok).toBe(true);
@@ -582,6 +609,88 @@ describe("runBenchMatrix", () => {
       ok: false,
       reason: "unsupported-field",
     });
+
+    const hiddenUnknown = new Error("failed");
+    Object.defineProperty(hiddenUnknown, "retryAfterMs", {
+      value: 250,
+      enumerable: false,
+    });
+    expect(captureThrowableSnapshot(hiddenUnknown)).toMatchObject({
+      ok: false,
+      reason: "unsupported-field",
+    });
+
+    const symbolUnknown = new Error("failed");
+    Object.defineProperty(symbolUnknown, Symbol("debug"), {
+      value: "internal",
+      enumerable: false,
+    });
+    expect(captureThrowableSnapshot(symbolUnknown)).toMatchObject({
+      ok: false,
+      reason: "unsupported-field",
+    });
+  });
+
+  it("uses the persisted-schema string boundary for host paths and credentials", () => {
+    const unsafe = [
+      ...[
+        "/Users",
+        "/home",
+        "/root",
+        "/var",
+        "/private",
+        "/Volumes",
+        "/tmp",
+        "/etc",
+        "/opt",
+        "/mnt",
+        "/proc",
+        "/sys",
+        "/dev",
+      ].map((directory) => `open ${directory}/reviewgate/private.json`),
+      String.raw`open C:\Users\alice\secrets.json`,
+      String.raw`open \\server\share\credentials.json`,
+      "open file:///etc/passwd",
+      "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
+      "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+      "request used AKIAIOSFODNN7EXAMPLE",
+      "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
+      "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
+    ];
+    for (const value of unsafe) {
+      expect(captureThrowableSnapshot(new Error(value))).toMatchObject({
+        ok: false,
+        reason: "unsafe-string",
+      });
+    }
+
+    const nested = new Error("provider failed") as Error & {
+      context: { attempts: Array<{ detail: string }> };
+    };
+    nested.context = { attempts: [{ detail: "safe" }, { detail: "open /var/folders/token" }] };
+    expect(captureThrowableSnapshot(nested)).toMatchObject({
+      ok: false,
+      reason: "unsafe-string",
+    });
+
+    const hiddenArrayField = ["safe"] as string[] & { debugPayload?: string };
+    Object.defineProperty(hiddenArrayField, "debugPayload", {
+      value: "internal",
+      enumerable: false,
+    });
+    const nestedArray = new Error("provider failed") as Error & { context: unknown };
+    nestedArray.context = hiddenArrayField;
+    expect(captureThrowableSnapshot(nestedArray)).toMatchObject({
+      ok: false,
+      reason: "unsupported-field",
+    });
+
+    for (const value of [
+      "request failed in src/core/orchestrator.ts",
+      "see https://example.com/root/replay?case=safe-value",
+    ]) {
+      expect(captureThrowableSnapshot(new Error(value))).toMatchObject({ ok: true });
+    }
   });
 
   it("replays typed review and complete throws in full order across multiple variants", async () => {

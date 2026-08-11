@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -162,7 +163,7 @@ function writeUncheckedArtifact(
   const ref = `2026/08/10/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${contentSha256.slice(0, 12)}.json`;
   const path = join(auditDir, ...ref.split("/"));
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, bytes);
+  writeFileSync(path, bytes, { mode: 0o600 });
   return { ref, sha256: contentSha256, path };
 }
 
@@ -528,6 +529,24 @@ describe("canonical policy trace storage", () => {
 });
 
 describe("policy trace reference security", () => {
+  it("rejects a hash-valid policy trace unless its mode remains exactly 0600", () => {
+    const auditDir = join(tmp(), "audit");
+    const stored = writePolicyTrace({ auditDir, trace: emptyTrace(), now: NOW });
+    if (stored.status !== "complete") throw new Error("fixture trace did not persist");
+    const artifact = join(auditDir, ...stored.ref.split("/"));
+
+    for (const unsafeMode of [0o644, 0o4600]) {
+      execFileSync("/bin/chmod", [unsafeMode.toString(8), artifact]);
+      expect(lstatSync(artifact).mode & 0o7777).toBe(unsafeMode);
+      const verified = verifyPolicyTraceReference({
+        auditDir,
+        ref: stored.ref,
+        sha256: stored.sha256,
+      });
+      expect(verified).toEqual({ ok: false, reason: "not-a-file" });
+    }
+  });
+
   it("rejects missing, absolute, traversing, wrong-hash, tampered, and symlink-escaping refs", () => {
     const root = tmp();
     const auditDir = join(root, "audit");

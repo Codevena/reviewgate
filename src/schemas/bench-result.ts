@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
+import { redactHighEntropy } from "../diff/sanitizer.ts";
 import { PolicyTraceSchema } from "./policy-trace.ts";
 
 // reviewgate bench — result schema (spec §5, §7.2). What `bench run` writes and
@@ -221,7 +222,16 @@ const SensitiveThrowableFieldSchema = z
       ),
     "throwable field contains sensitive key",
   );
-function isSafeThrowableString(value: string): boolean {
+const HOST_ABSOLUTE_PATH =
+  /(?:^|[^A-Za-z0-9])\/(?:Users|home|root|var|private|Volumes|tmp|etc|opt|mnt|proc|sys|dev)(?=\/|\\|$|[\s"'`)\],;:])/i;
+const WINDOWS_DRIVE_PATH = /(?:^|[^A-Za-z0-9])[A-Za-z]:[\\/]/;
+const WINDOWS_UNC_PATH = /\\\\[^\\\s]+\\[^\\\s]+/;
+const FILE_URL = /\bfile:\/\//i;
+const CREDENTIAL_VALUE =
+  /(?:\bBearer\s+\S+|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b)/i;
+
+/** Shared at-rest boundary for every string in a captured provider throw. */
+export function isAuthoritativeThrowableString(value: string): boolean {
   const hasUnsafeControlCharacter = Array.from(value).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
     return (
@@ -233,18 +243,22 @@ function isSafeThrowableString(value: string): boolean {
     );
   });
   return (
-    !/(?:\/Users\/|\/home\/|\/private\/|\/tmp\/|[A-Za-z]:[\\/]|\bBearer\s+|\bsk-[A-Za-z0-9_-]{8,})/i.test(
-      value,
-    ) && !hasUnsafeControlCharacter
+    !hasUnsafeControlCharacter &&
+    !HOST_ABSOLUTE_PATH.test(value) &&
+    !WINDOWS_DRIVE_PATH.test(value) &&
+    !WINDOWS_UNC_PATH.test(value) &&
+    !FILE_URL.test(value) &&
+    !CREDENTIAL_VALUE.test(value) &&
+    redactHighEntropy(value).count === 0
   );
 }
 const SafeThrowableStringSchema = z
   .string()
-  .refine(isSafeThrowableString, "throwable string contains unsafe data");
+  .refine(isAuthoritativeThrowableString, "throwable string contains unsafe data");
 const SafeThrowableNameSchema = z
   .string()
   .min(1)
-  .refine(isSafeThrowableString, "throwable string contains unsafe data");
+  .refine(isAuthoritativeThrowableString, "throwable string contains unsafe data");
 
 export const ThrowableSafeValueSchema: z.ZodType<ThrowableSafeValue> = z.lazy(() =>
   z.union([

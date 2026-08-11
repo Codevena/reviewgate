@@ -122,7 +122,7 @@ function readBoundedRegularArtifact(
   if (pathBefore.isSymbolicLink() || !pathBefore.isFile() || pathBefore.nlink !== 1) {
     return { ok: false, reason: "not-a-file" };
   }
-  if (requiredMode !== undefined && (pathBefore.mode & 0o777) !== requiredMode) {
+  if (requiredMode !== undefined && (pathBefore.mode & 0o7777) !== requiredMode) {
     return { ok: false, reason: "not-a-file" };
   }
   if (pathBefore.size > POLICY_TRACE_MAX_BYTES) return { ok: false, reason: "too-large" };
@@ -135,7 +135,7 @@ function readBoundedRegularArtifact(
     if (!openedBefore.isFile() || openedBefore.nlink !== 1) {
       return { ok: false, reason: "not-a-file" };
     }
-    if (requiredMode !== undefined && (openedBefore.mode & 0o777) !== requiredMode) {
+    if (requiredMode !== undefined && (openedBefore.mode & 0o7777) !== requiredMode) {
       return { ok: false, reason: "not-a-file" };
     }
     if (openedBefore.size > POLICY_TRACE_MAX_BYTES) {
@@ -162,7 +162,7 @@ function readBoundedRegularArtifact(
       pathAfter.isSymbolicLink() ||
       !pathAfter.isFile() ||
       pathAfter.nlink !== 1 ||
-      (requiredMode !== undefined && (pathAfter.mode & 0o777) !== requiredMode) ||
+      (requiredMode !== undefined && (pathAfter.mode & 0o7777) !== requiredMode) ||
       pathAfter.dev !== openedAfter.dev ||
       pathAfter.ino !== openedAfter.ino ||
       realpathSync(path) !== realPath
@@ -264,7 +264,7 @@ export function verifyPolicyTraceReference(
         return { ok: false, reason: "path-escape" };
       }
     }
-    const read = readBoundedRegularArtifact(candidate, realRoot);
+    const read = readBoundedRegularArtifact(candidate, realRoot, 0o600);
     if (!read.ok) return read;
     const { bytes } = read;
     const contentSha256 = sha256(bytes);

@@ -299,6 +299,62 @@ describe("BenchResultSchema", () => {
         value: "failed at /Users/alice/private/file",
       }).success,
     ).toBe(false);
+
+    const unsafeStrings = [
+      ...[
+        "/Users",
+        "/home",
+        "/root",
+        "/var",
+        "/private",
+        "/Volumes",
+        "/tmp",
+        "/etc",
+        "/opt",
+        "/mnt",
+        "/proc",
+        "/sys",
+        "/dev",
+      ].map((directory) => `open ${directory}/reviewgate/private.json`),
+      String.raw`open C:\Users\alice\secrets.json`,
+      String.raw`open \\server\share\credentials.json`,
+      "open file:///etc/passwd",
+      "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
+      "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+      "request used AKIAIOSFODNN7EXAMPLE",
+      "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
+      "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
+    ];
+    for (const value of unsafeStrings) {
+      expect(parseSnapshot({ kind: "primitive", primitive_type: "string", value }).success).toBe(
+        false,
+      );
+    }
+
+    expect(
+      parseSnapshot({
+        kind: "error",
+        error_type: "Error",
+        name: "Error",
+        message: "provider failed",
+        fields: [
+          {
+            key: "context",
+            value: { attempts: [{ detail: "safe" }, { detail: "open /var/folders/token" }] },
+            enumerable: true,
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    for (const value of [
+      "request failed in src/core/orchestrator.ts",
+      "see https://example.com/root/replay?case=safe-value",
+    ]) {
+      expect(parseSnapshot({ kind: "primitive", primitive_type: "string", value }).success).toBe(
+        true,
+      );
+    }
   });
 
   it("strictly validates normalized matrix policy provenance", () => {

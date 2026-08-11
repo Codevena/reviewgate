@@ -77,6 +77,7 @@ import {
   type MatrixVariant,
   type Metric,
   type ProviderResult,
+  isAuthoritativeThrowableString,
 } from "../../schemas/bench-result.ts";
 import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { spawnCapture } from "../../utils/spawn-capture.ts";
@@ -1260,26 +1261,18 @@ export type ThrowableCaptureResult =
 
 const SENSITIVE_THROW_FIELD =
   /(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|private[_-]?key)/i;
-const UNSAFE_THROW_STRING =
-  /(?:\/Users\/|\/home\/|\/private\/|\/tmp\/|[A-Za-z]:[\\/]|\bBearer\s+|\bsk-[A-Za-z0-9_-]{8,})/i;
 const CAPTURED_THROWABLE_FIELD_KEY_SET = new Set<string>(CAPTURED_THROWABLE_FIELD_KEYS);
-
-function hasUnsafeControlCharacter(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return (
-      codePoint <= 8 ||
-      codePoint === 11 ||
-      codePoint === 12 ||
-      (codePoint >= 14 && codePoint <= 31) ||
-      codePoint === 127
-    );
-  });
-}
-
-function safeThrowableString(value: string): boolean {
-  return !UNSAFE_THROW_STRING.test(value) && !hasUnsafeControlCharacter(value);
-}
+const OMITTED_STANDARD_THROWABLE_FIELD_KEYS = new Set([
+  "cause",
+  "column",
+  "line",
+  "message",
+  "name",
+  "originalColumn",
+  "originalLine",
+  "sourceURL",
+  "stack",
+]);
 
 type SafeValueCapture =
   | { ok: true; value: import("../../schemas/bench-result.ts").ThrowableSafeValue }
@@ -1293,7 +1286,7 @@ function captureSafeThrowableValue(
   if (depth > 12) return { ok: false, reason: "unsupported-field" };
   if (value === null || typeof value === "boolean") return { ok: true, value };
   if (typeof value === "string") {
-    return safeThrowableString(value)
+    return isAuthoritativeThrowableString(value)
       ? { ok: true, value }
       : { ok: false, reason: "unsafe-string" };
   }
@@ -1303,9 +1296,26 @@ function captureSafeThrowableValue(
   seen.add(value);
   try {
     if (Array.isArray(value)) {
+      const ownKeys = Reflect.ownKeys(value);
+      if (
+        ownKeys.some((key) => {
+          if (typeof key === "symbol") return true;
+          if (key === "length") return false;
+          const index = Number(key);
+          return (
+            !Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== key
+          );
+        })
+      ) {
+        return { ok: false, reason: "unsupported-field" };
+      }
       const captured: import("../../schemas/bench-result.ts").ThrowableSafeValue[] = [];
-      for (const item of value) {
-        const next = captureSafeThrowableValue(item, seen, depth + 1);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (descriptor === undefined || !("value" in descriptor)) {
+          return { ok: false, reason: "unsupported-field" };
+        }
+        const next = captureSafeThrowableValue(descriptor.value, seen, depth + 1);
         if (!next.ok) return next;
         captured.push(next.value);
       }
@@ -1316,7 +1326,11 @@ function captureSafeThrowableValue(
       return { ok: false, reason: "unsupported-field" };
     }
     const captured: Record<string, import("../../schemas/bench-result.ts").ThrowableSafeValue> = {};
-    for (const key of Object.keys(value).sort()) {
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key === "symbol")) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    for (const key of (ownKeys as string[]).sort()) {
       if (SENSITIVE_THROW_FIELD.test(key)) return { ok: false, reason: "sensitive-field" };
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor === undefined || !("value" in descriptor)) {
@@ -1338,7 +1352,9 @@ function captureThrowableSnapshotInner(
   depth: number,
 ): ThrowableCaptureResult {
   if (typeof thrown === "string") {
-    if (!safeThrowableString(thrown)) return { ok: false, reason: "unsafe-string" };
+    if (!isAuthoritativeThrowableString(thrown)) {
+      return { ok: false, reason: "unsafe-string" };
+    }
     const snapshot = {
       kind: "primitive" as const,
       primitive_type: "string" as const,
@@ -1362,7 +1378,10 @@ function captureThrowableSnapshotInner(
         ? "SandboxUnavailableError"
         : null;
   if (errorType === null) return { ok: false, reason: "unsupported-error-type" };
-  if (!safeThrowableString(thrown.name) || !safeThrowableString(thrown.message)) {
+  if (
+    !isAuthoritativeThrowableString(thrown.name) ||
+    !isAuthoritativeThrowableString(thrown.message)
+  ) {
     return { ok: false, reason: "unsafe-string" };
   }
   seen.add(thrown);
@@ -1382,16 +1401,19 @@ function captureThrowableSnapshotInner(
       value: import("../../schemas/bench-result.ts").ThrowableSafeValue;
       enumerable: boolean;
     }> = [];
-    for (const key of Object.getOwnPropertyNames(thrown).sort()) {
-      if (["cause", "message", "name", "stack"].includes(key)) continue;
+    const ownKeys = Reflect.ownKeys(thrown);
+    if (ownKeys.some((key) => typeof key === "symbol")) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    for (const key of (ownKeys as string[]).sort()) {
+      if (OMITTED_STANDARD_THROWABLE_FIELD_KEYS.has(key)) continue;
       if (SENSITIVE_THROW_FIELD.test(key)) return { ok: false, reason: "sensitive-field" };
       const descriptor = Object.getOwnPropertyDescriptor(thrown, key);
       if (descriptor === undefined || !("value" in descriptor)) {
         return { ok: false, reason: "unsupported-field" };
       }
       if (!CAPTURED_THROWABLE_FIELD_KEY_SET.has(key)) {
-        if (descriptor.enumerable) return { ok: false, reason: "unsupported-field" };
-        continue;
+        return { ok: false, reason: "unsupported-field" };
       }
       const captured = captureSafeThrowableValue(descriptor.value, seen, depth + 1);
       if (!captured.ok) return captured;
@@ -1563,7 +1585,12 @@ export function verifyBenchArtifactReference(input: {
       }
     }
     const before = lstatSync(candidate);
-    if (before.isSymbolicLink() || !before.isFile() || before.nlink !== 1) {
+    if (
+      before.isSymbolicLink() ||
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      (before.mode & 0o7777) !== 0o600
+    ) {
       return { ok: false, reason: "not-a-file" };
     }
     if (before.size > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
@@ -1575,6 +1602,7 @@ export function verifyBenchArtifactReference(input: {
     if (
       !opened.isFile() ||
       opened.nlink !== 1 ||
+      (opened.mode & 0o7777) !== 0o600 ||
       opened.dev !== before.dev ||
       opened.ino !== before.ino
     ) {
@@ -1594,6 +1622,8 @@ export function verifyBenchArtifactReference(input: {
       pathAfter.isSymbolicLink() ||
       !pathAfter.isFile() ||
       pathAfter.nlink !== 1 ||
+      (after.mode & 0o7777) !== 0o600 ||
+      (pathAfter.mode & 0o7777) !== 0o600 ||
       pathAfter.dev !== after.dev ||
       pathAfter.ino !== after.ino
     ) {
