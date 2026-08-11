@@ -95,10 +95,11 @@ Exact ablation is internal to measurement code:
   reviewer/preflight/completion results, then replays each variant through the same policy path
   with only `policyAblations` changed. The matrix directory contains content-addressed `artifacts/`
   for results, response manifests, policy traces and their trace-set binding.
-- A traced Rig run binds `manifest.json`, `cassette.jsonl`, `policy-replay/` envelopes, exact diffs
-  and content-addressed policy-state snapshots. Replay joins responses by stable logical call ID
-  and ordered hashes, then runs baseline/counterfactual in separate persistent branch-local scratch
-  checkouts. Production state is never a replay target.
+- A traced Rig run binds `result.json` to the exact SHA-addressed Manifest, script, source commit,
+  initial state, private mode-`0600` Cassette and complete turn/trace inventory. The Cassette is
+  read once through a contained, stable no-follow file descriptor; replay joins responses by stable
+  logical call ID and ordered hashes, then runs baseline/counterfactual in separate persistent
+  branch-local scratch checkouts. Production state is never a replay target.
 
 Bench/Rig treat a missing, corrupt, incomplete, cross-catalog or identity-mismatched evidence set
 as invalid measurement and exit `4`; no absent counter is interpreted as zero. Stateful history

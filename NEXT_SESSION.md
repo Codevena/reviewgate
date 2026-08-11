@@ -5,9 +5,9 @@ _Last updated: 2026-08-11. Supersedes all earlier content._
 ## One-line state
 
 **Policy Accountability & Pruning Slice 1 is implemented on
-`feat/policy-accountability-trace` through core commit `2355ac0` and CLI-help contract commit
-`fa68dfa`; this documentation commit closes its handoff and verification. The next milestone is
-Slice 2 measurement and pruning design—not pass deletion.**
+`feat/policy-accountability-trace` through final implementation/security commit `86cb319`; this
+documentation commit closes its handoff and verification. The next milestone is Slice 2
+measurement and pruning design—not pass deletion.**
 
 ## Checkout and publication state
 
@@ -15,7 +15,7 @@ Slice 2 measurement and pruning design—not pass deletion.**
 |---|---|
 | branch | `feat/policy-accountability-trace` |
 | isolated worktree | `/Users/markus/.config/superpowers/worktrees/reviewgate/policy-accountability-trace` |
-| implementation boundary | `9bc72c1..fa68dfa` (Slice-1 code/tests and authoritative replay help; this handoff is the following documentation commit) |
+| implementation boundary | `9bc72c1..86cb319` (Slice-1 code/tests, authoritative replay help and final artifact-binding hardening; this handoff is the following documentation commit) |
 | pushed? | **NO**—do not push without Markus's explicit permission |
 | main checkout | out of scope; preserve its foreign `.reviewgate/lore/approvals.jsonl` |
 
@@ -29,9 +29,10 @@ Slice 2 measurement and pruning design—not pass deletion.**
   errors/overflow remain fail-open with respect to the already-computed policy verdict.
 - Exact authoritative Bench pairing: only the baseline calls live providers; variants consume the
   same captured logical responses and change only the internal ablation set.
-- Exact Rig capture/replay: Cassette call identities, response order, source commit/diff and state
-  digests are bound; persistent baseline/counterfactual scratch branches are isolated from the
-  measured checkout and from each other.
+- Exact Rig capture/replay: the result is SHA-bound to its Manifest, script, source, initial state,
+  Cassette and complete turn/trace inventory; private mode-`0600` Cassette call identities,
+  response order, source commit/diff and state digests are bound. Persistent
+  baseline/counterfactual scratch branches are isolated from the measured checkout and each other.
 - An 18-row production contract harness, four-class offline replay and ten mutation-proven
   accountability boundaries.
 

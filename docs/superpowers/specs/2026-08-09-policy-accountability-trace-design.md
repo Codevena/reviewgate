@@ -1,8 +1,7 @@
 # Policy Accountability & Pruning — Slice 1: Policy Trace & Replay
 
-_Written 2026-08-09. Status: Slice 1 core implementation is complete through `2355ac0`; the
-authoritative replay help contract is corrected in `fa68dfa`, and final documentation is this
-handoff commit._
+_Written 2026-08-09. Status: Slice 1 implementation and final artifact-binding hardening are
+complete through `86cb319`; final documentation is this handoff commit._
 
 ## Implementation status — 2026-08-11
 
@@ -24,11 +23,10 @@ multi-turn sequences. Replay preserves `ImplicitOutcomeStore` writes in each bra
 production does not read that store into later policy inputs; its divergence therefore proves
 branch-local persistence, not a current downstream review effect.
 
-Final verification at this boundary covered the 173-test focused policy suite, TypeScript, Biome,
-the full 454-file suite (`3505 pass`, `12 skip`, `0 fail`), a fresh compiled build and the Bench,
-Rig and Audit help surfaces. The required commands and durable acceptance semantics live in
-`TEST_PLAN.md`; exact command output and the earlier pre-help baseline are retained in the ignored
-Task-11 execution report.
+Final verification at this boundary covered the focused policy/replay suites, TypeScript, Biome,
+the full 454-file suite (`3515 pass`, `12 skip`, `0 fail`; 12,123 assertions), a fresh compiled
+build and the Bench, Rig and Audit help surfaces. The required commands and durable acceptance
+semantics live in `TEST_PLAN.md`; the Task reports retain the preceding gate evidence.
 
 ## Context
 

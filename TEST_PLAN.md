@@ -51,7 +51,8 @@ The suite must prove:
 - trace-on/off leaves findings, legacy markers, Markdown, counts and verdict byte-equivalent after
   optional telemetry is removed;
 - Audit/Bench policy artifacts are canonical and content-addressed; Rig state and Cassette evidence
-  are mode-`0600`, contained and bound by exact content hashes/identities;
+  are mode-`0600`, contained and bound by exact content hashes/identities; `result.json` is bound to
+  the exact Manifest, script, source, initial state, Cassette and complete turn/trace inventory;
 - Bench uses one live baseline and exact captured-response replay for internally ablated variants;
 - Rig replays exact calls in persistent, isolated baseline/counterfactual branches without live
   provider or network calls and without production-state writes;
