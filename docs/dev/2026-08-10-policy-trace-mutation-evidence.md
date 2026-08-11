@@ -36,3 +36,30 @@ ledger was again exactly
 The final disposable baseline rerun was `147 pass, 0 fail, 1294 expect() calls` across seven files.
 The disposable tree was moved intact, rather than deleted, to the recoverable location
 `~/.Trash/reviewgate-task10-mutations-rPRQzq`.
+
+## Review Fix Round 1 — production lifecycle binding
+
+Independent review found that the original inactive-row fixture called
+`PolicyTraceRecorder.markInactive()` directly for every pass. A disposable mutation first disabled
+the production `judgment.docs-cap` inactive branch while leaving that fixture unchanged. The
+pre-fix matrix stayed green (`38 pass, 0 fail, 393 expect() calls`), proving that its inactive
+assertion did not observe production lifecycle behavior. A separate test-first probe then expected
+the three always-on passes not to fabricate `not-run`; it failed on `evidence.fact-location` with
+the fixture-created `stage-precondition-miss` row (`0 pass, 1 fail`).
+
+The replacement runs one real Orchestrator iteration with policy tracing in memory. Literal fixture
+expectations classify `evidence.fact-location`, `evidence.grounding-token`, and
+`evidence.redaction-placeholder` as empty `ran` rows; the other 15 passes are expected to be actual
+production `not-run` rows with their literal `configured-off` or `stage-precondition-miss` reason.
+No fixture calls `markInactive()`.
+
+Two post-fix mutations were applied independently in the same disposable copy:
+
+| Deliberate lifecycle mutation | Named failing command | Exact red evidence |
+|---|---|---|
+| Bypassed the production `judgment.docs-cap` configured-off transition. | `bun test tests/unit/policy-pass-contract-matrix.test.ts -t "binds every literal lifecycle"` | `0 pass, 1 fail`; production returned empty `ran`, expected `not-run/configured-off`. |
+| Injected a fake production `stage-precondition-miss` for always-on `evidence.fact-location`. | Same command. | `0 pass, 1 fail`; production returned `not-run`, expected the literal empty `ran` counters. |
+
+Both production mutations were restored, `git diff --exit-code -- src` returned zero, and the same
+lifecycle test returned `1 pass, 0 fail, 37 expect() calls`. The disposable copy was moved intact to
+`~/.Trash/reviewgate-task10-r1-mutation.K9lQ5B`.

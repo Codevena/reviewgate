@@ -4,6 +4,7 @@ import {
   EXPLANATORY_STAGE_IDS,
   POLICY_PASS_CONTRACTS,
   runExplanatoryStageContract,
+  runProductionLifecycleContracts,
 } from "../fixtures/policy-pass-contracts.ts";
 
 describe("policy pass contract matrix", () => {
@@ -21,11 +22,43 @@ describe("policy pass contract matrix", () => {
     ]);
     expect(result.effects.map(({ order }) => order)).toEqual([60, 70]);
   });
+
+  it("binds every literal lifecycle classification to the production orchestrator path", async () => {
+    const actual = await runProductionLifecycleContracts();
+    expect(actual.map(({ passId }) => passId)).toEqual(
+      POLICY_PASS_CONTRACTS.map(({ passId }) => passId),
+    );
+
+    for (const [index, contract] of POLICY_PASS_CONTRACTS.entries()) {
+      const observed = actual[index];
+      expect(observed?.evaluationCount, contract.passId).toBe(0);
+      if (contract.expected.lifecycle.kind === "ran-empty") {
+        expect(observed?.summary, contract.passId).toEqual({
+          pass_id: contract.passId,
+          status: "ran",
+          considered: 0,
+          opportunities: 0,
+          would_apply: 0,
+          applied: 0,
+          protected: 0,
+          blocking_removed: 0,
+          blocking_preserved: 0,
+          dropped: 0,
+        });
+      } else {
+        expect(observed?.summary, contract.passId).toEqual({
+          pass_id: contract.passId,
+          status: "not-run",
+          reason_code: contract.expected.lifecycle.reasonCode,
+        });
+      }
+    }
+  });
 });
 
 for (const contract of POLICY_PASS_CONTRACTS) {
   describe(contract.passId, () => {
-    it("matches the literal numeric, severity, blocking, and inactive contract", () => {
+    it("matches the literal numeric, severity, and blocking contract", () => {
       const actual = contract.run();
       const { expected } = contract;
 
@@ -45,13 +78,6 @@ for (const contract of POLICY_PASS_CONTRACTS) {
         expect(actual.protected?.blocking).toBe(expected.protectedBlocking);
         expect(actual.protected?.severities).toEqual(expected.protectedSeverities);
       }
-
-      expect(actual.inactive).toEqual({
-        pass_id: contract.passId,
-        status: "not-run",
-        reason_code: expected.inactiveReason,
-      });
-      expect(Object.keys(actual.inactive).sort()).toEqual(["pass_id", "reason_code", "status"]);
 
       if (expected.variant === undefined) {
         expect(actual.variant).toBeUndefined();

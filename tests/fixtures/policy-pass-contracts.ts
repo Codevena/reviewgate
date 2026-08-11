@@ -1,6 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { defaultConfig } from "../../src/config/defaults.ts";
+import type { ReviewgateConfig } from "../../src/config/define-config.ts";
 import { type AggregateInput, aggregate } from "../../src/core/aggregator.ts";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
 import {
@@ -15,7 +17,9 @@ import {
   type PolicyStageId,
 } from "../../src/core/policy/catalog.ts";
 import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
+import { Orchestrator } from "../../src/core/orchestrator.ts";
 import { demoteSelfRefuting } from "../../src/core/self-refutation.ts";
+import type { ProviderAdapter, ReviewResult } from "../../src/providers/adapter-base.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 import type {
   PolicyEffect,
@@ -49,9 +53,15 @@ export interface PolicyPassContractActual {
   active: PolicyContractScenario;
   ablated: PolicyContractScenario;
   protected?: PolicyContractScenario;
-  inactive: PolicyPassSummary;
   variant?: PolicyContractScenario;
 }
+
+export type PolicyLifecycleExpected =
+  | { kind: "ran-empty" }
+  | {
+      kind: "not-run";
+      reasonCode: Extract<PolicyReasonCode, "configured-off" | "stage-precondition-miss">;
+    };
 
 export interface PolicyPassContractExpected {
   noOpportunity: PolicyNumericTuple;
@@ -59,7 +69,7 @@ export interface PolicyPassContractExpected {
   active: PolicyNumericTuple;
   ablated: PolicyNumericTuple;
   protected?: PolicyNumericTuple;
-  inactiveReason: Extract<PolicyReasonCode, "configured-off" | "stage-precondition-miss">;
+  lifecycle: PolicyLifecycleExpected;
   activeBlocking: number;
   ablatedBlocking: number;
   protectedBlocking?: number;
@@ -77,6 +87,103 @@ export interface PolicyPassContract {
   passId: PolicyPassId;
   expected: PolicyPassContractExpected;
   run(): PolicyPassContractActual;
+}
+
+export interface PolicyLifecycleActual {
+  passId: PolicyPassId;
+  summary: PolicyPassSummary;
+  evaluationCount: number;
+}
+
+const LIFECYCLE_DIFF = [
+  "diff --git a/a.ts b/a.ts",
+  "--- a/a.ts",
+  "+++ b/a.ts",
+  "@@ -1 +1 @@",
+  "-export const value = 0;",
+  "+export const value = 1;",
+  "",
+].join("\n");
+
+function lifecycleAdapter(): ProviderAdapter {
+  return {
+    id: "codex",
+    async preflight() {
+      return { available: true, version: "fixture", authMode: "oauth", error: null };
+    },
+    async review(input) {
+      return {
+        reviewerId: input.reviewerId,
+        verdict: "PASS",
+        findings: [],
+        usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, quotaUsedPct: null },
+        durationMs: 1,
+        exitCode: 0,
+        rawEventsPath: "",
+        rawText: '{"verdict":"PASS","findings":[]}',
+        status: "ok",
+      } satisfies ReviewResult;
+    },
+  };
+}
+
+export async function runProductionLifecycleContracts(): Promise<PolicyLifecycleActual[]> {
+  const repoRoot = mkdtempSync(join(tmpdir(), "reviewgate-policy-lifecycle-"));
+  writeFileSync(join(repoRoot, "a.ts"), "export const value = 1;\n");
+  try {
+    const config: ReviewgateConfig = {
+      ...defaultConfig,
+      cache: { enabled: false, reviewTtlDays: 7 },
+      phases: {
+        ...defaultConfig.phases,
+        review: {
+          ...defaultConfig.phases.review,
+          reviewers: [{ provider: "codex", persona: "quality" }],
+          selfRefutationFilter: false,
+          hypotheticalSeverityGuard: false,
+          scopeToDiff: false,
+          scopeToSession: false,
+          deltaReview: false,
+          confidenceFloor: 0,
+          demoteTestSecurity: false,
+          capDocsSeverity: false,
+          providerPrecisionContext: false,
+        },
+        brain: null,
+        critic: null,
+        fpLedger: null,
+        grounding: null,
+        implicitOutcomes: null,
+        lore: null,
+        reputation: { ...defaultConfig.phases.reputation, enabled: false },
+        triage: null,
+      },
+    };
+    const result = await new Orchestrator({
+      repoRoot,
+      config,
+      adapters: { codex: lifecycleAdapter() },
+      sandboxMode: "off",
+      hostTier: "opus",
+      agentHost: "codex",
+      diff: LIFECYCLE_DIFF,
+      gitInfo: { sha: "a".repeat(40), branch: "fixture", dirtyFiles: ["a.ts"] },
+      reasonOnFailEnabled: true,
+      disableLastResortFailover: true,
+      policyExecution: { trace: "memory", policyAblations: new Set(), authoritative: false },
+      providerAvailable: (provider) => provider === "codex",
+    }).runIteration({ runId: "policy-lifecycle-contract", iter: 1 });
+    const trace = result.policyTrace;
+    if (trace === undefined) throw new Error("production lifecycle trace was not returned");
+    return trace.passes.map((summary) => ({
+      passId: summary.pass_id,
+      summary,
+      evaluationCount: trace.evaluations.filter(({ pass_id }) => pass_id === summary.pass_id)
+        .length,
+    }));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 }
 
 function finding(overrides: Partial<Finding> = {}): Finding {
@@ -132,15 +239,6 @@ function scenario(
   };
 }
 
-function inactive(
-  passId: PolicyPassId,
-  reasonCode: Extract<PolicyReasonCode, "configured-off" | "stage-precondition-miss">,
-): PolicyPassSummary {
-  const recorder = runtime(`${passId}-inactive`);
-  recorder.markInactive(passId, reasonCode);
-  return recorder.summary(passId);
-}
-
 function runPrePass(
   passId: PolicyPassId,
   runId: string,
@@ -190,7 +288,6 @@ function aggregateContract(
               inputs.protected,
             ),
           }),
-      inactive: inactive(passId, expected.inactiveReason),
       ...(inputs.variant === undefined
         ? {}
         : { variant: runAggregatePass(passId, `${passId}-variant`, inputs.variant) }),
@@ -205,7 +302,7 @@ function factLocationContract(): PolicyPassContract {
     noMatch: [1, 1, 0, 0, 0, 0, 0, 0],
     active: [1, 1, 1, 1, 0, 1, 0, 0],
     ablated: [1, 1, 1, 0, 0, 0, 1, 0],
-    inactiveReason: "stage-precondition-miss",
+    lifecycle: { kind: "ran-empty" },
     activeBlocking: 0,
     ablatedBlocking: 1,
     activeSeverities: ["INFO"],
@@ -253,7 +350,6 @@ function factLocationContract(): PolicyPassContract {
             (recorder) => validateFindingFacts([activeFinding], repoRoot, new Set(), recorder),
             [passId],
           ),
-          inactive: inactive(passId, expected.inactiveReason),
           variant: runPrePass(passId, "fact-reanchor", (recorder) =>
             validateFindingFacts([reanchorFinding], repoRoot, new Set(), recorder),
           ),
@@ -286,7 +382,6 @@ function preAggregationContract(
       ...(inputs.protected === undefined
         ? {}
         : { protected: runPrePass(passId, `${passId}-protected`, inputs.protected) }),
-      inactive: inactive(passId, expected.inactiveReason),
     }),
   };
 }
@@ -367,7 +462,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -400,7 +495,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 0, 1, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 1,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -437,7 +532,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 0, 1, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "ran-empty" },
       activeBlocking: 1,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -471,7 +566,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 0, 1, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 1,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -512,7 +607,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "ran-empty" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -544,7 +639,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -591,7 +686,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -635,7 +730,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -670,7 +765,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -709,7 +804,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       noMatch: [1, 1, 0, 0, 0, 0, 0, 0],
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "stage-precondition-miss" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       activeSeverities: ["INFO"],
@@ -737,7 +832,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "stage-precondition-miss" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -771,7 +866,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       noMatch: [1, 1, 0, 0, 0, 0, 0, 0],
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "stage-precondition-miss" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       activeSeverities: ["INFO"],
@@ -799,7 +894,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -842,7 +937,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "stage-precondition-miss" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -883,7 +978,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "stage-precondition-miss",
+      lifecycle: { kind: "not-run", reasonCode: "stage-precondition-miss" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -918,7 +1013,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 1, 0, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 0,
       ablatedBlocking: 1,
       protectedBlocking: 1,
@@ -961,7 +1056,7 @@ export const POLICY_PASS_CONTRACTS: readonly PolicyPassContract[] = [
       active: [1, 1, 1, 1, 0, 0, 1, 0],
       ablated: [1, 1, 1, 0, 0, 0, 1, 0],
       protected: [1, 1, 1, 0, 1, 0, 1, 0],
-      inactiveReason: "configured-off",
+      lifecycle: { kind: "not-run", reasonCode: "configured-off" },
       activeBlocking: 1,
       ablatedBlocking: 1,
       protectedBlocking: 1,
