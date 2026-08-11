@@ -401,7 +401,10 @@ function replayEnvelopeProductionPath(input: {
       runtime,
     );
   }
-  if (canonicalJson(grounded) !== canonicalJson(envelope.aggregate.findings)) {
+  if (
+    input.verifyOriginal &&
+    canonicalJson(grounded) !== canonicalJson(envelope.aggregate.findings)
+  ) {
     throw new Error("captured aggregate findings do not match production pre-policy replay");
   }
   const result = aggregate(aggregateInputFromEnvelope(envelope, grounded, runtime));

@@ -40,6 +40,7 @@ import {
   replayPolicyEnvelopeSequence,
   runWithReplayProviderCeiling,
 } from "../../src/rig/replay.ts";
+import type { Finding } from "../../src/schemas/finding.ts";
 import {
   type PolicyReplayEnvelopeInput,
   PolicyReplayEnvelopeSchema,
@@ -643,6 +644,122 @@ function confidenceEnvelope(fixture: ReturnType<typeof exactRun>): PolicyReplayE
   };
 }
 
+function preAggregationEnvelope(
+  fixture: ReturnType<typeof exactRun>,
+  finding: Finding,
+): PolicyReplayEnvelopeInput {
+  const runtime = PolicyTraceRecorder.start({
+    runId: "exact-run",
+    iter: 1,
+    ablated: new Set(),
+  });
+  const factChecked = validateFindingFacts([finding], fixture.sourceRepoRoot, new Set(), runtime);
+  const selfScreened = demoteSelfRefuting(factChecked, true, runtime);
+  const hypothetical = demoteHypotheticalCriticals(selfScreened, true, runtime);
+  const grounded = groundFindings(hypothetical, "", runtime);
+  runtime.markInactive("judgment.grounding-llm", "configured-off");
+  const policyInactive = {
+    "judgment.critic": "configured-off" as const,
+    "scope.diff": "configured-off" as const,
+    "scope.delta": "stage-precondition-miss" as const,
+    "scope.session": "stage-precondition-miss" as const,
+  };
+  const result = aggregate({
+    findings: grounded,
+    reviewersTotal: 1,
+    changedRanges: new Map(),
+    scopeToDiff: false,
+    outOfDiffBlocking: [],
+    confidenceFloor: 0,
+    demoteCorrectness: true,
+    corroborateCritical: true,
+    demoteTestSecurity: true,
+    capDocsSeverity: true,
+    critic: new Map(),
+    fpActive: new Map(),
+    fpActiveClusters: new Map(),
+    repUnreliable: new Set(),
+    protectedReviewers: new Set(),
+    foreignFiles: new Set(),
+    cycleRejected: new Set(),
+    claimedFixed: new Map(),
+    deltaScope: new Set(),
+    rejectedRegions: [],
+    policyRuntime: runtime,
+    policyInactive,
+  });
+  const policyTrace = runtime.finalize({
+    rawResponseSha256: [...fixture.envelope.raw_response_sha256],
+    verdict: result.verdict,
+    finalFindings: result.dedupedFindings,
+  });
+  if (policyTrace === null) throw new Error("pre-aggregation trace fixture failed");
+  return {
+    ...fixture.envelope,
+    pre_policy_findings: [finding],
+    grounding: { corpus: "", verdicts: [], llm_status: "not-run" },
+    history: {
+      ...fixture.envelope.history,
+      fp_ledger: { enabled: false },
+      reputation: { enabled: false },
+    },
+    aggregate: {
+      findings: grounded,
+      reviewers_total: 1,
+      changed_ranges: [],
+      scope_to_diff: false,
+      out_of_diff_blocking: [],
+      confidence_floor: 0,
+      demote_correctness: true,
+      corroborate_critical: true,
+      demote_test_security: true,
+      cap_docs_severity: true,
+      critic: [],
+      fp_active: [],
+      fp_active_clusters: [],
+      rep_unreliable: [],
+      protected_reviewers: [],
+      foreign_files: [],
+      cycle_rejected: [],
+      claimed_fixed: [],
+      delta_scope: [],
+      rejected_regions: [],
+      policy_inactive: Object.entries(policyInactive)
+        .map(([pass_id, reason_code]) => ({
+          pass_id: pass_id as keyof typeof policyInactive,
+          reason_code,
+        }))
+        .sort((left, right) => left.pass_id.localeCompare(right.pass_id)),
+    },
+    policy_final_findings: result.dedupedFindings,
+    policy_trace: policyTrace,
+  };
+}
+
+function preAggregationFinding(input: {
+  signature: string;
+  severity: "CRITICAL" | "WARN";
+  line: number;
+  message: string;
+  details: string;
+}): Finding {
+  return {
+    id: input.signature,
+    signature: input.signature,
+    severity: input.severity,
+    category: "quality",
+    rule_id: `${input.signature}-rule`,
+    file: "src/x.ts",
+    line_start: input.line,
+    line_end: input.line,
+    message: input.message,
+    details: input.details,
+    reviewer: { provider: "codex", model: "gpt-5", persona: "correctness" },
+    confidence: 0.9,
+    consensus: "singleton",
+  };
+}
+
 describe("rig replay — determinism self-check", () => {
   test("a run whose metrics re-derive identically is DETERMINISTIC", () => {
     const { manifestPath, scriptPath } = miniRun();
@@ -1026,6 +1143,99 @@ describe("rig replay — exact policy authority", () => {
     });
     expect(pair.baseline.final.counts.info).toBe(1);
     expect(pair.counterfactual.final.counts.warn).toBe(1);
+  });
+
+  test("replays fact-location ablation from immutable raw findings into aggregate", async () => {
+    const fixture = exactRun();
+    const envelope = PolicyReplayEnvelopeSchema.parse(
+      preAggregationEnvelope(
+        fixture,
+        preAggregationFinding({
+          signature: "fact-location-counterfactual",
+          severity: "WARN",
+          line: 99,
+          message: "Finding cites a source location outside the file",
+          details: "The reported location is not present in the one-line fixture.",
+        }),
+      ),
+    );
+
+    const pair = await replayPolicyEnvelopePair({
+      sourceRepoRoot: fixture.sourceRepoRoot,
+      envelope,
+      stateSnapshotRoot: fixture.stateRoot,
+      passId: "evidence.fact-location",
+    });
+
+    expect(pair.baseline.final.counts.info).toBe(1);
+    expect(pair.counterfactual.final.counts.warn).toBe(1);
+    expect(pair.counterfactual.ablated).toEqual(["evidence.fact-location"]);
+    expect(pair.baseline.raw_response_sha256).toEqual(pair.counterfactual.raw_response_sha256);
+  });
+
+  test("replays self-refutation ablation before aggregate without trusting captured output", async () => {
+    const fixture = exactRun();
+    const envelope = PolicyReplayEnvelopeSchema.parse(
+      preAggregationEnvelope(
+        fixture,
+        preAggregationFinding({
+          signature: "self-refutation-counterfactual",
+          severity: "WARN",
+          line: 1,
+          message: "Potential maintainability concern",
+          details: "The implementation was inspected. In conclusion, no issue.",
+        }),
+      ),
+    );
+
+    const pair = await replayPolicyEnvelopePair({
+      sourceRepoRoot: fixture.sourceRepoRoot,
+      envelope,
+      stateSnapshotRoot: fixture.stateRoot,
+      passId: "evidence.self-refutation",
+    });
+
+    expect(pair.baseline.final.counts.info).toBe(1);
+    expect(pair.counterfactual.final.counts.warn).toBe(1);
+    expect(pair.counterfactual.ablated).toEqual(["evidence.self-refutation"]);
+  });
+
+  test("keeps baseline aggregate and response-hash authority for pre-aggregation replay", async () => {
+    const fixture = exactRun();
+    const original = PolicyReplayEnvelopeSchema.parse(
+      preAggregationEnvelope(
+        fixture,
+        preAggregationFinding({
+          signature: "pre-aggregate-authority",
+          severity: "WARN",
+          line: 99,
+          message: "Finding cites a source location outside the file",
+          details: "The captured raw finding must remain immutable.",
+        }),
+      ),
+    );
+    const mismatchedAggregate = {
+      ...original,
+      aggregate: {
+        ...original.aggregate,
+        findings: original.pre_policy_findings,
+      },
+    };
+    const mismatchedResponseHash = {
+      ...original,
+      raw_response_sha256: ["f".repeat(64)],
+    };
+
+    for (const envelope of [mismatchedAggregate, mismatchedResponseHash]) {
+      await expect(
+        replayPolicyEnvelopePair({
+          sourceRepoRoot: fixture.sourceRepoRoot,
+          envelope,
+          stateSnapshotRoot: fixture.stateRoot,
+          passId: "evidence.fact-location",
+        }),
+      ).rejects.toThrow(/captured aggregate findings|baseline replay/);
+    }
   });
 
   test("persists real branch-local policy outcomes across a multi-envelope sequence", async () => {
