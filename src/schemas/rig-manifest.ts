@@ -9,6 +9,29 @@
 // the writer and the reader cannot drift apart.
 import { z } from "zod";
 
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const GitObjectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
+
+export const RigPolicyReplayTraceSchema = z
+  .object({
+    ref: z.string().regex(/^[0-9a-f]{12}-i(?:0|[1-9]\d*)-[0-9a-f]{12}\.json$/),
+    sha256: Sha256Schema,
+  })
+  .strict();
+
+export const RigPolicyReplayMetadataSchema = z
+  .object({
+    catalogVersion: z.string().min(1),
+    sourceCommit: GitObjectIdSchema,
+    initialStateRef: z.string().regex(/^policy-state\/[0-9a-f]{64}\.json$/),
+    initialStateSha256: Sha256Schema,
+    initialStateDigest: Sha256Schema,
+    cassetteSha256: Sha256Schema,
+    cassetteRef: z.literal("cassette.jsonl"),
+    captureDir: z.literal("policy-replay"),
+  })
+  .strict();
+
 export const RigManifestTurnSchema = z
   .object({
     index: z.number().int().positive(),
@@ -52,6 +75,23 @@ export const RigManifestTurnSchema = z
      * catch, and the run scored it as a reviewer miss. Optional so older manifests parse.
      */
     diffBytes: z.number().int().nonnegative().nullable().optional(),
+    /** Exact per-iteration capture artifacts produced while this agent turn ran. */
+    policyReplay: z
+      .object({
+        status: z.enum(["complete", "missing", "error", "overflow"]),
+        traces: z.array(RigPolicyReplayTraceSchema),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if ((value.status === "complete") !== value.traces.length > 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["traces"],
+            message: "complete requires traces and non-complete status forbids them",
+          });
+        }
+      })
+      .optional(),
   })
   .strict();
 
@@ -63,6 +103,8 @@ export const RigManifestSchema = z
     outDir: z.string().min(1),
     /** Cassette the run recorded into, or null when it was not recording. */
     cassettePath: z.string().nullable().optional(),
+    /** Present only for new exact policy-capture runs; absence is legacy/non-authoritative. */
+    policyReplay: RigPolicyReplayMetadataSchema.optional(),
     turns: z.array(RigManifestTurnSchema),
   })
   .strict();

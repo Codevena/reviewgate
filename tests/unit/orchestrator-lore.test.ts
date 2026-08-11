@@ -191,6 +191,7 @@ function orch(
   repo: string,
   adapter: ProviderAdapter,
   loreConfig: Record<string, unknown> = { enabled: true },
+  trace = false,
 ) {
   return new Orchestrator({
     repoRoot: repo,
@@ -206,6 +207,15 @@ function orch(
     hostTier: "opus",
     diff,
     reasonOnFailEnabled: true,
+    ...(trace
+      ? {
+          policyExecution: {
+            trace: "memory" as const,
+            policyAblations: new Set(),
+            authoritative: false,
+          },
+        }
+      : {}),
   });
 }
 
@@ -539,6 +549,39 @@ describe("orchestrator lore integration", () => {
     expect(promos).toHaveLength(1);
     expect(promos[0].file).toBe(".reviewgate/lore/born-canon-entry.md");
     expect(promos[0].severity).toBe("INFO");
+  });
+
+  it("binds trace final identity to panel and additive lore findings", async () => {
+    const repo = initRepo();
+    writeFileSync(join(repo, "foo.ts"), "content");
+    commitAll(repo);
+    writeLoreEntry(repo, {
+      id: "traced-canon-entry",
+      status: "canon",
+      anchors: ["nonexistent-file.ts"],
+      verifiedTree: "irrelevant",
+      body: "This unapproved canon entry must remain visible in authoritative trace identity.",
+    });
+
+    const state = { calls: 0 };
+    const res = await orch(repo, warnFindingStub(state), { enabled: true }, true).runIteration({
+      runId: "R-TRACE-LORE",
+      iter: 1,
+      loreReminderBudget: { allowed: false, cooldownIds: [] },
+    });
+    const pending = JSON.parse(readFileSync(pendingJsonPath(repo), "utf8"));
+
+    expect(res.policyTrace?.final.finding_signatures).toEqual(
+      pending.findings.map((finding: Finding) => finding.signature),
+    );
+    expect(res.policyTrace?.final.finding_severities).toEqual(
+      pending.findings.map((finding: Finding) => ({
+        signature: finding.signature,
+        severity: finding.severity,
+      })),
+    );
+    expect(res.policyTrace?.final.counts).toEqual(pending.counts);
+    expect(res.summary.counts).toEqual(pending.counts);
   });
 
   it("(g) a CRITICAL panel finding suppresses the reminder but NOT the canon-promotion guard", async () => {

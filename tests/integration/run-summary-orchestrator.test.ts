@@ -89,5 +89,8 @@ describe("orchestrator IterationResult.summary", () => {
     const result = await orch.runIteration({ runId: "RUN", iter: 1 });
     expect(result.summary.source).toBe("skipped");
     expect(result.summary.providers).toEqual([]);
+    expect(result.summary.policy_trace_status).toBe("not-run");
+    expect(result.summary.policy_trace_ref).toBeUndefined();
+    expect(result.summary.policy_trace_sha256).toBeUndefined();
   });
 });

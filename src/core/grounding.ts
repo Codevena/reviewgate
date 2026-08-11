@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { neutralizeInjectionMarkers, sanitizeDiff } from "../diff/sanitizer.ts";
 import type { CompleteOptions, ProviderAdapter } from "../providers/adapter-base.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { safeJsonParse } from "../utils/safe-json.ts";
+import { type PolicyRuntime, transitionFinding } from "./policy/trace.ts";
 
 // S6 grounding (layer 1) — deterministic, no LLM. A reviewer occasionally fabricates
 // a CRITICAL by inventing a code fact (field report 2026-06-03: F-003 claimed a
@@ -82,22 +84,45 @@ function isSecurityOrCorrectness(f: Finding): boolean {
 // HIGH-precision — ANY absent one is almost certainly fabricated, so it triggers. Dotted/
 // backtick code refs are LOWER-precision (a real finding may cite a present core symbol plus
 // an incidental absent one), so they only trigger when ALL are absent.
-export function groundFindings(findings: Finding[], corpus: string): Finding[] {
+export function groundFindings(
+  findings: Finding[],
+  corpus: string,
+  runtime?: PolicyRuntime,
+): Finding[] {
+  const runtimeInput = runtime === undefined ? {} : { runtime };
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL" || isSecurityOrCorrectness(f)) return f;
-    const { cssVars, codeRefs } = citedTokens(`${f.message} ${f.details}`);
-    if (cssVars.length === 0 && codeRefs.length === 0) return f;
+    const critical = f.severity === "CRITICAL";
+    const { cssVars, codeRefs } = critical
+      ? citedTokens(`${f.message} ${f.details}`)
+      : { cssVars: [], codeRefs: [] };
+    const opportunity = critical && (cssVars.length > 0 || codeRefs.length > 0);
     const cssAbsent = cssVars.filter((t) => !corpus.includes(t));
     const refsAbsent = codeRefs.filter((t) => !corpus.includes(t));
     const allRefsAbsent = codeRefs.length > 0 && refsAbsent.length === codeRefs.length;
-    if (cssAbsent.length === 0 && !allRefsAbsent) return f;
+    const matched = opportunity && (cssAbsent.length > 0 || allRefsAbsent);
     const absent = [...cssAbsent, ...(allRefsAbsent ? refsAbsent : [])];
-    const note = `\n\n↓ grounding: cites ${absent
-      .map((t) => `\`${t}\``)
-      .join(
-        ", ",
-      )} not found in the reviewed code — likely fabricated; demoted to advisory. Verify before treating as real.`;
-    return groundingDemote(f, note);
+    const protectedBy =
+      matched && isSecurityOrCorrectness(f) ? ("security-correctness-floor" as const) : undefined;
+    return (
+      transitionFinding({
+        ...runtimeInput,
+        passId: "evidence.grounding-token",
+        finding: f,
+        opportunity,
+        matched,
+        reasonCode: "cited-token-absent",
+        action: "demoted",
+        ...(protectedBy === undefined ? {} : { protectedBy }),
+        proposed: () => {
+          const note = `\n\n↓ grounding: cites ${absent
+            .map((t) => `\`${t}\``)
+            .join(
+              ", ",
+            )} not found in the reviewed code — likely fabricated; demoted to advisory. Verify before treating as real.`;
+          return groundingDemote(f, note);
+        },
+      }) ?? f
+    );
   });
 }
 
@@ -214,7 +239,11 @@ export async function judgeGrounding(
   opts: CompleteOptions,
   findings: Finding[],
   corpus: string,
-): Promise<{ map: Map<string, GroundingVerdict>; status: GroundingJudgeStatus }> {
+): Promise<{
+  map: Map<string, GroundingVerdict>;
+  status: GroundingJudgeStatus;
+  rawResponseSha256?: string;
+}> {
   const criticals = findings.filter((f) => f.severity === "CRITICAL");
   if (criticals.length === 0) return { map: new Map(), status: "skipped" };
   if (typeof adapter.complete !== "function") return { map: new Map(), status: "misconfigured" };
@@ -224,8 +253,9 @@ export async function judgeGrounding(
   } catch {
     return { map: new Map(), status: "error" };
   }
+  const rawResponseSha256 = createHash("sha256").update(Buffer.from(text, "utf8")).digest("hex");
   const map = parseGroundingOutput(text);
-  return { map, status: map.size > 0 ? "ran" : "empty" };
+  return { map, status: map.size > 0 ? "ran" : "empty", rawResponseSha256 };
 }
 
 // Demote-only, CRITICAL-only, fail-safe. A CRITICAL the judge marked grounded:false →
@@ -241,17 +271,36 @@ export async function judgeGrounding(
 export function applyGroundingJudgeVerdicts(
   findings: Finding[],
   map: Map<string, GroundingVerdict>,
+  runtime?: PolicyRuntime,
 ): Finding[] {
+  const runtimeInput = runtime === undefined ? {} : { runtime };
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL" || isSecurityOrCorrectness(f)) return f;
-    const v = map.get(f.signature);
-    if (!v || v.grounded !== false) return f;
-    // Bound the UNTRUSTED judge reason so truncation lands on it (not on the finding's own
-    // details) and the note stays well within the 2000-char cap; groundingDemote caps again
-    // as a backstop.
-    const note = `\n\n↓ grounding judge: the claim is not supported by the reviewed code${
-      v.reason ? ` — ${v.reason.slice(0, 300)}` : ""
-    }; likely fabricated, demoted to advisory.`;
-    return groundingDemote(f, note);
+    const critical = f.severity === "CRITICAL";
+    const verdict = critical ? map.get(f.signature) : undefined;
+    const opportunity = critical && verdict !== undefined;
+    const matched = opportunity && verdict.grounded === false;
+    const protectedBy =
+      matched && isSecurityOrCorrectness(f) ? ("security-correctness-floor" as const) : undefined;
+    return (
+      transitionFinding({
+        ...runtimeInput,
+        passId: "judgment.grounding-llm",
+        finding: f,
+        opportunity,
+        matched,
+        reasonCode: "judge-ungrounded",
+        action: "demoted",
+        ...(protectedBy === undefined ? {} : { protectedBy }),
+        proposed: () => {
+          // Bound the UNTRUSTED judge reason so truncation lands on it (not on the finding's own
+          // details) and the note stays well within the 2000-char cap; groundingDemote caps again
+          // as a backstop.
+          const note = `\n\n↓ grounding judge: the claim is not supported by the reviewed code${
+            verdict?.reason ? ` — ${verdict.reason.slice(0, 300)}` : ""
+          }; likely fabricated, demoted to advisory.`;
+          return groundingDemote(f, note);
+        },
+      }) ?? f
+    );
   });
 }

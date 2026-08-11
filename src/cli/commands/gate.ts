@@ -16,6 +16,7 @@ import type { loadEffectiveConfig } from "../../config/global.ts";
 import { buildSessionStartInjection } from "../../core/agent-lessons/inject.ts";
 import { LoopDriver } from "../../core/loop-driver.ts";
 import { Orchestrator } from "../../core/orchestrator.ts";
+import { resolvePolicyReplayCaptureSink } from "../../core/policy/replay-capture.ts";
 import { type SnapshotFileEntry, snapshotReviewedFiles } from "../../core/reviewed-snapshot.ts";
 import { computeForeignFiles } from "../../core/session-manifest.ts";
 import { StateStore } from "../../core/state-store.ts";
@@ -1127,6 +1128,14 @@ async function runStopGate(
   // A corrupt dirty.flag (ctx.diffIncomplete) OR a collectDiff-truncation trailer
   // both mean the diff isn't a trustworthy complete picture.
   const diffIncomplete = ctx.diffIncomplete || diffMarkedIncomplete(diff);
+  const replaySinkEnv = process.env.REVIEWGATE_RIG_REPLAY_DIR;
+  const replayCapture =
+    replaySinkEnv === undefined
+      ? null
+      : resolvePolicyReplayCaptureSink({
+          sinkDir: replaySinkEnv,
+          measuredRepoRoot: input.repoRoot,
+        });
   const orchestrator = new Orchestrator({
     repoRoot: input.repoRoot,
     config: cfg,
@@ -1156,6 +1165,9 @@ async function runStopGate(
     ...(foreignFiles ? { foreignFiles } : {}),
     // S2: session_id + dirtyNow snapshot → orchestrator stamps session_attributable / whole_diff_attributable.
     ...(attribution ? { attribution } : {}),
+    ...(replayCapture === null
+      ? {}
+      : { policyReplayCapture: { sinkDir: replayCapture.sinkDir, sourceCommit: gitInfo.sha } }),
   });
 
   const driver = new LoopDriver({

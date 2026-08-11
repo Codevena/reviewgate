@@ -3,6 +3,7 @@
 // as currently-safe / hypothetical / future fragility one step to WARN. Fail-safe.
 import { describe, expect, it } from "bun:test";
 import { demoteHypotheticalCriticals } from "../../src/core/hypothetical-demote.ts";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import { demoteSelfRefuting } from "../../src/core/self-refutation.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
@@ -56,11 +57,31 @@ describe("demoteHypotheticalCriticals — NEGATIVE (stays CRITICAL)", () => {
     expect(out?.severity).toBe("CRITICAL");
   });
   it("EXEMPT security even with a hypothetical marker", () => {
-    const out = one({
+    const finding = f({
       category: "security",
       details: "Currently safe, but a future change could leak the token.",
     });
+    const runtime = PolicyTraceRecorder.start({
+      runId: "hypothetical-protected",
+      iter: 1,
+      ablated: [],
+    });
+    const out = demoteHypotheticalCriticals([finding], true, runtime)[0];
     expect(out?.severity).toBe("CRITICAL");
+    expect(out?.policy_effects?.[0]).toMatchObject({
+      pass_id: "judgment.hypothetical",
+      order: 30,
+      action: "protected",
+      reason_code: "hypothetical-critical",
+      protected_by: "security-correctness-floor",
+    });
+    expect(runtime.summary("judgment.hypothetical")).toMatchObject({
+      opportunities: 1,
+      would_apply: 1,
+      applied: 0,
+      protected: 1,
+      blocking_preserved: 1,
+    });
   });
   it("EXEMPT correctness even with a hypothetical marker", () => {
     const out = one({

@@ -195,8 +195,14 @@ an improvisation.
 **Five are listed; four are live.** The pay-per-token DashScope route — which an
 earlier draft of this section recommended — was measured on 2026-08-07 and is
 **blocked**, so do not route the stop branch there. The live four are:
-bare-completion adapter, shrink-the-scope, Extra Bundles, and a plan-tier change;
-the last two are supplements to one of the first two, never substitutes.
+bare-completion adapter, shrink-the-scope, Extra Bundles, and a plan-tier change.
+
+**Scope of the risk-control block (corrected 2026-08-07 by Markus):** it suspends
+**purchases only** — pay-as-you-go activation and Extra Usage Packs. **Renewal and
+plan-tier changes are NOT affected.** An earlier draft speculated otherwise. A
+Standard upgrade is therefore a live option, and it is the one that resurrects the
+authoritative run: 2,538 credits is 102 % of a Lite window but **25.4 % of a
+Standard one**, with 3–4 concurrent agents instead of 1–2.
 
 **Correction (2026-08-07):** an earlier draft of this section treated "direct API"
 and "non-executing reviewer" as one option. They are **two independent axes** and

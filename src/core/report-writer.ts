@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { neutralizeFences, neutralizeInjectionMarkers } from "../diff/sanitizer.ts";
 import type { Finding } from "../schemas/finding.ts";
 import type { PendingReport } from "../schemas/pending-report.ts";
+import type { PolicyEffect } from "../schemas/policy-trace.ts";
 import type { EscalationReason } from "../schemas/state.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import {
@@ -30,6 +31,20 @@ function consensusEmoji(c: Finding["consensus"]): string {
   return "⚪"; // singleton or minority
 }
 
+function hasPolicyEffect(
+  finding: Finding,
+  passId: PolicyEffect["pass_id"],
+  predicate: (effect: PolicyEffect) => boolean = () => true,
+): boolean {
+  return (finding.policy_effects ?? []).some(
+    (effect) => effect.pass_id === passId && predicate(effect),
+  );
+}
+
+function hasAppliedPolicyEffect(finding: Finding, passId: PolicyEffect["pass_id"]): boolean {
+  return hasPolicyEffect(finding, passId, (effect) => effect.action !== "protected");
+}
+
 // Building finding badges: the hard-block 🔒 deterministic badge (for findings
 // from the deterministic checker tier) AND the demote/suppression badges (scope,
 // FP-ledger, critic, reputation, …). Builds a blockquote line ONLY when at
@@ -40,17 +55,37 @@ export function findingBadges(f: Finding): string | null {
   const badges: string[] = [];
   if (f.deterministic)
     badges.push("🔒 deterministic check — fix it (re-runs automatically; not rejectable)");
-  if (f.fact_invalid) badges.push("🔎 cited location not found — likely hallucinated");
+  if (
+    f.fact_invalid ||
+    hasPolicyEffect(
+      f,
+      "evidence.fact-location",
+      (effect) => effect.reason_code === "location-out-of-range",
+    )
+  )
+    badges.push("🔎 cited location not found — likely hallucinated");
   // Anchor repair: the counterpart to the badge above — the cited line was wrong, but the
   // reviewer's quoted evidence (carrying an identifier-like token) matched a real line of this
   // file, showing the reviewer read real code rather than fabricating one, so it was moved rather
   // than demoted. That is weaker than proof the defect itself is real — see finding.ts.
-  if (f.anchor_repaired)
+  if (
+    f.anchor_repaired ||
+    hasPolicyEffect(
+      f,
+      "evidence.fact-location",
+      (effect) => effect.reason_code === "evidence-line-reanchored",
+    )
+  )
     badges.push(
       "⚑ reviewer cited a line that does not exist — re-anchored to the source line it quoted",
     );
-  if (f.grounding_demoted) badges.push("🌫 cited token absent from corpus — likely fabricated");
-  if (f.hypothetical_demoted)
+  if (
+    f.grounding_demoted ||
+    hasAppliedPolicyEffect(f, "evidence.grounding-token") ||
+    hasAppliedPolicyEffect(f, "judgment.grounding-llm")
+  )
+    badges.push("🌫 cited token absent from corpus — likely fabricated");
+  if (f.hypothetical_demoted || hasAppliedPolicyEffect(f, "judgment.hypothetical"))
     badges.push(
       "⏳ demoted CRITICAL→WARN — reviewer text is hypothetical/future, not a present defect",
     );
@@ -58,30 +93,36 @@ export function findingBadges(f: Finding): string | null {
   // decision-required on SOFT-PASS (it does NOT silently re-arm). Render only while still blocking
   // (CRITICAL/WARN): an INFO one was further suppressed by a structural/agent off-ramp (e.g. the
   // reject → cycleRejected path) and no longer needs a decision, so the prompt would mislead.
-  if (f.demoted_from_critical && f.severity !== "INFO")
+  const tracedFromCritical = (f.policy_effects ?? []).some(
+    (effect) =>
+      effect.action !== "protected" && effect.before === "CRITICAL" && effect.after === "WARN",
+  );
+  if ((f.demoted_from_critical || tracedFromCritical) && f.severity !== "INFO")
     badges.push(
       "⬇ was CRITICAL, one-step-demoted — decide before passing (don't reflexively acknowledge)",
     );
-  if (f.scope_demoted) badges.push("📍 outside changed lines");
+  if (f.scope_demoted || hasAppliedPolicyEffect(f, "scope.diff"))
+    badges.push("📍 outside changed lines");
   // T4/R2: iteration >= 2 policy demote — fresh nit on content the panel already
   // reviewed and the agent did not touch since.
-  if (f.delta_scope_demoted)
+  if (f.delta_scope_demoted || hasAppliedPolicyEffect(f, "scope.delta"))
     badges.push("🗂 on content already reviewed and unchanged since — advisory (delta scope)");
   // Slice A (P1): on a file this session did not author — advisory (parallel agent / pre-existing).
-  if (f.foreign_to_session)
+  if (f.foreign_to_session || hasAppliedPolicyEffect(f, "scope.session"))
     badges.push(
       "👥 on a file this session did not edit (parallel agent / pre-existing) — advisory; if it truly isn't yours, record an out-of-scope decision",
     );
-  if (f.test_severity_demoted) badges.push("📁 security finding on a test/fixture file — advisory");
+  if (f.test_severity_demoted || hasAppliedPolicyEffect(f, "judgment.test-security"))
+    badges.push("📁 security finding on a test/fixture file — advisory");
   // Slice D (P5): a CRITICAL on a docs/markdown file capped to WARN (stale doc ≠ data-loss bug).
-  if (f.docs_severity_capped)
+  if (f.docs_severity_capped || hasAppliedPolicyEffect(f, "judgment.docs-cap"))
     badges.push("📝 docs file — capped CRITICAL→WARN; still decide before passing");
   // Slice C (P4): a lone uncorroborated CRITICAL — honest framing, NOT a downgrade (still blocks).
   if (f.lone_critical_uncorroborated)
     badges.push(
       "🚧 lone CRITICAL — single reviewer, uncorroborated; verify the cited code yourself, then fix (action:fixed) or reject (reviewer_was_wrong) with a concrete reason",
     );
-  if (f.redaction_demoted)
+  if (f.redaction_demoted || hasAppliedPolicyEffect(f, "evidence.redaction-placeholder"))
     badges.push(
       "🙈 targets a <REDACTED:…> placeholder (stripped secret, not real code) — advisory",
     );
@@ -103,16 +144,22 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "🔎 the line this finding cites as evidence is not present in the file — likely reasoned on stale or absent context; verify the cited code yourself before acting",
     );
-  if (f.critic_verdict === "likely_fp") badges.push("🧠 critic flagged as likely FP");
-  if (f.fp_ledger_match?.suppressed) badges.push("📒 matches known-FP pattern");
+  if (f.critic_verdict === "likely_fp" || hasAppliedPolicyEffect(f, "judgment.critic"))
+    badges.push("🧠 critic flagged as likely FP");
+  if (f.fp_ledger_match?.suppressed || hasAppliedPolicyEffect(f, "history.fp-signature"))
+    badges.push("📒 matches known-FP pattern");
   if (f.fp_cluster_match?.suppressed)
     badges.push(`📚 active FP cluster ${f.fp_cluster_match.cluster_key}`);
-  if (f.low_confidence) badges.push("🎯 below confidence floor");
+  if (f.low_confidence || hasAppliedPolicyEffect(f, "judgment.confidence"))
+    badges.push("🎯 below confidence floor");
   // #4: only assert "kept blocking" while the finding IS still blocking. The protect flag is
   // stamped in the critic pass BEFORE the hard suppressors (scopeToDiff/fpActive/cycleRejected)
   // run; if one of them later demotes this finding to advisory INFO, the "kept blocking" badge
   // would be a lie (codex DoD) — so gate it on a non-INFO severity.
-  if (f.protected_high_precision && f.severity !== "INFO")
+  const tracedHighPrecisionProtection = (f.policy_effects ?? []).some(
+    (effect) => effect.action === "protected" && effect.protected_by === "high-precision-reviewer",
+  );
+  if ((f.protected_high_precision || tracedHighPrecisionProtection) && f.severity !== "INFO")
     badges.push("🛡 kept blocking — high-track-record reviewer (soft demote overridden)");
   // T3/R4 (field report 2026-07-03): region-rejection badge. Suppressed → explains WHY the
   // finding is advisory; blocking → cites the prior reason and names the fast-path so the
@@ -130,7 +177,8 @@ export function findingBadges(f: Finding): string | null {
     badges.push(
       "🧷 needs corroboration — CRITICAL claim from a chronically-unreliable reviewer, clamped to WARN; verify the cited code, then fix or reject with evidence",
     );
-  else if (f.reputation_demoted) badges.push("📉 reviewer reputation low");
+  else if (f.reputation_demoted || hasAppliedPolicyEffect(f, "judgment.reputation"))
+    badges.push("📉 reviewer reputation low");
   if (f.claimed_fixed_recurred)
     // A pinned recurrence that survived the demote chain (CRITICAL/WARN) is blocking →
     // assert the fix failed. One that was scope/fp-demoted to advisory INFO recurred but

@@ -1,4 +1,5 @@
 import type { Finding } from "../schemas/finding.ts";
+import { type PolicyRuntime, transitionFinding } from "./policy/trace.ts";
 
 // #2 severity floor (field report 2026-06-17 non-convergence): a CRITICAL must describe a
 // PRESENT, demonstrable defect. A reviewer that concedes the code is "currently safe" yet raises
@@ -51,16 +52,36 @@ const NOTE =
  * (currently-safe / hypothetical / future-conditional) and asserts no present-defect backstop.
  * Demote-only, positive-signal, security/correctness-exempt, fail-safe.
  */
-export function demoteHypotheticalCriticals(findings: Finding[], enabled = true): Finding[] {
+export function demoteHypotheticalCriticals(
+  findings: Finding[],
+  enabled = true,
+  runtime?: PolicyRuntime,
+): Finding[] {
   if (!enabled) return findings;
+  const runtimeInput = runtime === undefined ? {} : { runtime };
   return findings.map((f) => {
-    if (f.severity !== "CRITICAL") return f; // CRITICAL-only
-    if (f.deterministic) return f; // check-tier ground truth — never demote
-    // Never soften the hard-veto categories on an untrusted text signal (mirror self-refutation).
-    if (f.category === "security" || f.category === "correctness") return f;
-    const text = `${f.message}\n${f.details}\n${f.suggested_fix ?? ""}`;
-    if (!HYPOTHETICAL.test(text)) return f; // positive marker required
-    if (PRESENT_DEFECT.test(text)) return f; // also asserts a present defect → stays CRITICAL
-    return demote(f, NOTE);
+    const opportunity = f.severity === "CRITICAL";
+    const text = opportunity ? `${f.message}\n${f.details}\n${f.suggested_fix ?? ""}` : "";
+    const matched = opportunity && HYPOTHETICAL.test(text) && !PRESENT_DEFECT.test(text);
+    const protectedBy = !matched
+      ? undefined
+      : f.deterministic
+        ? ("deterministic-ground-truth" as const)
+        : f.category === "security" || f.category === "correctness"
+          ? ("security-correctness-floor" as const)
+          : undefined;
+    return (
+      transitionFinding({
+        ...runtimeInput,
+        passId: "judgment.hypothetical",
+        finding: f,
+        opportunity,
+        matched,
+        reasonCode: "hypothetical-critical",
+        action: "demoted",
+        ...(protectedBy === undefined ? {} : { protectedBy }),
+        proposed: () => demote(f, NOTE),
+      }) ?? f
+    );
   });
 }

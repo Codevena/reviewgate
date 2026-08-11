@@ -94,7 +94,18 @@ export class OpenCodeAdapter implements ProviderAdapter {
     const stdoutFile = join(run, "out.txt");
     const stderrFile = join(run, "err.log");
 
-    const args = ["run", "--dangerously-skip-permissions", "--format", "default"];
+    // `--auto` replaces `--dangerously-skip-permissions`, which does NOT exist in
+    // opencode 1.18.10 — verified against `opencode run --help`, and opencode exits 0
+    // on unknown flags instead of rejecting them, so the old flag was silently
+    // ignored on every call. The complete() path at the bottom of this file still
+    // passes the dead flag; fix that separately, it changes curator behaviour.
+    //
+    // The `--pure --agent rg-reviewer` measurement scaffolding from 2026-08-07 was
+    // REVERTED here (gate finding F-002): it depended on a user-global
+    // ~/.config/opencode/agent/rg-reviewer.md that no other machine has. Its result is
+    // recorded in bench/results/qwen-overhead/tool-surface.json (~23.5K -> ~17.8K input
+    // tokens); make it a config option before reintroducing it.
+    const args = ["run", "--auto", "--format", "default"];
     // Only force a model with -m for a REAL provider/model id. The sentinel
     // "default" (or empty) means "use opencode's own configured default model"
     // — which is how opencode is meant to be driven here (e.g. a MiniMax Token

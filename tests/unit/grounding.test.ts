@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { groundFindings } from "../../src/core/grounding.ts";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 function mk(over: Partial<Finding> = {}): Finding {
@@ -122,12 +123,32 @@ describe("groundFindings (S6 layer 1)", () => {
   // is layer 2's job, which reads the actual code). Otherwise an absent token in
   // attacker-influenced finding text is a fail-open.
   it("NEVER demotes a security CRITICAL, even citing an absent token (exempt — fail-open guard)", () => {
+    const runtime = PolicyTraceRecorder.start({
+      runId: "grounding-token-protected",
+      iter: 1,
+      ablated: [],
+    });
     const out = groundFindings(
       [mk({ category: "security", details: "leak via --ghost-token" })],
       CORPUS,
+      runtime,
     );
     expect(out[0]?.severity).toBe("CRITICAL");
     expect(out[0]?.grounding_demoted).toBeUndefined();
+    expect(out[0]?.policy_effects?.[0]).toMatchObject({
+      pass_id: "evidence.grounding-token",
+      order: 40,
+      action: "protected",
+      reason_code: "cited-token-absent",
+      protected_by: "security-correctness-floor",
+    });
+    expect(runtime.summary("evidence.grounding-token")).toMatchObject({
+      opportunities: 1,
+      would_apply: 1,
+      applied: 0,
+      protected: 1,
+      blocking_preserved: 1,
+    });
   });
 
   it("NEVER demotes a correctness CRITICAL citing an absent token (exempt)", () => {

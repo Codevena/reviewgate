@@ -6,8 +6,8 @@
 // seeded cases) is flagged non-authoritative and its headline rates are withheld.
 import { describe, expect, it } from "bun:test";
 import { makeMetric } from "../../src/bench/metrics.ts";
-import { isAuthoritative, renderBenchReport } from "../../src/bench/report.ts";
-import type { BenchResult } from "../../src/schemas/bench-result.ts";
+import { isAuthoritative, renderBenchMatrix, renderBenchReport } from "../../src/bench/report.ts";
+import type { BenchMatrix, BenchResult } from "../../src/schemas/bench-result.ts";
 
 function baseResult(over: Partial<BenchResult> = {}): BenchResult {
   const result: BenchResult = {
@@ -283,5 +283,82 @@ describe("renderBenchReport", () => {
       }),
     );
     expect(table).toContain("n/a");
+  });
+});
+
+describe("renderBenchMatrix policy provenance", () => {
+  it("renders normalized pass IDs and precise authoritative invalidity reasons", () => {
+    const base = baseResult();
+    const metric = makeMetric(1, 1);
+    const matrix: BenchMatrix = {
+      schema: "reviewgate.bench.matrix.v1",
+      provenance: base.provenance,
+      variants: [
+        {
+          label: "baseline",
+          ablation: "",
+          class: "baseline",
+          precision: metric,
+          recall: metric,
+          clean_fp_rate: makeMetric(0, 1),
+          delta: null,
+          policy: {
+            catalog_version: "reviewgate.policy-catalog.v1",
+            ablated_pass_id: null,
+            trace_status: "complete",
+            trace_ref: `inline-policy-trace-set/${"a".repeat(64)}.json`,
+            trace_sha256: "a".repeat(64),
+            raw_response_sha256: ["b".repeat(64)],
+            authoritative: true,
+            reason: null,
+          },
+        },
+        {
+          label: "-scope.diff",
+          ablation: "scope.diff",
+          class: "A",
+          precision: metric,
+          recall: metric,
+          clean_fp_rate: makeMetric(0, 1),
+          delta: { precision: 0, recall: 0, clean_fp_rate: 0 },
+          policy: {
+            catalog_version: "reviewgate.policy-catalog.v1",
+            ablated_pass_id: "scope.diff",
+            trace_status: "not-run",
+            raw_response_sha256: ["b".repeat(64)],
+            authoritative: false,
+            reason: "pass-not-run: scope.diff had no configured opportunity",
+          },
+        },
+      ],
+      authoritative: false,
+    };
+    const output = renderBenchMatrix(matrix);
+    expect(output).toContain("scope.diff");
+    expect(output).toContain("NON-AUTHORITATIVE");
+    expect(output).toContain("pass-not-run: scope.diff had no configured opportunity");
+    expect(output).toContain("reviewgate.policy-catalog.v1");
+  });
+
+  it("labels a legacy matrix without trace provenance as non-authoritative for policy", () => {
+    const base = baseResult();
+    const metric = makeMetric(1, 1);
+    const output = renderBenchMatrix({
+      schema: "reviewgate.bench.matrix.v1",
+      provenance: base.provenance,
+      variants: [
+        {
+          label: "baseline",
+          ablation: "",
+          class: "baseline",
+          precision: metric,
+          recall: metric,
+          clean_fp_rate: makeMetric(0, 1),
+          delta: null,
+        },
+      ],
+    });
+    expect(output).toContain("NON-AUTHORITATIVE");
+    expect(output).toContain("legacy result has no policy trace provenance");
   });
 });

@@ -6,6 +6,7 @@ import type { EmbedOptions } from "../core/brain/embeddings.ts";
 import { redactHighEntropy } from "../diff/sanitizer.ts";
 import type {
   CompleteOptions,
+  PolicyReplayCallContext,
   Preflight,
   ProviderAdapter,
   ProviderConfig,
@@ -14,6 +15,7 @@ import type {
 } from "../providers/adapter-base.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import type { CassetteEntry } from "../schemas/cassette.ts";
+import { policyReplayCallId } from "../schemas/policy-replay.ts";
 import { completeKey, embedKey, reviewKey, sha256 } from "./matching.ts";
 import { appendEntry } from "./store.ts";
 
@@ -123,16 +125,19 @@ export class RecordingAdapter implements ProviderAdapter {
       this.complete = async (prompt, opts) => {
         const text = await realComplete(prompt, opts);
         const promptSha256 = sha256(prompt);
-        await this.append({
-          method: "complete",
-          // Key by the prompt hash so each judge phase replays the response
-          // recorded for ITS exact prompt — a shared per-provider FIFO returned
-          // a sibling phase's response when pop-order skewed across phases.
-          // (Replay must match: replay-adapter pops `completeKey(id, sha256(prompt))`.)
-          key: completeKey(this.id, promptSha256),
-          promptSha256,
-          result: { text },
-        });
+        await this.append(
+          {
+            method: "complete",
+            // Key by the prompt hash so each judge phase replays the response
+            // recorded for ITS exact prompt — a shared per-provider FIFO returned
+            // a sibling phase's response when pop-order skewed across phases.
+            // (Replay must match: replay-adapter pops `completeKey(id, sha256(prompt))`.)
+            key: completeKey(this.id, promptSha256),
+            promptSha256,
+            result: { text },
+          },
+          opts.policyReplayCall,
+        );
         return text;
       };
     }
@@ -146,12 +151,15 @@ export class RecordingAdapter implements ProviderAdapter {
     input: ReviewInput & { cfg: ProviderConfig; reviewerId: string },
   ): Promise<ReviewResult> {
     const result = await this.real.review(input);
-    await this.append({
-      method: "review",
-      key: reviewKey(input.reviewerId),
-      promptSha256: this.hashFile(input.promptFile),
-      result,
-    });
+    await this.append(
+      {
+        method: "review",
+        key: reviewKey(input.reviewerId),
+        promptSha256: this.hashFile(input.promptFile),
+        result,
+      },
+      input.policyReplayCall,
+    );
     return result;
   }
 
@@ -165,12 +173,27 @@ export class RecordingAdapter implements ProviderAdapter {
 
   private async append(
     partial: Pick<CassetteEntry, "method" | "key" | "promptSha256" | "result">,
+    policyReplayCall?: PolicyReplayCallContext,
   ): Promise<void> {
     try {
       await appendEntry(this.path, {
         schema: "reviewgate.cassette.entry.v1",
         provider: this.id,
         ...partial,
+        ...(policyReplayCall === undefined || partial.method === "embed"
+          ? {}
+          : {
+              policyReplayCall: {
+                ...policyReplayCall,
+                callId: policyReplayCallId({
+                  ...policyReplayCall,
+                  provider: this.id,
+                  method: partial.method,
+                  key: partial.key,
+                  promptSha256: partial.promptSha256,
+                }),
+              },
+            }),
         // Redact secrets from the stored body (leak-at-rest defense). Cast: the
         // shape is preserved (only string leaves change) so it still satisfies
         // CassetteEntry["result"]; loadCassette re-validates against the schema.

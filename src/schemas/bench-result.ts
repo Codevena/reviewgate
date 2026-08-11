@@ -1,4 +1,10 @@
+import { createHash } from "node:crypto";
+import { URL } from "node:url";
 import { z } from "zod";
+import { canonicalJson } from "../audit/canonical.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
+import { redactHighEntropy } from "../diff/sanitizer.ts";
+import { PolicyTraceSchema } from "./policy-trace.ts";
 
 // reviewgate bench — result schema (spec §5, §7.2). What `bench run` writes and
 // `bench report` reads. Every rate carries its raw numerator/denominator + a Wilson
@@ -184,6 +190,401 @@ export const CaseCriticSchema = z
     }
   });
 
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const PolicyPassIdSchema = z.enum(POLICY_PASS_IDS);
+const PolicyTraceArtifactRefSchema = z
+  .string()
+  .regex(
+    /^artifacts\/policy-traces\/\d{4}\/\d{2}\/\d{2}\/policy\/[0-9a-f]{12}-i(?:0|[1-9]\d*)-[0-9a-f]{12}\.json$/,
+  );
+const PolicyTraceSetArtifactRefSchema = z
+  .string()
+  .regex(/^artifacts\/policy-trace-sets\/[0-9a-f]{64}\.json$/);
+const ResultArtifactRefSchema = z.string().regex(/^artifacts\/results\/[0-9a-f]{64}\.json$/);
+const ResponseManifestArtifactRefSchema = z
+  .string()
+  .regex(/^artifacts\/responses\/[0-9a-f]{64}\.json$/);
+
+export type ThrowableSafeValue =
+  | null
+  | string
+  | number
+  | boolean
+  | ThrowableSafeValue[]
+  | { [key: string]: ThrowableSafeValue };
+
+const MAX_PERCENT_DECODE_PASSES = 3;
+const SENSITIVE_THROWABLE_KEYS = new Set([
+  "authorization",
+  "cookie",
+  "credential",
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "apitoken",
+  "apikey",
+  "privatekey",
+  "clientsecret",
+  "accesstoken",
+  "signature",
+  "xamzsignature",
+  "xamzcredential",
+  "xamzsecuritytoken",
+]);
+
+function isSensitiveThrowableKey(value: string): boolean {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return SENSITIVE_THROWABLE_KEYS.has(normalized);
+}
+
+const SensitiveThrowableFieldSchema = z
+  .string()
+  .min(1)
+  .refine((value) => !isSensitiveThrowableKey(value), "throwable field contains sensitive key");
+const ABSOLUTE_POSIX_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/(?!\/)(?=[^\s/])/;
+const FORWARD_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/\/[^/\s\\]+\/[^/\s\\]+/;
+const WINDOWS_DRIVE_PATH = /(?:^|[\s"\x27\x60([{=,:;])[A-Za-z]:[\\/]/;
+const WINDOWS_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\\\\[^\\\s]+\\[^\\\s]+/;
+const URL_SEGMENT = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'`)}]+/gi;
+const KEY_VALUE_PAIR =
+  /(?:"([^"\r\n]{1,128})"|'([^'\r\n]{1,128})'|([A-Za-z][A-Za-z0-9_.-]{0,127}))\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\]]+)/g;
+const CREDENTIAL_VALUE =
+  /(?:\bBearer\s+\S+|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b)/i;
+const PERCENT_ENCODED_BYTE = /%[0-9A-Fa-f]{2}/;
+const PERCENT_ENCODED_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
+
+function decodePercentToFixedPoint(value: string): string | null {
+  let decoded = value;
+  for (let pass = 0; pass < MAX_PERCENT_DECODE_PASSES; pass += 1) {
+    if (!PERCENT_ENCODED_BYTE.test(decoded)) return decoded;
+    let invalidRun = false;
+    const nextDecoded = decoded.replace(PERCENT_ENCODED_RUN, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        invalidRun = true;
+        return run;
+      }
+    });
+    if (invalidRun) return null;
+    decoded = nextDecoded.normalize("NFKC");
+  }
+  return PERCENT_ENCODED_BYTE.test(decoded) ? null : decoded;
+}
+
+function hasSensitiveKeyValuePair(value: string): boolean {
+  for (const match of value.matchAll(KEY_VALUE_PAIR)) {
+    const key = match[1] ?? match[2] ?? match[3];
+    if (key !== undefined && isSensitiveThrowableKey(key)) return true;
+  }
+  return false;
+}
+
+function maskSafeHttpUrls(value: string): string | null {
+  let invalidUrl = false;
+  const nonUrlText = value.replace(URL_SEGMENT, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+        parsed.username !== "" ||
+        parsed.password !== ""
+      ) {
+        invalidUrl = true;
+        return rawUrl;
+      }
+      if (
+        hasSensitiveKeyValuePair(`${parsed.pathname} ${parsed.hash}`) ||
+        Array.from(parsed.searchParams).some(
+          ([key, partValue]) =>
+            isSensitiveThrowableKey(key) ||
+            hasSensitiveKeyValuePair(partValue) ||
+            CREDENTIAL_VALUE.test(partValue),
+        )
+      ) {
+        invalidUrl = true;
+        return rawUrl;
+      }
+      return " ".repeat(rawUrl.length);
+    } catch {
+      invalidUrl = true;
+      return rawUrl;
+    }
+  });
+  return invalidUrl ? null : nonUrlText;
+}
+
+/** Shared at-rest boundary for every string in a captured provider throw. */
+export function isAuthoritativeThrowableString(value: string): boolean {
+  const decodedValue = decodePercentToFixedPoint(value.normalize("NFKC"));
+  if (decodedValue === null) return false;
+  const hasUnsafeControlCharacter = Array.from(decodedValue).some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 8 ||
+      codePoint === 11 ||
+      codePoint === 12 ||
+      (codePoint >= 14 && codePoint <= 31) ||
+      codePoint === 127
+    );
+  });
+  const nonUrlText = maskSafeHttpUrls(decodedValue);
+  return (
+    !hasUnsafeControlCharacter &&
+    nonUrlText !== null &&
+    !ABSOLUTE_POSIX_PATH.test(nonUrlText) &&
+    !FORWARD_UNC_PATH.test(nonUrlText) &&
+    !WINDOWS_DRIVE_PATH.test(nonUrlText) &&
+    !WINDOWS_UNC_PATH.test(nonUrlText) &&
+    !hasSensitiveKeyValuePair(nonUrlText) &&
+    !CREDENTIAL_VALUE.test(decodedValue) &&
+    redactHighEntropy(nonUrlText).count === 0
+  );
+}
+const SafeThrowableStringSchema = z
+  .string()
+  .refine(isAuthoritativeThrowableString, "throwable string contains unsafe data");
+const SafeThrowableNameSchema = z
+  .string()
+  .min(1)
+  .refine(isAuthoritativeThrowableString, "throwable string contains unsafe data");
+
+export const ThrowableSafeValueSchema: z.ZodType<ThrowableSafeValue> = z.lazy(() =>
+  z.union([
+    z.null(),
+    SafeThrowableStringSchema,
+    z.number().finite(),
+    z.boolean(),
+    z.array(ThrowableSafeValueSchema),
+    z.record(SensitiveThrowableFieldSchema, ThrowableSafeValueSchema),
+  ]),
+);
+
+export type CapturedThrowableSnapshot =
+  | { kind: "primitive"; primitive_type: "string"; value: string }
+  | { kind: "primitive"; primitive_type: "undefined" | "null" }
+  | {
+      kind: "error";
+      error_type: "Error" | "SandboxUnavailableError";
+      name: string;
+      message: string;
+      cause?: CapturedThrowableSnapshot | undefined;
+      fields: Array<{ key: string; value: ThrowableSafeValue; enumerable: boolean }>;
+    };
+
+export const CAPTURED_THROWABLE_FIELD_KEYS = [
+  "code",
+  "context",
+  "errno",
+  "exitCode",
+  "killed",
+  "retryable",
+  "signal",
+  "status",
+  "statusCode",
+  "syscall",
+  "timedOut",
+] as const;
+const CapturedThrowableFieldKeySchema = z.enum(CAPTURED_THROWABLE_FIELD_KEYS);
+
+export const CapturedThrowableSnapshotSchema: z.ZodType<CapturedThrowableSnapshot> = z.lazy(() =>
+  z.union([
+    z
+      .object({
+        kind: z.literal("primitive"),
+        primitive_type: z.literal("string"),
+        value: SafeThrowableStringSchema,
+      })
+      .strict(),
+    z.object({ kind: z.literal("primitive"), primitive_type: z.literal("undefined") }).strict(),
+    z.object({ kind: z.literal("primitive"), primitive_type: z.literal("null") }).strict(),
+    z
+      .object({
+        kind: z.literal("error"),
+        error_type: z.enum(["Error", "SandboxUnavailableError"]),
+        name: SafeThrowableNameSchema,
+        message: SafeThrowableStringSchema,
+        cause: CapturedThrowableSnapshotSchema.optional(),
+        fields: z.array(
+          z
+            .object({
+              key: CapturedThrowableFieldKeySchema,
+              value: ThrowableSafeValueSchema,
+              enumerable: z.boolean(),
+            })
+            .strict(),
+        ),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        const keys = value.fields.map((field) => field.key);
+        if (
+          keys.some((key, index) => index > 0 && (keys[index - 1] ?? "").localeCompare(key) >= 0)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["fields"],
+            message: "throwable fields must be uniquely sorted",
+          });
+        }
+      }),
+  ]),
+);
+
+export const BenchResponseManifestSchema = z
+  .object({
+    schema: z.literal("reviewgate.bench.provider-response-hashes.v2"),
+    entries: z.array(
+      z
+        .object({
+          provider: z.string().min(1),
+          kind: z.enum(["review", "complete"]),
+          ordinal: z.number().int().nonnegative(),
+          request_sha256: Sha256Schema,
+          response_sha256: Sha256Schema,
+          outcome: z.enum(["return", "throw"]),
+          throw_snapshot: CapturedThrowableSnapshotSchema.optional(),
+        })
+        .strict()
+        .superRefine((value, ctx) => {
+          if ((value.outcome === "throw") !== (value.throw_snapshot !== undefined)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["throw_snapshot"],
+              message: "throw outcomes require exactly one typed snapshot",
+            });
+          }
+          if (value.throw_snapshot !== undefined) {
+            const actual = createHash("sha256")
+              .update(Buffer.from(canonicalJson(value.throw_snapshot), "utf8"))
+              .digest("hex");
+            if (actual !== value.response_sha256) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ["response_sha256"],
+                message: "throw snapshot hash mismatch",
+              });
+            }
+          }
+        }),
+    ),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.entries.some((entry, index) => entry.ordinal !== index)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entries"],
+        message: "response ordinals must be globally contiguous",
+      });
+    }
+  });
+
+export const BenchPolicyTraceRunSchema = z
+  .object({
+    authoritative: z.boolean(),
+    status: z.enum(["complete", "not-run", "error", "overflow"]),
+    catalog_version: z.string().min(1),
+    requested_ablations: z.array(PolicyPassIdSchema),
+    trace: PolicyTraceSchema.optional(),
+    trace_ref: PolicyTraceArtifactRefSchema.optional(),
+    trace_sha256: Sha256Schema.optional(),
+    request_identity_sha256: Sha256Schema,
+    effective_config_sha256: Sha256Schema,
+    final_identity_sha256: Sha256Schema,
+    reason: z.string().min(1).nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const completeFields = [value.trace, value.trace_ref, value.trace_sha256];
+    if (value.status === "complete") {
+      if (completeFields.some((field) => field === undefined)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["trace"],
+          message: "complete policy trace requires trace/ref/hash",
+        });
+      }
+      if (value.trace !== undefined && value.trace_sha256 !== undefined) {
+        const actualSha256 = createHash("sha256")
+          .update(Buffer.from(canonicalJson(value.trace), "utf8"))
+          .digest("hex");
+        if (value.trace_sha256 !== actualSha256) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_sha256"],
+            message: "embedded policy trace hash mismatch",
+          });
+        }
+        const traceRefMatch = value.trace_ref?.match(
+          /^artifacts\/policy-traces\/\d{4}\/\d{2}\/\d{2}\/policy\/([0-9a-f]{12})-i(0|[1-9]\d*)-([0-9a-f]{12})\.json$/,
+        );
+        const runSha12 = createHash("sha256").update(value.trace.run_id).digest("hex").slice(0, 12);
+        if (
+          traceRefMatch === null ||
+          traceRefMatch === undefined ||
+          traceRefMatch[1] !== runSha12 ||
+          Number(traceRefMatch[2]) !== value.trace.iter ||
+          traceRefMatch[3] !== actualSha256.slice(0, 12)
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: "persisted policy trace reference mismatch",
+          });
+        }
+        const finalSha256 = createHash("sha256")
+          .update(Buffer.from(canonicalJson(value.trace.final), "utf8"))
+          .digest("hex");
+        if (value.final_identity_sha256 !== finalSha256) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["final_identity_sha256"],
+            message: "embedded policy final identity mismatch",
+          });
+        }
+        if (
+          value.requested_ablations.length !== value.trace.ablated.length ||
+          value.requested_ablations.some((passId, index) => passId !== value.trace?.ablated[index])
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["requested_ablations"],
+            message: "requested ablations must equal the embedded trace profile",
+          });
+        }
+      }
+    } else if (completeFields.some((field) => field !== undefined)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["trace"],
+        message: `${value.status} policy trace forbids trace/ref/hash`,
+      });
+    }
+    if (value.authoritative !== (value.status === "complete" && value.reason === null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["authoritative"],
+        message: "authoritative requires complete trace and no invalidity reason",
+      });
+    }
+    if (
+      value.authoritative &&
+      (value.catalog_version !== POLICY_CATALOG_VERSION ||
+        value.trace?.catalog_version !== POLICY_CATALOG_VERSION)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["catalog_version"],
+        message: "authoritative trace requires the current policy catalog",
+      });
+    }
+  });
+
 export const CaseResultSchema = z
   .object({
     id: z.string(),
@@ -211,6 +612,9 @@ export const CaseResultSchema = z
     latency_ms: z.number().nonnegative().nullable(),
     error: z.string().nullable(),
     critic: CaseCriticSchema.optional(),
+    // Additive: legacy BenchResult v1 rows without traces remain parseable, but
+    // exact policy matrix runs require this block before they can be scored.
+    policy_trace: BenchPolicyTraceRunSchema.optional(),
   })
   .strict();
 
@@ -373,6 +777,124 @@ export const BenchResultSchema = z
   })
   .strict();
 
+const BenchPolicyTraceSetRunSchema = z
+  .object({
+    label: z.string().min(1),
+    ablated_pass_id: PolicyPassIdSchema.nullable(),
+    result: z.object({ path: ResultArtifactRefSchema, sha256: Sha256Schema }).strict(),
+    traces: z.array(
+      z
+        .object({
+          case_id: z.string().min(1),
+          repeat: z.number().int().positive(),
+          trace_ref: PolicyTraceArtifactRefSchema,
+          trace_sha256: Sha256Schema,
+          effective_config_sha256: Sha256Schema,
+          request_identity_sha256: Sha256Schema,
+          final_identity_sha256: Sha256Schema,
+          raw_response_sha256: z.array(Sha256Schema),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export const BenchPolicyTraceSetSchema = z
+  .object({
+    schema: z.literal("reviewgate.bench.policy-trace-set.v1"),
+    catalog_version: z.literal(POLICY_CATALOG_VERSION),
+    response_manifest: z
+      .object({ path: ResponseManifestArtifactRefSchema, sha256: Sha256Schema })
+      .strict(),
+    runs: z.array(BenchPolicyTraceSetRunSchema).min(2),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.response_manifest.path !== `artifacts/responses/${value.response_manifest.sha256}.json`
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["response_manifest", "path"],
+        message: "response manifest path/hash identity mismatch",
+      });
+    }
+    const baseline = value.runs[0];
+    if (baseline?.label !== "baseline" || baseline.ablated_pass_id !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["runs", 0],
+        message: "trace set must start with the unabated baseline",
+      });
+      return;
+    }
+    const labels = new Set<string>();
+    const passIds = new Set<string>();
+    for (const [runIndex, run] of value.runs.entries()) {
+      if (run.result.path !== `artifacts/results/${run.result.sha256}.json`) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["runs", runIndex, "result", "path"],
+          message: "result path/hash identity mismatch",
+        });
+      }
+      if (labels.has(run.label)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["runs", runIndex, "label"],
+          message: "trace-set run labels must be unique",
+        });
+      }
+      labels.add(run.label);
+      if (runIndex > 0) {
+        if (run.ablated_pass_id === null || passIds.has(run.ablated_pass_id)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["runs", runIndex, "ablated_pass_id"],
+            message: "counterfactual trace sets require one unique pass ID",
+          });
+        } else {
+          passIds.add(run.ablated_pass_id);
+        }
+      }
+      if (baseline === undefined || run.traces.length !== baseline.traces.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["runs", runIndex, "traces"],
+          message: "trace-set runs must have identical case cardinality",
+        });
+        continue;
+      }
+      for (const [traceIndex, trace] of run.traces.entries()) {
+        if (!trace.trace_ref.endsWith(`-${trace.trace_sha256.slice(0, 12)}.json`)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["runs", runIndex, "traces", traceIndex, "trace_ref"],
+            message: "policy trace path/hash identity mismatch",
+          });
+        }
+        const base = baseline.traces[traceIndex];
+        if (
+          base === undefined ||
+          trace.case_id !== base.case_id ||
+          trace.repeat !== base.repeat ||
+          trace.effective_config_sha256 !== base.effective_config_sha256 ||
+          trace.request_identity_sha256 !== base.request_identity_sha256 ||
+          trace.raw_response_sha256.length !== base.raw_response_sha256.length ||
+          trace.raw_response_sha256.some(
+            (hash, hashIndex) => hash !== base.raw_response_sha256[hashIndex],
+          )
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["runs", runIndex, "traces", traceIndex],
+            message: "trace-set pair identity mismatch",
+          });
+        }
+      }
+    }
+  });
+
 // reviewgate bench matrix (spec §8) — the ablation Δ table. One variant per row:
 // the baseline (full suppression) plus one row per ablated layer, each carrying
 // its point metrics and the signed delta vs. baseline.
@@ -398,6 +920,51 @@ export const MatrixVariantSchema = z
     authoritative: z.boolean().optional(),
     result_ref: z.string().optional(),
     result_sha256: z.string().optional(),
+    policy: z
+      .object({
+        catalog_version: z.string().min(1),
+        ablated_pass_id: PolicyPassIdSchema.nullable(),
+        trace_status: z.enum(["complete", "not-run", "error", "overflow"]),
+        trace_ref: PolicyTraceSetArtifactRefSchema.optional(),
+        trace_sha256: Sha256Schema.optional(),
+        raw_response_sha256: z.array(Sha256Schema),
+        authoritative: z.boolean(),
+        reason: z.string().min(1).nullable(),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if (value.authoritative && value.catalog_version !== POLICY_CATALOG_VERSION) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["catalog_version"],
+            message: "authoritative matrix policy requires the current catalog",
+          });
+        }
+        const hasIdentity = value.trace_ref !== undefined && value.trace_sha256 !== undefined;
+        const hasAnyIdentity = value.trace_ref !== undefined || value.trace_sha256 !== undefined;
+        if (value.trace_status === "complete" && !hasIdentity) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: "complete matrix policy requires trace ref/hash",
+          });
+        }
+        if (value.trace_status !== "complete" && hasAnyIdentity) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["trace_ref"],
+            message: `${value.trace_status} matrix policy forbids trace ref/hash`,
+          });
+        }
+        if (value.authoritative !== (value.trace_status === "complete" && value.reason === null)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["authoritative"],
+            message: "authoritative matrix policy requires complete trace and no reason",
+          });
+        }
+      })
+      .optional(),
   })
   .strict();
 
@@ -414,6 +981,7 @@ export const BenchMatrixSchema = z
         baseline: MatrixArtifactRefSchema,
         variants: z.array(MatrixArtifactRefSchema),
         reviewer_responses: MatrixArtifactRefSchema,
+        policy_trace_set: MatrixArtifactRefSchema.optional(),
       })
       .strict()
       .optional(),
@@ -426,6 +994,9 @@ export type BenchMatrix = z.infer<typeof BenchMatrixSchema>;
 export type PhasesSnapshot = z.infer<typeof PhasesSnapshotSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type CaseResult = z.infer<typeof CaseResultSchema>;
+export type BenchPolicyTraceRun = z.infer<typeof BenchPolicyTraceRunSchema>;
+export type BenchResponseManifest = z.infer<typeof BenchResponseManifestSchema>;
+export type BenchPolicyTraceSet = z.infer<typeof BenchPolicyTraceSetSchema>;
 export type SpreadStat = z.infer<typeof SpreadStatSchema>;
 export type Stability = z.infer<typeof StabilitySchema>;
 export type ProviderResult = z.infer<typeof ProviderResultSchema>;

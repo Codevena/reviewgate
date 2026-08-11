@@ -10,10 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { AuditLogger } from "../audit/logger.ts";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
+import { completeKey, reviewKey } from "../cassette/matching.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
 import {
   BUDGET_ATTRIBUTION_SLACK_MS,
@@ -26,7 +27,12 @@ import type { ReviewgateConfig } from "../config/define-config.ts";
 import { parseChangedRanges, parseDeletedPaths } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
-import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
+import type {
+  PolicyReplayCallContext,
+  ProviderAdapter,
+  ProviderConfig,
+  ReviewResult,
+} from "../providers/adapter-base.ts";
 import { isProviderAvailable } from "../providers/availability.ts";
 import { type ProviderId, SUBPROCESSLESS_PROVIDERS } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
@@ -42,6 +48,7 @@ import { collectReferencedFileContents } from "../research/plan-refs.ts";
 import { researchPath, writeResearch } from "../research/research-writer.ts";
 import { buildSymbolGraph, enclosingSymbol } from "../research/symbol-graph.ts";
 import { analyzeUiFiles } from "../research/ui-analysis.ts";
+import { createPolicyStateSnapshot } from "../rig/policy-replay-state.ts";
 import { sandboxRuntimeAvailable } from "../sandbox/availability.ts";
 import { SandboxUnavailableError } from "../sandbox/errors.ts";
 import {
@@ -52,6 +59,12 @@ import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { NO_PANEL_REVIEWER_ID } from "../schemas/pending-report.ts";
+import { type PolicyReplayEnvelopeInput, policyReplayCallId } from "../schemas/policy-replay.ts";
+import {
+  type PolicySummary,
+  PolicySummarySchema,
+  type PolicyTrace,
+} from "../schemas/policy-trace.ts";
 import type { PassLedger, ReviewedSnapshot } from "../schemas/state.ts";
 import { triageFromFacts } from "../triage/matrix.ts";
 import { refineTriage } from "../triage/triage-engine.ts";
@@ -62,7 +75,7 @@ import { withTimeout } from "../utils/with-timeout.ts";
 import { RG_VERSION } from "../version.ts";
 import { type Adjudication, renderAdjudications } from "./adjudications.ts";
 import { recurrenceNotesForFindings } from "./agent-lessons/recurrence.ts";
-import { aggregate } from "./aggregator.ts";
+import { type AggregateInput, aggregate } from "./aggregator.ts";
 import { CandidateStore } from "./brain/candidate-store.ts";
 import { runCurator } from "./brain/curator.ts";
 import type { EmbedOptions, Embedder } from "./brain/embeddings.ts";
@@ -73,7 +86,7 @@ import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { runChecks } from "./checks/runner.ts";
-import { type CriticVerdict, runCritic } from "./critic.ts";
+import { type CriticVerdict, buildCriticPrompt, runCritic } from "./critic.ts";
 import { attestEvidence, validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
@@ -86,7 +99,12 @@ import {
   fragmentingFpClasses,
 } from "./fp-ledger/fragmentation.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
-import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
+import {
+  applyGroundingJudgeVerdicts,
+  buildGroundingJudgePrompt,
+  groundFindings,
+  judgeGrounding,
+} from "./grounding.ts";
 import { renderHouseRules } from "./house-rules.ts";
 import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
@@ -97,6 +115,15 @@ import { orderForBudget, renderLoreBlock, selectForDiff } from "./lore/render.ts
 import { classifyEntry } from "./lore/staleness.ts";
 import { type LoreEntryParsed, loadLore } from "./lore/store.ts";
 import { PERSONA_REAFFIRM, reaffirmFor, resolvePersonas } from "./personas.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASSES } from "./policy/catalog.ts";
+import {
+  capturePolicyReplayEnvelope,
+  serializePolicyReplayAggregateInputs,
+} from "./policy/replay-capture.ts";
+import type { PolicyExecutionOptions } from "./policy/replay.ts";
+import { resolvePolicyExecutionOptions } from "./policy/replay.ts";
+import { OrderedResponseHashes } from "./policy/response-hashes.ts";
+import { PolicyTraceRecorder } from "./policy/trace.ts";
 import {
   HIGH_PRECISION_FLOOR,
   PROTECT_MIN_DECISIONS,
@@ -233,6 +260,11 @@ export interface OrchestratorInput {
   // Benchmark-only reliability control. Runtime callers omit this and retain
   // exactly one critic completion attempt.
   criticMaxAttempts?: number;
+  // Internal-only policy instrumentation/ablation. Normal Gate construction omits
+  // this and resolves to persist with an AuditLogger; direct/tests resolve off.
+  policyExecution?: PolicyExecutionOptions;
+  /** Internal Rig sink only. It carries no pass/ablation controls. */
+  policyReplayCapture?: { sinkDir: string; sourceCommit: string };
 }
 
 // P1a (bench): a single reviewer's pre-aggregation output, captured per attempt.
@@ -306,6 +338,10 @@ export interface IterationResult {
   // — a documented v1 boundary: the canon-guard finding fires on the NEXT gate
   // run instead, see docs/superpowers/specs/2026-07-09-lore-design.md).
   loreOutcomes?: { reminderEmittedId?: string; promotions: string[] };
+  // Server-owned policy telemetry. Physical persistence and compact summary
+  // binding are added by Task 7; memory mode exposes only the complete trace.
+  policyTrace?: PolicyTrace;
+  policySummary?: PolicySummary;
 }
 
 // Structural contract the LoopDriver depends on — lets the driver race a run
@@ -677,6 +713,12 @@ interface ReviewerRun {
   provider: ProviderId;
   persona: string;
   model: string;
+  /** Actual adapter-call attempt within this logical reviewer slot (skips do not count). */
+  attempt?: number;
+  /** Exact prompt digest used by RecordingAdapter for this call. */
+  promptSha256?: string;
+  /** Exact caller identity sent to RecordingAdapter for authoritative Rig capture. */
+  policyReplayCall?: PolicyReplayCallContext;
   // Deadline-aware budgets: true when this run's granted window was MATERIALLY
   // shortened by the remaining-budget clamp (more than BUDGET_ATTRIBUTION_SLACK_MS
   // below the provider's configured timeoutMs). A timeout under such a window is
@@ -717,6 +759,22 @@ export class Orchestrator {
   }): Promise<IterationResult> {
     const start = Date.now();
     const repo = this.input.repoRoot;
+    const policyExecution = resolvePolicyExecutionOptions(
+      this.input.policyExecution,
+      this.input.audit !== undefined,
+    );
+    let policyReplayStateSha256: string | null = null;
+    if (this.input.policyReplayCapture !== undefined) {
+      try {
+        policyReplayStateSha256 = createPolicyStateSnapshot({
+          sourceRepoRoot: repo,
+          outputRoot: dirname(this.input.policyReplayCapture.sinkDir),
+        }).stateSha256;
+      } catch {
+        // Telemetry only: an exact snapshot failure must never change the Gate verdict.
+        policyReplayStateSha256 = null;
+      }
+    }
     // S1: render prior adjudications ONCE — injected as trusted prompt context (before the
     // untrusted diff fence) AND hashed into the behavior cache key below.
     const adjudicationsText = renderAdjudications(opts.priorAdjudications ?? []);
@@ -802,6 +860,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -822,6 +881,7 @@ export class Orchestrator {
           criticCostUsd: 0,
           findings: [],
           runs: [],
+          policyTraceStatus: "not-run",
         }),
       };
     }
@@ -870,6 +930,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [f],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -908,9 +969,8 @@ export class Orchestrator {
     const fpFullSnapshot = fpStore ? await fpStore.snapshot() : undefined;
     // Pass the run timestamp so a sticky/active whose window has expired is
     // re-evaluated at read time and never served as suppressing (F-017).
-    const fpActiveSnapshot = fpStore
-      ? await fpStore.activeSnapshot(this.input.now?.() ?? new Date())
-      : undefined;
+    const fpObservedAt = this.input.now?.() ?? new Date();
+    const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot(fpObservedAt) : undefined;
 
     // M6: Context7 library docs. Fetched PRE-CACHE — before the behavior-hash —
     // so the docs-corpus identity feeds the cache key (a docs change must
@@ -1447,6 +1507,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -1488,6 +1549,7 @@ export class Orchestrator {
             criticCostUsd: 0,
             findings: [],
             runs: [],
+            policyTraceStatus: "not-run",
           }),
         };
       }
@@ -1602,9 +1664,30 @@ export class Orchestrator {
       findingsPath: string,
       diffPath: string,
       tmpDir: string,
+      attempt: number,
+      logicalSlot: number,
     ): Promise<ReviewerRun> => {
       const adapter = this.input.adapters[provider];
       const reviewStart = Date.now();
+      let promptSha256: string | undefined;
+      try {
+        promptSha256 = createHash("sha256").update(readFileSync(promptFile)).digest("hex");
+      } catch {
+        // Capture-only identity. The provider call retains its production behavior; an
+        // unavailable prompt digest simply prevents an authoritative replay envelope.
+      }
+      const policyReplayCall: PolicyReplayCallContext | undefined =
+        this.input.policyReplayCapture === undefined || promptSha256 === undefined
+          ? undefined
+          : {
+              runId: opts.runId,
+              iter: opts.iter,
+              kind: "reviewer",
+              ordinal: logicalSlot,
+              slot: logicalSlot,
+              attempt,
+              occurrence: 0,
+            };
       // #7: clamp this reviewer's per-run timeout to the triage cap for a small diff (never
       // ABOVE the provider's own timeout). The full panel still runs — only the wall-clock
       // ceiling drops, so a tiny change can't stall behind one slow slot for the full default.
@@ -1639,6 +1722,9 @@ export class Orchestrator {
           provider,
           persona,
           model,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         };
       }
       // Build a per-reviewer sandbox profile and forward { profile, mode } so the
@@ -1683,8 +1769,18 @@ export class Orchestrator {
           diffPath,
           ...(opts.signal ? { signal: opts.signal } : {}),
           ...(sandbox ? { sandbox } : {}),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         });
-        return { res, provider, persona, model, budgetCapped };
+        return {
+          res,
+          provider,
+          persona,
+          model,
+          budgetCapped,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
+        };
       } catch (err) {
         // strict + isolation-unavailable: fail closed for this reviewer with a
         // legible statusDetail, so the "0 ok reviewers → ERROR/block" gate handles
@@ -1709,6 +1805,9 @@ export class Orchestrator {
           persona,
           model,
           budgetCapped,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         };
       }
     };
@@ -1749,7 +1848,7 @@ export class Orchestrator {
     }
 
     const tasks = panelReviewers.map(
-      async (r): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
+      async (r, logicalSlot): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
         const adapter = this.input.adapters[r.provider];
         const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
         if (!adapter || !providerCfg || !providerCfg.enabled) return null;
@@ -1768,6 +1867,7 @@ export class Orchestrator {
         // default perms — it MUST be removed even on a thrown adapter, else every
         // review leaks a /tmp dir with the (untrusted) diff in it.
         try {
+          let actualAttempt = 0;
           const promptFile = join(runDir, "prompt.txt");
           const findingsPath = join(runDir, "findings.md");
           const diffPath = join(runDir, "diff.patch");
@@ -1952,6 +2052,8 @@ export class Orchestrator {
               findingsPath,
               diffPath,
               runDir,
+              ++actualAttempt,
+              logicalSlot,
             );
             const eff = effectFor(r.provider, run.res, run.budgetCapped);
             if (eff) effects.push(eff);
@@ -1992,6 +2094,8 @@ export class Orchestrator {
                 findingsPath,
                 diffPath,
                 runDir,
+                ++actualAttempt,
+                logicalSlot,
               );
               run.res.statusDetail =
                 `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
@@ -2041,6 +2145,8 @@ export class Orchestrator {
                 findingsPath,
                 diffPath,
                 runDir,
+                ++actualAttempt,
+                logicalSlot,
               );
               run.res.statusDetail =
                 `[last-resort from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
@@ -2203,6 +2309,7 @@ export class Orchestrator {
           criticCostUsd: 0,
           findings: [],
           runs: reviewerOutcomes,
+          policyTraceStatus: "not-run",
         }),
       };
     }
@@ -2217,6 +2324,82 @@ export class Orchestrator {
       .flatMap((s) => s.res.findings)
       .filter((f) => !isExcludedFromReview(f.file));
     const symbolFindings = await this.applySymbolSignatures(rawFindings);
+    const reviewerResponseHashes = new OrderedResponseHashes();
+    const responseCalls: PolicyReplayEnvelopeInput["response_calls"] = [];
+    const recordResponseCall = (input: {
+      kind: "reviewer" | "grounding" | "critic";
+      provider: ProviderId;
+      method: "review" | "complete";
+      key: string;
+      promptSha256: string;
+      ordinal: number;
+      slot: number;
+      attempt: number;
+      occurrence: number;
+      responseSha256: string;
+    }): void => {
+      responseCalls.push({
+        call_id: policyReplayCallId({
+          runId: opts.runId,
+          iter: opts.iter,
+          kind: input.kind,
+          provider: input.provider,
+          method: input.method,
+          key: input.key,
+          promptSha256: input.promptSha256,
+          ordinal: input.ordinal,
+          slot: input.slot,
+          attempt: input.attempt,
+          occurrence: input.occurrence,
+        }),
+        kind: input.kind,
+        provider: input.provider,
+        method: input.method,
+        key: input.key,
+        prompt_sha256: input.promptSha256,
+        ordinal: input.ordinal,
+        slot: input.slot,
+        attempt: input.attempt,
+        occurrence: input.occurrence,
+        response_sha256: input.responseSha256,
+      });
+    };
+    if (policyExecution.trace !== "off") {
+      for (const [ordinal, run] of settled.entries()) {
+        reviewerResponseHashes.record(`reviewer:${run.provider}`, ordinal, run.res.rawText);
+        if (
+          run.res.rawText !== undefined &&
+          run.promptSha256 !== undefined &&
+          run.policyReplayCall !== undefined
+        ) {
+          recordResponseCall({
+            kind: "reviewer",
+            provider: run.provider,
+            method: "review",
+            key: reviewKey(run.res.reviewerId),
+            promptSha256: run.promptSha256,
+            ordinal: run.policyReplayCall.ordinal,
+            slot: run.policyReplayCall.slot,
+            attempt: run.policyReplayCall.attempt,
+            occurrence: run.policyReplayCall.occurrence,
+            responseSha256: createHash("sha256")
+              .update(Buffer.from(run.res.rawText, "utf8"))
+              .digest("hex"),
+          });
+        }
+      }
+    }
+    const rawResponseSha256 = reviewerResponseHashes.values();
+    // One recorder owns the complete policy lifecycle. It is deliberately
+    // created at the last boundary before the first outcome-changing pass.
+    const policyRuntime =
+      policyExecution.trace === "off"
+        ? undefined
+        : PolicyTraceRecorder.start({
+            runId: opts.runId,
+            iter: opts.iter,
+            ablated: policyExecution.policyAblations,
+          });
     // Deterministic fact-check BEFORE grounding: a finding whose cited file:line
     // provably does not exist in the working tree (file empty / line out of range) is
     // a hallucination — demote it to advisory so a singleton reviewer can't hard-FAIL
@@ -2227,21 +2410,32 @@ export class Orchestrator {
       symbolFindings,
       this.input.repoRoot,
       parseDeletedPaths(this.input.diff),
+      policyRuntime,
     );
     // #1 (field report 2026-06-17): demote a finding whose OWN conclusion retracts it
     // ("…appears safe", "No issue", "No defect") to INFO before grounding/critic/aggregate,
     // so a self-contradicting WARN/CRITICAL never blocks the gate. First-party retraction
     // signal → category-independent; deterministic, demote-only, fail-safe.
+    const selfRefutationEnabled = this.input.config.phases.review.selfRefutationFilter !== false;
+    if (!selfRefutationEnabled) {
+      policyRuntime?.markInactive("evidence.self-refutation", "configured-off");
+    }
     const selfScreenedFindings = demoteSelfRefuting(
       factCheckedFindings,
-      this.input.config.phases.review.selfRefutationFilter !== false,
+      selfRefutationEnabled,
+      policyRuntime,
     );
     // non-convergence #2: demote a CRITICAL the reviewer's own text frames as currently-safe /
     // hypothetical / future fragility (no present defect) one step to WARN — pre-aggregate, like
     // self-refutation/grounding. One-step, security/correctness-exempt, fail-safe.
+    const hypotheticalEnabled = this.input.config.phases.review.hypotheticalSeverityGuard !== false;
+    if (!hypotheticalEnabled) {
+      policyRuntime?.markInactive("judgment.hypothetical", "configured-off");
+    }
     const allFindings = demoteHypotheticalCriticals(
       selfScreenedFindings,
-      this.input.config.phases.review.hypotheticalSeverityGuard !== false,
+      hypotheticalEnabled,
+      policyRuntime,
     );
     // S6 grounding corpus = diff + the WHOLE-FILE content of changed files (`fileContext`),
     // deliberately NOT the scoped `promptContext` the reviewer prompt now uses: grounding
@@ -2253,18 +2447,32 @@ export class Orchestrator {
     const groundingCorpus = `${this.input.diff}\n${fileContext ?? ""}`;
     // Layer 1 (deterministic, no LLM): demote a CRITICAL citing a code-shaped token absent
     // from the corpus.
-    let groundedFindings = groundFindings(allFindings, groundingCorpus);
+    let groundedFindings = groundFindings(allFindings, groundingCorpus, policyRuntime);
     // Layer 2 (LLM judge, opt-in via phases.grounding): demote a CRITICAL whose claim is
     // SEMANTICALLY fabricated (e.g. an invented `outerHTML` XSS sink where the code only sets
     // a React aria-label). Only fires when there is a CRITICAL to judge; any error → no demote.
     const groundingCfg = this.input.config.phases.grounding;
+    let groundingVerdicts = new Map<string, { grounded: boolean; reason?: string | undefined }>();
+    let groundingLlmStatus: "ran" | "not-run" | "error" = "not-run";
     if (groundingCfg && groundedFindings.some((f) => f.severity === "CRITICAL")) {
       const gAdapter = this.input.adapters[groundingCfg.provider];
       const gProviderCfg = this.input.config.providers[groundingCfg.provider] as
         | ProviderConfig
         | undefined;
       if (gAdapter && gProviderCfg) {
-        const { map } = await judgeGrounding(
+        const groundingPromptSha256 = createHash("sha256")
+          .update(
+            buildGroundingJudgePrompt(
+              groundedFindings.filter((finding) => finding.severity === "CRITICAL"),
+              groundingCorpus,
+            ),
+          )
+          .digest("hex");
+        const {
+          map,
+          status: groundingStatus,
+          rawResponseSha256: groundingResponseSha256,
+        } = await judgeGrounding(
           gAdapter,
           {
             model: groundingCfg.model ?? gProviderCfg.model,
@@ -2272,6 +2480,19 @@ export class Orchestrator {
             ...(gProviderCfg.auth ? { auth: gProviderCfg.auth } : {}),
             timeoutMs: gProviderCfg.timeoutMs,
             ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(this.input.policyReplayCapture === undefined
+              ? {}
+              : {
+                  policyReplayCall: {
+                    runId: opts.runId,
+                    iter: opts.iter,
+                    kind: "grounding" as const,
+                    ordinal: panelReviewers.length,
+                    slot: 0,
+                    attempt: 1,
+                    occurrence: 0,
+                  },
+                }),
             ...(gProviderCfg.openrouterProvider
               ? { openrouterProvider: gProviderCfg.openrouterProvider }
               : {}),
@@ -2279,8 +2500,34 @@ export class Orchestrator {
           groundedFindings,
           groundingCorpus,
         );
-        groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map);
+        groundingVerdicts = map;
+        groundingLlmStatus =
+          groundingStatus === "ran" ? "ran" : groundingStatus === "error" ? "error" : "not-run";
+        if (groundingResponseSha256 !== undefined) {
+          rawResponseSha256.push(groundingResponseSha256);
+          recordResponseCall({
+            kind: "grounding",
+            provider: groundingCfg.provider,
+            method: "complete",
+            key: completeKey(groundingCfg.provider, groundingPromptSha256),
+            promptSha256: groundingPromptSha256,
+            ordinal: panelReviewers.length,
+            slot: 0,
+            attempt: 1,
+            occurrence: 0,
+            responseSha256: groundingResponseSha256,
+          });
+          groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
+        } else {
+          policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
+        }
+      } else {
+        policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
       }
+    } else if (groundingCfg === null || groundingCfg === undefined) {
+      policyRuntime?.markInactive("judgment.grounding-llm", "configured-off");
+    } else {
+      policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
     }
 
     // --- Optional critic phase (demote-only) ---
@@ -2299,6 +2546,7 @@ export class Orchestrator {
     // (no usage envelope). Kept as a named field for the IterationResult shape.
     const criticCostUsd = 0;
     const criticCfg = this.input.config.phases.critic;
+    let criticAttempted = false;
     if (criticCfg && groundedFindings.length > 0) {
       const criticAdapter = this.input.adapters[criticCfg.provider];
       const cProviderCfg = this.input.config.providers[criticCfg.provider] as
@@ -2321,8 +2569,39 @@ export class Orchestrator {
         // review() — review() forces REVIEW_OUTPUT_SCHEMA on codex/openrouter/ollama
         // and makes the critic a silent no-op. No cost is attributed: complete()
         // returns only text (no usage envelope), so the critic phase is $0 here.
+        criticAttempted = true;
+        const criticPromptSha256 = createHash("sha256")
+          .update(buildCriticPrompt(groundedFindings))
+          .digest("hex");
+        let criticPhysicalAttempt = 0;
+        const successfulCriticCalls: PolicyReplayCallContext[] = [];
+        const replayCriticAdapter: Pick<ProviderAdapter, "complete"> =
+          this.input.policyReplayCapture === undefined ||
+          typeof criticAdapter.complete !== "function"
+            ? criticAdapter
+            : {
+                complete: async (prompt, completeOptions) => {
+                  const attempt = ++criticPhysicalAttempt;
+                  const policyReplayCall: PolicyReplayCallContext = {
+                    runId: opts.runId,
+                    iter: opts.iter,
+                    kind: "critic",
+                    ordinal: panelReviewers.length + attempt,
+                    slot: 0,
+                    attempt,
+                    occurrence: attempt - 1,
+                  };
+                  const text = await criticAdapter.complete?.call(criticAdapter, prompt, {
+                    ...completeOptions,
+                    policyReplayCall,
+                  });
+                  if (text === undefined) throw new Error("critic completion unavailable");
+                  successfulCriticCalls.push(policyReplayCall);
+                  return text;
+                },
+              };
         const r = await runCritic(
-          criticAdapter,
+          replayCriticAdapter,
           criticCfg.provider,
           {
             model: criticCfg.model ?? cProviderCfg.model,
@@ -2338,8 +2617,44 @@ export class Orchestrator {
           groundedFindings,
           this.input.criticMaxAttempts ?? 1,
         );
-        criticMap = r.map.size > 0 ? r.map : undefined;
+        criticMap = r.map;
         criticInfo = r.info;
+        if (r.rawResponseSha256s !== undefined) {
+          for (const [index, responseSha256] of r.rawResponseSha256s.entries()) {
+            rawResponseSha256.push(responseSha256);
+            const policyReplayCall = successfulCriticCalls[index];
+            if (policyReplayCall === undefined) continue;
+            recordResponseCall({
+              kind: "critic",
+              provider: criticCfg.provider,
+              method: "complete",
+              key: completeKey(criticCfg.provider, criticPromptSha256),
+              promptSha256: criticPromptSha256,
+              ordinal: policyReplayCall.ordinal,
+              slot: policyReplayCall.slot,
+              attempt: policyReplayCall.attempt,
+              occurrence: policyReplayCall.occurrence,
+              responseSha256,
+            });
+          }
+        } else if (r.rawResponseSha256 !== undefined) {
+          rawResponseSha256.push(r.rawResponseSha256);
+          const policyReplayCall = successfulCriticCalls[0];
+          if (policyReplayCall !== undefined) {
+            recordResponseCall({
+              kind: "critic",
+              provider: criticCfg.provider,
+              method: "complete",
+              key: completeKey(criticCfg.provider, criticPromptSha256),
+              promptSha256: criticPromptSha256,
+              ordinal: policyReplayCall.ordinal,
+              slot: policyReplayCall.slot,
+              attempt: policyReplayCall.attempt,
+              occurrence: policyReplayCall.occurrence,
+              responseSha256: r.rawResponseSha256,
+            });
+          }
+        }
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
       }
@@ -2442,7 +2757,30 @@ export class Orchestrator {
           })
         : undefined;
 
-    const agg = aggregate({
+    const policyInactive: NonNullable<AggregateInput["policyInactive"]> = {};
+    if (criticCfg === null || criticCfg === undefined) {
+      policyInactive["judgment.critic"] = "configured-off";
+    } else if (!criticAttempted) {
+      policyInactive["judgment.critic"] = "stage-precondition-miss";
+    }
+    if (this.input.config.phases.review.scopeToDiff === false) {
+      policyInactive["scope.diff"] = "configured-off";
+    } else if (this.input.reportMode === "one-shot") {
+      policyInactive["scope.diff"] = "stage-precondition-miss";
+    }
+    if (this.input.config.phases.review.deltaReview === false) {
+      policyInactive["scope.delta"] = "configured-off";
+    } else if (deltaScope === null) {
+      policyInactive["scope.delta"] = "stage-precondition-miss";
+    }
+    if (!this.input.foreignFiles || this.input.foreignFiles.size === 0) {
+      policyInactive["scope.session"] =
+        this.input.config.phases.review.scopeToSession === false
+          ? "configured-off"
+          : "stage-precondition-miss";
+    }
+
+    const aggregateInput: AggregateInput = {
       findings: groundedFindings,
       // Distinct reviewer identities, NOT raw slot count: collapsed fallbacks
       // (two slots → same provider:persona) must not satisfy the singleton-
@@ -2480,7 +2818,10 @@ export class Orchestrator {
       // (one-shot plan reviews have no decision cycle to bind regions to). The same
       // value feeds regionsSegment in the cache key above.
       ...(activeRegions ? { rejectedRegions: activeRegions } : {}),
-    });
+      ...(policyRuntime === undefined ? {} : { policyRuntime }),
+      ...(policyRuntime === undefined ? {} : { policyInactive }),
+    };
+    const agg = aggregate(aggregateInput);
 
     // Include critic-DROPPED likely_fp findings (INFO → drop): they never reach
     // dedupedFindings, so filtering it alone undercounts the critic's activity.
@@ -2492,12 +2833,14 @@ export class Orchestrator {
     // outcomes so downstream learners have signal. NEVER changes the verdict or
     // report — a failure here is swallowed.
     const ioCfg = this.input.config.phases.implicitOutcomes;
+    let implicitOutcomeCreatedAt: string | null = null;
     if (ioCfg?.enabled) {
       try {
+        implicitOutcomeCreatedAt = new Date().toISOString();
         const outcomes = deriveImplicitOutcomes(agg.dedupedFindings, agg.criticDropped, {
           runId: opts.runId,
           iter: opts.iter,
-          nowIso: new Date().toISOString(),
+          nowIso: implicitOutcomeCreatedAt,
         });
         await new ImplicitOutcomeStore(repo).append(outcomes, ioCfg.cap);
       } catch (err) {
@@ -2680,6 +3023,127 @@ export class Orchestrator {
       loreFindingsBuilt.length > 0
         ? { ...agg.counts, info: agg.counts.info + loreFindingsBuilt.length }
         : agg.counts;
+    const policyTrace = policyRuntime?.finalize({
+      rawResponseSha256,
+      verdict: agg.verdict,
+      finalFindings,
+    });
+    if (
+      this.input.policyReplayCapture !== undefined &&
+      policyReplayStateSha256 !== null &&
+      policyTrace !== undefined &&
+      policyTrace !== null
+    ) {
+      try {
+        capturePolicyReplayEnvelope({
+          sinkDir: this.input.policyReplayCapture.sinkDir,
+          measuredRepoRoot: repo,
+          envelope: {
+            schema: "reviewgate.policy-replay-envelope.v1",
+            catalog_version: POLICY_CATALOG_VERSION,
+            run_id: opts.runId,
+            iter: opts.iter,
+            source_commit: this.input.policyReplayCapture.sourceCommit,
+            exact_diff: this.input.diff,
+            pre_policy_findings: structuredClone(symbolFindings),
+            grounding: {
+              corpus: groundingCorpus,
+              verdicts: [...groundingVerdicts]
+                .map(([signature, verdict]) => ({ signature, ...verdict }))
+                .sort((left, right) =>
+                  left.signature < right.signature ? -1 : left.signature > right.signature ? 1 : 0,
+                ),
+              llm_status: groundingLlmStatus,
+            },
+            aggregate: serializePolicyReplayAggregateInputs(aggregateInput),
+            policy_final_findings: structuredClone(agg.dedupedFindings),
+            pre_policy: {
+              self_refutation_enabled: selfRefutationEnabled,
+              hypothetical_enabled: hypotheticalEnabled,
+            },
+            state_sha256: policyReplayStateSha256,
+            raw_response_sha256: [...rawResponseSha256],
+            response_calls: responseCalls,
+            history: {
+              fp_ledger:
+                fpStore === null
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      active_at: fpObservedAt.toISOString(),
+                      clusters_at: now.toISOString(),
+                    },
+              reputation:
+                repCfg?.enabled !== true
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      observed_at: now.toISOString(),
+                      min_samples: repCfg.minSamples,
+                      trust_floor: repCfg.trustFloor,
+                      half_life_days: repCfg.halfLifeDays,
+                    },
+              cycle_state: {
+                source: "state.json",
+                region_rejected_enabled: activeRegions !== null,
+              },
+              implicit_outcomes:
+                ioCfg?.enabled !== true || implicitOutcomeCreatedAt === null
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      cap: ioCfg.cap,
+                      created_at: implicitOutcomeCreatedAt,
+                    },
+            },
+            policy_trace: policyTrace,
+            lossless: true,
+          },
+        });
+      } catch {
+        // Capture and redaction are diagnostic telemetry. Never alter production behavior.
+      }
+    }
+    let policySummary: PolicySummary | undefined;
+    if (policyExecution.trace === "persist") {
+      // Keep the gate's abort boundary ahead of all persistence. The complete
+      // trace is stored before pending.*, so every report/run summary can bind
+      // one identical content address.
+      opts.signal?.throwIfAborted();
+      const stored =
+        policyTrace === undefined || policyTrace === null || this.input.audit === undefined
+          ? ({ status: "error" } as const)
+          : this.input.audit.writePolicyTrace(policyTrace);
+      const candidate = {
+        catalog_version: POLICY_CATALOG_VERSION,
+        status: stored.status,
+        passes:
+          policyTrace?.passes ??
+          POLICY_PASSES.map(
+            (pass) =>
+              policyRuntime?.summary(pass.id) ?? {
+                pass_id: pass.id,
+                status: "error" as const,
+                reason_code: "instrumentation-error" as const,
+              },
+          ),
+        ...(stored.status === "complete"
+          ? { policy_trace_ref: stored.ref, policy_trace_sha256: stored.sha256 }
+          : {}),
+      };
+      const parsed = PolicySummarySchema.safeParse(candidate);
+      policySummary = parsed.success
+        ? parsed.data
+        : PolicySummarySchema.parse({
+            catalog_version: POLICY_CATALOG_VERSION,
+            status: "error",
+            passes: POLICY_PASSES.map((pass) => ({
+              pass_id: pass.id,
+              status: "error",
+              reason_code: "instrumentation-error",
+            })),
+          });
+    }
     // Banner data for invalid/broad/zero-match entries + the render-budget drop
     // count — render-only (report-writer.ts), never affects the verdict.
     const loreBanner =
@@ -2712,6 +3176,7 @@ export class Orchestrator {
       triage.riskClass === "docs",
       wholeDiffAttributable,
       loreBanner,
+      policySummary,
     );
 
     // --- Brain Curator (Phase 4): non-blocking, best-effort, hard-timeout-bounded.
@@ -2871,6 +3336,8 @@ export class Orchestrator {
             },
           }
         : {}),
+      ...(policyTrace === undefined || policyTrace === null ? {} : { policyTrace }),
+      ...(policySummary === undefined ? {} : { policySummary }),
       summary: buildRunSummary({
         verdict: agg.verdict,
         source: "panel",
@@ -2880,6 +3347,17 @@ export class Orchestrator {
         findings: finalFindings,
         runs: reviewerOutcomes,
         ruleUncited,
+        ...(policySummary === undefined
+          ? {}
+          : {
+              policyTraceStatus: policySummary.status,
+              ...(policySummary.policy_trace_ref === undefined
+                ? {}
+                : { policyTraceRef: policySummary.policy_trace_ref }),
+              ...(policySummary.policy_trace_sha256 === undefined
+                ? {}
+                : { policyTraceSha256: policySummary.policy_trace_sha256 }),
+            }),
       }),
     };
   }
@@ -3164,6 +3642,7 @@ export class Orchestrator {
       zero_match: string[];
       dropped: number;
     },
+    policySummary?: PolicySummary,
   ): Promise<void> {
     // Single chokepoint for the self-deadline: if the gate aborted this run
     // (loop.runTimeoutMs), NO writeReport branch — early triage ERROR/PASS, cache
@@ -3240,6 +3719,7 @@ export class Orchestrator {
           ? { whole_diff_attributable: wholeDiffAttributable }
           : {}),
         ...(loreBanner ? { lore_banner: loreBanner } : {}),
+        ...(policySummary ? { policy_summary: policySummary } : {}),
         cost_usd_total: runs.reduce((sum, r) => sum + r.res.usage.costUsd, 0),
         duration_ms_total: Date.now() - start,
         generated_at: new Date().toISOString(),

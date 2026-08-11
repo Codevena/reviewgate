@@ -11,9 +11,42 @@
 //     read as "no false positives on a turn that had findings", a different and flattering
 //     claim. 7 of the 12 pilot turns are clean, so this is the common case.
 import { z } from "zod";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import { MetricSchema, SpreadStatSchema } from "./bench-result.ts";
 import { FindingSchema } from "./finding.ts";
 import { CriticInfoSchema } from "./pending-report.ts";
+
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
+const PolicyReplayTraceRefSchema = z
+  .string()
+  .regex(/^[0-9a-f]{12}-i(?:0|[1-9]\d*)-[0-9a-f]{12}\.json$/);
+
+/**
+ * Immutable identity copied from the exact manifest used by the harvester. Optional keeps
+ * pre-binding results parseable, but authoritative replay refuses to use one without it.
+ */
+export const RigPolicyReplayArtifactBindingSchema = z
+  .object({
+    manifestRef: z.string().regex(/^[^/\\]+$/),
+    manifestSha256: Sha256Schema,
+    scriptId: z.string().min(1),
+    initialStateRef: z.string().regex(/^policy-state\/[0-9a-f]{64}\.json$/),
+    initialStateSha256: Sha256Schema,
+    initialStateDigest: Sha256Schema,
+    cassetteRef: z.literal("cassette.jsonl"),
+    cassetteSha256: Sha256Schema,
+    turns: z.array(
+      z
+        .object({
+          index: z.number().int().positive(),
+          traces: z.array(
+            z.object({ ref: PolicyReplayTraceRefSchema, sha256: Sha256Schema }).strict(),
+          ),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
 /**
  * M6 — which suppression layer removed or demoted how many findings.
@@ -112,12 +145,49 @@ export const RigTurnRecordSchema = z
      * `src/rig/ablate.ts` — it is the reason two of the four layers can only be bounded.
      */
     findings: z.array(FindingSchema),
+    /** Optional so results harvested before exact replay remain parseable. */
+    policyReplay: z
+      .object({
+        status: z.enum(["complete", "missing", "error", "overflow", "invalid"]),
+        traces: z.array(
+          z
+            .object({
+              ref: z.string().min(1),
+              sha256: z.string().regex(/^[0-9a-f]{64}$/),
+              runId: z.string().min(1),
+              iter: z.number().int().positive(),
+              stateSha256: z.string().regex(/^[0-9a-f]{64}$/),
+              lossless: z.boolean(),
+            })
+            .strict(),
+        ),
+        reason: z.string().nullable(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   // The two null contracts, enforced rather than documented: a future edit that computes
   // `caught` for a clean turn or `0` for a zero-finding turn fails validation here instead of
   // publishing a number whose meaning silently changed.
   .superRefine((t, ctx) => {
+    if (t.policyReplay !== undefined) {
+      const complete = t.policyReplay.status === "complete";
+      if (complete !== (t.policyReplay.traces.length > 0 && t.policyReplay.reason === null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "complete replay requires traces and no reason; other statuses require a reason",
+          path: ["policyReplay"],
+        });
+      }
+      if (!complete && t.policyReplay.traces.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "non-complete replay status cannot carry authoritative traces",
+          path: ["policyReplay", "traces"],
+        });
+      }
+    }
     if ((t.seededId === null) !== (t.caught === null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -232,6 +302,41 @@ export const RigResultSchema = z
     provenance: RigProvenanceSchema,
     turns: z.array(RigTurnRecordSchema),
     metrics: RigMetricsSchema,
+    /** Closed policy authority statement. Legacy artifacts omit it and remain parseable. */
+    policyReplay: z
+      .object({
+        authoritative: z.boolean(),
+        catalogVersion: z.literal(POLICY_CATALOG_VERSION).nullable(),
+        sourceCommit: z
+          .string()
+          .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+          .nullable(),
+        passIds: z.array(z.enum(POLICY_PASS_IDS)),
+        reason: z.string().nullable(),
+        artifactBinding: RigPolicyReplayArtifactBindingSchema.optional(),
+      })
+      .strict()
+      .superRefine((value, ctx) => {
+        if (value.authoritative !== (value.reason === null)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["reason"],
+            message: "authoritative requires no reason; non-authoritative requires one",
+          });
+        }
+        if (
+          value.authoritative &&
+          (value.passIds.length !== POLICY_PASS_IDS.length ||
+            POLICY_PASS_IDS.some((passId, index) => value.passIds[index] !== passId))
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["passIds"],
+            message: "authoritative replay requires the complete policy catalog",
+          });
+        }
+      })
+      .optional(),
     /**
      * Everything that failed, was skipped, or could not be read — one line each.
      * Task 6's honesty rule ("a run with three timed-out turns that reports only the nine
@@ -248,3 +353,4 @@ export type RigSlope = z.infer<typeof RigSlopeSchema>;
 export type RigMetrics = z.infer<typeof RigMetricsSchema>;
 export type RigProvenance = z.infer<typeof RigProvenanceSchema>;
 export type RigResult = z.infer<typeof RigResultSchema>;
+export type RigPolicyReplayArtifactBinding = z.infer<typeof RigPolicyReplayArtifactBindingSchema>;

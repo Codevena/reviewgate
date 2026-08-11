@@ -1,5 +1,112 @@
 import { describe, expect, it } from "bun:test";
-import { BenchResultSchema } from "../../src/schemas/bench-result.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "../../src/audit/canonical.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
+import {
+  BenchMatrixSchema,
+  BenchPolicyTraceSetSchema,
+  BenchResponseManifestSchema,
+  BenchResultSchema,
+} from "../../src/schemas/bench-result.ts";
+
+function emptyPolicyTrace(ablated: string[] = []) {
+  return {
+    schema: "reviewgate.policy-trace.v1",
+    catalog_version: POLICY_CATALOG_VERSION,
+    run_id: "bench-case",
+    iter: 1,
+    ablated,
+    raw_response_sha256: ["a".repeat(64)],
+    passes: POLICY_PASS_IDS.map((passId) => ({
+      pass_id: passId,
+      status: "ran",
+      considered: 0,
+      opportunities: 0,
+      would_apply: 0,
+      applied: 0,
+      protected: 0,
+      blocking_removed: 0,
+      blocking_preserved: 0,
+      dropped: 0,
+    })),
+    evaluations: [],
+    stages: [
+      {
+        stage_id: "verdict.compute",
+        order: 190,
+        reason_code: "no-blocking-findings",
+        input_signatures: [],
+        verdict: "PASS",
+      },
+    ],
+    final: {
+      verdict: "PASS",
+      counts: { critical: 0, warn: 0, info: 0 },
+      finding_signatures: [],
+      finding_severities: [],
+    },
+  };
+}
+
+function completePolicyRecord() {
+  const trace = emptyPolicyTrace();
+  const traceSha256 = createHash("sha256").update(canonicalJson(trace)).digest("hex");
+  const finalIdentitySha256 = createHash("sha256").update(canonicalJson(trace.final)).digest("hex");
+  return {
+    authoritative: true,
+    status: "complete",
+    catalog_version: POLICY_CATALOG_VERSION,
+    requested_ablations: [],
+    trace,
+    trace_ref: `artifacts/policy-traces/2026/07/01/policy/${createHash("sha256").update(trace.run_id).digest("hex").slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`,
+    trace_sha256: traceSha256,
+    request_identity_sha256: "c".repeat(64),
+    effective_config_sha256: "d".repeat(64),
+    final_identity_sha256: finalIdentitySha256,
+    reason: null,
+  };
+}
+
+function validPolicyTraceSet() {
+  const trace = (caseId: string, traceSha256: string) => ({
+    case_id: caseId,
+    repeat: 1,
+    trace_ref: `artifacts/policy-traces/2026/07/01/policy/${"9".repeat(12)}-i1-${traceSha256.slice(0, 12)}.json`,
+    trace_sha256: traceSha256,
+    effective_config_sha256: "d".repeat(64),
+    request_identity_sha256: "c".repeat(64),
+    final_identity_sha256: "e".repeat(64),
+    raw_response_sha256: ["a".repeat(64)],
+  });
+  return {
+    schema: "reviewgate.bench.policy-trace-set.v1",
+    catalog_version: POLICY_CATALOG_VERSION,
+    response_manifest: {
+      path: `artifacts/responses/${"b".repeat(64)}.json`,
+      sha256: "b".repeat(64),
+    },
+    runs: [
+      {
+        label: "baseline",
+        ablated_pass_id: null,
+        result: {
+          path: `artifacts/results/${"1".repeat(64)}.json`,
+          sha256: "1".repeat(64),
+        },
+        traces: [trace("case-1", "2".repeat(64))],
+      },
+      {
+        label: "-judgment.confidence",
+        ablated_pass_id: "judgment.confidence",
+        result: {
+          path: `artifacts/results/${"3".repeat(64)}.json`,
+          sha256: "3".repeat(64),
+        },
+        traces: [trace("case-1", "4".repeat(64))],
+      },
+    ],
+  };
+}
 
 const validResult = {
   schema: "reviewgate.bench.result.v1",
@@ -69,11 +176,355 @@ const validResult = {
   },
 };
 
+const UNSAFE_REPLAY_STRINGS = [
+  ...[
+    "/Users",
+    "/home",
+    "/root",
+    "/var",
+    "/private",
+    "/Volumes",
+    "/tmp",
+    "/etc",
+    "/opt",
+    "/mnt",
+    "/proc",
+    "/sys",
+    "/dev",
+  ].map((directory) => `open ${directory}/reviewgate/private.json`),
+  "open /usr/local/bin/reviewgate",
+  "open /Applications/ReviewGate.app/Contents/Info.plist",
+  "open /Library/Application Support/ReviewGate/config.json",
+  "open /System/Library/CoreServices/SystemVersion.plist",
+  "open /workspace/reviewgate/private.json",
+  "open //server/share/credentials.json",
+  String.raw`open C:\Users\alice\secrets.json`,
+  String.raw`open \\server\share\credentials.json`,
+  "open file:///etc/passwd",
+  "password=hunter2",
+  "api_key=notverysecret",
+  "Authorization: Basic YTpi",
+  "https://user:password@example.com/private",
+  "Authorization: Bearer short-but-secret",
+  "ｐａｓｓｗｏｒｄ=hunter2",
+  "password：hunter2",
+  "ａｐｉ＿ｋｅｙ＝notverysecret",
+  'payload ｛"ｐａｓｓｗｏｒｄ"："hunter2"｝',
+  "https://example.com/download？ａｐｉ＿ｋｅｙ＝notverysecret",
+  "password%EF%BC%9Ahunter2",
+  "%EF%BD%90%EF%BD%81%EF%BD%93%EF%BD%93%EF%BD%97%EF%BD%8F%EF%BD%92%EF%BD%84%EF%BC%9Dhunter2",
+  "https://example.com/download%EF%BC%9Fapi_key%EF%BC%9Dnotverysecret",
+  "open %2Fusr%2Flocal%2Fbin%2Freviewgate",
+  "open file%3A%2F%2F%2Fetc%2Fpasswd",
+  "open file%253A%252F%252F%252Fetc%252Fpasswd",
+  "query %2570assword%253Dhunter2",
+  'payload {"password":"hunter2"}',
+  'payload {"authorization":"Basic YTpi"}',
+  "client_secret=notverysecret",
+  "ACCESS-TOKEN=notverysecret",
+  "https://example.com/download?X-Amz-Signature=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "https://example.com/download?token=notverysecret",
+  "https://example.com/download?signature=notverysecret",
+  "https://example.com/download?password=hunter2",
+  "https://example.com/download?api-key=notverysecret",
+  "open %2525252Fusr%2525252Flocal%2525252Fbin",
+  "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
+  "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+  "request used AKIAIOSFODNN7EXAMPLE",
+  "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
+  "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
+];
+
+const SAFE_REPLAY_STRINGS = [
+  "request failed in src/core/orchestrator.ts",
+  "see https://example.com/root/replay?case=safe-value",
+  "see https://docs.example.com/guides/reviewgate/policy-traces",
+  "see https://docs.example.com/runs/550e8400-e29b-41d4-a716-446655440000/long-safe-policy-trace-slug",
+  "probe http://[::1]:3000/api/health/check",
+  "probe https://[2001:db8::1]/reviewgate/status",
+  "see https://docs.example.com/search?topic=policy&case=safe-value",
+  "quota is 50% remaining",
+  "100% utilization",
+  "see https://example.com/search?q=100%25+coverage",
+  "see https://example.com/search?signatureAlgorithm=ed25519",
+  "see https://example.com/search?token_count=128",
+  "see https://example.com/search?passwordPolicy=strict",
+];
+
+function parseThrowableSnapshot(snapshot: unknown) {
+  return BenchResponseManifestSchema.safeParse({
+    schema: "reviewgate.bench.provider-response-hashes.v2",
+    entries: [
+      {
+        provider: "codex",
+        kind: "review",
+        ordinal: 0,
+        request_sha256: "a".repeat(64),
+        response_sha256: createHash("sha256").update(canonicalJson(snapshot)).digest("hex"),
+        outcome: "throw",
+        throw_snapshot: snapshot,
+      },
+    ],
+  });
+}
+
 describe("BenchResultSchema", () => {
   it("parses a valid result", () => {
     const r = BenchResultSchema.safeParse(validResult);
     if (!r.success) console.error(r.error);
     expect(r.success).toBe(true);
+  });
+
+  it("accepts complete embedded policy trace provenance additively", () => {
+    const parsed = BenchResultSchema.safeParse({
+      ...validResult,
+      cases: [{ ...validResult.cases[0], policy_trace: completePolicyRecord() }],
+    });
+    if (!parsed.success) console.error(parsed.error);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps legacy BenchResult v1 artifacts explicitly parseable without policy traces", () => {
+    expect(BenchResultSchema.safeParse(validResult).success).toBe(true);
+  });
+
+  it("rejects complete trace provenance with a missing ref/hash instead of defaulting it", () => {
+    const policy = completePolicyRecord();
+    const { trace_ref: _missing, ...withoutRef } = policy;
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: withoutRef }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a tampered embedded trace whose immutable hash/ref no longer match", () => {
+    const policy = completePolicyRecord();
+    policy.trace.raw_response_sha256 = ["f".repeat(64)];
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: policy }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects a missing ran-pass counter rather than coercing it to zero", () => {
+    const policy = completePolicyRecord();
+    const first = policy.trace.passes[0];
+    if (first) Reflect.deleteProperty(first, "opportunities");
+    expect(
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], policy_trace: policy }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("binds every trace-set artifact path to its declared immutable hash", () => {
+    const traceSet = validPolicyTraceSet();
+    expect(BenchPolicyTraceSetSchema.safeParse(traceSet).success).toBe(true);
+
+    expect(
+      BenchPolicyTraceSetSchema.safeParse({
+        ...traceSet,
+        response_manifest: { ...traceSet.response_manifest, sha256: "5".repeat(64) },
+      }).success,
+    ).toBe(false);
+    expect(
+      BenchPolicyTraceSetSchema.safeParse({
+        ...traceSet,
+        runs: traceSet.runs.map((run, index) =>
+          index === 0 ? { ...run, result: { ...run.result, sha256: "6".repeat(64) } } : run,
+        ),
+      }).success,
+    ).toBe(false);
+    expect(
+      BenchPolicyTraceSetSchema.safeParse({
+        ...traceSet,
+        runs: traceSet.runs.map((run, index) =>
+          index === 1
+            ? {
+                ...run,
+                traces: run.traces.map((row) => ({
+                  ...row,
+                  trace_sha256: "7".repeat(64),
+                })),
+              }
+            : run,
+        ),
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects unsafe replay strings at the persisted-schema top level", () => {
+    expect(
+      parseThrowableSnapshot({
+        kind: "error",
+        error_type: "Error",
+        name: "Error",
+        message: "failed",
+        fields: [{ key: "apiToken", value: "secret", enumerable: true }],
+      }).success,
+    ).toBe(false);
+    expect(
+      parseThrowableSnapshot({
+        kind: "primitive",
+        primitive_type: "string",
+        value: "failed at /Users/alice/private/file",
+      }).success,
+    ).toBe(false);
+
+    for (const value of UNSAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: value,
+          fields: [],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("rejects unsafe replay strings recursively in the persisted schema", () => {
+    for (const value of UNSAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: "provider failed",
+          fields: [
+            {
+              key: "context",
+              value: { attempts: [{ detail: "safe" }, { detail: value }] },
+              enumerable: true,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("allows safe replay strings at the persisted-schema top level", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: value,
+          fields: [],
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("allows safe replay strings recursively in the persisted schema", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: "provider failed",
+          fields: [{ key: "context", value: { detail: value }, enumerable: true }],
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("strictly validates normalized matrix policy provenance", () => {
+    const metric = validResult.aggregate.precision;
+    const matrix = {
+      schema: "reviewgate.bench.matrix.v1",
+      provenance: validResult.provenance,
+      variants: [
+        {
+          label: "-judgment.confidence",
+          ablation: "judgment.confidence",
+          class: "A",
+          precision: metric,
+          recall: metric,
+          clean_fp_rate: metric,
+          delta: { precision: 0, recall: 0, clean_fp_rate: 0 },
+          policy: {
+            catalog_version: POLICY_CATALOG_VERSION,
+            ablated_pass_id: "judgment.confidence",
+            trace_status: "complete",
+            trace_ref: `artifacts/policy-trace-sets/${"f".repeat(64)}.json`,
+            trace_sha256: "f".repeat(64),
+            raw_response_sha256: ["a".repeat(64)],
+            authoritative: true,
+            reason: null,
+          },
+        },
+      ],
+    };
+    expect(BenchMatrixSchema.safeParse(matrix).success).toBe(true);
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: { ...matrix.variants[0]?.policy, ablated_pass_id: "confidence-floor" },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: {
+              ...matrix.variants[0]?.policy,
+              catalog_version: "reviewgate.policy-catalog.v0",
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        variants: [
+          {
+            ...matrix.variants[0],
+            policy: {
+              ...matrix.variants[0]?.policy,
+              authoritative: false,
+              trace_status: "error",
+              trace_sha256: undefined,
+              reason: "trace failed",
+            },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+
+    expect(
+      BenchMatrixSchema.safeParse({
+        ...matrix,
+        artifacts: {
+          baseline: { path: `artifacts/results/${"a".repeat(64)}.json`, sha256: "a".repeat(64) },
+          variants: [],
+          reviewer_responses: {
+            path: `artifacts/responses/${"b".repeat(64)}.json`,
+            sha256: "b".repeat(64),
+          },
+          policy_trace_set: {
+            path: `artifacts/policy-trace-sets/${"c".repeat(64)}.json`,
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it("accepts Alpha.12 integrity, critic coverage and honest unknown costs additively", () => {

@@ -1,5 +1,6 @@
 // tests/unit/self-refutation.test.ts
 import { describe, expect, it } from "bun:test";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import { demoteSelfRefuting } from "../../src/core/self-refutation.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
@@ -146,6 +147,32 @@ describe("demoteSelfRefuting — NEGATIVE (must stay blocking)", () => {
 });
 
 describe("demoteSelfRefuting — guards", () => {
+  it("records a matching correctness retraction as protected after its opportunity", () => {
+    const f = mkFinding({
+      category: "correctness",
+      details: "Traced the index math carefully. This is fine.",
+    });
+    const runtime = PolicyTraceRecorder.start({ runId: "self-protected", iter: 1, ablated: [] });
+    const out = demoteSelfRefuting([f], true, runtime);
+
+    expect(out[0]?.severity).toBe("WARN");
+    expect(out[0]?.self_refuted).toBeUndefined();
+    expect(out[0]?.policy_effects?.[0]).toMatchObject({
+      pass_id: "evidence.self-refutation",
+      order: 20,
+      action: "protected",
+      reason_code: "terminal-self-refutation",
+      protected_by: "security-correctness-floor",
+    });
+    expect(runtime.summary("evidence.self-refutation")).toMatchObject({
+      opportunities: 1,
+      would_apply: 1,
+      applied: 0,
+      protected: 1,
+      blocking_preserved: 1,
+    });
+  });
+
   it("is idempotent (re-running leaves an already-demoted INFO unchanged)", () => {
     const f = mkFinding({ details: "Looks correct. No issue." });
     const once = demoteSelfRefuting([f]);

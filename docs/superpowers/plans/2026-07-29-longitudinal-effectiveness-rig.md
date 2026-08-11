@@ -984,6 +984,10 @@ NOT the mechanism for any counterfactual, and it must never be given an `--ablat
 
 ### Task 6: Preregistration, the pilot run, and the honest write-up ✅ DONE 2026-08-05
 
+> **Correction (2026-08-10):** The stale-report defect superseded pilot-01's M2 value and sample
+> size below. See `docs/dev/2026-08-07-rig-stale-report-correction.md` for the preserved
+> before/after record.
+
 Ran on the fourth attempt — 12/12 turns, **zero unreviewed**, 61 min wall clock, $0.0166
 billed. Result `rig/results/pilot-01/result.json` + 40-entry cassette; write-up
 `docs/dev/2026-08-05-pilot-01-result.md`. The three earlier attempts (0 audit events, cassette

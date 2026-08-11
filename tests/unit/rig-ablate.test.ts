@@ -1,8 +1,20 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { makeMetric, summarizeSpread } from "../../src/bench/metrics.ts";
+import { RigLayerSelectorError, runRigAblate } from "../../src/cli/commands/rig.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import { ablate, renderAblationMatrix } from "../../src/rig/ablate.ts";
+import { RigAuthorityError } from "../../src/rig/policy-replay-state.ts";
+import { assertRigResultManifestBinding, renderPolicyAblationRows } from "../../src/rig/replay.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
-import type { RigResult, RigTurnRecord } from "../../src/schemas/rig-result.ts";
+import { RigManifestSchema } from "../../src/schemas/rig-manifest.ts";
+import {
+  type RigResult,
+  RigResultSchema,
+  type RigTurnRecord,
+} from "../../src/schemas/rig-result.ts";
 
 const ZERO = { critic: 0, reputation: 0, fp_ledger: 0, lore: 0 };
 
@@ -85,7 +97,350 @@ function result(turns: RigTurnRecord[], over: Partial<RigResult> = {}): RigResul
 
 const NO_TAGS = new Map<number, string[]>();
 
+function exactManifest(runId: string, scriptId: string, sourceCommit: string) {
+  return {
+    schema: "reviewgate.rig.manifest.v1",
+    runId,
+    scriptId,
+    outDir: "/unused",
+    cassettePath: null,
+    policyReplay: {
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit,
+      initialStateRef: `policy-state/${"1".repeat(64)}.json`,
+      initialStateSha256: "2".repeat(64),
+      initialStateDigest: "3".repeat(64),
+      cassetteSha256: "4".repeat(64),
+      cassetteRef: "cassette.jsonl",
+      captureDir: "policy-replay",
+    },
+    turns: [
+      {
+        index: 1,
+        snapshotDir: "/unused/turn-01",
+        agentExitCode: 0,
+        wallMs: 1,
+        policyReplay: {
+          status: "complete",
+          traces: [{ ref: `${"a".repeat(12)}-i1-${"b".repeat(12)}.json`, sha256: "5".repeat(64) }],
+        },
+      },
+    ],
+  };
+}
+
+function exactResultForManifest(
+  manifest: ReturnType<typeof exactManifest>,
+  manifestSha256: string,
+) {
+  const firstTrace = manifest.turns[0]?.policyReplay.traces[0];
+  if (firstTrace === undefined) throw new Error("exact result fixture is missing its trace");
+  const base = result([
+    turn({
+      index: 1,
+      policyReplay: {
+        status: "complete",
+        traces: [
+          {
+            ...firstTrace,
+            runId: manifest.runId,
+            iter: 1,
+            stateSha256: manifest.policyReplay.initialStateDigest,
+            lossless: true,
+          },
+        ],
+        reason: null,
+      },
+    }),
+  ]);
+  return {
+    ...base,
+    runId: manifest.runId,
+    provenance: {
+      ...base.provenance,
+      run_id: manifest.runId,
+      script_id: manifest.scriptId,
+      manifest_path: "/unused/manifest-a.json",
+    },
+    policyReplay: {
+      authoritative: true,
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit: manifest.policyReplay.sourceCommit,
+      passIds: [...POLICY_PASS_IDS],
+      reason: null,
+      artifactBinding: {
+        manifestRef: "manifest.json",
+        manifestSha256,
+        scriptId: manifest.scriptId,
+        initialStateRef: manifest.policyReplay.initialStateRef,
+        initialStateSha256: manifest.policyReplay.initialStateSha256,
+        initialStateDigest: manifest.policyReplay.initialStateDigest,
+        cassetteRef: manifest.policyReplay.cassetteRef,
+        cassetteSha256: manifest.policyReplay.cassetteSha256,
+        turns: manifest.turns.map((entry) => ({
+          index: entry.index,
+          traces: entry.policyReplay.traces,
+        })),
+      },
+    },
+  };
+}
+
 describe("rig ablate", () => {
+  test("binds every authoritative source/state/cassette/turn inventory field", () => {
+    const manifestValue = exactManifest("run-a", "script-a", "c".repeat(40));
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifestValue)}\n`);
+    const manifest = RigManifestSchema.parse(manifestValue);
+    const validResult = RigResultSchema.parse(
+      exactResultForManifest(
+        manifestValue,
+        new Bun.CryptoHasher("sha256").update(manifestBytes).digest("hex"),
+      ),
+    );
+    const validate = (candidate: RigResult): void =>
+      assertRigResultManifestBinding({
+        result: candidate,
+        manifest,
+        manifestPath: "/artifact/manifest.json",
+        manifestBytes,
+        scriptId: "script-a",
+      });
+    expect(() => validate(validResult)).not.toThrow();
+
+    const authority = (candidate: RigResult) => {
+      const statement = candidate.policyReplay;
+      const binding = statement?.artifactBinding;
+      const firstTrace = binding?.turns[0]?.traces[0];
+      if (statement === undefined || binding === undefined || firstTrace === undefined) {
+        throw new Error("exact result fixture is missing authority fields");
+      }
+      return { statement, binding, firstTrace };
+    };
+
+    const mutations: Array<(candidate: RigResult) => void> = [
+      (candidate) => {
+        candidate.runId = "run-b";
+      },
+      (candidate) => {
+        authority(candidate).statement.sourceCommit = "d".repeat(40);
+      },
+      (candidate) => {
+        authority(candidate).binding.initialStateSha256 = "6".repeat(64);
+      },
+      (candidate) => {
+        authority(candidate).binding.cassetteSha256 = "7".repeat(64);
+      },
+      (candidate) => {
+        authority(candidate).firstTrace.sha256 = "8".repeat(64);
+      },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(validResult);
+      mutate(candidate);
+      try {
+        validate(candidate);
+        throw new Error("expected authority rejection");
+      } catch (error) {
+        expect(error).toBeInstanceOf(RigAuthorityError);
+        expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+      }
+    }
+  });
+
+  test("rejects an authoritative result combined with a different valid run manifest", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-exact-bind-"));
+    const sourceCommit = "c".repeat(40);
+    const manifestA = exactManifest("run-a", "script-a", sourceCommit);
+    const manifestB = exactManifest("run-b", "script-b", sourceCommit);
+    const manifestABytes = `${JSON.stringify(manifestA)}\n`;
+    const manifestBBytes = `${JSON.stringify(manifestB)}\n`;
+    const manifestAPath = join(root, "manifest-a.json");
+    writeFileSync(manifestAPath, manifestABytes);
+    writeFileSync(join(root, "manifest.json"), manifestBBytes);
+    const exact = exactResultForManifest(
+      manifestA,
+      new Bun.CryptoHasher("sha256").update(manifestABytes).digest("hex"),
+    );
+    exact.provenance.manifest_path = manifestAPath;
+    const resultPath = join(root, "result.json");
+    writeFileSync(resultPath, JSON.stringify(exact));
+    const scriptPath = join(root, "script-a.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "script-a",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+
+    try {
+      await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
+      throw new Error("expected authority rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RigAuthorityError);
+      expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+    }
+    const child = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "src/cli/index.ts",
+        "rig",
+        "ablate",
+        "--result",
+        resultPath,
+        "--script",
+        scriptPath,
+      ],
+      {
+        cwd: join(import.meta.dir, "..", ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode).toBe(4);
+    expect(stderr).toContain("result-manifest-mismatch");
+    expect(stdout).not.toContain("exact policy ablation");
+  });
+
+  test("binds authoritative --script to the harvested script identity", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-exact-script-bind-"));
+    const manifest = exactManifest("run-a", "script-a", "c".repeat(40));
+    const manifestBytes = `${JSON.stringify(manifest)}\n`;
+    writeFileSync(join(root, "manifest.json"), manifestBytes);
+    const exact = exactResultForManifest(
+      manifest,
+      new Bun.CryptoHasher("sha256").update(manifestBytes).digest("hex"),
+    );
+    exact.provenance.manifest_path = join(root, "manifest.json");
+    const resultPath = join(root, "result.json");
+    writeFileSync(resultPath, JSON.stringify(exact));
+    const scriptPath = join(root, "script-b.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "script-b",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+
+    try {
+      await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
+      throw new Error("expected authority rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RigAuthorityError);
+      expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
+    }
+  });
+
+  test("keeps exact catalog selectors and legacy aliases in their own result modes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-layer-selector-"));
+    const scriptPath = join(root, "script.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "selector-script",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+    const legacyPath = join(root, "legacy.json");
+    writeFileSync(legacyPath, JSON.stringify(result([turn({ index: 1 })])));
+    await expect(
+      runRigAblate({
+        resultPath: legacyPath,
+        scriptPath,
+        layer: "judgment.confidence",
+      }),
+    ).rejects.toBeInstanceOf(RigLayerSelectorError);
+
+    const exactPath = join(root, "exact.json");
+    writeFileSync(
+      exactPath,
+      JSON.stringify(
+        result([turn({ index: 1 })], {
+          policyReplay: {
+            authoritative: true,
+            catalogVersion: POLICY_CATALOG_VERSION,
+            sourceCommit: "a".repeat(40),
+            passIds: [...POLICY_PASS_IDS],
+            reason: null,
+          },
+        }),
+      ),
+    );
+    await expect(
+      runRigAblate({ resultPath: exactPath, scriptPath, layer: "critic" }),
+    ).rejects.toBeInstanceOf(RigLayerSelectorError);
+  });
+
+  test("maps an invalid mode-specific CLI selector to exact exit 2", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-layer-selector-cli-"));
+    const resultPath = join(root, "legacy.json");
+    const scriptPath = join(root, "script.json");
+    writeFileSync(resultPath, JSON.stringify(result([turn({ index: 1 })])));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "selector-cli",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+    const child = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "src/cli/index.ts",
+        "rig",
+        "ablate",
+        "--result",
+        resultPath,
+        "--script",
+        scriptPath,
+        "--layer",
+        "judgment.confidence",
+      ],
+      { cwd: join(import.meta.dir, "..", ".."), stdout: "pipe", stderr: "pipe" },
+    );
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("legacy --layer");
+  });
+
+  test("exact rows use every closed catalog ID and keep Lore separate", () => {
+    const rendered = renderPolicyAblationRows(
+      POLICY_PASS_IDS.map((passId) => ({
+        passId,
+        authoritative: true,
+        reason: null,
+        envelopes: 1,
+        opportunities: 1,
+        applied: 1,
+        wouldApplyWithoutMutation: 1,
+        baselineBlocking: 0,
+        counterfactualBlocking: 1,
+      })),
+    );
+    for (const passId of POLICY_PASS_IDS) expect(rendered).toContain(passId);
+    expect(rendered).toContain("Lore is excluded");
+    expect(rendered).not.toMatch(/^\s+lore\s/m);
+  });
+
+  test("the four historical layers identify themselves as legacy and non-authoritative", () => {
+    const base = result([turn({ index: 1, findings: [] })]);
+    const legacy = ablate(base, "critic", NO_TAGS);
+    expect(legacy.authoritative).toBe(false);
+    expect(renderAblationMatrix(base, [legacy])).toContain("NON-AUTHORITATIVE LEGACY");
+  });
+
   // The smallest assertion that proves the toggle is wired to something real rather than to
   // nothing: one critic-demoted finding, one more blocking finding when the critic is off.
   test("ablating the critic raises the blocking count by exactly one", () => {

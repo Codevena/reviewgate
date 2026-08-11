@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 // Temp dirs created by repo(), removed after the run whether tests pass or fail.
@@ -56,10 +57,12 @@ describe("validateFindingFacts — mis-anchored vs fabricated", () => {
   //          WITH it: CRITICAL kept at the quoted line 3 + anchor_repaired -> 1 blocking.
   it("re-anchors an out-of-range finding whose evidence_line matches a real line", () => {
     const dir = repo(FIVE_LINES);
+    const runtime = PolicyTraceRecorder.start({ runId: "fact-reanchor", iter: 1, ablated: [] });
     const out = validateFindingFacts(
       [mkFinding({ line_start: 67, line_end: 67, evidence_line: EVIDENCE })],
       dir,
       new Set(),
+      runtime,
     );
     expect(out[0]?.severity).toBe("CRITICAL");
     expect(out[0]?.line_start).toBe(3);
@@ -67,6 +70,23 @@ describe("validateFindingFacts — mis-anchored vs fabricated", () => {
     expect(out[0]?.anchor_repaired).toBe(true);
     expect(out[0]?.fact_invalid).toBeUndefined();
     expect(out[0]?.details).toContain("re-anchored");
+    expect(out[0]?.policy_effects?.[0]).toEqual({
+      pass_id: "evidence.fact-location",
+      order: 10,
+      action: "reanchored",
+      before: "CRITICAL",
+      after: "CRITICAL",
+      reason_code: "evidence-line-reanchored",
+      source_signatures: ["sig1"],
+    });
+    expect(runtime.summary("evidence.fact-location")).toMatchObject({
+      considered: 1,
+      opportunities: 1,
+      would_apply: 1,
+      applied: 1,
+      blocking_removed: 0,
+      blocking_preserved: 1,
+    });
   });
 
   // GUARD 2 (passes on current code — MUTATION-CHECKED in Step 3).

@@ -11,9 +11,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import { privateCassetteSize, readPrivateCassette } from "../cassette/store.ts";
 import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { collectDiff } from "../utils/git.ts";
@@ -30,6 +32,12 @@ export interface DriverOpts {
   maxTurns?: number;
   /** How long to wait for the workspace to go quiescent after the agent exits. */
   quiesceTimeoutMs?: number;
+  /** Rig-owned, prevalidated sink and immutable source identity. Omitted by legacy callers. */
+  policyReplay?: {
+    sinkDir: string;
+    metadata: NonNullable<RigManifest["policyReplay"]>;
+    cassettePath: string;
+  };
 }
 
 // The manifest shape lives in `src/schemas/rig-manifest.ts` — the harvester parses this file
@@ -219,6 +227,21 @@ function startReportArchiver(repoRoot: string, destDir: string): () => void {
   // this archiver exists to keep (gate finding F-001).
   const seq = new Map<string, number>();
   const seen = new Set<string>();
+  // Seed with the state on disk BEFORE the agent runs. The docstring promises every version that
+  // APPEARS while the turn runs; without this seed the first poll (250ms in, long before this
+  // turn's gate has written anything) captures the PREVIOUS turn's leftover pending.json as this
+  // turn's report #1. Nothing is lost: the previous turn's own final sweep already archived those
+  // exact bytes. Hashed, not merely name-checked — a report REWRITTEN during this turn must still
+  // be archived.
+  for (const name of ["pending.json", "pending.md"]) {
+    const src = join(reviewgateDir(repoRoot), name);
+    if (!existsSync(src)) continue;
+    try {
+      seen.add(`${name}:${createHash("sha256").update(readFileSync(src, "utf8")).digest("hex")}`);
+    } catch {
+      /* unreadable this instant → it is simply not seeded, and a later tick captures it */
+    }
+  }
   const capture = () => {
     for (const name of ["pending.json", "pending.md"]) {
       const src = join(reviewgateDir(repoRoot), name);
@@ -260,7 +283,12 @@ function startReportArchiver(repoRoot: string, destDir: string): () => void {
  * wants, and it keeps a multi-megabyte agent turn out of the parent's memory, which the
  * pipe version would have accumulated there for the whole run.
  */
-async function runAgent(argv: string[], cwd: string, logPath: string): Promise<number> {
+async function runAgent(
+  argv: string[],
+  cwd: string,
+  logPath: string,
+  replaySinkDir?: string,
+): Promise<number> {
   const fd = openSync(logPath, "a");
   try {
     const proc = Bun.spawn(argv, {
@@ -269,11 +297,48 @@ async function runAgent(argv: string[], cwd: string, logPath: string): Promise<n
       stdin: "ignore",
       stdout: fd,
       stderr: fd,
+      ...(replaySinkDir === undefined
+        ? {}
+        : { env: { ...process.env, REVIEWGATE_RIG_REPLAY_DIR: replaySinkDir } }),
     });
     return await proc.exited;
   } finally {
     closeSync(fd);
   }
+}
+
+function sha256FileOrEmpty(path: string): string {
+  try {
+    return createHash("sha256").update(readFileSync(path)).digest("hex");
+  } catch {
+    return createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+  }
+}
+
+function policyReplayInventory(sinkDir: string): Map<string, string> {
+  const inventory = new Map<string, string>();
+  const traceRef = /^[0-9a-f]{12}-i(?:0|[1-9]\d*)-[0-9a-f]{12}\.json$/;
+  const statusRef = /^[0-9a-f]{12}-i(?:0|[1-9]\d*)\.(?:overflow|error)$/;
+  const names = readdirSync(sinkDir).filter((name) => traceRef.test(name) || statusRef.test(name));
+  names.sort((left, right) => {
+    const leftMatch = /^([0-9a-f]{12})-i(0|[1-9]\d*)-([0-9a-f]{12})\.json$/.exec(left);
+    const rightMatch = /^([0-9a-f]{12})-i(0|[1-9]\d*)-([0-9a-f]{12})\.json$/.exec(right);
+    if (leftMatch === null || rightMatch === null) return left.localeCompare(right);
+    return (
+      (leftMatch[1] ?? "").localeCompare(rightMatch[1] ?? "") ||
+      Number(leftMatch[2] ?? "0") - Number(rightMatch[2] ?? "0") ||
+      (leftMatch[3] ?? "").localeCompare(rightMatch[3] ?? "")
+    );
+  });
+  for (const name of names) {
+    try {
+      inventory.set(name, sha256FileOrEmpty(join(sinkDir, name)));
+    } catch {
+      // A hostile/racing entry is left unrecorded. A reviewed turn with no complete
+      // new artifact becomes `missing`, which authoritative harvest rejects.
+    }
+  }
+  return inventory;
 }
 
 /**
@@ -311,6 +376,10 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
   const maxTurns = Math.max(1, Math.min(opts.maxTurns ?? script.turns.length, script.turns.length));
   const quiesceTimeoutMs = opts.quiesceTimeoutMs ?? QUIESCE_TIMEOUT_MS;
   const manifestPath = join(opts.outDir, "manifest.json");
+  if (opts.policyReplay !== undefined) {
+    // Authority starts before the agent: never let a hostile cassette path reach the child.
+    privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
+  }
   const manifest: DriverRunManifest = {
     schema: "reviewgate.rig.manifest.v1",
     // Not a random id: a run is identified by the script it ran and when it started, so a
@@ -318,7 +387,8 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     runId: `${script.id}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
     scriptId: script.id,
     outDir: opts.outDir,
-    cassettePath: recordingCassettePath(),
+    cassettePath: opts.policyReplay?.cassettePath ?? recordingCassettePath(),
+    ...(opts.policyReplay === undefined ? {} : { policyReplay: opts.policyReplay.metadata }),
     turns: [],
   };
   mkdirSync(opts.outDir, { recursive: true });
@@ -328,8 +398,13 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     const startedAt = Date.now();
     // Sampled BEFORE the agent runs: everything the cassette grows by during this turn is
     // this turn's reviewer traffic, which is what makes the entries addressable per turn.
-    const cassetteBefore = cassetteSize(manifest.cassettePath ?? null);
+    const cassetteBefore =
+      opts.policyReplay === undefined
+        ? cassetteSize(manifest.cassettePath ?? null)
+        : privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
     const auditBytesBefore = auditBytes(opts.repoRoot);
+    const replayBefore =
+      opts.policyReplay === undefined ? null : policyReplayInventory(opts.policyReplay.sinkDir);
     // The turn directory is created BEFORE the agent runs, because the agent's transcript
     // is written into it live (see runAgent). The .reviewgate/ snapshot still happens after.
     const snapshotDir = join(opts.outDir, "turns", String(turn.index));
@@ -342,6 +417,7 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
         opts.agentCmd(turn.prompt),
         opts.repoRoot,
         join(snapshotDir, "agent.log"),
+        opts.policyReplay?.sinkDir,
       );
       await awaitQuiescent(opts.repoRoot, quiesceTimeoutMs);
     } finally {
@@ -358,11 +434,38 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     const src = reviewgateDir(opts.repoRoot);
     if (existsSync(src)) await copyWithRetry(src, join(snapshotDir, ".reviewgate"), turn.index);
 
-    const cassetteAfter = cassetteSize(manifest.cassettePath ?? null);
+    const cassetteAfter =
+      opts.policyReplay === undefined
+        ? cassetteSize(manifest.cassettePath ?? null)
+        : privateCassetteSize(opts.policyReplay.cassettePath, opts.repoRoot);
     const diffBytes = await captureTurnDiff(opts.repoRoot, snapshotDir);
     // Checked BEFORE the snapshot is declared good: an unreviewed turn is not a slow turn, it
     // is a turn that produced no measurement, and the run must not quietly accumulate them.
     const gateReviewed = gateReviewedTurn(opts.repoRoot, auditBytesBefore);
+    const replayAfter =
+      opts.policyReplay === undefined ? null : policyReplayInventory(opts.policyReplay.sinkDir);
+    const changedReplayArtifacts =
+      replayBefore === null || replayAfter === null
+        ? []
+        : [...replayAfter].filter(([ref, hash]) => replayBefore.get(ref) !== hash);
+    const replayOverflowed = changedReplayArtifacts.some(([ref]) => ref.endsWith(".overflow"));
+    const replayErrored = changedReplayArtifacts.some(([ref]) => ref.endsWith(".error"));
+    const replayTraces = changedReplayArtifacts
+      .filter(([ref]) => ref.endsWith(".json"))
+      .map(([ref, sha256]) => ({ ref, sha256 }));
+    if (manifest.policyReplay !== undefined && opts.policyReplay !== undefined) {
+      const cassetteBytes = readPrivateCassette(opts.policyReplay.cassettePath, opts.repoRoot);
+      const cassetteText = new TextDecoder("utf-8", { fatal: true }).decode(cassetteBytes);
+      if (!Buffer.from(cassetteText, "utf8").equals(cassetteBytes)) {
+        throw new Error("rig driver: cassette is not canonical UTF-8");
+      }
+      manifest.policyReplay.cassetteSha256 = createHash("sha256")
+        .update(cassetteBytes)
+        .digest("hex");
+      writeFileAtomic(join(opts.outDir, manifest.policyReplay.cassetteRef), cassetteText, {
+        mode: 0o600,
+      });
+    }
     manifest.turns.push({
       index: turn.index,
       snapshotDir,
@@ -374,6 +477,20 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
           ? null
           : { before: cassetteBefore, after: cassetteAfter },
       diffBytes,
+      ...(opts.policyReplay === undefined
+        ? {}
+        : {
+            policyReplay: {
+              status: replayOverflowed
+                ? ("overflow" as const)
+                : replayErrored
+                  ? ("error" as const)
+                  : replayTraces.length > 0
+                    ? ("complete" as const)
+                    : ("missing" as const),
+              traces: replayOverflowed || replayErrored ? [] : replayTraces,
+            },
+          }),
     });
     if (gateReviewed) {
       consecutiveUnreviewed = 0;

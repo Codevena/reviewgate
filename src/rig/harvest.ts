@@ -28,11 +28,13 @@
 //     (`<turn>/reports/*-pending.json`), which is why that archiver is load-bearing rather
 //     than redundant with the final `pending.json` (a turn that ends green overwrites the
 //     report that caught the defect).
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { platform, release } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { matchesAnyTag } from "../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../bench/metrics.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import type { DecisionOutcome } from "../schemas/audit-event.ts";
 import type { Metric } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
@@ -53,6 +55,7 @@ import type { RigTurn } from "../schemas/rig-turn-script.ts";
 import type { LoadedRun } from "../stats/load.ts";
 import { loadAuditWindow } from "../stats/load.ts";
 import { RG_VERSION } from "../version.ts";
+import { validateRigPolicyReplayArtifacts } from "./policy-replay-state.ts";
 import { loadTurnScript } from "./turn-script.ts";
 
 /** Below this many defined FP-burden points the slope is not reported at all. */
@@ -142,6 +145,8 @@ function collectTurnFindings(
   snapshotDir: string,
   turnIndex: number,
   warnings: string[],
+  ownedRunIds: Set<string>,
+  knownRunIds: Set<string>,
 ): { findings: Finding[]; panel: PanelSlot[]; reportsRead: number; criticRuns: CriticInfo[] } {
   const reportsDir = join(snapshotDir, "reports");
   const bySignature = new Map<string, Finding>();
@@ -163,6 +168,8 @@ function collectTurnFindings(
     .sort((a, b) => (Number.parseInt(a, 10) || 0) - (Number.parseInt(b, 10) || 0));
 
   let reportsRead = 0;
+  let inheritedCount = 0;
+  const orphanNames: string[] = [];
   for (const name of names) {
     // JSON.parse inside the try, not just the schema check: the archiver writes atomically,
     // but a snapshot copied while a file was being renamed away can still land truncated, and
@@ -184,6 +191,20 @@ function collectTurnFindings(
       );
       continue;
     }
+    // OWNERSHIP. The archiver captures whatever `pending.json` is on disk, which on 31 of 36
+    // recorded pilot turns was the PREVIOUS turn's leftover — counting it here would count one
+    // finding once in the turn that produced it and again in the turn that merely saw it, the
+    // very double-count the per-turn signature dedup above exists to prevent. A gate run lives
+    // inside one Stop hook and therefore one turn, so `run_id` alone identifies the owner
+    // (verified 1:1 across all 34 recorded gate runs). Keyed on run_id and NOT on (run_id, iter):
+    // a gate that writes a report and then dies before appending `run.complete` would otherwise
+    // have its real report discarded as unattributable.
+    const runId = parsed.data.run_id;
+    if (!ownedRunIds.has(runId)) {
+      if (knownRunIds.has(runId)) inheritedCount++;
+      else orphanNames.push(name);
+      continue;
+    }
     reportsRead++;
     if (parsed.data.critic)
       criticRuns.set(`${parsed.data.run_id}:${parsed.data.iter}`, parsed.data.critic);
@@ -201,6 +222,20 @@ function collectTurnFindings(
         persona: r.persona,
       });
     }
+  }
+  // One line per TURN, not per report: naming each of eleven inherited files would bury the
+  // signal. Nothing is lost — each is counted in the turn whose gate produced it.
+  if (inheritedCount > 0) {
+    warnings.push(
+      `turn ${turnIndex}: ${inheritedCount} archived report(s) carry a run_id produced by an EARLIER turn — the gate did not write them during this turn. They are EXCLUDED here and counted where they were produced, so one finding is not counted twice across turns.`,
+    );
+  }
+  // One line per REPORT, and loud: unlike an inherited report, an orphan is not counted anywhere,
+  // so this is real data loss rather than a correction.
+  for (const orphan of orphanNames) {
+    warnings.push(
+      `turn ${turnIndex}: archived report ${orphan} carries a run_id that appears in NO turn's audit events and was EXCLUDED — it cannot be attributed to any turn (pruned audit day-partition, or a snapshot from a different run). This turn's findings may be UNDERSTATED.`,
+    );
   }
   return {
     findings: [...bySignature.values()],
@@ -410,10 +445,17 @@ function harvestTurn(
     );
   }
 
+  // `window.runs` is cumulative for this snapshot, so it carries every earlier turn's runs too —
+  // which is exactly what distinguishes an INHERITED report (owned by an earlier turn) from an
+  // ORPHAN (owned by none).
+  const ownedRunIds = new Set(runDelta.added.map((r) => r.run_id));
+  const knownRunIds = new Set(window.runs.map((r) => r.run_id));
   const { findings, panel, reportsRead, criticRuns } = collectTurnFindings(
     snapshotDir,
     index,
     warnings,
+    ownedRunIds,
+    knownRunIds,
   );
   const blocking = findings.filter(isBlocking);
   const iterations = runDelta.added.length;
@@ -481,9 +523,9 @@ function harvestTurn(
 }
 
 export function harvest(manifestPath: string, scriptPath: string): RigResult {
-  const manifest = RigManifestSchema.parse(
-    JSON.parse(readFileSync(manifestPath, "utf8")) as unknown,
-  );
+  const manifestBytes = readFileSync(manifestPath);
+  const manifest = RigManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")) as unknown);
+  const policyReplay = validateRigPolicyReplayArtifacts({ manifest, manifestPath });
   const script = loadTurnScript(scriptPath);
   if (manifest.scriptId !== script.id) {
     throw new Error(
@@ -512,6 +554,21 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
       previous,
       warnings,
     );
+    const replayTraces = policyReplay?.turns.get(manifestTurn.index);
+    if (replayTraces !== undefined) {
+      turn.record.policyReplay = {
+        status: "complete",
+        reason: null,
+        traces: replayTraces.map(({ ref, sha256, envelope }) => ({
+          ref,
+          sha256,
+          runId: envelope.run_id,
+          iter: envelope.iter,
+          stateSha256: envelope.state_sha256,
+          lossless: envelope.lossless,
+        })),
+      };
+    }
     turns.push(turn);
     panelSlots.push(...panel);
     previous = cumulative;
@@ -579,6 +636,44 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
     );
   }
 
+  const resultPolicyReplay: RigResult["policyReplay"] = (() => {
+    if (policyReplay === null) {
+      return {
+        authoritative: false,
+        catalogVersion: null,
+        sourceCommit: null,
+        passIds: [],
+        reason:
+          "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
+      };
+    }
+    const metadata = manifest.policyReplay;
+    if (metadata === undefined) {
+      throw new Error("rig harvest: validated policy replay is missing manifest metadata");
+    }
+    return {
+      authoritative: true,
+      catalogVersion: POLICY_CATALOG_VERSION,
+      sourceCommit: policyReplay.sourceCommit,
+      passIds: [...POLICY_PASS_IDS],
+      reason: null,
+      artifactBinding: {
+        manifestRef: basename(manifestPath),
+        manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+        scriptId: manifest.scriptId,
+        initialStateRef: metadata.initialStateRef,
+        initialStateSha256: metadata.initialStateSha256,
+        initialStateDigest: metadata.initialStateDigest,
+        cassetteRef: metadata.cassetteRef,
+        cassetteSha256: metadata.cassetteSha256,
+        turns: manifest.turns.map((turn) => ({
+          index: turn.index,
+          traces: turn.policyReplay?.traces ?? [],
+        })),
+      },
+    };
+  })();
+
   const result: RigResult = {
     schema: "reviewgate.rig.result.v1",
     runId: manifest.runId,
@@ -620,6 +715,7 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
       },
       suppression,
     },
+    policyReplay: resultPolicyReplay,
     warnings,
   };
   // Validate what we are about to hand out: the null contracts in RigTurnRecordSchema are the

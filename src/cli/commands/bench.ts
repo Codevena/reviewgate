@@ -9,9 +9,14 @@
 // 3 = ERROR (no reviewer completed anywhere) · 4 = benchmark-invalid.
 import { createHash } from "node:crypto";
 import {
+  constants,
+  closeSync,
   existsSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -21,23 +26,35 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { canonicalJson } from "../../audit/canonical.ts";
+import { verifyPolicyTraceReference, writePolicyTrace } from "../../audit/policy-trace-store.ts";
 import type { MatchResult } from "../../bench/matcher.ts";
 import { makeMetric, summarizeSpread } from "../../bench/metrics.ts";
 import { isAuthoritative, renderBenchMatrix, renderBenchReport } from "../../bench/report.ts";
 import {
+  type AuthoritativeTraceRun,
   type CaseRunOutcome,
   type SuppressorConfig,
   buildBenchConfig,
   runBenchCase,
+  validateAuthoritativeTracePair,
 } from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
+import {
+  POLICY_CATALOG_VERSION,
+  POLICY_PASS_IDS,
+  type PolicyPassId,
+} from "../../core/policy/catalog.ts";
+import type { PolicyExecutionOptions } from "../../core/policy/replay.ts";
 import type {
   OpenRouterProviderRouting,
+  Preflight,
   ProviderAdapter,
   ProviderConfig,
   ReviewResult,
 } from "../../providers/adapter-base.ts";
 import type { ProviderId } from "../../providers/registry.ts";
+import { SandboxUnavailableError } from "../../sandbox/errors.ts";
 import { type BenchCase, BenchCaseSchema } from "../../schemas/bench-case.ts";
 import {
   type BenchPreregistration,
@@ -46,14 +63,23 @@ import {
 import {
   type BenchMatrix,
   BenchMatrixSchema,
+  type BenchPolicyTraceSet,
+  BenchPolicyTraceSetSchema,
+  type BenchResponseManifest,
+  BenchResponseManifestSchema,
   type BenchResult,
   BenchResultSchema,
+  CAPTURED_THROWABLE_FIELD_KEYS,
+  type CapturedThrowableSnapshot,
+  CapturedThrowableSnapshotSchema,
   type CaseResult,
   type Cost,
   type MatrixVariant,
   type Metric,
   type ProviderResult,
+  isAuthoritativeThrowableString,
 } from "../../schemas/bench-result.ts";
+import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { spawnCapture } from "../../utils/spawn-capture.ts";
 import { RG_VERSION } from "../../version.ts";
 import { buildAdapters } from "../build-adapters.ts";
@@ -69,6 +95,33 @@ const KNOWN_PROVIDERS: ReadonlySet<string> = new Set([
   "opencode",
   "ollama",
 ]);
+
+/** Parse `--provider-model opencode=alibaba-token-plan/qwen3.8-max,ollama=glm-5.2:cloud`.
+ * Splits on the FIRST `=` only — model ids legitimately contain slashes, colons
+ * and occasionally `=`. Validated against KNOWN_PROVIDERS rather than a second
+ * hand-maintained list, so a new provider cannot be accepted here while being
+ * rejected two functions down. */
+export function parseProviderModels(raw: string): Partial<Record<ProviderId, string>> {
+  const out: Partial<Record<ProviderId, string>> = {};
+  const pairs = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`--provider-model expects <provider>=<model>, got "${pair}"`);
+    }
+    const provider = pair.slice(0, eq).trim();
+    const model = pair.slice(eq + 1).trim();
+    if (!model) throw new Error(`--provider-model: empty model for "${provider}"`);
+    if (!KNOWN_PROVIDERS.has(provider)) {
+      throw new Error(`--provider-model: unknown provider "${provider}"`);
+    }
+    out[provider as ProviderId] = model;
+  }
+  return out;
+}
 
 export interface BenchRunInput {
   repoRoot: string;
@@ -88,6 +141,9 @@ export interface BenchRunInput {
   ablationLabels?: string[];
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Pin a reviewer's upstream model, so provenance records what actually ran
+   * instead of a "default" sentinel that resolves outside the repo. */
+  providerModels?: Partial<Record<ProviderId, string>>;
   /** Benchmark-only physical critic completion limit; runtime default remains 1. */
   criticMaxAttempts?: number;
   /** Benchmark-only physical reviewer invocation limit per configured reviewer/case. */
@@ -112,6 +168,10 @@ export interface BenchRunInput {
   now?: () => Date;
   /** injectable quota-failover availability probe (tests); production probes real CLIs. */
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
+  /** Internal matrix-only policy trace/ablation options. */
+  policyExecution?: PolicyExecutionOptions;
+  /** Internal Matrix-owned real artifact sink for per-case policy traces. */
+  policyTraceStore?: { root: string; refPrefix: string; now?: Date };
 }
 
 export interface BenchRunnerInfo {
@@ -181,7 +241,7 @@ export async function runBenchReport(input: BenchReportInput): Promise<BenchRunO
   return { exitCode: 0, stdout: out, stderr: "" };
 }
 
-function sha256(s: string): string {
+function sha256(s: string | Buffer): string {
   return createHash("sha256").update(s).digest("hex");
 }
 
@@ -397,6 +457,25 @@ function outcomeToCaseResult(
     latency_ms: out.latencyMs,
     error: out.error,
     ...(out.critic ? { critic: out.critic } : {}),
+    ...(out.policy
+      ? {
+          policy_trace: {
+            authoritative: out.policy.authoritative,
+            status: out.policy.status,
+            catalog_version: out.policy.catalogVersion,
+            requested_ablations: out.policy.requestedAblations,
+            ...(out.policy.trace === undefined ? {} : { trace: out.policy.trace }),
+            ...(out.policy.traceRef === undefined ? {} : { trace_ref: out.policy.traceRef }),
+            ...(out.policy.traceSha256 === undefined
+              ? {}
+              : { trace_sha256: out.policy.traceSha256 }),
+            request_identity_sha256: out.policy.requestIdentitySha256,
+            effective_config_sha256: out.policy.effectiveConfigSha256,
+            final_identity_sha256: out.policy.finalIdentitySha256,
+            reason: out.policy.authoritative ? null : `policy trace status ${out.policy.status}`,
+          },
+        }
+      : {}),
   };
 }
 
@@ -476,7 +555,7 @@ async function preregistrationDigest(
   return { digest: sha256File(path), tracked: tracked.status === 0 };
 }
 
-async function buildRoster(
+export async function buildRoster(
   config: ReviewgateConfig,
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
 ): Promise<Array<{ id: string; cli_version: string; model: string; persona: string }>> {
@@ -578,6 +657,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
       ...(input.criticOpenrouterProvider
         ? { criticOpenrouterProvider: input.criticOpenrouterProvider }
         : {}),
+      ...(input.providerModels ? { providerModels: input.providerModels } : {}),
       ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     });
   } catch (err) {
@@ -659,6 +739,10 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
           ? { criticMaxAttempts: input.criticMaxAttempts }
           : {}),
         ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+        ...(input.policyExecution === undefined ? {} : { policyExecution: input.policyExecution }),
+        ...(input.policyTraceStore === undefined
+          ? {}
+          : { policyTraceStore: input.policyTraceStore }),
       });
       caseResults.push(outcomeToCaseResult(loaded, loaded.benchCase, outcome, r));
 
@@ -962,15 +1046,19 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
 
 // --- bench matrix (spec §8 ablation) ---------------------------------------
 
-/** The ablatable layers → the suppressor override that turns each OFF, tagged by
- * class (A = post-review suppressor; B = input/prompt-stage). `scopeToDiff` is
- * applied by the aggregator after raw reviews, so it is class A in production. */
-const MATRIX_ABLATIONS: Record<string, { klass: "A" | "B"; off: SuppressorConfig }> = {
-  critic: { klass: "A", off: { critic: null } },
-  "confidence-floor": { klass: "A", off: { confidenceFloor: 0 } },
-  reputation: { klass: "A", off: { reputation: false } },
-  "scope-to-diff": { klass: "A", off: { scopeToDiff: false } },
+/** Legacy CLI labels accepted at the boundary and normalized to the closed policy catalog. */
+const MATRIX_ABLATION_ALIASES: Readonly<Record<string, PolicyPassId>> = {
+  critic: "judgment.critic",
+  "confidence-floor": "judgment.confidence",
+  reputation: "judgment.reputation",
+  "scope-to-diff": "scope.diff",
 };
+
+function normalizeMatrixAblation(value: string): PolicyPassId | null {
+  const alias = MATRIX_ABLATION_ALIASES[value];
+  if (alias !== undefined) return alias;
+  return (POLICY_PASS_IDS as readonly string[]).includes(value) ? (value as PolicyPassId) : null;
+}
 
 export interface BenchMatrixInput {
   repoRoot: string;
@@ -1159,18 +1247,545 @@ export function validateMatrixPreregistration(
   return reasons;
 }
 
+type ThrowableCaptureFailureReason =
+  | "unsupported-error-type"
+  | "unsupported-thrown-value"
+  | "unsupported-field"
+  | "sensitive-field"
+  | "unsafe-string"
+  | "cyclic-value";
+
+export type ThrowableCaptureResult =
+  | { ok: true; snapshot: CapturedThrowableSnapshot; sha256: string }
+  | { ok: false; reason: ThrowableCaptureFailureReason };
+
+const SENSITIVE_THROW_FIELD =
+  /(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|private[_-]?key)/i;
+const CAPTURED_THROWABLE_FIELD_KEY_SET = new Set<string>(CAPTURED_THROWABLE_FIELD_KEYS);
+const OMITTED_STANDARD_THROWABLE_FIELD_KEYS = new Set([
+  "cause",
+  "column",
+  "line",
+  "message",
+  "name",
+  "originalColumn",
+  "originalLine",
+  "sourceURL",
+  "stack",
+]);
+
+type SafeValueCapture =
+  | { ok: true; value: import("../../schemas/bench-result.ts").ThrowableSafeValue }
+  | { ok: false; reason: ThrowableCaptureFailureReason };
+
+function captureSafeThrowableValue(
+  value: unknown,
+  seen: Set<object>,
+  depth: number,
+): SafeValueCapture {
+  if (depth > 12) return { ok: false, reason: "unsupported-field" };
+  if (value === null || typeof value === "boolean") return { ok: true, value };
+  if (typeof value === "string") {
+    return isAuthoritativeThrowableString(value)
+      ? { ok: true, value }
+      : { ok: false, reason: "unsafe-string" };
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return { ok: true, value };
+  if (typeof value !== "object") return { ok: false, reason: "unsupported-field" };
+  if (seen.has(value)) return { ok: false, reason: "cyclic-value" };
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const ownKeys = Reflect.ownKeys(value);
+      if (
+        ownKeys.some((key) => {
+          if (typeof key === "symbol") return true;
+          if (key === "length") return false;
+          const index = Number(key);
+          return (
+            !Number.isInteger(index) || index < 0 || index >= value.length || String(index) !== key
+          );
+        })
+      ) {
+        return { ok: false, reason: "unsupported-field" };
+      }
+      const captured: import("../../schemas/bench-result.ts").ThrowableSafeValue[] = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (descriptor === undefined || !("value" in descriptor)) {
+          return { ok: false, reason: "unsupported-field" };
+        }
+        const next = captureSafeThrowableValue(descriptor.value, seen, depth + 1);
+        if (!next.ok) return next;
+        captured.push(next.value);
+      }
+      return { ok: true, value: captured };
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    const captured: Record<string, import("../../schemas/bench-result.ts").ThrowableSafeValue> = {};
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.some((key) => typeof key === "symbol")) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    for (const key of (ownKeys as string[]).sort()) {
+      if (SENSITIVE_THROW_FIELD.test(key)) return { ok: false, reason: "sensitive-field" };
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !("value" in descriptor)) {
+        return { ok: false, reason: "unsupported-field" };
+      }
+      const next = captureSafeThrowableValue(descriptor.value, seen, depth + 1);
+      if (!next.ok) return next;
+      captured[key] = next.value;
+    }
+    return { ok: true, value: captured };
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function captureThrowableSnapshotInner(
+  thrown: unknown,
+  seen: Set<object>,
+  depth: number,
+): ThrowableCaptureResult {
+  if (typeof thrown === "string") {
+    if (!isAuthoritativeThrowableString(thrown)) {
+      return { ok: false, reason: "unsafe-string" };
+    }
+    const snapshot = {
+      kind: "primitive" as const,
+      primitive_type: "string" as const,
+      value: thrown,
+    };
+    return { ok: true, snapshot, sha256: sha256(canonicalJson(snapshot)) };
+  }
+  if (thrown === undefined || thrown === null) {
+    const snapshot = {
+      kind: "primitive" as const,
+      primitive_type: thrown === undefined ? ("undefined" as const) : ("null" as const),
+    };
+    return { ok: true, snapshot, sha256: sha256(canonicalJson(snapshot)) };
+  }
+  if (!(thrown instanceof Error)) return { ok: false, reason: "unsupported-thrown-value" };
+  if (depth > 12 || seen.has(thrown)) return { ok: false, reason: "cyclic-value" };
+  const errorType =
+    thrown.constructor === Error
+      ? "Error"
+      : thrown.constructor === SandboxUnavailableError
+        ? "SandboxUnavailableError"
+        : null;
+  if (errorType === null) return { ok: false, reason: "unsupported-error-type" };
+  if (
+    !isAuthoritativeThrowableString(thrown.name) ||
+    !isAuthoritativeThrowableString(thrown.message)
+  ) {
+    return { ok: false, reason: "unsafe-string" };
+  }
+  seen.add(thrown);
+  try {
+    let cause: CapturedThrowableSnapshot | undefined;
+    if (Object.hasOwn(thrown, "cause")) {
+      const causeDescriptor = Object.getOwnPropertyDescriptor(thrown, "cause");
+      if (causeDescriptor === undefined || !("value" in causeDescriptor)) {
+        return { ok: false, reason: "unsupported-field" };
+      }
+      const capturedCause = captureThrowableSnapshotInner(causeDescriptor.value, seen, depth + 1);
+      if (!capturedCause.ok) return capturedCause;
+      cause = capturedCause.snapshot;
+    }
+    const fields: Array<{
+      key: string;
+      value: import("../../schemas/bench-result.ts").ThrowableSafeValue;
+      enumerable: boolean;
+    }> = [];
+    const ownKeys = Reflect.ownKeys(thrown);
+    if (ownKeys.some((key) => typeof key === "symbol")) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    for (const key of (ownKeys as string[]).sort()) {
+      if (OMITTED_STANDARD_THROWABLE_FIELD_KEYS.has(key)) continue;
+      if (SENSITIVE_THROW_FIELD.test(key)) return { ok: false, reason: "sensitive-field" };
+      const descriptor = Object.getOwnPropertyDescriptor(thrown, key);
+      if (descriptor === undefined || !("value" in descriptor)) {
+        return { ok: false, reason: "unsupported-field" };
+      }
+      if (!CAPTURED_THROWABLE_FIELD_KEY_SET.has(key)) {
+        return { ok: false, reason: "unsupported-field" };
+      }
+      const captured = captureSafeThrowableValue(descriptor.value, seen, depth + 1);
+      if (!captured.ok) return captured;
+      fields.push({ key, value: captured.value, enumerable: descriptor.enumerable ?? false });
+    }
+    const snapshot: CapturedThrowableSnapshot = {
+      kind: "error",
+      error_type: errorType,
+      name: thrown.name,
+      message: thrown.message,
+      ...(cause === undefined ? {} : { cause }),
+      fields,
+    };
+    const parsed = CapturedThrowableSnapshotSchema.safeParse(snapshot);
+    if (!parsed.success) {
+      return { ok: false, reason: "unsupported-field" };
+    }
+    return { ok: true, snapshot: parsed.data, sha256: sha256(canonicalJson(parsed.data)) };
+  } finally {
+    seen.delete(thrown);
+  }
+}
+
+function freezeThrowableSnapshot<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      freezeThrowableSnapshot(child);
+    }
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export function captureThrowableSnapshot(thrown: unknown): ThrowableCaptureResult {
+  const captured = captureThrowableSnapshotInner(thrown, new Set(), 0);
+  if (!captured.ok) return captured;
+  freezeThrowableSnapshot(captured.snapshot);
+  return captured;
+}
+
+function cloneThrowableSafeValue<T>(value: T): T {
+  return structuredClone(value);
+}
+
+export function replayThrowableSnapshot(snapshot: CapturedThrowableSnapshot): unknown {
+  if (snapshot.kind === "primitive") {
+    if (snapshot.primitive_type === "string") return snapshot.value;
+    if (snapshot.primitive_type === "undefined") return undefined;
+    return null;
+  }
+  const error: Error =
+    snapshot.error_type === "SandboxUnavailableError"
+      ? new SandboxUnavailableError(snapshot.message)
+      : new Error(snapshot.message);
+  error.name = snapshot.name;
+  if (snapshot.cause !== undefined) {
+    Object.defineProperty(error, "cause", {
+      value: replayThrowableSnapshot(snapshot.cause),
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  for (const field of snapshot.fields) {
+    Object.defineProperty(error, field.key, {
+      value: cloneThrowableSafeValue(field.value),
+      enumerable: field.enumerable,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return error;
+}
+
+export type BenchArtifactKind =
+  | "policy-trace"
+  | "policy-trace-set"
+  | "bench-result"
+  | "response-manifest";
+
+export type BenchArtifactVerification =
+  | { ok: true; value: unknown }
+  | {
+      ok: false;
+      reason:
+        | "invalid-reference"
+        | "path-escape"
+        | "missing"
+        | "not-a-file"
+        | "too-large"
+        | "hash-mismatch"
+        | "invalid-encoding"
+        | "invalid-json"
+        | "invalid-trace"
+        | "invalid-schema"
+        | "non-canonical"
+        | "identity-mismatch"
+        | "read-error";
+    };
+
+const BENCH_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
+const FULL_SHA256 = /^[0-9a-f]{64}$/;
+
+function artifactRefFor(kind: Exclude<BenchArtifactKind, "policy-trace">, sha: string): string {
+  const dir =
+    kind === "policy-trace-set"
+      ? "policy-trace-sets"
+      : kind === "bench-result"
+        ? "results"
+        : "responses";
+  return `artifacts/${dir}/${sha}.json`;
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+export function verifyBenchArtifactReference(input: {
+  root: string;
+  ref: string;
+  sha256: string;
+  kind: BenchArtifactKind;
+}): BenchArtifactVerification {
+  if (
+    !FULL_SHA256.test(input.sha256) ||
+    isAbsolute(input.ref) ||
+    input.ref.includes("\\") ||
+    input.ref
+      .split("/")
+      .some((component) => component === "" || component === "." || component === "..")
+  ) {
+    return { ok: false, reason: "invalid-reference" };
+  }
+  if (input.kind === "policy-trace") {
+    const prefix = "artifacts/policy-traces/";
+    if (!input.ref.startsWith(prefix)) return { ok: false, reason: "invalid-reference" };
+    const verified = verifyPolicyTraceReference({
+      auditDir: join(input.root, "artifacts", "policy-traces"),
+      ref: input.ref.slice(prefix.length),
+      sha256: input.sha256,
+    });
+    return verified.ok ? { ok: true, value: verified.trace } : verified;
+  }
+  if (input.ref !== artifactRefFor(input.kind, input.sha256)) {
+    return { ok: false, reason: "identity-mismatch" };
+  }
+  const root = resolve(input.root);
+  const candidate = resolve(root, ...input.ref.split("/"));
+  if (!isContainedPath(root, candidate)) return { ok: false, reason: "path-escape" };
+  if (!existsSync(candidate)) return { ok: false, reason: "missing" };
+  let fd: number | undefined;
+  try {
+    const rootStat = lstatSync(root);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      return { ok: false, reason: "path-escape" };
+    }
+    const realRoot = realpathSync(root);
+    let parent = root;
+    for (const component of input.ref.split("/").slice(0, -1)) {
+      parent = join(parent, component);
+      const parentStat = lstatSync(parent);
+      if (
+        parentStat.isSymbolicLink() ||
+        !parentStat.isDirectory() ||
+        !isContainedPath(realRoot, realpathSync(parent))
+      ) {
+        return { ok: false, reason: "path-escape" };
+      }
+    }
+    const before = lstatSync(candidate);
+    if (
+      before.isSymbolicLink() ||
+      !before.isFile() ||
+      before.nlink !== 1 ||
+      (before.mode & 0o7777) !== 0o600
+    ) {
+      return { ok: false, reason: "not-a-file" };
+    }
+    if (before.size > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
+    if (!isContainedPath(realRoot, realpathSync(candidate))) {
+      return { ok: false, reason: "path-escape" };
+    }
+    fd = openSync(candidate, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd);
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1 ||
+      (opened.mode & 0o7777) !== 0o600 ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino
+    ) {
+      return { ok: false, reason: "not-a-file" };
+    }
+    if (opened.size > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
+    const bytes = readFileSync(fd);
+    if (bytes.length > BENCH_ARTIFACT_MAX_BYTES) return { ok: false, reason: "too-large" };
+    const after = fstatSync(fd);
+    const pathAfter = lstatSync(candidate);
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.mtimeMs !== opened.mtimeMs ||
+      after.ctimeMs !== opened.ctimeMs ||
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
+      pathAfter.nlink !== 1 ||
+      (after.mode & 0o7777) !== 0o600 ||
+      (pathAfter.mode & 0o7777) !== 0o600 ||
+      pathAfter.dev !== after.dev ||
+      pathAfter.ino !== after.ino
+    ) {
+      return { ok: false, reason: "read-error" };
+    }
+    if (sha256(bytes) !== input.sha256) return { ok: false, reason: "hash-mismatch" };
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return { ok: false, reason: "invalid-encoding" };
+    }
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(text);
+    } catch {
+      return { ok: false, reason: "invalid-json" };
+    }
+    const parsed =
+      input.kind === "bench-result"
+        ? BenchResultSchema.safeParse(decoded)
+        : input.kind === "policy-trace-set"
+          ? BenchPolicyTraceSetSchema.safeParse(decoded)
+          : BenchResponseManifestSchema.safeParse(decoded);
+    if (!parsed.success) return { ok: false, reason: "invalid-schema" };
+    if (canonicalJson(parsed.data) !== text) return { ok: false, reason: "non-canonical" };
+    return { ok: true, value: parsed.data };
+  } catch {
+    return { ok: false, reason: "read-error" };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function ensureDirectoryWithoutSymlinks(path: string): boolean {
+  const target = resolve(path);
+  const missing: string[] = [];
+  let cursor = target;
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor);
+    if (parent === cursor) return false;
+    missing.unshift(basename(cursor));
+    cursor = parent;
+  }
+  try {
+    const existing = lstatSync(cursor);
+    if (existing.isSymbolicLink() || !existing.isDirectory()) return false;
+    for (const component of missing) {
+      cursor = join(cursor, component);
+      try {
+        mkdirSync(cursor, { mode: 0o700 });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+      }
+      const created = lstatSync(cursor);
+      if (created.isSymbolicLink() || !created.isDirectory()) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureContainedArtifactParent(root: string, ref: string): boolean {
+  if (!ensureDirectoryWithoutSymlinks(root)) return false;
+  try {
+    const realRoot = realpathSync(root);
+    let parent = resolve(root);
+    for (const component of ref.split("/").slice(0, -1)) {
+      parent = join(parent, component);
+      if (!existsSync(parent)) {
+        try {
+          mkdirSync(parent, { mode: 0o700 });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+        }
+      }
+      const stat = lstatSync(parent);
+      if (
+        stat.isSymbolicLink() ||
+        !stat.isDirectory() ||
+        !isContainedPath(realRoot, realpathSync(parent))
+      ) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type PersistedBenchArtifact =
+  | { ok: true; ref: string; sha256: string }
+  | { ok: false; reason: Exclude<BenchArtifactVerification, { ok: true }>["reason"] };
+
+function persistBenchArtifact(input: {
+  root: string;
+  kind: Exclude<BenchArtifactKind, "policy-trace">;
+  value: BenchResult | BenchResponseManifest | BenchPolicyTraceSet;
+}): PersistedBenchArtifact {
+  const parsed =
+    input.kind === "bench-result"
+      ? BenchResultSchema.safeParse(input.value)
+      : input.kind === "response-manifest"
+        ? BenchResponseManifestSchema.safeParse(input.value)
+        : BenchPolicyTraceSetSchema.safeParse(input.value);
+  if (!parsed.success) return { ok: false, reason: "invalid-schema" };
+  const canonical = canonicalJson(parsed.data);
+  const contentSha256 = sha256(canonical);
+  const ref = artifactRefFor(input.kind, contentSha256);
+  if (!ensureContainedArtifactParent(input.root, ref)) {
+    return { ok: false, reason: "path-escape" };
+  }
+  const destination = resolve(input.root, ...ref.split("/"));
+  try {
+    writeFileIfAbsent(destination, canonical, { mode: 0o600 });
+  } catch {
+    return { ok: false, reason: "read-error" };
+  }
+  const verified = verifyBenchArtifactReference({
+    root: input.root,
+    ref,
+    sha256: contentSha256,
+    kind: input.kind,
+  });
+  return verified.ok ? { ok: true, ref, sha256: contentSha256 } : verified;
+}
+
 interface CapturedReviewEntry {
   provider: ProviderId;
-  reviewer_id: string;
+  kind: "review" | "complete";
   ordinal: number;
   request_sha256: string;
   response_sha256: string;
+  outcome: "return" | "throw";
+  throw_snapshot?: CapturedThrowableSnapshot;
 }
+
+type CapturedPreflightEntry =
+  | {
+      request_sha256: string;
+      response_sha256: string;
+      outcome: "return";
+      value: Preflight;
+    }
+  | {
+      request_sha256: string;
+      response_sha256: string;
+      outcome: "throw";
+      throw_snapshot: CapturedThrowableSnapshot;
+    };
 
 interface ReviewCaptureState {
   entries: CapturedReviewEntry[];
-  responses: Map<string, ReviewResult>;
-  ordinals: Map<ProviderId, number>;
+  preflights: Map<ProviderId, CapturedPreflightEntry[]>;
+  responses: Map<
+    number,
+    { kind: "review"; value: ReviewResult } | { kind: "complete"; value: string }
+  >;
+  throws: Map<number, CapturedThrowableSnapshot>;
+  nextOrdinal: number;
   mismatch: string | null;
 }
 
@@ -1183,8 +1798,10 @@ function normalizedReview(result: ReviewResult): ReviewResult {
     durationMs: result.durationMs,
     exitCode: result.exitCode,
     rawEventsPath: "",
+    ...(result.rawText === undefined ? {} : { rawText: result.rawText }),
     status: result.status,
     ...(result.statusDetail ? { statusDetail: result.statusDetail } : {}),
+    ...(result.quotaInferred === undefined ? {} : { quotaInferred: result.quotaInferred }),
   };
 }
 
@@ -1215,36 +1832,149 @@ function reviewRequestHash(
   );
 }
 
+function completionRequestHash(
+  provider: ProviderId,
+  ordinal: number,
+  prompt: string,
+  opts: Parameters<NonNullable<ProviderAdapter["complete"]>>[1],
+): string {
+  return sha256(
+    stableJson({
+      provider,
+      kind: "complete",
+      ordinal,
+      prompt_sha256: sha256(prompt),
+      options: {
+        model: opts.model,
+        apiKeyEnv: opts.apiKeyEnv ?? null,
+        timeoutMs: opts.timeoutMs ?? null,
+        maxTokens: opts.maxTokens ?? null,
+        auth: opts.auth ?? null,
+        openrouterProvider: opts.openrouterProvider ?? null,
+        baseUrl: opts.baseUrl ?? null,
+        disableReasoning: opts.disableReasoning ?? null,
+      },
+    }),
+  );
+}
+
+function preflightRequestHash(provider: ProviderId, ordinal: number, cfg: ProviderConfig): string {
+  return sha256(stableJson({ provider, ordinal, config: cfg }));
+}
+
 function captureReviewerAdapters(
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
-  reviewers: ReadonlySet<ProviderId>,
   state: ReviewCaptureState,
 ): Partial<Record<ProviderId, ProviderAdapter>> {
-  const out: Partial<Record<ProviderId, ProviderAdapter>> = { ...adapters };
-  for (const provider of reviewers) {
-    const adapter = adapters[provider];
+  const out: Partial<Record<ProviderId, ProviderAdapter>> = {};
+  for (const [provider, adapter] of Object.entries(adapters) as Array<
+    [ProviderId, ProviderAdapter | undefined]
+  >) {
     if (!adapter) continue;
     const complete = adapter.complete?.bind(adapter);
     out[provider] = {
       id: adapter.id,
-      preflight: (cfg) => adapter.preflight(cfg),
-      async review(input) {
-        const ordinal = (state.ordinals.get(provider) ?? 0) + 1;
-        state.ordinals.set(provider, ordinal);
-        const requestHash = reviewRequestHash(provider, ordinal, input);
-        const response = normalizedReview(await adapter.review(input));
-        const responseHash = sha256(stableJson(response));
-        state.responses.set(requestHash, response);
-        state.entries.push({
-          provider,
-          reviewer_id: input.reviewerId,
-          ordinal,
-          request_sha256: requestHash,
-          response_sha256: responseHash,
-        });
-        return structuredClone(response);
+      async preflight(cfg) {
+        const entries = state.preflights.get(provider) ?? [];
+        state.preflights.set(provider, entries);
+        const requestHash = preflightRequestHash(provider, entries.length, cfg);
+        try {
+          const value = structuredClone(await adapter.preflight(cfg));
+          entries.push({
+            request_sha256: requestHash,
+            response_sha256: sha256(stableJson(value)),
+            outcome: "return",
+            value,
+          });
+          return structuredClone(value);
+        } catch (error) {
+          const captured = captureThrowableSnapshot(error);
+          if (!captured.ok) {
+            state.mismatch ??= `${provider} preflight throw ${entries.length} is not safely reconstructable: ${captured.reason}`;
+            throw error;
+          }
+          entries.push({
+            request_sha256: requestHash,
+            response_sha256: captured.sha256,
+            outcome: "throw",
+            throw_snapshot: captured.snapshot,
+          });
+          throw error;
+        }
       },
-      ...(complete ? { complete: (prompt, opts) => complete(prompt, opts) } : {}),
+      async review(input) {
+        const ordinal = state.nextOrdinal++;
+        const requestHash = reviewRequestHash(provider, ordinal, input);
+        try {
+          const response = normalizedReview(await adapter.review(input));
+          const responseHash = sha256(stableJson(response));
+          state.responses.set(ordinal, { kind: "review", value: response });
+          state.entries.push({
+            provider,
+            kind: "review",
+            ordinal,
+            request_sha256: requestHash,
+            response_sha256: responseHash,
+            outcome: "return",
+          });
+          return structuredClone(response);
+        } catch (error) {
+          const captured = captureThrowableSnapshot(error);
+          if (!captured.ok) {
+            state.mismatch ??= `${provider} review throw ${ordinal} is not safely reconstructable: ${captured.reason}`;
+            throw error;
+          }
+          state.throws.set(ordinal, captured.snapshot);
+          state.entries.push({
+            provider,
+            kind: "review",
+            ordinal,
+            request_sha256: requestHash,
+            response_sha256: captured.sha256,
+            outcome: "throw",
+            throw_snapshot: captured.snapshot,
+          });
+          throw error;
+        }
+      },
+      ...(complete
+        ? {
+            async complete(prompt, opts) {
+              const ordinal = state.nextOrdinal++;
+              const requestHash = completionRequestHash(provider, ordinal, prompt, opts);
+              try {
+                const response = await complete(prompt, opts);
+                state.responses.set(ordinal, { kind: "complete", value: response });
+                state.entries.push({
+                  provider,
+                  kind: "complete",
+                  ordinal,
+                  request_sha256: requestHash,
+                  response_sha256: sha256(response),
+                  outcome: "return",
+                });
+                return response;
+              } catch (error) {
+                const captured = captureThrowableSnapshot(error);
+                if (!captured.ok) {
+                  state.mismatch ??= `${provider} complete throw ${ordinal} is not safely reconstructable: ${captured.reason}`;
+                  throw error;
+                }
+                state.throws.set(ordinal, captured.snapshot);
+                state.entries.push({
+                  provider,
+                  kind: "complete",
+                  ordinal,
+                  request_sha256: requestHash,
+                  response_sha256: captured.sha256,
+                  outcome: "throw",
+                  throw_snapshot: captured.snapshot,
+                });
+                throw error;
+              }
+            },
+          }
+        : {}),
     };
   }
   return out;
@@ -1252,28 +1982,54 @@ function captureReviewerAdapters(
 
 function replayReviewerAdapters(
   adapters: Partial<Record<ProviderId, ProviderAdapter>>,
-  reviewers: ReadonlySet<ProviderId>,
   capture: ReviewCaptureState,
-): Partial<Record<ProviderId, ProviderAdapter>> {
-  const out: Partial<Record<ProviderId, ProviderAdapter>> = { ...adapters };
-  const ordinals = new Map<ProviderId, number>();
-  for (const provider of reviewers) {
-    const adapter = adapters[provider];
+): { adapters: Partial<Record<ProviderId, ProviderAdapter>>; consumed: () => boolean } {
+  const out: Partial<Record<ProviderId, ProviderAdapter>> = {};
+  let cursor = 0;
+  const preflightCursors = new Map<ProviderId, number>();
+  const mismatch = (message: string): void => {
+    capture.mismatch ??= message;
+  };
+  for (const [provider, adapter] of Object.entries(adapters) as Array<
+    [ProviderId, ProviderAdapter | undefined]
+  >) {
     if (!adapter) continue;
-    const complete = adapter.complete?.bind(adapter);
     out[provider] = {
       id: adapter.id,
-      preflight: (cfg) => adapter.preflight(cfg),
+      async preflight(cfg) {
+        const ordinal = preflightCursors.get(provider) ?? 0;
+        preflightCursors.set(provider, ordinal + 1);
+        const expected = capture.preflights.get(provider)?.[ordinal];
+        const requestHash = preflightRequestHash(provider, ordinal, cfg);
+        if (expected === undefined || expected.request_sha256 !== requestHash) {
+          mismatch(`${provider} preflight request ${ordinal} did not match baseline identity`);
+          throw new Error(capture.mismatch ?? "preflight replay mismatch");
+        }
+        if (expected.outcome === "throw") {
+          if (sha256(canonicalJson(expected.throw_snapshot)) !== expected.response_sha256) {
+            mismatch(`${provider} preflight throw ${ordinal} failed snapshot hash validation`);
+            throw new Error(capture.mismatch ?? "preflight replay mismatch");
+          }
+          throw replayThrowableSnapshot(expected.throw_snapshot);
+        }
+        if (sha256(stableJson(expected.value)) !== expected.response_sha256) {
+          mismatch(`${provider} preflight response ${ordinal} failed baseline hash validation`);
+          throw new Error(capture.mismatch ?? "preflight replay mismatch");
+        }
+        return structuredClone(expected.value);
+      },
       async review(input) {
-        const ordinal = (ordinals.get(provider) ?? 0) + 1;
-        ordinals.set(provider, ordinal);
+        const ordinal = cursor++;
         const requestHash = reviewRequestHash(provider, ordinal, input);
-        const expected = capture.entries.find(
-          (entry) => entry.provider === provider && entry.ordinal === ordinal,
-        );
-        const response = expected ? capture.responses.get(expected.request_sha256) : undefined;
-        if (!expected || expected.request_sha256 !== requestHash || !response) {
-          capture.mismatch = `${provider} reviewer request ${ordinal} did not match baseline`;
+        const expected = capture.entries[ordinal];
+        const stored = capture.responses.get(ordinal);
+        if (
+          !expected ||
+          expected.kind !== "review" ||
+          expected.provider !== provider ||
+          expected.request_sha256 !== requestHash
+        ) {
+          mismatch(`${provider} review request ${ordinal} did not match baseline order/identity`);
           return {
             reviewerId: input.reviewerId,
             verdict: "ERROR",
@@ -1283,19 +2039,106 @@ function replayReviewerAdapters(
             exitCode: 1,
             rawEventsPath: "",
             status: "error",
-            statusDetail: capture.mismatch,
+            statusDetail: capture.mismatch ?? "replay mismatch",
           };
         }
-        return structuredClone(response);
+        if (expected.outcome === "throw") {
+          const snapshot = capture.throws.get(ordinal);
+          if (
+            snapshot === undefined ||
+            expected.throw_snapshot === undefined ||
+            sha256(canonicalJson(snapshot)) !== expected.response_sha256 ||
+            canonicalJson(snapshot) !== canonicalJson(expected.throw_snapshot)
+          ) {
+            mismatch(`${provider} review throw ${ordinal} failed snapshot hash validation`);
+            throw new Error(capture.mismatch ?? "replay throw mismatch");
+          }
+          throw replayThrowableSnapshot(snapshot);
+        }
+        if (
+          stored?.kind !== "review" ||
+          sha256(stableJson(stored.value)) !== expected.response_sha256
+        ) {
+          mismatch(`${provider} review response ${ordinal} failed baseline hash validation`);
+          return {
+            reviewerId: input.reviewerId,
+            verdict: "ERROR",
+            findings: [],
+            usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, quotaUsedPct: null },
+            durationMs: 0,
+            exitCode: 1,
+            rawEventsPath: "",
+            status: "error",
+            statusDetail: capture.mismatch ?? "replay response mismatch",
+          };
+        }
+        return structuredClone(stored.value);
       },
-      ...(complete ? { complete: (prompt, opts) => complete(prompt, opts) } : {}),
+      ...(adapter.complete
+        ? {
+            async complete(prompt, opts) {
+              const ordinal = cursor++;
+              const requestHash = completionRequestHash(provider, ordinal, prompt, opts);
+              const expected = capture.entries[ordinal];
+              const stored = capture.responses.get(ordinal);
+              if (
+                !expected ||
+                expected.kind !== "complete" ||
+                expected.provider !== provider ||
+                expected.request_sha256 !== requestHash
+              ) {
+                mismatch(
+                  `${provider} complete request ${ordinal} did not match baseline order/identity`,
+                );
+                throw new Error(capture.mismatch ?? "replay mismatch");
+              }
+              if (expected.outcome === "throw") {
+                const snapshot = capture.throws.get(ordinal);
+                if (
+                  snapshot === undefined ||
+                  expected.throw_snapshot === undefined ||
+                  sha256(canonicalJson(snapshot)) !== expected.response_sha256 ||
+                  canonicalJson(snapshot) !== canonicalJson(expected.throw_snapshot)
+                ) {
+                  mismatch(`${provider} complete throw ${ordinal} failed snapshot hash validation`);
+                  throw new Error(capture.mismatch ?? "replay throw mismatch");
+                }
+                throw replayThrowableSnapshot(snapshot);
+              }
+              if (
+                stored?.kind !== "complete" ||
+                sha256(stored.value) !== expected.response_sha256
+              ) {
+                mismatch(
+                  `${provider} complete response ${ordinal} failed baseline hash validation`,
+                );
+                throw new Error(capture.mismatch ?? "replay response mismatch");
+              }
+              return stored.value;
+            },
+          }
+        : {}),
     };
   }
-  return out;
-}
-
-function relativeArtifact(fromDir: string, path: string): string {
-  return relative(fromDir, path).split("\\").join("/");
+  return {
+    adapters: out,
+    consumed: () => {
+      if (cursor !== capture.entries.length) {
+        mismatch(`replay consumed ${cursor}/${capture.entries.length} captured provider responses`);
+        return false;
+      }
+      for (const [provider, preflights] of capture.preflights) {
+        const consumed = preflightCursors.get(provider) ?? 0;
+        if (consumed !== preflights.length) {
+          mismatch(
+            `replay consumed ${consumed}/${preflights.length} captured ${provider} preflights`,
+          );
+          return false;
+        }
+      }
+      return true;
+    },
+  };
 }
 
 function matrixVariantProvenanceMismatch(baseline: BenchResult, variant: BenchResult): string[] {
@@ -1320,6 +2163,191 @@ function matrixVariantProvenanceMismatch(baseline: BenchResult, variant: BenchRe
   return reasons;
 }
 
+function authoritativeTraceRunFromCase(caseResult: CaseResult): AuthoritativeTraceRun | null {
+  const policy = caseResult.policy_trace;
+  if (policy === undefined) return null;
+  return {
+    authoritative: policy.authoritative,
+    status: policy.status,
+    catalogVersion: policy.catalog_version,
+    requestedAblations: [...policy.requested_ablations],
+    ...(policy.trace === undefined ? {} : { trace: policy.trace }),
+    ...(policy.trace_ref === undefined ? {} : { traceRef: policy.trace_ref }),
+    ...(policy.trace_sha256 === undefined ? {} : { traceSha256: policy.trace_sha256 }),
+    requestIdentitySha256: policy.request_identity_sha256,
+    effectiveConfigSha256: policy.effective_config_sha256,
+    finalIdentitySha256: policy.final_identity_sha256,
+  };
+}
+
+function validateBenchResultTracePairs(
+  baseline: BenchResult,
+  counterfactual: BenchResult,
+): { ok: true } | { ok: false; reason: string } {
+  if (baseline.cases.length !== counterfactual.cases.length) {
+    return { ok: false, reason: "case identity mismatch: result cardinality differs" };
+  }
+  for (const [index, baselineCase] of baseline.cases.entries()) {
+    const counterfactualCase = counterfactual.cases[index];
+    if (
+      counterfactualCase === undefined ||
+      baselineCase.id !== counterfactualCase.id ||
+      (baselineCase.repeat ?? 1) !== (counterfactualCase.repeat ?? 1) ||
+      baselineCase.content_hash !== counterfactualCase.content_hash
+    ) {
+      return { ok: false, reason: `case identity mismatch at row ${index}` };
+    }
+    const baselineTrace = authoritativeTraceRunFromCase(baselineCase);
+    const counterfactualTrace = authoritativeTraceRunFromCase(counterfactualCase);
+    if (baselineTrace === null || counterfactualTrace === null) {
+      return { ok: false, reason: `missing-trace: case ${baselineCase.id}` };
+    }
+    const validation = validateAuthoritativeTracePair(baselineTrace, counterfactualTrace);
+    if (!validation.ok) {
+      return {
+        ok: false,
+        reason: `${validation.code}: case ${baselineCase.id}: ${validation.reason}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+function matrixPolicyProvenance(
+  result: BenchResult,
+  ablatedPassId: PolicyPassId | null,
+  traceSet: { ref: string; sha256: string } | null,
+) {
+  const policyRows = result.cases.map((caseResult) => caseResult.policy_trace);
+  const complete =
+    traceSet !== null &&
+    policyRows.length > 0 &&
+    policyRows.every((row) => row?.authoritative === true);
+  const rawResponseSha256 = policyRows.flatMap((row) => row?.trace?.raw_response_sha256 ?? []);
+  return {
+    catalog_version: POLICY_CATALOG_VERSION,
+    ablated_pass_id: ablatedPassId,
+    trace_status: complete ? ("complete" as const) : ("not-run" as const),
+    ...(complete
+      ? {
+          trace_ref: traceSet.ref,
+          trace_sha256: traceSet.sha256,
+        }
+      : {}),
+    raw_response_sha256: rawResponseSha256,
+    authoritative: complete,
+    reason: complete ? null : "one or more case traces are non-authoritative",
+  };
+}
+
+function verifyResultTraceArtifacts(
+  root: string,
+  result: BenchResult,
+): { ok: true } | { ok: false; reason: string } {
+  for (const row of result.cases) {
+    const policy = row.policy_trace;
+    if (
+      policy?.authoritative !== true ||
+      policy.trace === undefined ||
+      policy.trace_ref === undefined ||
+      policy.trace_sha256 === undefined
+    ) {
+      return { ok: false, reason: `case ${row.id} has no authoritative persisted trace` };
+    }
+    const verified = verifyBenchArtifactReference({
+      root,
+      ref: policy.trace_ref,
+      sha256: policy.trace_sha256,
+      kind: "policy-trace",
+    });
+    if (!verified.ok) {
+      return { ok: false, reason: `case ${row.id} trace ${verified.reason}` };
+    }
+    if (canonicalJson(verified.value) !== canonicalJson(policy.trace)) {
+      return { ok: false, reason: `case ${row.id} trace embedded identity mismatch` };
+    }
+  }
+  return { ok: true };
+}
+
+function publishResultTraces(
+  stagingRoot: string,
+  outputRoot: string,
+  results: readonly BenchResult[],
+): { ok: true } | { ok: false; reason: string } {
+  if (!ensureDirectoryWithoutSymlinks(join(outputRoot, "artifacts"))) {
+    return { ok: false, reason: "trace output path is unsafe" };
+  }
+  for (const result of results) {
+    const staged = verifyResultTraceArtifacts(stagingRoot, result);
+    if (!staged.ok) return staged;
+    for (const row of result.cases) {
+      const policy = row.policy_trace;
+      if (
+        policy?.trace === undefined ||
+        policy.trace_ref === undefined ||
+        policy.trace_sha256 === undefined
+      ) {
+        return { ok: false, reason: `case ${row.id} trace missing before publish` };
+      }
+      const dateMatch = policy.trace_ref.match(
+        /^artifacts\/policy-traces\/(\d{4})\/(\d{2})\/(\d{2})\//,
+      );
+      if (dateMatch === null) return { ok: false, reason: `case ${row.id} trace ref invalid` };
+      const stored = writePolicyTrace({
+        auditDir: join(outputRoot, "artifacts", "policy-traces"),
+        trace: policy.trace,
+        now: new Date(`${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}T00:00:00.000Z`),
+      });
+      if (
+        stored.status !== "complete" ||
+        `artifacts/policy-traces/${stored.ref}` !== policy.trace_ref ||
+        stored.sha256 !== policy.trace_sha256
+      ) {
+        return { ok: false, reason: `case ${row.id} trace publish failed` };
+      }
+    }
+  }
+  for (const result of results) {
+    const published = verifyResultTraceArtifacts(outputRoot, result);
+    if (!published.ok) return published;
+  }
+  return { ok: true };
+}
+
+function traceSetRun(
+  label: string,
+  ablatedPassId: PolicyPassId | null,
+  result: BenchResult,
+  artifact: { ref: string; sha256: string },
+) {
+  return {
+    label,
+    ablated_pass_id: ablatedPassId,
+    result: { path: artifact.ref, sha256: artifact.sha256 },
+    traces: result.cases.map((row) => {
+      const policy = row.policy_trace;
+      if (
+        policy?.trace === undefined ||
+        policy.trace_ref === undefined ||
+        policy.trace_sha256 === undefined
+      ) {
+        throw new Error(`missing persisted policy trace for ${row.id}`);
+      }
+      return {
+        case_id: row.id,
+        repeat: row.repeat ?? 1,
+        trace_ref: policy.trace_ref,
+        trace_sha256: policy.trace_sha256,
+        effective_config_sha256: policy.effective_config_sha256,
+        request_identity_sha256: policy.request_identity_sha256,
+        final_identity_sha256: policy.final_identity_sha256,
+        raw_response_sha256: policy.trace.raw_response_sha256,
+      };
+    }),
+  };
+}
+
 /**
  * Ablation matrix (spec §8): run the corpus once as a BASELINE (full suppression)
  * and once per `--ablate` layer with that ONE layer turned off, then report the
@@ -1330,23 +2358,26 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
   if (input.ablate.length === 0) {
     return { exitCode: 2, stdout: "", stderr: "bench matrix: --ablate needs at least one layer\n" };
   }
-  const unknown = input.ablate.filter((a) => !(a in MATRIX_ABLATIONS));
+  const normalizedAblations = input.ablate.map(normalizeMatrixAblation);
+  const unknown = input.ablate.filter((_value, index) => normalizedAblations[index] === null);
   if (unknown.length > 0) {
     return {
       exitCode: 2,
       stdout: "",
-      stderr: `bench matrix: unknown ablation(s): ${unknown.join(",")} (known: ${Object.keys(MATRIX_ABLATIONS).join(",")})\n`,
+      stderr: `bench matrix: unknown ablation(s): ${unknown.join(",")} (known catalog IDs plus aliases: ${Object.keys(MATRIX_ABLATION_ALIASES).join(",")})\n`,
     };
   }
-  if (input.authoritative && (input.ablate.length !== 1 || input.ablate[0] !== "critic")) {
+  const ablatedPassIds = normalizedAblations.filter(
+    (value): value is PolicyPassId => value !== null,
+  );
+  if (new Set(ablatedPassIds).size !== ablatedPassIds.length) {
     return {
       exitCode: 2,
       stdout: "",
-      stderr:
-        "bench matrix: authoritative paired mode currently supports exactly --ablate critic\n",
+      stderr: "bench matrix: duplicate ablations resolve to the same policy catalog ID\n",
     };
   }
-  if (input.ablate.includes("critic") && !input.criticProvider) {
+  if (ablatedPassIds.includes("judgment.critic") && !input.criticProvider) {
     return {
       exitCode: 2,
       stdout: "",
@@ -1358,19 +2389,12 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
   };
   const matrixPath = resolve(input.repoRoot, input.out);
   const artifactDir = dirname(matrixPath);
-  const baselinePath = join(artifactDir, "baseline.result.json");
-  const responseManifestPath = join(artifactDir, "reviewer-responses.sha256.json");
-  const variantPaths = new Map(
-    input.ablate.map((layer) => [layer, join(artifactDir, `no-${layer}.result.json`)]),
-  );
-  for (const path of [matrixPath, baselinePath, responseManifestPath, ...variantPaths.values()]) {
-    if (existsSync(path)) {
-      return {
-        exitCode: 2,
-        stdout: "",
-        stderr: `bench matrix: output already exists (immutable): ${path}\n`,
-      };
-    }
+  if (existsSync(matrixPath)) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `bench matrix: output already exists (immutable): ${matrixPath}\n`,
+    };
   }
 
   let baselineConfig: ReviewgateConfig;
@@ -1426,31 +2450,31 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       };
     }
   }
-  // Capture the whole declared slot chain, not just primaries. A quota response
-  // from a primary can make a fallback the actual reviewer; replaying only the
-  // primary would silently call that fallback live in every matrix variant.
-  const reviewerIds = new Set(
-    baselineConfig.phases.review.reviewers.flatMap((reviewer) => [
-      reviewer.provider,
-      ...(reviewer.fallback ?? []),
-    ]),
-  );
   const underlying = buildAdapters(baselineConfig, input.adapters);
   const capture: ReviewCaptureState = {
     entries: [],
+    preflights: new Map(),
     responses: new Map(),
-    ordinals: new Map(),
+    throws: new Map(),
+    nextOrdinal: 0,
     mismatch: null,
   };
-  const capturingAdapters = captureReviewerAdapters(underlying, reviewerIds, capture);
+  const capturingAdapters = captureReviewerAdapters(underlying, capture);
   const budget = createCallBudget(input.maxProviderCalls);
   const runnerInfo = input.runnerInfo ?? detectRunnerInfo(input.adapters);
   const work = mkdtempSync(join(tmpdir(), "rg-bench-matrix-"));
+  const stagingArtifactRoot = join(work, "artifact-root");
   try {
+    if (!ensureDirectoryWithoutSymlinks(join(stagingArtifactRoot, "artifacts"))) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: "bench matrix: benchmark-invalid — trace staging path is unsafe\n",
+      };
+    }
     const runVariant = async (
       label: string,
-      suppressors: SuppressorConfig,
-      ablationLabels: string[],
+      requestedAblations: PolicyPassId[],
       adapters: Partial<Record<ProviderId, ProviderAdapter>>,
       countProviderCalls: boolean,
     ): Promise<{ result?: BenchResult; output: BenchRunOutput; tempPath: string }> => {
@@ -1487,12 +2511,22 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         authoritative: input.authoritative ?? false,
         callBudget: budget,
         countProviderCalls,
-        // Reviewer samples are replayed in-memory, but non-critic variants still
-        // make live critic calls and those must consume the shared hard ceiling.
-        countCompletionCalls: true,
+        // Baseline is the sole live path. Variants replay review + every judge/
+        // critic completion from the same captured logical response sequence.
+        countCompletionCalls: countProviderCalls,
         runnerInfo,
-        suppressors,
-        ablationLabels,
+        suppressors: baselineSuppressors,
+        ablationLabels: requestedAblations,
+        policyExecution: {
+          trace: "memory",
+          policyAblations: new Set(requestedAblations),
+          authoritative: true,
+        },
+        policyTraceStore: {
+          root: join(stagingArtifactRoot, "artifacts", "policy-traces"),
+          refPrefix: "artifacts/policy-traces",
+          ...(input.now === undefined ? {} : { now: input.now() }),
+        },
       });
       if (!existsSync(out)) return { output, tempPath: out };
       return {
@@ -1502,70 +2536,34 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       };
     };
 
-    const baselineRun = await runVariant(
-      "baseline",
-      baselineSuppressors,
-      [],
-      capturingAdapters,
-      true,
-    );
+    const baselineRun = await runVariant("baseline", [], capturingAdapters, true);
     if (baselineRun.output.exitCode !== 0 || !baselineRun.result) {
-      if (existsSync(baselineRun.tempPath)) {
-        mkdirSync(artifactDir, { recursive: true });
-        writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
-      }
       return baselineRun.output;
     }
     const baseline = baselineRun.result;
+    capture.entries.sort((left, right) => left.ordinal - right.ordinal);
+    if (capture.mismatch !== null) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — ${capture.mismatch}\n`,
+      };
+    }
+    const manifest = BenchResponseManifestSchema.parse({
+      schema: "reviewgate.bench.provider-response-hashes.v2",
+      entries: [...capture.entries],
+    });
+    const executed: Array<{
+      label: string;
+      passId: PolicyPassId | null;
+      result: BenchResult;
+    }> = [{ label: "baseline", passId: null, result: baseline }];
 
-    const manifest = {
-      schema: "reviewgate.bench.reviewer-response-hashes.v1",
-      entries: [...capture.entries].sort(
-        (a, b) => a.provider.localeCompare(b.provider) || a.ordinal - b.ordinal,
-      ),
-    };
-    const responseManifestTempPath = join(work, "reviewer-responses.sha256.json");
-    writeFileSync(responseManifestTempPath, `${JSON.stringify(manifest, null, 2)}\n`);
-
-    const dv = (b: Metric, v: Metric): number => (b.value ?? 0) - (v.value ?? 0);
-    const baselineHash = sha256File(baselineRun.tempPath);
-    const variants: MatrixVariant[] = [
-      {
-        label: "baseline",
-        ablation: "",
-        class: "baseline",
-        precision: baseline.aggregate.precision,
-        recall: baseline.aggregate.recall,
-        clean_fp_rate: baseline.aggregate.clean_fp_rate,
-        delta: null,
-        authoritative: isAuthoritative(baseline).ok,
-        result_ref: relativeArtifact(artifactDir, baselinePath),
-        result_sha256: baselineHash,
-      },
-    ];
-    const variantArtifactRefs: Array<{ path: string; sha256: string }> = [];
-    const completedVariantArtifacts: Array<{ tempPath: string; finalPath: string }> = [];
-
-    for (const layer of input.ablate) {
-      const spec = MATRIX_ABLATIONS[layer];
-      if (!spec) continue; // validated above
-      const replayAdapters = replayReviewerAdapters(underlying, reviewerIds, capture);
-      const variantRun = await runVariant(
-        `no-${layer}`,
-        { ...baselineSuppressors, ...spec.off },
-        [layer],
-        replayAdapters,
-        false,
-      );
-      const finalPath = variantPaths.get(layer);
-      if (!finalPath) throw new Error(`missing artifact path for ${layer}`);
+    for (const passId of ablatedPassIds) {
+      const replay = replayReviewerAdapters(underlying, capture);
+      const variantRun = await runVariant(`no-${passId}`, [passId], replay.adapters, false);
+      replay.consumed();
       if (variantRun.output.exitCode !== 0 || !variantRun.result || capture.mismatch) {
-        mkdirSync(artifactDir, { recursive: true });
-        writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
-        writeFileSync(responseManifestPath, readFileSync(responseManifestTempPath));
-        if (existsSync(variantRun.tempPath)) {
-          writeFileSync(finalPath, readFileSync(variantRun.tempPath));
-        }
         return {
           exitCode: variantRun.output.exitCode === 0 ? 4 : variantRun.output.exitCode,
           stdout: variantRun.output.stdout,
@@ -1575,43 +2573,187 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       const r = variantRun.result;
       const provenanceMismatch = matrixVariantProvenanceMismatch(baseline, r);
       if (provenanceMismatch.length > 0) {
-        mkdirSync(artifactDir, { recursive: true });
-        writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
-        writeFileSync(responseManifestPath, readFileSync(responseManifestTempPath));
-        if (existsSync(variantRun.tempPath)) {
-          writeFileSync(finalPath, readFileSync(variantRun.tempPath));
-        }
         return {
           exitCode: 4,
           stdout: "",
           stderr: `bench matrix: benchmark-invalid — ${provenanceMismatch.join("; ")}\n`,
         };
       }
-      const resultHash = sha256File(variantRun.tempPath);
-      completedVariantArtifacts.push({ tempPath: variantRun.tempPath, finalPath });
-      variantArtifactRefs.push({
-        path: relativeArtifact(artifactDir, finalPath),
-        sha256: resultHash,
-      });
-      variants.push({
-        label: `-${layer}`,
-        ablation: layer,
-        class: spec.klass,
-        precision: r.aggregate.precision,
-        recall: r.aggregate.recall,
-        clean_fp_rate: r.aggregate.clean_fp_rate,
-        delta: {
-          precision: dv(baseline.aggregate.precision, r.aggregate.precision),
-          recall: dv(baseline.aggregate.recall, r.aggregate.recall),
-          clean_fp_rate: dv(baseline.aggregate.clean_fp_rate, r.aggregate.clean_fp_rate),
-        },
-        authoritative: isAuthoritative(r).ok,
-        result_ref: relativeArtifact(artifactDir, finalPath),
-        result_sha256: resultHash,
-      });
+      const traceValidation = validateBenchResultTracePairs(baseline, r);
+      if (!traceValidation.ok) {
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — ${traceValidation.reason}\n`,
+        };
+      }
+      executed.push({ label: `-${passId}`, passId, result: r });
     }
 
+    const publishedTraces = publishResultTraces(
+      stagingArtifactRoot,
+      artifactDir,
+      executed.map((run) => run.result),
+    );
+    if (!publishedTraces.ok) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — policy trace artifact ${publishedTraces.reason}\n`,
+      };
+    }
+    const responseArtifact = persistBenchArtifact({
+      root: artifactDir,
+      kind: "response-manifest",
+      value: manifest,
+    });
+    if (!responseArtifact.ok) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — response manifest ${responseArtifact.reason}\n`,
+      };
+    }
+    const resultArtifacts = new Map<string, { ref: string; sha256: string }>();
+    for (const run of executed) {
+      const artifact = persistBenchArtifact({
+        root: artifactDir,
+        kind: "bench-result",
+        value: run.result,
+      });
+      if (!artifact.ok) {
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — result ${run.label} ${artifact.reason}\n`,
+        };
+      }
+      const traceVerification = verifyResultTraceArtifacts(artifactDir, run.result);
+      if (!traceVerification.ok) {
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — ${traceVerification.reason}\n`,
+        };
+      }
+      resultArtifacts.set(run.label, { ref: artifact.ref, sha256: artifact.sha256 });
+    }
+    const traceSet = BenchPolicyTraceSetSchema.parse({
+      schema: "reviewgate.bench.policy-trace-set.v1",
+      catalog_version: POLICY_CATALOG_VERSION,
+      response_manifest: {
+        path: responseArtifact.ref,
+        sha256: responseArtifact.sha256,
+      },
+      runs: executed.map((run) => {
+        const artifact = resultArtifacts.get(run.label);
+        if (artifact === undefined) throw new Error(`missing result artifact for ${run.label}`);
+        return traceSetRun(run.label, run.passId, run.result, artifact);
+      }),
+    });
+    const traceSetArtifact = persistBenchArtifact({
+      root: artifactDir,
+      kind: "policy-trace-set",
+      value: traceSet,
+    });
+    if (!traceSetArtifact.ok) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — policy trace set ${traceSetArtifact.reason}\n`,
+      };
+    }
+    const finalResponseVerification = verifyBenchArtifactReference({
+      root: artifactDir,
+      ref: responseArtifact.ref,
+      sha256: responseArtifact.sha256,
+      kind: "response-manifest",
+    });
+    if (
+      !finalResponseVerification.ok ||
+      canonicalJson(finalResponseVerification.value) !== canonicalJson(manifest)
+    ) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — response manifest final verification ${finalResponseVerification.ok ? "identity-mismatch" : finalResponseVerification.reason}\n`,
+      };
+    }
+    for (const run of executed) {
+      const artifact = resultArtifacts.get(run.label);
+      if (artifact === undefined) throw new Error(`missing result artifact for ${run.label}`);
+      const finalResultVerification = verifyBenchArtifactReference({
+        root: artifactDir,
+        ref: artifact.ref,
+        sha256: artifact.sha256,
+        kind: "bench-result",
+      });
+      const finalTraceVerification = verifyResultTraceArtifacts(artifactDir, run.result);
+      if (
+        !finalResultVerification.ok ||
+        canonicalJson(finalResultVerification.value) !== canonicalJson(run.result) ||
+        !finalTraceVerification.ok
+      ) {
+        const reason = !finalResultVerification.ok
+          ? finalResultVerification.reason
+          : !finalTraceVerification.ok
+            ? finalTraceVerification.reason
+            : "identity-mismatch";
+        return {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench matrix: benchmark-invalid — result ${run.label} final verification ${reason}\n`,
+        };
+      }
+    }
+    const finalTraceSetVerification = verifyBenchArtifactReference({
+      root: artifactDir,
+      ref: traceSetArtifact.ref,
+      sha256: traceSetArtifact.sha256,
+      kind: "policy-trace-set",
+    });
+    if (
+      !finalTraceSetVerification.ok ||
+      canonicalJson(finalTraceSetVerification.value) !== canonicalJson(traceSet)
+    ) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench matrix: benchmark-invalid — policy trace set final verification ${finalTraceSetVerification.ok ? "identity-mismatch" : finalTraceSetVerification.reason}\n`,
+      };
+    }
+    const traceSetIdentity = { ref: traceSetArtifact.ref, sha256: traceSetArtifact.sha256 };
+    const dv = (b: Metric, v: Metric): number => (b.value ?? 0) - (v.value ?? 0);
+    const variants: MatrixVariant[] = executed.map((run) => {
+      const artifact = resultArtifacts.get(run.label);
+      if (artifact === undefined) throw new Error(`missing result artifact for ${run.label}`);
+      const baselineRow = run.passId === null;
+      return {
+        label: run.label,
+        ablation: run.passId ?? "",
+        class: baselineRow ? "baseline" : "A",
+        precision: run.result.aggregate.precision,
+        recall: run.result.aggregate.recall,
+        clean_fp_rate: run.result.aggregate.clean_fp_rate,
+        delta: baselineRow
+          ? null
+          : {
+              precision: dv(baseline.aggregate.precision, run.result.aggregate.precision),
+              recall: dv(baseline.aggregate.recall, run.result.aggregate.recall),
+              clean_fp_rate: dv(
+                baseline.aggregate.clean_fp_rate,
+                run.result.aggregate.clean_fp_rate,
+              ),
+            },
+        authoritative: isAuthoritative(run.result).ok,
+        result_ref: artifact.ref,
+        result_sha256: artifact.sha256,
+        policy: matrixPolicyProvenance(run.result, run.passId, traceSetIdentity),
+      };
+    });
     const allAuthoritative = variants.every((variant) => variant.authoritative === true);
+    const baselineArtifact = resultArtifacts.get("baseline");
+    if (baselineArtifact === undefined) throw new Error("missing baseline result artifact");
     const matrix: BenchMatrix = {
       schema: "reviewgate.bench.matrix.v1",
       provenance: baseline.provenance,
@@ -1619,24 +2761,40 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       authoritative: allAuthoritative,
       artifacts: {
         baseline: {
-          path: relativeArtifact(artifactDir, baselinePath),
-          sha256: baselineHash,
+          path: baselineArtifact.ref,
+          sha256: baselineArtifact.sha256,
         },
-        variants: variantArtifactRefs,
+        variants: executed.slice(1).map((run) => {
+          const artifact = resultArtifacts.get(run.label);
+          if (artifact === undefined) throw new Error(`missing result artifact for ${run.label}`);
+          return { path: artifact.ref, sha256: artifact.sha256 };
+        }),
         reviewer_responses: {
-          path: relativeArtifact(artifactDir, responseManifestPath),
-          sha256: sha256File(responseManifestTempPath),
+          path: responseArtifact.ref,
+          sha256: responseArtifact.sha256,
+        },
+        policy_trace_set: {
+          path: traceSetArtifact.ref,
+          sha256: traceSetArtifact.sha256,
         },
       },
     };
     BenchMatrixSchema.parse(matrix);
-    mkdirSync(artifactDir, { recursive: true });
-    writeFileSync(baselinePath, readFileSync(baselineRun.tempPath));
-    writeFileSync(responseManifestPath, readFileSync(responseManifestTempPath));
-    for (const artifact of completedVariantArtifacts) {
-      writeFileSync(artifact.finalPath, readFileSync(artifact.tempPath));
+    if (!ensureDirectoryWithoutSymlinks(artifactDir)) {
+      return {
+        exitCode: 4,
+        stdout: "",
+        stderr: "bench matrix: benchmark-invalid — output path is not a safe directory\n",
+      };
     }
-    writeFileSync(matrixPath, `${JSON.stringify(matrix, null, 2)}\n`);
+    const matrixCreated = writeFileIfAbsent(matrixPath, canonicalJson(matrix), { mode: 0o600 });
+    if (!matrixCreated) {
+      return {
+        exitCode: 2,
+        stdout: "",
+        stderr: `bench matrix: output already exists (immutable): ${matrixPath}\n`,
+      };
+    }
     if (input.authoritative && !allAuthoritative) {
       return {
         exitCode: 4,

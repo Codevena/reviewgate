@@ -21,6 +21,9 @@ function seedDay(auditDir: string, d: Date): string {
   mkdirSync(dir, { recursive: true });
   const f = join(dir, "120000.jsonl");
   writeFileSync(f, "{}\n");
+  const policyDir = join(dir, "policy");
+  mkdirSync(policyDir, { recursive: true });
+  writeFileSync(join(policyDir, "trace.json"), "{}\n");
   return dir;
 }
 
@@ -36,9 +39,11 @@ describe("AuditLogger retention pruning", () => {
     const log = new AuditLogger(auditDir, 180);
     await log.append({ event: "session.start", run_id: "r1", iter: 0, trigger: "session-start" });
 
-    // Older-than-180d partition pruned; the recent one and today's new file remain.
+    // The policy child follows the existing whole-day retention boundary: there is
+    // no independent artifact-retention implementation to drift from the JSONL log.
     expect(existsSync(oldDir)).toBe(false);
     expect(existsSync(recentDir)).toBe(true);
+    expect(existsSync(join(recentDir, "policy", "trace.json"))).toBe(true);
     expect(existsSync(log.currentFilePath())).toBe(true);
   });
 

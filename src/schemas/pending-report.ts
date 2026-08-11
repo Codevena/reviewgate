@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { FindingSchema } from "./finding.ts";
+import { PolicySummarySchema } from "./policy-trace.ts";
 
 export const ReviewerStatus = z.enum(["ok", "error", "abstain", "timeout", "quota-exhausted"]);
 export type ReviewerStatus = z.infer<typeof ReviewerStatus>;
@@ -69,6 +70,8 @@ export const PendingReportSchema = z.object({
     }),
   ),
   findings: z.array(FindingSchema),
+  // Optional as one unit so legacy reviewgate.pending.v1 artifacts remain valid.
+  policy_summary: PolicySummarySchema.optional(),
   // S2 (field report 2026-06-23): true iff the reviewed diff contains at least one file this
   // session is responsible for (the attributable ∩ diff set is non-empty). The load-bearing
   // whole-diff guard for the out-of-session honest handoff: the agent may disown the change-set

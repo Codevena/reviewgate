@@ -19,13 +19,51 @@ Snapshot/inspect files live under `flashbuddy/.reviewgate/`: `pending.json`/`pen
 ## Layer 1 — Automated (deterministic, no network)
 ```
 export PATH="$HOME/.bun/bin:$PATH"
-bun test            # expect ~300 pass / 9 skip / 0 fail
+bun test            # require the real terminal summary: 0 fail
 bun run typecheck   # clean
 bun run lint        # clean
 ```
 Covers every phase's logic with fakes: loop FSM, triage, aggregator (+dedup/critic),
 signatures, cache, brain (store/select/engine/curator/lifecycle/fetcher/embeddings),
 config, audit, all adapters, full P0→P4 integration.
+
+### Policy Accountability & Replay — Slice 1
+
+This deterministic block is the focused acceptance suite for the closed 18-pass catalog, both
+explanatory stages, fail-open production tracing and fail-closed authoritative measurement:
+
+```bash
+bun test tests/unit/policy-catalog.test.ts \
+  tests/unit/policy-trace-schema.test.ts \
+  tests/unit/policy-trace-recorder.test.ts \
+  tests/unit/policy-pass-contract-matrix.test.ts \
+  tests/integration/policy-trace-equivalence.test.ts \
+  tests/integration/policy-trace-offline-replay.test.ts \
+  tests/unit/bench-matrix.test.ts \
+  tests/unit/rig-replay.test.ts \
+  tests/unit/audit-verify-corruption.test.ts
+```
+
+The suite must prove:
+
+- all 18 catalog rows and the `aggregation.cluster`/`verdict.compute` stages are present in fixed
+  order, with explicit no-opportunity, no-match, active, ablated and protected contracts;
+- trace-on/off leaves findings, legacy markers, Markdown, counts and verdict byte-equivalent after
+  optional telemetry is removed;
+- Audit/Bench policy artifacts are canonical and content-addressed; Rig state and Cassette evidence
+  are mode-`0600`, contained and bound by exact content hashes/identities; `result.json` is bound to
+  the exact Manifest, script, source, initial state, Cassette and complete turn/trace inventory;
+- Bench uses one live baseline and exact captured-response replay for internally ablated variants;
+- Rig replays exact calls in persistent, isolated baseline/counterfactual branches without live
+  provider or network calls and without production-state writes;
+- missing, corrupt, overflowed, reordered, cross-catalog or mismatched evidence is non-authoritative
+  and authoritative commands exit `4` rather than substituting zero counters.
+
+The ten required mutation proofs, their named red regressions and restored source hashes are kept in
+`docs/dev/2026-08-10-policy-trace-mutation-evidence.md`. Do not replace them with a green-only full
+suite. Slice 1 is measurement plumbing, not evidence that a pass is useful or useless: zero
+opportunities do not support deletion, Lore is additive/outside the 18, and history passes need
+seeded multi-turn sequences.
 
 ## Layer 2 — Real CLI/API e2e (gated; needs real providers + OPENROUTER_API_KEY)
 ```

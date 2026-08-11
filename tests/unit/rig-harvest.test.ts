@@ -70,6 +70,13 @@ interface FxTurn {
    * keys on the whole file's hash and a report rewritten for an unrelated reason is a new file.
    */
   reportIters?: number[];
+  /**
+   * parallel to `reports`: the `run_id` that version carries. Defaults to this turn's own
+   * (`session-<turnIndex>`), i.e. a report the turn's own gate produced. Set it to an EARLIER
+   * turn's id to model the archiver catching a leftover `pending.json`, or to an id no audit
+   * event carries to model a report that cannot be attributed to any turn.
+   */
+  reportRunIds?: (string | undefined)[];
   agentExitCode?: number;
 }
 
@@ -138,10 +145,15 @@ function turnAuditJsonl(turn: FxTurn, turnIndex: number): string {
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
-function pendingReport(findings: FxFinding[], iter: number, critic?: FxCritic): string {
+function pendingReport(
+  findings: FxFinding[],
+  iter: number,
+  critic: FxCritic | undefined,
+  runId: string,
+): string {
   return JSON.stringify({
     schema: "reviewgate.pending.v1",
-    run_id: "session-x",
+    run_id: runId,
     iter,
     max_iter: 5,
     verdict: findings.length === 0 ? "PASS" : "FAIL",
@@ -253,7 +265,12 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
       for (const [n, findings] of reports.entries()) {
         writeFileSync(
           join(reportDir, `${n + 1}-pending.json`),
-          pendingReport(findings, turn.reportIters?.[n] ?? n + 1, turn.critics?.[n]),
+          pendingReport(
+            findings,
+            turn.reportIters?.[n] ?? n + 1,
+            turn.critics?.[n],
+            turn.reportRunIds?.[n] ?? `session-${index}`,
+          ),
         );
       }
     }
@@ -361,11 +378,13 @@ describe("rig harvest", () => {
     const { manifestPath, scriptPath } = buildFixture([
       {
         // Critic RAN and kept everything: demoted 0, so suppression.critic is 0 too.
+        iterations: [{}],
         reports: [[{ signature: "sig-a", severity: "WARN", message: "a finding" }]],
         critics: [{ provider: "openrouter", status: "ran", verdicts: 4, demoted: 0 }],
       },
       {
         // pilot-01's shape: findings, but no critic key at all.
+        iterations: [{}],
         reports: [[{ signature: "sig-b", severity: "WARN", message: "another finding" }]],
       },
     ]);
@@ -393,6 +412,7 @@ describe("rig harvest", () => {
           [{ signature: "sig-b", severity: "WARN", message: "two" }],
         ],
         reportIters: [1, 1],
+        iterations: [{}],
         critics: [same, same],
       },
     ]);
@@ -413,6 +433,7 @@ describe("rig harvest", () => {
           [{ signature: "sig-b", severity: "WARN", message: "two" }],
         ],
         reportIters: [1, 2],
+        iterations: [{}, {}],
         critics: [same, same],
       },
     ]);
@@ -713,6 +734,27 @@ describe("rig harvest", () => {
     const fx = canonicalFixture();
     const result = harvest(fx.manifestPath, fx.scriptPath);
     expect(() => RigResultSchema.parse(result)).not.toThrow();
+    expect(result.policyReplay).toEqual({
+      authoritative: false,
+      catalogVersion: null,
+      sourceCommit: null,
+      passIds: [],
+      reason:
+        "legacy run: no exact policy replay metadata; four-layer counts are non-authoritative",
+    });
+    expect(() =>
+      RigResultSchema.parse({
+        ...result,
+        turns: result.turns.map((turn, index) =>
+          index === 0
+            ? {
+                ...turn,
+                policyReplay: { status: "complete", traces: [], reason: null },
+              }
+            : turn,
+        ),
+      }),
+    ).toThrow(/complete/i);
   });
 
   test("provenance names the panel it was measured on", () => {
@@ -887,7 +929,7 @@ describe("rig harvest", () => {
       join(reportDir, "9-pending.json"),
       JSON.stringify({
         schema: "reviewgate.pending.v1",
-        run_id: "session-x",
+        run_id: "session-1",
         iter: 1,
         max_iter: 5,
         verdict: "PASS",
@@ -916,5 +958,105 @@ describe("rig harvest", () => {
     expect(result.provenance.panel).toEqual([
       { provider: "openrouter", model: "anthropic/claude-sonnet-4.5", persona: "security" },
     ]);
+  });
+
+  test("an inherited report is not counted again in the turn that merely saw it", () => {
+    const fx = buildFixture([
+      { seeded: null, iterations: [{ warn: 1 }], reports: [[{ signature: "s1" }]] },
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        // The archiver's first poll caught turn 1's leftover, then turn 2's own report.
+        reports: [[{ signature: "s1" }], [{ signature: "s2" }]],
+        reportRunIds: ["session-1", undefined],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.findingsTotal).toBe(1);
+    expect(result.turns[1]?.findings[0]?.signature).toBe("s2");
+    expect(result.warnings.some((w) => w.includes("turn 2") && /EARLIER turn/.test(w))).toBe(true);
+  });
+
+  test("a turn the gate never reviewed reports nothing, not its predecessor's findings", () => {
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 3 }],
+        reports: [[{ signature: "a" }, { signature: "b" }, { signature: "c" }]],
+      },
+      // The agent died; the gate never ran. Only turn 1's leftover was on disk to archive.
+      {
+        seeded: null,
+        iterations: [],
+        reports: [[{ signature: "a" }, { signature: "b" }, { signature: "c" }]],
+        reportRunIds: ["session-1"],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.iterations).toBe(0);
+    expect(result.turns[1]?.findingsTotal).toBe(0);
+  });
+
+  test("a report owned by NO turn is dropped and warned about, not charged to this turn", () => {
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "own" }], [{ signature: "ghost" }]],
+        reportRunIds: [undefined, "session-99"],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[0]?.findingsTotal).toBe(1);
+    expect(result.warnings.some((w) => /NO turn's audit events/.test(w))).toBe(true);
+  });
+
+  test("criticRuns is not attributed to a turn that only INHERITED the report", () => {
+    const critic = { provider: "ollama", status: "ran" as const, verdicts: 2, demoted: 1 };
+    const fx = buildFixture([
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "s1" }]],
+        critics: [critic],
+      },
+      {
+        seeded: null,
+        iterations: [{ warn: 0 }],
+        reports: [[{ signature: "s1" }], []],
+        critics: [critic, undefined],
+        reportRunIds: ["session-1", undefined],
+        reportIters: [1, 1],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[0]?.criticRuns?.length).toBe(1);
+    expect(result.turns[1]?.criticRuns ?? []).toEqual([]);
+  });
+
+  test("reportsRead counts only OWNED reports, so the unmeasured-turn warning still fires", () => {
+    const fx = buildFixture([
+      { seeded: null, iterations: [{ warn: 1 }], reports: [[{ signature: "s1" }]] },
+      // The gate DID run, but the archiver caught only turn 1's leftover — none of turn 2's own.
+      {
+        seeded: null,
+        iterations: [{ warn: 1 }],
+        reports: [[{ signature: "s1" }]],
+        reportRunIds: ["session-1"],
+      },
+    ]);
+    const result = harvest(fx.manifestPath, fx.scriptPath);
+
+    expect(result.turns[1]?.iterations).toBe(1);
+    expect(result.turns[1]?.findingsTotal).toBe(0);
+    expect(
+      result.warnings.some((w) => w.includes("turn 2") && /NO pending\.json was archived/.test(w)),
+    ).toBe(true);
   });
 });

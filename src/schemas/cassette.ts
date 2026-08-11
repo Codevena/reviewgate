@@ -14,6 +14,19 @@ export const ProviderIdSchema = z.enum([
 
 const ReviewStatusSchema = z.enum(["ok", "error", "abstain", "timeout", "quota-exhausted"]);
 
+export const PolicyReplayCassetteCallSchema = z
+  .object({
+    callId: z.string().regex(/^[0-9a-f]{64}$/),
+    runId: z.string().min(1).max(128),
+    iter: z.number().int().positive(),
+    kind: z.enum(["reviewer", "grounding", "critic"]),
+    ordinal: z.number().int().nonnegative(),
+    slot: z.number().int().nonnegative(),
+    attempt: z.number().int().positive(),
+    occurrence: z.number().int().nonnegative(),
+  })
+  .strict();
+
 // zod mirror of ReviewResult (src/providers/adapter-base.ts). rawEventsPath MAY be ""
 // (several adapters return empty) → plain z.string(), never non-empty.
 export const ReviewResultSchema = z.object({
@@ -48,6 +61,8 @@ export const CassetteEntrySchema = z
     key: z.string(),
     method: z.enum(["review", "complete", "embed"]),
     promptSha256: z.string(),
+    /** Additive: absent on legacy/non-authoritative recordings. */
+    policyReplayCall: PolicyReplayCassetteCallSchema.optional(),
     result: z.union([
       ReviewResultSchema,
       z.object({ text: z.string() }),

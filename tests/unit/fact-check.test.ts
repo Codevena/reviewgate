@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
+import { PolicyTraceRecorder } from "../../src/core/policy/trace.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
 
 function mkFinding(over: Partial<Finding> = {}): Finding {
@@ -33,8 +34,9 @@ function repo(): string {
 }
 
 describe("validateFindingFacts", () => {
-  it("demotes a CRITICAL citing a line in an EMPTY file (line out of range)", () => {
+  it("demotes a security CRITICAL citing an EMPTY file and records no category protection", () => {
     const dir = repo();
+    const runtime = PolicyTraceRecorder.start({ runId: "fact-security", iter: 1, ablated: [] });
     const out = validateFindingFacts(
       [
         mkFinding({
@@ -47,9 +49,24 @@ describe("validateFindingFacts", () => {
       ],
       dir,
       new Set(),
+      runtime,
     );
     expect(out[0]).toMatchObject({ severity: "INFO", fact_invalid: true });
     expect(out[0]?.details).toContain("fact-check");
+    expect(runtime.summary("evidence.fact-location")).toMatchObject({
+      considered: 1,
+      opportunities: 1,
+      would_apply: 1,
+      applied: 1,
+      protected: 0,
+      blocking_removed: 1,
+    });
+    expect(out[0]?.policy_effects?.[0]).toMatchObject({
+      pass_id: "evidence.fact-location",
+      order: 10,
+      action: "demoted",
+      reason_code: "location-out-of-range",
+    });
   });
 
   it("demotes a CRITICAL whose line is beyond the file's length (out of range)", () => {

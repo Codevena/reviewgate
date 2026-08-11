@@ -1,4 +1,5 @@
 import type { Finding } from "../schemas/finding.ts";
+import { type PolicyRuntime, transitionFinding } from "./policy/trace.ts";
 
 // Deterministic self-refutation filter — no LLM, no network. A reviewer frequently
 // investigates a concern, narrates the analysis, and CONCLUDES the code is fine ("This
@@ -114,18 +115,35 @@ const NOTE =
  * "No defect", "Safe.") to INFO (advisory). Demote-only, positive-signal, fail-safe.
  * Skips deterministic check-tier findings and findings already at INFO (idempotent).
  */
-export function demoteSelfRefuting(findings: Finding[], enabled = true): Finding[] {
+export function demoteSelfRefuting(
+  findings: Finding[],
+  enabled = true,
+  runtime?: PolicyRuntime,
+): Finding[] {
   if (!enabled) return findings;
+  const runtimeInput = runtime === undefined ? {} : { runtime };
   return findings.map((f) => {
-    if (f.severity === "INFO") return f; // already advisory — idempotent no-op
-    if (f.deterministic) return f; // check-tier ground truth — never demote
-    // Never soften a security/correctness finding on the reviewer's own untrusted prose
-    // (dogfood DoD: a confused/injected reviewer could retract a real vuln). Hard-veto
-    // categories stay blocking — the agent dispositions them with a decision instead.
-    if (f.category === "security" || f.category === "correctness") return f;
-    if (isSelfRefutingText(f.message) || isSelfRefutingText(f.details)) {
-      return demote(f, NOTE);
-    }
-    return f;
+    const opportunity = f.severity !== "INFO";
+    const matched = opportunity && (isSelfRefutingText(f.message) || isSelfRefutingText(f.details));
+    const protectedBy = !matched
+      ? undefined
+      : f.deterministic
+        ? ("deterministic-ground-truth" as const)
+        : f.category === "security" || f.category === "correctness"
+          ? ("security-correctness-floor" as const)
+          : undefined;
+    return (
+      transitionFinding({
+        ...runtimeInput,
+        passId: "evidence.self-refutation",
+        finding: f,
+        opportunity,
+        matched,
+        reasonCode: "terminal-self-refutation",
+        action: "demoted",
+        ...(protectedBy === undefined ? {} : { protectedBy }),
+        proposed: () => demote(f, NOTE),
+      }) ?? f
+    );
   });
 }

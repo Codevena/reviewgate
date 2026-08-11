@@ -255,12 +255,38 @@ function fmtPoint(m: Metric): string {
  */
 export function renderBenchMatrix(matrix: BenchMatrix): string {
   const p = matrix.provenance;
+  const policyRows = matrix.variants.flatMap((variant) =>
+    variant.policy === undefined ? [] : [{ label: variant.label, policy: variant.policy }],
+  );
+  const policyCatalogs = [...new Set(policyRows.map((row) => row.policy.catalog_version))];
+  const invalidPolicyRows = policyRows.filter((row) => !row.policy.authoritative);
+  const legacyPolicyRows = matrix.variants
+    .filter((variant) => variant.policy === undefined)
+    .map((variant) => ({
+      label: variant.label,
+      reason: "legacy result has no policy trace provenance",
+    }));
+  const policyInvalidities = [
+    ...invalidPolicyRows.map((row) => ({
+      label: row.label,
+      reason: row.policy.reason ?? `trace status ${row.policy.trace_status}`,
+    })),
+    ...legacyPolicyRows,
+  ];
   const L: string[] = [];
   L.push("Reviewgate bench matrix — ablation (baseline = full suppression)");
   L.push("================================================================");
   L.push(
     `roster: ${p.providers.map((r) => r.id).join(", ")}  ·  repeat ${p.repeat}  ·  corpus ${p.corpus_commit}${p.corpus_dirty ? " (dirty)" : ""}`,
   );
+  if (policyCatalogs.length > 0) L.push(`policy catalog: ${policyCatalogs.join(", ")}`);
+  if (matrix.authoritative === false || policyInvalidities.length > 0) {
+    L.push("");
+    L.push("⚠ NON-AUTHORITATIVE policy matrix:");
+    for (const row of policyInvalidities) {
+      L.push(`  · ${row.label}: ${row.reason}`);
+    }
+  }
   L.push("");
   const head = `  ${pad("variant", 16)} ${pad("class", 6)} ${pad("precision", 10)} ${pad("recall", 8)} ${pad("clean-FP", 9)}  ${pad("Δprec", 7)} ${pad("Δrecall", 8)} Δcleanfp`;
   L.push(head);
@@ -278,6 +304,18 @@ export function renderBenchMatrix(matrix: BenchMatrix): string {
   const M: string[] = [];
   M.push("### Reviewgate bench — ablation matrix");
   M.push("");
+  if (policyCatalogs.length > 0) {
+    M.push(`_Policy catalog: \`${policyCatalogs.join(", ")}\`._`);
+    M.push("");
+  }
+  if (matrix.authoritative === false || policyInvalidities.length > 0) {
+    M.push(
+      `> ⚠ **NON-AUTHORITATIVE policy matrix** — ${policyInvalidities
+        .map((row) => `${row.label}: ${row.reason}`)
+        .join("; ")}.`,
+    );
+    M.push("");
+  }
   M.push("| variant | class | precision | recall | clean-FP | Δprec | Δrecall | Δclean-FP |");
   M.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
   for (const v of matrix.variants) {

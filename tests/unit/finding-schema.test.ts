@@ -75,3 +75,51 @@ describe("claimed_fixed_recurred tag", () => {
     expect(() => FindingSchema.parse({ ...base, claimed_fixed_recurred: { iter: 0 } })).toThrow();
   });
 });
+
+describe("FindingSchema policy effects", () => {
+  it("keeps legacy findings parseable with policy_effects absent", () => {
+    expect(FindingSchema.parse(base).policy_effects).toBeUndefined();
+  });
+
+  it("preserves a server-authored material policy effect", () => {
+    const parsed = FindingSchema.parse({
+      ...base,
+      policy_effects: [
+        {
+          pass_id: "judgment.confidence",
+          order: 140,
+          action: "demoted",
+          before: "WARN",
+          after: "INFO",
+          reason_code: "below-confidence-floor",
+          source_signatures: ["sig-a", "sig-b"],
+        },
+      ],
+    });
+    expect(parsed.policy_effects?.[0]?.pass_id).toBe("judgment.confidence");
+  });
+
+  it("rejects malicious prose and unsorted lineage inside policy_effects", () => {
+    const effect = {
+      pass_id: "judgment.confidence",
+      order: 140,
+      action: "demoted",
+      before: "WARN",
+      after: "INFO",
+      reason_code: "below-confidence-floor",
+      source_signatures: ["sig-a"],
+    };
+    expect(
+      FindingSchema.safeParse({
+        ...base,
+        policy_effects: [{ ...effect, reason_code: "the reviewer asked for a demotion" }],
+      }).success,
+    ).toBe(false);
+    expect(
+      FindingSchema.safeParse({
+        ...base,
+        policy_effects: [{ ...effect, source_signatures: ["sig-b", "sig-a"] }],
+      }).success,
+    ).toBe(false);
+  });
+});

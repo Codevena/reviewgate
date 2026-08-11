@@ -4,6 +4,10 @@ _2026-08-05. Task 6 of `docs/superpowers/plans/2026-07-29-longitudinal-effective
 _Preregistered in `rig/preregistrations/pilot-01.json` **before** the run. Nothing below was
 registered in light of a result._
 
+> **Correction (2026-08-10):** The stale-report defect invalidated the M2 value and sample size
+> reported here. The preserved before/after record is in
+> `docs/dev/2026-08-07-rig-stale-report-correction.md`.
+
 ## Headline
 
 12 turns, 5 seeded defects, 61 minutes of wall clock, **every turn reviewed by the gate**.

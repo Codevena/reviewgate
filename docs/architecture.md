@@ -62,6 +62,51 @@ Decides **allow-stop vs. block**:
 triage → cache check → research → reviewer panel → critic → aggregate → write report
 ```
 
+### Policy accountability (`src/core/policy/`)
+
+The review path has a closed, versioned catalog of **18 outcome-changing passes**. The catalog is
+not a second rule engine: production predicates and precedence remain in the existing
+Orchestrator/Aggregator path, while `PolicyTraceRecorder` records each pass's opportunity, match,
+protection and material transition at that path's actual execution point.
+
+| Class | Ordered catalog IDs |
+|---|---|
+| evidence | `evidence.fact-location`, `evidence.self-refutation`, `evidence.grounding-token`, `evidence.redaction-placeholder` |
+| value judgment | `judgment.hypothetical`, `judgment.grounding-llm`, `judgment.critic`, `judgment.confidence`, `judgment.reputation`, `judgment.test-security`, `judgment.docs-cap` |
+| scope | `scope.diff`, `scope.delta`, `scope.session` |
+| history | `history.fp-signature`, `history.cycle-rejected`, `history.fp-cluster`, `history.region-rejected` |
+
+`aggregation.cluster` and `verdict.compute` are the two non-ablatable explanatory stages. Lore is
+additive—it may append findings, but it is not one of the 18 demoters and is measured separately.
+The catalog and its fixed order live in `src/core/policy/catalog.ts`; the persisted schema lives in
+`src/schemas/policy-trace.ts`.
+
+Normal audited Gate runs never receive an ablation set. They persist a complete canonical trace to
+`.reviewgate/audit/YYYY/MM/DD/policy/<run>-i<iter>-<content>.json` and bind its relative reference
+and SHA-256 into `run.complete` plus the compact `pending.json.policy_summary`. The artifact is
+mode `0600`, limited to 1 MiB and verified through the audit chain. Trace recording or persistence
+failure is telemetry-only: the already-computed policy result and Gate verdict survive, while the
+trace status becomes `error` or `overflow`. This does not relax ordinary reviewer failures, which
+still fail closed.
+
+Exact ablation is internal to measurement code:
+
+- `bench matrix` makes the baseline the only live-provider path, captures the globally ordered
+  reviewer/preflight/completion results, then replays each variant through the same policy path
+  with only `policyAblations` changed. The matrix directory contains content-addressed `artifacts/`
+  for results, response manifests, policy traces and their trace-set binding.
+- A traced Rig run binds `result.json` to the exact SHA-addressed Manifest, script, source commit,
+  initial state, private mode-`0600` Cassette and complete turn/trace inventory. The Cassette is
+  read once through a contained, stable no-follow file descriptor; replay joins responses by stable
+  logical call ID and ordered hashes, then runs baseline/counterfactual in separate persistent
+  branch-local scratch checkouts. Production state is never a replay target.
+
+Bench/Rig treat a missing, corrupt, incomplete, cross-catalog or identity-mismatched evidence set
+as invalid measurement and exit `4`; no absent counter is interpreted as zero. Stateful history
+passes require seeded multi-turn sequences. Branch-local `ImplicitOutcomeStore` writes are retained
+as causal evidence, but current production writes that store without feeding it back into later
+policy inputs.
+
 ## Module map
 
 | Area | Responsibility |
@@ -71,6 +116,8 @@ triage → cache check → research → reviewer panel → critic → aggregate 
 | **`src/providers/`** | One adapter per reviewer CLI (`codex.ts`, `gemini.ts`, `claude.ts`, `openrouter.ts`, `opencode.ts`, `ollama.ts`), all implementing `adapter-base.ts`. Most spawn the real CLIs via `src/utils/spawn.ts` (`spawnSafely`, which closes stdin — codex hangs otherwise); `openrouter.ts` and `ollama.ts` are subprocess-free HTTP adapters instead (`SUBPROCESSLESS_PROVIDERS` in `registry.ts`). `review-output.ts` holds the shared `REVIEW_OUTPUT_SCHEMA` and parses reviewer JSON into `Finding`s. |
 | **`src/hosts/`** | Generates and merges native Claude Code and Codex lifecycle hooks. Codex commands resolve the Git root, preserve hook stdin, identify `REVIEWGATE_AGENT_HOST=codex`, and fail closed when the Stop shim is unavailable. Hook installation and Codex hash trust are intentionally separate states. |
 | **`src/core/`** | `aggregator.ts` (severity-weighted verdict + dedup + consensus), `critic.ts` (demote-only adversarial pass), `report-writer.ts` (renders `pending.md`/`pending.json`), `state-store.ts` (locked, atomic `state.json`). |
+| **`src/core/policy/`** | Closed 18-pass catalog, ordered in-memory trace recorder and internal-only replay/ablation contract. |
+| **`src/audit/`** | Hash-chained audit events plus canonical, content-addressed policy-trace persistence and verification. |
 | **`src/research/`** | `symbol-graph.ts` (tree-sitter, TS/Python `.wasm` grammars), `conventions.ts`, `research-writer.ts` produce `research.md`, injected as trusted context before the diff fence. |
 | **`src/core/brain/`** | Per-repo memory ("Brain") + Curator. Default OFF. `fetcher.ts` is an SSRF-hardened `safeFetch`; the curator phase is non-blocking, timeout-bounded, and never changes the verdict. |
 | **`src/config/`** | `reviewgate.config.ts` is parsed as data, never executed. `control-plane.ts` fingerprints source/effective policy separately, retains the last-known-good config, forces candidates through a special path, and requires a prior-policy pass plus TTY approval for weakening/non-monotonic changes. Invalid present configs block. The approved full config also participates in the review cache key. |
@@ -118,7 +165,7 @@ Everything lives under `.reviewgate/` as plain files:
 | `decisions/<iter>.jsonl` | no | the agent's accept/reject ledger |
 | `state.json` | no | loop FSM state |
 | `cache/reviews/<key>.json` | no | per-diff cached verdicts |
-| `audit/…` | no | sha256 hash-chained event log |
+| `audit/…` | no | sha256 hash-chained event log plus day-partitioned `policy/*.json` traces |
 | `brain.{json,md}` | yes | committed per-repo memory (when Brain enabled) |
 | `ESCALATION.md` | no | written when a run escalates to the human |
 

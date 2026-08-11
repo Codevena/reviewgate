@@ -7,6 +7,7 @@
 // diffs are UNTRUSTED, so the case is hydrated defensively (path-safety + git apply
 // to an empty tree) and anything unparseable / unsafe / non-applyable is `invalid`.
 
+import { createHash } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -19,10 +20,18 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalJson } from "../audit/canonical.ts";
+import { verifyPolicyTraceReference, writePolicyTrace } from "../audit/policy-trace-store.ts";
 import { buildAdapters } from "../cli/build-adapters.ts";
 import { defaultConfig } from "../config/defaults.ts";
 import { ConfigSchema, type ReviewgateConfig } from "../config/define-config.ts";
 import { Orchestrator } from "../core/orchestrator.ts";
+import {
+  POLICY_CATALOG_VERSION,
+  POLICY_PASS_IDS,
+  type PolicyPassId,
+} from "../core/policy/catalog.ts";
+import type { PolicyExecutionOptions } from "../core/policy/replay.ts";
 import type {
   OpenRouterProviderRouting,
   ProviderAdapter,
@@ -32,6 +41,7 @@ import type { ProviderId } from "../providers/registry.ts";
 import type { BenchCase } from "../schemas/bench-case.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { type PendingReport, PendingReportSchema } from "../schemas/pending-report.ts";
+import { type PolicyTrace, PolicyTraceSchema } from "../schemas/policy-trace.ts";
 import type { GitInfo } from "../utils/git.ts";
 import { planReviewJsonPath, reviewgateDir } from "../utils/paths.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
@@ -97,6 +107,11 @@ export interface BenchConfigOptions {
   /** Exact critic model and upstream route recorded by benchmark provenance. */
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Pin a provider's upstream model for this run. Recorded by provenance via
+   * buildRoster, which reads providers.<id>.model. Without this, a provider whose
+   * model is the "default" sentinel resolves against the user's own CLI config —
+   * an unversioned benchmark input. */
+  providerModels?: Partial<Record<ProviderId, string>>;
   /** Hard provider-side output ceiling for OpenRouter review/critic requests. */
   maxOutputTokens?: number;
 }
@@ -129,6 +144,15 @@ export function buildBenchConfig(opts: BenchConfigOptions = {}): ReviewgateConfi
     for (const provider of opts.providers) {
       const pc = base.providers[provider];
       if (pc) pc.enabled = true;
+    }
+  }
+  // Applied AFTER the panel loop so a pinned model survives the enable pass, and
+  // independently of `providers` so a critic-only or curator-only provider can be
+  // pinned too.
+  if (opts.providerModels) {
+    for (const [provider, model] of Object.entries(opts.providerModels)) {
+      const pc = base.providers[provider as ProviderId];
+      if (pc) pc.model = model;
     }
   }
   const s = opts.suppressors;
@@ -196,6 +220,205 @@ export interface CaseRunOutcome {
     verdicts: number;
     demoted: number;
   };
+  /** Complete in-memory policy trace identity for authoritative matrix pairing. */
+  policy?: AuthoritativeTraceRun;
+}
+
+export type AuthoritativeTraceInvalidityCode =
+  | "missing-trace"
+  | "missing-pass-row"
+  | "missing-counter"
+  | "pass-not-run"
+  | "trace-status"
+  | "trace-reference"
+  | "trace-hash"
+  | "catalog-mismatch"
+  | "requested-pass-mismatch"
+  | "response-hash-mismatch"
+  | "request-identity-mismatch"
+  | "config-mismatch"
+  | "final-identity-mismatch"
+  | "non-authoritative-execution"
+  | "invalid-trace";
+
+export interface AuthoritativeTraceRun {
+  authoritative: boolean;
+  status: "complete" | "not-run" | "error" | "overflow";
+  catalogVersion: string;
+  requestedAblations: PolicyPassId[];
+  trace?: PolicyTrace | undefined;
+  traceRef?: string | undefined;
+  traceSha256?: string | undefined;
+  requestIdentitySha256: string;
+  effectiveConfigSha256: string;
+  finalIdentitySha256: string;
+}
+
+export type AuthoritativeTracePairValidation =
+  | { ok: true }
+  | { ok: false; code: AuthoritativeTraceInvalidityCode; reason: string };
+
+const TRACE_COUNTERS = [
+  "considered",
+  "opportunities",
+  "would_apply",
+  "applied",
+  "protected",
+  "blocking_removed",
+  "blocking_preserved",
+  "dropped",
+] as const;
+
+function invalidTracePair(
+  code: AuthoritativeTraceInvalidityCode,
+  reason: string,
+): AuthoritativeTracePairValidation {
+  return { ok: false, code, reason };
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sha256Text(value: string): string {
+  return createHash("sha256").update(Buffer.from(value, "utf8")).digest("hex");
+}
+
+/** Fail-closed validation used before an ablation pair can contribute metrics. */
+export function validateAuthoritativeTracePair(
+  baseline: AuthoritativeTraceRun,
+  counterfactual: AuthoritativeTraceRun,
+): AuthoritativeTracePairValidation {
+  const runs = [
+    ["baseline", baseline],
+    ["counterfactual", counterfactual],
+  ] as const;
+
+  for (const [label, run] of runs) {
+    if (!run.authoritative) {
+      return invalidTracePair(
+        "non-authoritative-execution",
+        `${label} policy execution was not authoritative`,
+      );
+    }
+    if (run.trace === undefined) {
+      return invalidTracePair("missing-trace", `${label} policy trace is missing`);
+    }
+    if (run.status !== "complete") {
+      return invalidTracePair("trace-status", `${label} policy trace status is ${run.status}`);
+    }
+    if (
+      run.catalogVersion !== POLICY_CATALOG_VERSION ||
+      run.trace.catalog_version !== POLICY_CATALOG_VERSION
+    ) {
+      return invalidTracePair(
+        "catalog-mismatch",
+        `${label} policy catalog is not ${POLICY_CATALOG_VERSION}`,
+      );
+    }
+    if (
+      run.trace.passes.length !== POLICY_PASS_IDS.length ||
+      POLICY_PASS_IDS.some((passId, index) => run.trace?.passes[index]?.pass_id !== passId)
+    ) {
+      return invalidTracePair(
+        "missing-pass-row",
+        `${label} policy trace does not contain the exact configured pass inventory`,
+      );
+    }
+    for (const row of run.trace.passes) {
+      if (row.status !== "ran") continue;
+      const record = row as unknown as Record<string, unknown>;
+      const missing = TRACE_COUNTERS.find((counter) => typeof record[counter] !== "number");
+      if (missing !== undefined) {
+        return invalidTracePair(
+          "missing-counter",
+          `${label} pass ${row.pass_id} is missing numeric counter ${missing}`,
+        );
+      }
+    }
+    if (!sameStrings(run.requestedAblations, run.trace.ablated)) {
+      return invalidTracePair(
+        "requested-pass-mismatch",
+        `${label} requested ablations do not match its trace`,
+      );
+    }
+    for (const passId of run.requestedAblations) {
+      const row = run.trace.passes.find((candidate) => candidate.pass_id === passId);
+      if (row?.status !== "ran") {
+        return invalidTracePair("pass-not-run", `${label} requested pass ${passId} did not run`);
+      }
+    }
+    const parsed = PolicyTraceSchema.safeParse(run.trace);
+    if (!parsed.success) {
+      return invalidTracePair(
+        "invalid-trace",
+        `${label} policy trace is invalid: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`,
+      );
+    }
+  }
+
+  if (!sameStrings(baseline.requestedAblations, [])) {
+    return invalidTracePair(
+      "requested-pass-mismatch",
+      "baseline must not request a policy ablation",
+    );
+  }
+  if (counterfactual.requestedAblations.length !== 1) {
+    return invalidTracePair(
+      "requested-pass-mismatch",
+      "counterfactual must request exactly one policy ablation",
+    );
+  }
+  if (baseline.effectiveConfigSha256 !== counterfactual.effectiveConfigSha256) {
+    return invalidTracePair("config-mismatch", "effective policy configs differ across the pair");
+  }
+  if (baseline.requestIdentitySha256 !== counterfactual.requestIdentitySha256) {
+    return invalidTracePair(
+      "request-identity-mismatch",
+      "review request identities differ across the pair",
+    );
+  }
+  const baselineTrace = baseline.trace as PolicyTrace;
+  const counterfactualTrace = counterfactual.trace as PolicyTrace;
+  if (!sameStrings(baselineTrace.raw_response_sha256, counterfactualTrace.raw_response_sha256)) {
+    return invalidTracePair(
+      "response-hash-mismatch",
+      "ordered raw response hashes differ across the pair",
+    );
+  }
+
+  for (const [label, run] of runs) {
+    const trace = run.trace as PolicyTrace;
+    if (run.finalIdentitySha256 !== sha256Text(canonicalJson(trace.final))) {
+      return invalidTracePair(
+        "final-identity-mismatch",
+        `${label} final finding identity does not match its trace`,
+      );
+    }
+    if (run.traceRef === undefined || run.traceSha256 === undefined) {
+      return invalidTracePair(
+        "trace-reference",
+        `${label} complete policy trace is missing its persisted reference or hash`,
+      );
+    }
+    const actualSha256 = sha256Text(canonicalJson(trace));
+    if (run.traceSha256 !== actualSha256) {
+      return invalidTracePair("trace-hash", `${label} policy trace content hash mismatches`);
+    }
+    const refMatch = run.traceRef.match(
+      /^artifacts\/policy-traces\/\d{4}\/\d{2}\/\d{2}\/policy\/([0-9a-f]{12})-i(0|[1-9]\d*)-([0-9a-f]{12})\.json$/,
+    );
+    if (
+      refMatch === null ||
+      refMatch[1] !== sha256Text(trace.run_id).slice(0, 12) ||
+      Number(refMatch[2]) !== trace.iter ||
+      refMatch[3] !== actualSha256.slice(0, 12)
+    ) {
+      return invalidTracePair("trace-reference", `${label} policy trace reference mismatches`);
+    }
+  }
+
+  return { ok: true };
 }
 
 export interface RunBenchCaseInput {
@@ -213,6 +436,118 @@ export interface RunBenchCaseInput {
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
   /** Benchmark-only critic completion limit; omitted means the runtime default (1). */
   criticMaxAttempts?: number;
+  /** Bench/Rig-only trace and ablation control. Normal gate/config paths never set this. */
+  policyExecution?: PolicyExecutionOptions;
+  /** Matrix-owned contained store for authoritative trace artifacts. */
+  policyTraceStore?: { root: string; refPrefix: string; now?: Date };
+}
+
+function buildAuthoritativeTraceRun(input: {
+  trace: PolicyTrace | undefined;
+  execution: PolicyExecutionOptions;
+  config: ReviewgateConfig;
+  benchCase: BenchCase;
+  diffPatch: string;
+  report: PendingReport;
+  verdict: "PASS" | "SOFT-PASS" | "FAIL" | "ERROR";
+  traceStore?: { root: string; refPrefix: string; now?: Date };
+}): AuthoritativeTraceRun {
+  const requestedAblations = [...input.execution.policyAblations].sort(
+    (left, right) => POLICY_PASS_IDS.indexOf(left) - POLICY_PASS_IDS.indexOf(right),
+  );
+  const finalIdentity = {
+    verdict: input.verdict,
+    counts: {
+      critical: input.report.counts.critical,
+      warn: input.report.counts.warn,
+      info: input.report.counts.info,
+    },
+    finding_signatures: input.report.findings.map((finding) => finding.signature),
+    finding_severities: input.report.findings.map((finding) => ({
+      signature: finding.signature,
+      severity: finding.severity,
+    })),
+  };
+  const effectiveConfigSha256 = sha256Text(canonicalJson(input.config));
+  const requestIdentitySha256 = sha256Text(
+    canonicalJson({
+      bench_case: input.benchCase,
+      diff_sha256: sha256Text(input.diffPatch),
+      git: FIXED_SYNTHETIC_GIT_INFO,
+      reviewers: input.config.phases.review.reviewers,
+      grounding: input.config.phases.grounding,
+      critic: input.config.phases.critic,
+      effective_config_sha256: effectiveConfigSha256,
+      state: "per-case-fresh",
+    }),
+  );
+  if (input.trace === undefined) {
+    return {
+      authoritative: false,
+      status: "not-run",
+      catalogVersion: POLICY_CATALOG_VERSION,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  const traceSha256 = sha256Text(canonicalJson(input.trace));
+  if (input.traceStore === undefined) {
+    return {
+      authoritative: false,
+      status: "error",
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  const stored = writePolicyTrace({
+    auditDir: input.traceStore.root,
+    trace: input.trace,
+    ...(input.traceStore.now === undefined ? {} : { now: input.traceStore.now }),
+  });
+  if (stored.status !== "complete") {
+    return {
+      authoritative: false,
+      status: stored.status,
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  const verified = verifyPolicyTraceReference({
+    auditDir: input.traceStore.root,
+    ref: stored.ref,
+    sha256: stored.sha256,
+  });
+  if (!verified.ok || stored.sha256 !== traceSha256) {
+    return {
+      authoritative: false,
+      status: "error",
+      catalogVersion: input.trace.catalog_version,
+      requestedAblations,
+      requestIdentitySha256,
+      effectiveConfigSha256,
+      finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+    };
+  }
+  return {
+    authoritative: input.execution.authoritative,
+    status: "complete",
+    catalogVersion: input.trace.catalog_version,
+    requestedAblations,
+    trace: input.trace,
+    traceRef: `${input.traceStore.refPrefix}/${stored.ref}`,
+    traceSha256: stored.sha256,
+    requestIdentitySha256,
+    effectiveConfigSha256,
+    finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
+  };
 }
 
 /** Adapt a persisted Finding to the matcher's shape. Index-derived id guarantees
@@ -309,6 +644,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       // Measure each provider as itself: a quota-exhausted slot must NOT poach
       // another panel member (that corrupts per-provider attribution).
       disableLastResortFailover: true,
+      ...(input.policyExecution === undefined ? {} : { policyExecution: input.policyExecution }),
       ...(input.criticMaxAttempts !== undefined
         ? { criticMaxAttempts: input.criticMaxAttempts }
         : {}),
@@ -416,6 +752,19 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
             demoted: 0,
           }
       : undefined;
+    const policy =
+      input.policyExecution === undefined
+        ? undefined
+        : buildAuthoritativeTraceRun({
+            trace: result.policyTrace,
+            execution: input.policyExecution,
+            config,
+            benchCase,
+            diffPatch,
+            report,
+            verdict: result.verdict,
+            ...(input.policyTraceStore === undefined ? {} : { traceStore: input.policyTraceStore }),
+          });
 
     return {
       status: "scored",
@@ -433,6 +782,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       providerCosts,
       aggregatedMatch,
       ...(critic ? { critic } : {}),
+      ...(policy ? { policy } : {}),
     };
   } finally {
     rmSync(work, { recursive: true, force: true });

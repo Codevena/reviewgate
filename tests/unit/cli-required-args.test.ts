@@ -8,6 +8,9 @@
 // marker). The pre-fix manual checks instead printed "... is required" and
 // exited 2, so the citty message + exit-1 distinguishes fixed from unfixed.
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CLI = join(import.meta.dir, "..", "..", "src", "cli", "index.ts");
@@ -24,6 +27,27 @@ async function run(args: string[]): Promise<{ code: number; stdout: string; stde
   ]);
   const code = await proc.exited;
   return { code, stdout, stderr };
+}
+
+function runSync(args: string[]): { code: number; stdout: string; stderr: string } {
+  const root = mkdtempSync(join(tmpdir(), "rg-cli-help-"));
+  const outputPath = join(root, "output.txt");
+  const output = openSync(outputPath, "w");
+  try {
+    const proc = spawnSync("bun", [CLI, ...args], {
+      stdio: ["ignore", output, output],
+      env: { ...process.env, NODE_ENV: "production" },
+    });
+    closeSync(output);
+    return { code: proc.status ?? -1, stdout: readFileSync(outputPath, "utf8"), stderr: "" };
+  } finally {
+    try {
+      closeSync(output);
+    } catch {
+      // The successful path closes before reading; only the exceptional path reaches this close.
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 describe("CLI required-arg declarations (F-079)", () => {
@@ -44,4 +68,85 @@ describe("CLI required-arg declarations (F-079)", () => {
       expect(code).toBe(1);
     });
   }
+});
+
+describe("Rig authority exit code", () => {
+  it("maps a typed cross-catalog harvest invalidity to exact exit 4", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-rig-authority-cli-"));
+    const scriptPath = join(root, "script.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "authority",
+        turns: [{ index: 1, prompt: "turn", seeded: null }],
+      }),
+    );
+    const manifestPath = join(root, "manifest.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.manifest.v1",
+        runId: "authority-run",
+        scriptId: "authority",
+        outDir: root,
+        turns: [],
+        policyReplay: {
+          catalogVersion: "reviewgate.policy-catalog.future",
+          sourceCommit: "a".repeat(40),
+          initialStateRef: `policy-state/${"b".repeat(64)}.json`,
+          initialStateSha256: "b".repeat(64),
+          initialStateDigest: "c".repeat(64),
+          cassetteSha256: "d".repeat(64),
+          cassetteRef: "cassette.jsonl",
+          captureDir: "policy-replay",
+        },
+      }),
+    );
+
+    const { code, stderr } = await run([
+      "rig",
+      "harvest",
+      "--manifest",
+      manifestPath,
+      "--script",
+      scriptPath,
+    ]);
+    expect(code).toBe(4);
+    expect(stderr).toContain("catalog-mismatch");
+  });
+});
+
+describe("policy replay CLI help contracts", () => {
+  it("describes Bench Matrix as exact internal closed-catalog ablation", () => {
+    const { code, stdout, stderr } = runSync(["bench", "matrix", "--help"]);
+    const help = `${stdout}${stderr}`;
+
+    expect(code).toBe(0);
+    expect(help).toContain("exact internal policy ablations");
+    expect(help).toContain("evidence.fact-location");
+    expect(help).toContain("legacy aliases accepted for compatibility");
+    expect(help).toContain("critic,confidence-floor,reputation,scope-to-diff");
+    expect(help).not.toContain("suppression layers toggled");
+    expect(help).not.toContain("critic-only authoritative protocol");
+  });
+
+  it("describes Rig Cassette verification by stable logical identity and hashes", () => {
+    const { code, stdout, stderr } = runSync(["rig", "replay", "--help"]);
+    const help = `${stdout}${stderr}`;
+
+    expect(code).toBe(0);
+    expect(help).toContain("stable logical call identity");
+    expect(help).toContain("ordered response hashes");
+    expect(help).not.toContain("FIFO");
+  });
+
+  it("keeps Audit help as the unchanged control", () => {
+    const { code, stdout, stderr } = runSync(["audit", "--help"]);
+    const help = `${stdout}${stderr}`;
+
+    expect(code).toBe(0);
+    expect(help).toContain("Audit utilities");
+    expect(help).toContain("verify");
+  });
 });
