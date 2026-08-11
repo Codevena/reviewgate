@@ -904,7 +904,7 @@ const bench = defineCommand({
       meta: {
         name: "matrix",
         description:
-          "Ablation: run the corpus with suppression layers toggled and print the per-layer Δ (spec §8 money-shot)",
+          "Run exact internal policy ablations over captured baseline responses and print per-pass deltas",
       },
       args: {
         corpus: { type: "string", required: true, description: "Corpus directory" },
@@ -912,7 +912,8 @@ const bench = defineCommand({
         ablate: {
           type: "string",
           required: true,
-          description: "Comma-separated layers: critic,confidence-floor,reputation,scope-to-diff",
+          description:
+            "Comma-separated closed catalog IDs (e.g. evidence.fact-location); legacy aliases accepted for compatibility: critic,confidence-floor,reputation,scope-to-diff",
         },
         providers: {
           type: "string",
@@ -940,7 +941,7 @@ const bench = defineCommand({
         "max-output-tokens": { type: "string", description: "OpenRouter output ceiling" },
         authoritative: {
           type: "boolean",
-          description: "Require the paired critic-only authoritative protocol",
+          description: "Require complete paired trace and evidence validation",
         },
         preregistration: { type: "string", description: "Committed preregistration JSON" },
         "min-clean": { type: "string", description: "Required distinct clean cases" },
@@ -1175,7 +1176,8 @@ const rig = defineCommand({
         script: { type: "string", required: true, description: "The turn script the run used" },
         cassette: {
           type: "string",
-          description: "Also check the recording's integrity (entry count, FIFO keys, bodies)",
+          description:
+            "Also verify the recording by stable logical call identity, ordered response hashes, and bodies",
         },
       },
       async run({ args }) {
