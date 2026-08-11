@@ -213,29 +213,66 @@ export type ThrowableSafeValue =
   | ThrowableSafeValue[]
   | { [key: string]: ThrowableSafeValue };
 
+const MAX_PERCENT_DECODE_PASSES = 3;
+const SENSITIVE_KEY_PARTS = [
+  "authorization",
+  "cookie",
+  "credential",
+  "password",
+  "passwd",
+  "secret",
+  "token",
+  "apikey",
+  "privatekey",
+  "signature",
+] as const;
+
+function isSensitiveThrowableKey(value: string): boolean {
+  const normalized = value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
+}
+
 const SensitiveThrowableFieldSchema = z
   .string()
   .min(1)
-  .refine(
-    (value) =>
-      !/(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|private[_-]?key)/i.test(
-        value,
-      ),
-    "throwable field contains sensitive key",
-  );
+  .refine((value) => !isSensitiveThrowableKey(value), "throwable field contains sensitive key");
 const ABSOLUTE_POSIX_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/(?!\/)(?=[^\s/])/;
 const FORWARD_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/\/[^/\s\\]+\/[^/\s\\]+/;
 const WINDOWS_DRIVE_PATH = /(?:^|[\s"\x27\x60([{=,:;])[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\\\\[^\\\s]+\\[^\\\s]+/;
-const URL_LIKE = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'`)\]}]+/gi;
-const SECRET_ASSIGNMENT =
-  /(?:^|[^A-Za-z0-9_])(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|private[_-]?key)\s*[:=]\s*\S+/i;
+const URL_SEGMENT = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'`)}]+/gi;
+const KEY_VALUE_PAIR =
+  /(?:"([^"\r\n]{1,128})"|'([^'\r\n]{1,128})'|([A-Za-z][A-Za-z0-9_.-]{0,127}))\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\]]+)/g;
 const CREDENTIAL_VALUE =
   /(?:\bBearer\s+\S+|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b)/i;
 
+function decodePercentToFixedPoint(value: string): string | null {
+  let decoded = value;
+  for (let pass = 0; pass < MAX_PERCENT_DECODE_PASSES; pass += 1) {
+    if (!decoded.includes("%")) return decoded;
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return null;
+    }
+  }
+  return decoded.includes("%") ? null : decoded;
+}
+
+function hasSensitiveKeyValuePair(value: string): boolean {
+  for (const match of value.matchAll(KEY_VALUE_PAIR)) {
+    const key = match[1] ?? match[2] ?? match[3];
+    if (key !== undefined && isSensitiveThrowableKey(key)) return true;
+  }
+  return false;
+}
+
 function maskSafeHttpUrls(value: string): string | null {
   let invalidUrl = false;
-  const nonUrlText = value.replace(URL_LIKE, (rawUrl) => {
+  const nonUrlText = value.replace(URL_SEGMENT, (rawUrl) => {
     try {
       const parsed = new URL(rawUrl);
       if (
@@ -246,11 +283,14 @@ function maskSafeHttpUrls(value: string): string | null {
         invalidUrl = true;
         return rawUrl;
       }
-      const decodedUrlParts = [parsed.pathname, parsed.search, parsed.hash].map((part) =>
-        decodeURIComponent(part),
-      );
       if (
-        decodedUrlParts.some((part) => SECRET_ASSIGNMENT.test(part) || CREDENTIAL_VALUE.test(part))
+        hasSensitiveKeyValuePair(`${parsed.pathname} ${parsed.hash}`) ||
+        Array.from(parsed.searchParams).some(
+          ([key, partValue]) =>
+            isSensitiveThrowableKey(key) ||
+            hasSensitiveKeyValuePair(partValue) ||
+            CREDENTIAL_VALUE.test(partValue),
+        )
       ) {
         invalidUrl = true;
         return rawUrl;
@@ -266,7 +306,9 @@ function maskSafeHttpUrls(value: string): string | null {
 
 /** Shared at-rest boundary for every string in a captured provider throw. */
 export function isAuthoritativeThrowableString(value: string): boolean {
-  const hasUnsafeControlCharacter = Array.from(value).some((character) => {
+  const decodedValue = decodePercentToFixedPoint(value);
+  if (decodedValue === null) return false;
+  const hasUnsafeControlCharacter = Array.from(decodedValue).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
     return (
       codePoint <= 8 ||
@@ -276,7 +318,7 @@ export function isAuthoritativeThrowableString(value: string): boolean {
       codePoint === 127
     );
   });
-  const nonUrlText = maskSafeHttpUrls(value);
+  const nonUrlText = maskSafeHttpUrls(decodedValue);
   return (
     !hasUnsafeControlCharacter &&
     nonUrlText !== null &&
@@ -284,8 +326,8 @@ export function isAuthoritativeThrowableString(value: string): boolean {
     !FORWARD_UNC_PATH.test(nonUrlText) &&
     !WINDOWS_DRIVE_PATH.test(nonUrlText) &&
     !WINDOWS_UNC_PATH.test(nonUrlText) &&
-    !SECRET_ASSIGNMENT.test(value) &&
-    !CREDENTIAL_VALUE.test(value) &&
+    !hasSensitiveKeyValuePair(nonUrlText) &&
+    !CREDENTIAL_VALUE.test(decodedValue) &&
     redactHighEntropy(nonUrlText).count === 0
   );
 }
