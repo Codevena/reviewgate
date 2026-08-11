@@ -176,6 +176,67 @@ const validResult = {
   },
 };
 
+const UNSAFE_REPLAY_STRINGS = [
+  ...[
+    "/Users",
+    "/home",
+    "/root",
+    "/var",
+    "/private",
+    "/Volumes",
+    "/tmp",
+    "/etc",
+    "/opt",
+    "/mnt",
+    "/proc",
+    "/sys",
+    "/dev",
+  ].map((directory) => `open ${directory}/reviewgate/private.json`),
+  "open /usr/local/bin/reviewgate",
+  "open /Applications/ReviewGate.app/Contents/Info.plist",
+  "open /Library/Application Support/ReviewGate/config.json",
+  "open /System/Library/CoreServices/SystemVersion.plist",
+  "open /workspace/reviewgate/private.json",
+  "open //server/share/credentials.json",
+  String.raw`open C:\Users\alice\secrets.json`,
+  String.raw`open \\server\share\credentials.json`,
+  "open file:///etc/passwd",
+  "password=hunter2",
+  "api_key=notverysecret",
+  "Authorization: Basic YTpi",
+  "https://user:password@example.com/private",
+  "Authorization: Bearer short-but-secret",
+  "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
+  "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+  "request used AKIAIOSFODNN7EXAMPLE",
+  "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
+  "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
+];
+
+const SAFE_REPLAY_STRINGS = [
+  "request failed in src/core/orchestrator.ts",
+  "see https://example.com/root/replay?case=safe-value",
+  "see https://docs.example.com/guides/reviewgate/policy-traces",
+  "see https://docs.example.com/runs/550e8400-e29b-41d4-a716-446655440000/long-safe-policy-trace-slug",
+];
+
+function parseThrowableSnapshot(snapshot: unknown) {
+  return BenchResponseManifestSchema.safeParse({
+    schema: "reviewgate.bench.provider-response-hashes.v2",
+    entries: [
+      {
+        provider: "codex",
+        kind: "review",
+        ordinal: 0,
+        request_sha256: "a".repeat(64),
+        response_sha256: createHash("sha256").update(canonicalJson(snapshot)).digest("hex"),
+        outcome: "throw",
+        throw_snapshot: snapshot,
+      },
+    ],
+  });
+}
+
 describe("BenchResultSchema", () => {
   it("parses a valid result", () => {
     const r = BenchResultSchema.safeParse(validResult);
@@ -266,25 +327,9 @@ describe("BenchResultSchema", () => {
     ).toBe(false);
   });
 
-  it("rejects credential fields and host paths in persisted throw snapshots", () => {
-    const parseSnapshot = (snapshot: unknown) =>
-      BenchResponseManifestSchema.safeParse({
-        schema: "reviewgate.bench.provider-response-hashes.v2",
-        entries: [
-          {
-            provider: "codex",
-            kind: "review",
-            ordinal: 0,
-            request_sha256: "a".repeat(64),
-            response_sha256: createHash("sha256").update(canonicalJson(snapshot)).digest("hex"),
-            outcome: "throw",
-            throw_snapshot: snapshot,
-          },
-        ],
-      });
-
+  it("rejects unsafe replay strings at the persisted-schema top level", () => {
     expect(
-      parseSnapshot({
+      parseThrowableSnapshot({
         kind: "error",
         error_type: "Error",
         name: "Error",
@@ -293,67 +338,71 @@ describe("BenchResultSchema", () => {
       }).success,
     ).toBe(false);
     expect(
-      parseSnapshot({
+      parseThrowableSnapshot({
         kind: "primitive",
         primitive_type: "string",
         value: "failed at /Users/alice/private/file",
       }).success,
     ).toBe(false);
 
-    const unsafeStrings = [
-      ...[
-        "/Users",
-        "/home",
-        "/root",
-        "/var",
-        "/private",
-        "/Volumes",
-        "/tmp",
-        "/etc",
-        "/opt",
-        "/mnt",
-        "/proc",
-        "/sys",
-        "/dev",
-      ].map((directory) => `open ${directory}/reviewgate/private.json`),
-      String.raw`open C:\Users\alice\secrets.json`,
-      String.raw`open \\server\share\credentials.json`,
-      "open file:///etc/passwd",
-      "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
-      "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
-      "request used AKIAIOSFODNN7EXAMPLE",
-      "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
-      "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
-    ];
-    for (const value of unsafeStrings) {
-      expect(parseSnapshot({ kind: "primitive", primitive_type: "string", value }).success).toBe(
-        false,
-      );
+    for (const value of UNSAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: value,
+          fields: [],
+        }).success,
+      ).toBe(false);
     }
+  });
 
-    expect(
-      parseSnapshot({
-        kind: "error",
-        error_type: "Error",
-        name: "Error",
-        message: "provider failed",
-        fields: [
-          {
-            key: "context",
-            value: { attempts: [{ detail: "safe" }, { detail: "open /var/folders/token" }] },
-            enumerable: true,
-          },
-        ],
-      }).success,
-    ).toBe(false);
+  it("rejects unsafe replay strings recursively in the persisted schema", () => {
+    for (const value of UNSAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: "provider failed",
+          fields: [
+            {
+              key: "context",
+              value: { attempts: [{ detail: "safe" }, { detail: value }] },
+              enumerable: true,
+            },
+          ],
+        }).success,
+      ).toBe(false);
+    }
+  });
 
-    for (const value of [
-      "request failed in src/core/orchestrator.ts",
-      "see https://example.com/root/replay?case=safe-value",
-    ]) {
-      expect(parseSnapshot({ kind: "primitive", primitive_type: "string", value }).success).toBe(
-        true,
-      );
+  it("allows safe replay strings at the persisted-schema top level", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: value,
+          fields: [],
+        }).success,
+      ).toBe(true);
+    }
+  });
+
+  it("allows safe replay strings recursively in the persisted schema", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
+      expect(
+        parseThrowableSnapshot({
+          kind: "error",
+          error_type: "Error",
+          name: "Error",
+          message: "provider failed",
+          fields: [{ key: "context", value: { detail: value }, enumerable: true }],
+        }).success,
+      ).toBe(true);
     }
   });
 

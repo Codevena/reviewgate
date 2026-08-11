@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { URL } from "node:url";
 import { z } from "zod";
 import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
@@ -222,13 +223,46 @@ const SensitiveThrowableFieldSchema = z
       ),
     "throwable field contains sensitive key",
   );
-const HOST_ABSOLUTE_PATH =
-  /(?:^|[^A-Za-z0-9])\/(?:Users|home|root|var|private|Volumes|tmp|etc|opt|mnt|proc|sys|dev)(?=\/|\\|$|[\s"'`)\],;:])/i;
-const WINDOWS_DRIVE_PATH = /(?:^|[^A-Za-z0-9])[A-Za-z]:[\\/]/;
-const WINDOWS_UNC_PATH = /\\\\[^\\\s]+\\[^\\\s]+/;
-const FILE_URL = /\bfile:\/\//i;
+const ABSOLUTE_POSIX_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/(?!\/)(?=[^\s/])/;
+const FORWARD_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\/\/[^/\s\\]+\/[^/\s\\]+/;
+const WINDOWS_DRIVE_PATH = /(?:^|[\s"\x27\x60([{=,:;])[A-Za-z]:[\\/]/;
+const WINDOWS_UNC_PATH = /(?:^|[\s"\x27\x60([{=,:;])\\\\[^\\\s]+\\[^\\\s]+/;
+const URL_LIKE = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s<>"'`)\]}]+/gi;
+const SECRET_ASSIGNMENT =
+  /(?:^|[^A-Za-z0-9_])(?:authorization|cookie|credential|password|passwd|secret|token|api[_-]?key|private[_-]?key)\s*[:=]\s*\S+/i;
 const CREDENTIAL_VALUE =
   /(?:\bBearer\s+\S+|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b)/i;
+
+function maskSafeHttpUrls(value: string): string | null {
+  let invalidUrl = false;
+  const nonUrlText = value.replace(URL_LIKE, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      if (
+        (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+        parsed.username !== "" ||
+        parsed.password !== ""
+      ) {
+        invalidUrl = true;
+        return rawUrl;
+      }
+      const decodedUrlParts = [parsed.pathname, parsed.search, parsed.hash].map((part) =>
+        decodeURIComponent(part),
+      );
+      if (
+        decodedUrlParts.some((part) => SECRET_ASSIGNMENT.test(part) || CREDENTIAL_VALUE.test(part))
+      ) {
+        invalidUrl = true;
+        return rawUrl;
+      }
+      return " ".repeat(rawUrl.length);
+    } catch {
+      invalidUrl = true;
+      return rawUrl;
+    }
+  });
+  return invalidUrl ? null : nonUrlText;
+}
 
 /** Shared at-rest boundary for every string in a captured provider throw. */
 export function isAuthoritativeThrowableString(value: string): boolean {
@@ -242,14 +276,17 @@ export function isAuthoritativeThrowableString(value: string): boolean {
       codePoint === 127
     );
   });
+  const nonUrlText = maskSafeHttpUrls(value);
   return (
     !hasUnsafeControlCharacter &&
-    !HOST_ABSOLUTE_PATH.test(value) &&
-    !WINDOWS_DRIVE_PATH.test(value) &&
-    !WINDOWS_UNC_PATH.test(value) &&
-    !FILE_URL.test(value) &&
+    nonUrlText !== null &&
+    !ABSOLUTE_POSIX_PATH.test(nonUrlText) &&
+    !FORWARD_UNC_PATH.test(nonUrlText) &&
+    !WINDOWS_DRIVE_PATH.test(nonUrlText) &&
+    !WINDOWS_UNC_PATH.test(nonUrlText) &&
+    !SECRET_ASSIGNMENT.test(value) &&
     !CREDENTIAL_VALUE.test(value) &&
-    redactHighEntropy(value).count === 0
+    redactHighEntropy(nonUrlText).count === 0
   );
 }
 const SafeThrowableStringSchema = z

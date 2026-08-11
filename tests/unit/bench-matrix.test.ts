@@ -91,6 +91,50 @@ const cleanJson = {
   source: "hand-written",
 };
 
+const UNSAFE_REPLAY_STRINGS = [
+  ...[
+    "/Users",
+    "/home",
+    "/root",
+    "/var",
+    "/private",
+    "/Volumes",
+    "/tmp",
+    "/etc",
+    "/opt",
+    "/mnt",
+    "/proc",
+    "/sys",
+    "/dev",
+  ].map((directory) => `open ${directory}/reviewgate/private.json`),
+  "open /usr/local/bin/reviewgate",
+  "open /Applications/ReviewGate.app/Contents/Info.plist",
+  "open /Library/Application Support/ReviewGate/config.json",
+  "open /System/Library/CoreServices/SystemVersion.plist",
+  "open /workspace/reviewgate/private.json",
+  "open //server/share/credentials.json",
+  String.raw`open C:\Users\alice\secrets.json`,
+  String.raw`open \\server\share\credentials.json`,
+  "open file:///etc/passwd",
+  "password=hunter2",
+  "api_key=notverysecret",
+  "Authorization: Basic YTpi",
+  "https://user:password@example.com/private",
+  "Authorization: Bearer short-but-secret",
+  "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
+  "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+  "request used AKIAIOSFODNN7EXAMPLE",
+  "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
+  "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
+];
+
+const SAFE_REPLAY_STRINGS = [
+  "request failed in src/core/orchestrator.ts",
+  "see https://example.com/root/replay?case=safe-value",
+  "see https://docs.example.com/guides/reviewgate/policy-traces",
+  "see https://docs.example.com/runs/550e8400-e29b-41d4-a716-446655440000/long-safe-policy-trace-slug",
+];
+
 function sqlFinding(): Finding {
   return {
     id: "codex-1",
@@ -631,48 +675,29 @@ describe("runBenchMatrix", () => {
     });
   });
 
-  it("uses the persisted-schema string boundary for host paths and credentials", () => {
-    const unsafe = [
-      ...[
-        "/Users",
-        "/home",
-        "/root",
-        "/var",
-        "/private",
-        "/Volumes",
-        "/tmp",
-        "/etc",
-        "/opt",
-        "/mnt",
-        "/proc",
-        "/sys",
-        "/dev",
-      ].map((directory) => `open ${directory}/reviewgate/private.json`),
-      String.raw`open C:\Users\alice\secrets.json`,
-      String.raw`open \\server\share\credentials.json`,
-      "open file:///etc/passwd",
-      "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
-      "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
-      "request used AKIAIOSFODNN7EXAMPLE",
-      "request used xoxb-123456789012-123456789012-AbCdEfGhIjKlMnOpQrStUvWx",
-      "request used AbCd3fGh1jKlMnOpQrSt7vWxYz09+/=AbCd",
-    ];
-    for (const value of unsafe) {
+  it("rejects unsafe replay strings at runtime top level", () => {
+    for (const value of UNSAFE_REPLAY_STRINGS) {
       expect(captureThrowableSnapshot(new Error(value))).toMatchObject({
         ok: false,
         reason: "unsafe-string",
       });
     }
+  });
 
-    const nested = new Error("provider failed") as Error & {
-      context: { attempts: Array<{ detail: string }> };
-    };
-    nested.context = { attempts: [{ detail: "safe" }, { detail: "open /var/folders/token" }] };
-    expect(captureThrowableSnapshot(nested)).toMatchObject({
-      ok: false,
-      reason: "unsafe-string",
-    });
+  it("rejects unsafe replay strings recursively during runtime capture", () => {
+    for (const value of UNSAFE_REPLAY_STRINGS) {
+      const nested = new Error("provider failed") as Error & {
+        context: { attempts: Array<{ detail: string }> };
+      };
+      nested.context = { attempts: [{ detail: "safe" }, { detail: value }] };
+      expect(captureThrowableSnapshot(nested)).toMatchObject({
+        ok: false,
+        reason: "unsafe-string",
+      });
+    }
+  });
 
+  it("rejects extension fields on nested throwable arrays", () => {
     const hiddenArrayField = ["safe"] as string[] & { debugPayload?: string };
     Object.defineProperty(hiddenArrayField, "debugPayload", {
       value: "internal",
@@ -684,12 +709,21 @@ describe("runBenchMatrix", () => {
       ok: false,
       reason: "unsupported-field",
     });
+  });
 
-    for (const value of [
-      "request failed in src/core/orchestrator.ts",
-      "see https://example.com/root/replay?case=safe-value",
-    ]) {
+  it("allows safe replay strings at runtime top level", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
       expect(captureThrowableSnapshot(new Error(value))).toMatchObject({ ok: true });
+    }
+  });
+
+  it("allows safe replay strings recursively during runtime capture", () => {
+    for (const value of SAFE_REPLAY_STRINGS) {
+      const nested = new Error("provider failed") as Error & {
+        context: { attempts: Array<{ detail: string }> };
+      };
+      nested.context = { attempts: [{ detail: value }] };
+      expect(captureThrowableSnapshot(nested)).toMatchObject({ ok: true });
     }
   });
 
