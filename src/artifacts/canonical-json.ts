@@ -7,7 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -43,10 +43,14 @@ export const __test: {
   beforeOpen: (() => void) | undefined;
   beforePathRecheck: (() => void) | undefined;
   beforeHashVerification: (() => void) | undefined;
+  beforeBoundedRead: (() => void) | undefined;
+  readSync: (fd: number, buffer: Buffer) => number;
 } = {
   beforeOpen: undefined,
   beforePathRecheck: undefined,
   beforeHashVerification: undefined,
+  beforeBoundedRead: undefined,
+  readSync: (fd, buffer) => readSync(fd, buffer, 0, buffer.length, null),
 };
 
 function sha256(value: string | Buffer): string {
@@ -212,8 +216,11 @@ export function verifyCanonicalJsonArtifact<T>(input: {
       return { ok: false, reason: "not-a-file" };
     }
     if (opened.size > input.maxBytes) return { ok: false, reason: "too-large" };
-    const bytes = readFileSync(fd);
-    if (bytes.length > input.maxBytes) return { ok: false, reason: "too-large" };
+    const bounded = Buffer.allocUnsafe(input.maxBytes + 1);
+    __test.beforeBoundedRead?.();
+    const bytesRead = __test.readSync(fd, bounded);
+    if (bytesRead > input.maxBytes) return { ok: false, reason: "too-large" };
+    const bytes = bounded.subarray(0, bytesRead);
     const after = fstatSync(fd);
     __test.beforePathRecheck?.();
     const pathAfter = lstatSync(candidate);

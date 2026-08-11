@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   linkSync,
   lstatSync,
@@ -137,6 +138,32 @@ describe("canonical JSON artifacts", () => {
       ok: false,
       reason: "too-large",
     });
+  });
+
+  it("reads one maxBytes+1 buffer after fstat and rejects growth at the cap", () => {
+    const rootDir = root();
+    const bytes = canonicalJson({ schema: "example.v1", value: 7 });
+    const maxBytes = bytes.length;
+    const contentSha256 = sha256(bytes);
+    const stored = writeArtifact(rootDir, bytes, contentSha256);
+    const readRequests: number[] = [];
+    const originalReadSync = __test.readSync;
+    __test.beforeBoundedRead = () => appendFileSync(stored.path, Buffer.alloc(maxBytes + 1));
+    __test.readSync = (fd, buffer) => {
+      readRequests.push(buffer.length);
+      return originalReadSync(fd, buffer);
+    };
+    try {
+      const result = verify(rootDir, stored.ref, contentSha256, maxBytes);
+      expect(readRequests).toEqual([maxBytes + 1]);
+      expect(result).toEqual({
+        ok: false,
+        reason: "too-large",
+      });
+    } finally {
+      __test.beforeBoundedRead = undefined;
+      __test.readSync = originalReadSync;
+    }
   });
 
   it("rejects invalid UTF-8 bytes before JSON parsing", () => {
