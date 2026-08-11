@@ -14,12 +14,17 @@ import {
   realpathSync,
 } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { POLICY_CATALOG_VERSION } from "../../core/policy/catalog.ts";
+import {
+  POLICY_CATALOG_VERSION,
+  POLICY_PASS_IDS,
+  type PolicyPassId,
+} from "../../core/policy/catalog.ts";
 import { resolvePolicyReplayCaptureSink } from "../../core/policy/replay-capture.ts";
 import {
   SUPPRESSION_LAYERS,
   type SuppressionLayer,
   ablate,
+  isSuppressionLayer,
   renderAblationMatrix,
   seededTagsFromScript,
 } from "../../rig/ablate.ts";
@@ -206,8 +211,17 @@ export interface RigAblateInput {
   resultPath: string;
   scriptPath: string;
   /** Omitted → every layer, as a matrix. */
-  layer?: SuppressionLayer | undefined;
+  layer?: string | undefined;
   sourceRepoRoot?: string | undefined;
+}
+
+export class RigLayerSelectorError extends Error {
+  readonly exitCode = 2;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "RigLayerSelectorError";
+  }
 }
 
 /**
@@ -217,6 +231,12 @@ export interface RigAblateInput {
 export async function runRigAblate(input: RigAblateInput): Promise<string> {
   const base = loadResult(input.resultPath);
   if (base.policyReplay?.authoritative === true) {
+    const passId = input.layer;
+    if (passId !== undefined && !(POLICY_PASS_IDS as readonly string[]).includes(passId)) {
+      throw new RigLayerSelectorError(
+        `rig ablate: exact --layer must be one closed-catalog id: ${POLICY_PASS_IDS.join(", ")}`,
+      );
+    }
     const siblingManifest = resolve(dirname(input.resultPath), "manifest.json");
     const manifestPath = existsSync(siblingManifest)
       ? siblingManifest
@@ -225,11 +245,18 @@ export async function runRigAblate(input: RigAblateInput): Promise<string> {
       await replayPolicyAblations({
         manifestPath,
         sourceRepoRoot: input.sourceRepoRoot ?? process.cwd(),
+        ...(passId === undefined ? {} : { passId: passId as PolicyPassId }),
       }),
     );
   }
+  if (input.layer !== undefined && !isSuppressionLayer(input.layer)) {
+    throw new RigLayerSelectorError(
+      `rig ablate: legacy --layer must be one of ${SUPPRESSION_LAYERS.join(", ")}`,
+    );
+  }
   const tags = seededTagsFromScript(input.scriptPath);
-  const layers = input.layer === undefined ? [...SUPPRESSION_LAYERS] : [input.layer];
+  const layers: SuppressionLayer[] =
+    input.layer === undefined ? [...SUPPRESSION_LAYERS] : [input.layer as SuppressionLayer];
   return `NON-AUTHORITATIVE LEGACY ANALYSIS — exact policy opportunities were not captured.\n${renderAblationMatrix(
     base,
     layers.map((l) => ablate(base, l, tags)),

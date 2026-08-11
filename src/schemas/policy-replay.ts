@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   POLICY_CATALOG_VERSION,
@@ -6,6 +7,7 @@ import {
 } from "../core/policy/catalog.ts";
 import { compareCodeUnits } from "../utils/compare.ts";
 import { isAuthoritativeThrowableString } from "./bench-result.ts";
+import { ProviderIdSchema } from "./cassette.ts";
 import { FindingCategory, FindingSchema } from "./finding.ts";
 import { PolicyTraceSchema } from "./policy-trace.ts";
 
@@ -13,6 +15,102 @@ const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 const GitObjectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 const PolicyPassIdSchema = z.enum(POLICY_PASS_IDS);
 const PolicyInactiveReasonSchema = z.enum(["configured-off", "stage-precondition-miss"]);
+const IsoTimestampSchema = z.string().datetime({ offset: true });
+
+export interface PolicyReplayCallIdentityInput {
+  runId: string;
+  iter: number;
+  kind: "reviewer" | "grounding" | "critic";
+  provider: string;
+  method: "review" | "complete";
+  key: string;
+  promptSha256: string;
+  ordinal: number;
+  slot: number;
+  attempt: number;
+  occurrence: number;
+}
+
+/** Stable logical-call identity; physical cassette append order is deliberately absent. */
+export function policyReplayCallId(input: PolicyReplayCallIdentityInput): string {
+  return createHash("sha256")
+    .update(
+      [
+        input.runId,
+        String(input.iter),
+        input.kind,
+        input.provider,
+        input.method,
+        input.key,
+        input.promptSha256,
+        String(input.ordinal),
+        String(input.slot),
+        String(input.attempt),
+        String(input.occurrence),
+      ].join("\0"),
+    )
+    .digest("hex");
+}
+
+const ResponseCallSchema = z
+  .object({
+    call_id: Sha256Schema,
+    kind: z.enum(["reviewer", "grounding", "critic"]),
+    provider: ProviderIdSchema,
+    method: z.enum(["review", "complete"]),
+    key: z.string().min(1),
+    prompt_sha256: Sha256Schema,
+    ordinal: z.number().int().nonnegative(),
+    slot: z.number().int().nonnegative(),
+    attempt: z.number().int().positive(),
+    occurrence: z.number().int().nonnegative(),
+    response_sha256: Sha256Schema,
+  })
+  .strict();
+
+const DisabledHistoryStoreSchema = z.object({ enabled: z.literal(false) }).strict();
+const HistoryInputsSchema = z
+  .object({
+    fp_ledger: z.discriminatedUnion("enabled", [
+      DisabledHistoryStoreSchema,
+      z
+        .object({
+          enabled: z.literal(true),
+          active_at: IsoTimestampSchema,
+          clusters_at: IsoTimestampSchema,
+        })
+        .strict(),
+    ]),
+    reputation: z.discriminatedUnion("enabled", [
+      DisabledHistoryStoreSchema,
+      z
+        .object({
+          enabled: z.literal(true),
+          observed_at: IsoTimestampSchema,
+          min_samples: z.number().int().nonnegative(),
+          trust_floor: z.number().min(0).max(1),
+          half_life_days: z.number().positive(),
+        })
+        .strict(),
+    ]),
+    cycle_state: z
+      .object({
+        source: z.literal("state.json"),
+        region_rejected_enabled: z.boolean(),
+      })
+      .strict(),
+    implicit_outcomes: z.discriminatedUnion("enabled", [
+      DisabledHistoryStoreSchema,
+      z
+        .object({
+          enabled: z.literal(true),
+          cap: z.number().int().positive(),
+          created_at: IsoTimestampSchema,
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
 
 const ChangedRangeSchema = z
   .object({ start: z.number().int().nonnegative(), end: z.number().int().positive() })
@@ -180,6 +278,8 @@ const PolicyReplayEnvelopeBaseSchema = z
       .strict(),
     state_sha256: Sha256Schema,
     raw_response_sha256: z.array(Sha256Schema),
+    response_calls: z.array(ResponseCallSchema),
+    history: HistoryInputsSchema,
     /** Original production trace; replay must reproduce it byte-for-byte before ablation. */
     policy_trace: PolicyTraceSchema,
     lossless: z.boolean(),
@@ -250,6 +350,49 @@ export const PolicyReplayEnvelopeSchema = PolicyReplayEnvelopeBaseSchema.superRe
         path: ["raw_response_sha256"],
         message: "ordered response hashes must match the production policy trace",
       });
+    }
+    if (
+      value.response_calls.length !== value.raw_response_sha256.length ||
+      value.response_calls.some(
+        (call, index) =>
+          call.response_sha256 !== value.raw_response_sha256[index] ||
+          (index > 0 && call.ordinal <= (value.response_calls[index - 1]?.ordinal ?? -1)),
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["response_calls"],
+        message: "response calls must bind every ordered response hash to its logical slot",
+      });
+    }
+    const seenCallIds = new Set<string>();
+    for (const [index, call] of value.response_calls.entries()) {
+      const expectedMethod = call.kind === "reviewer" ? "review" : "complete";
+      const expectedCallId = policyReplayCallId({
+        runId: value.run_id,
+        iter: value.iter,
+        kind: call.kind,
+        provider: call.provider,
+        method: call.method,
+        key: call.key,
+        promptSha256: call.prompt_sha256,
+        ordinal: call.ordinal,
+        slot: call.slot,
+        attempt: call.attempt,
+        occurrence: call.occurrence,
+      });
+      if (
+        call.method !== expectedMethod ||
+        call.call_id !== expectedCallId ||
+        seenCallIds.has(call.call_id)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["response_calls", index],
+          message: "response call identity, method, ordinal, or call id is invalid",
+        });
+      }
+      seenCallIds.add(call.call_id);
     }
     for (const row of value.aggregate.policy_inactive) {
       if (!POLICY_REASON_CODES.includes(row.reason_code)) {

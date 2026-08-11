@@ -28,10 +28,12 @@ import {
   createPolicyStateSnapshot,
   createReplayBranches,
   digestPolicyState,
+  verifyPolicyStateSnapshot,
 } from "../../src/rig/policy-replay-state.ts";
 import {
   type PolicyReplayEnvelope,
   PolicyReplayEnvelopeSchema,
+  policyReplayCallId,
 } from "../../src/schemas/policy-replay.ts";
 
 const H = "a".repeat(64);
@@ -126,6 +128,64 @@ function envelope(overrides: Partial<PolicyReplayEnvelope> = {}): PolicyReplayEn
     pre_policy: { self_refutation_enabled: true, hypothetical_enabled: true },
     state_sha256: H,
     raw_response_sha256: ["b".repeat(64), "c".repeat(64)],
+    response_calls: [
+      {
+        call_id: policyReplayCallId({
+          runId: "rig-run-1",
+          iter: 1,
+          kind: "reviewer",
+          provider: "codex",
+          method: "review",
+          key: "codex-correctness",
+          promptSha256: "d".repeat(64),
+          ordinal: 0,
+          slot: 0,
+          attempt: 1,
+          occurrence: 0,
+        }),
+        kind: "reviewer",
+        provider: "codex",
+        method: "review",
+        key: "codex-correctness",
+        prompt_sha256: "d".repeat(64),
+        ordinal: 0,
+        slot: 0,
+        attempt: 1,
+        occurrence: 0,
+        response_sha256: "b".repeat(64),
+      },
+      {
+        call_id: policyReplayCallId({
+          runId: "rig-run-1",
+          iter: 1,
+          kind: "critic",
+          provider: "openrouter",
+          method: "complete",
+          key: `openrouter:complete:${"e".repeat(64)}`,
+          promptSha256: "e".repeat(64),
+          ordinal: 1,
+          slot: 0,
+          attempt: 1,
+          occurrence: 0,
+        }),
+        kind: "critic",
+        provider: "openrouter",
+        method: "complete",
+        key: `openrouter:complete:${"e".repeat(64)}`,
+        prompt_sha256: "e".repeat(64),
+        ordinal: 1,
+        slot: 0,
+        attempt: 1,
+        occurrence: 0,
+        response_sha256: "c".repeat(64),
+      },
+    ],
+    history: {
+      fp_ledger: { enabled: false },
+      reputation: { enabled: false },
+      cycle_state: { source: "state.json", region_rejected_enabled: false },
+      implicit_outcomes: { enabled: false },
+    },
     policy_trace: policyTrace,
     lossless: true,
     ...overrides,
@@ -175,6 +235,50 @@ describe("policy replay envelope schema", () => {
         raw_response_sha256: ["c".repeat(64), "b".repeat(64)],
       }),
     ).toThrow(/ordered response hashes/i);
+  });
+
+  test("binds response hashes to stable calls and records effective history-store inputs", () => {
+    const base = envelope();
+    const promptSha256 = "d".repeat(64);
+    const call = {
+      call_id: policyReplayCallId({
+        runId: base.run_id,
+        iter: base.iter,
+        kind: "reviewer",
+        provider: "codex",
+        method: "review",
+        key: "codex-correctness",
+        promptSha256,
+        ordinal: 0,
+        slot: 0,
+        attempt: 1,
+        occurrence: 0,
+      }),
+      kind: "reviewer",
+      provider: "codex",
+      method: "review",
+      key: "codex-correctness",
+      prompt_sha256: promptSha256,
+      ordinal: 0,
+      slot: 0,
+      attempt: 1,
+      occurrence: 0,
+      response_sha256: "b".repeat(64),
+    };
+    expect(() =>
+      PolicyReplayEnvelopeSchema.parse({
+        ...base,
+        response_calls: [call],
+        raw_response_sha256: ["b".repeat(64)],
+        policy_trace: { ...base.policy_trace, raw_response_sha256: ["b".repeat(64)] },
+        history: {
+          fp_ledger: { enabled: false },
+          reputation: { enabled: false },
+          cycle_state: { source: "state.json", region_rejected_enabled: false },
+          implicit_outcomes: { enabled: false },
+        },
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -280,6 +384,22 @@ describe("policy replay capture", () => {
     const traversing = envelope();
     traversing.run_id = "../../escape";
     traversing.policy_trace.run_id = "../../escape";
+    traversing.response_calls = traversing.response_calls.map((call) => ({
+      ...call,
+      call_id: policyReplayCallId({
+        runId: traversing.run_id,
+        iter: traversing.iter,
+        kind: call.kind,
+        provider: call.provider,
+        method: call.method,
+        key: call.key,
+        promptSha256: call.prompt_sha256,
+        ordinal: call.ordinal,
+        slot: call.slot,
+        attempt: call.attempt,
+        occurrence: call.occurrence,
+      }),
+    }));
     expect(
       capturePolicyReplayEnvelope({
         sinkDir: escapedSink,
@@ -369,6 +489,64 @@ describe("policy replay state isolation", () => {
         outputRoot: mkdtempSync(join(tmpdir(), "rg-policy-state-output-")),
       }),
     ).toThrow(/symlink/i);
+  });
+
+  test("refuses a symlinked policy-state ancestor without writing outside the output root", () => {
+    const sourceRepoRoot = gitRepo();
+    const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-state-output-"));
+    const outside = mkdtempSync(join(tmpdir(), "rg-policy-state-escape-"));
+    symlinkSync(outside, join(outputRoot, "policy-state"));
+
+    expect(() => createPolicyStateSnapshot({ sourceRepoRoot, outputRoot })).toThrow(
+      /symlink|escape|ordinary directory/i,
+    );
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  test("uses one code-unit order for traversal, digest, manifest, and verification", () => {
+    const sourceRepoRoot = gitRepo();
+    writeFileSync(join(sourceRepoRoot, ".reviewgate", "Z.json"), "upper\n");
+    writeFileSync(join(sourceRepoRoot, ".reviewgate", "a.json"), "lower\n");
+    const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-state-output-"));
+
+    const snapshot = createPolicyStateSnapshot({ sourceRepoRoot, outputRoot });
+    expect(() =>
+      verifyPolicyStateSnapshot({
+        outputRoot,
+        ref: snapshot.ref,
+        sha256: snapshot.sha256,
+        expectedStateSha256: snapshot.stateSha256,
+      }),
+    ).not.toThrow();
+    const manifest = JSON.parse(readFileSync(join(outputRoot, snapshot.ref), "utf8")) as {
+      files: Array<{ path: string }>;
+    };
+    expect(manifest.files.map((entry) => entry.path)).toEqual([
+      "Z.json",
+      "a.json",
+      "fp-ledger.jsonl",
+      "reputation/events.jsonl",
+    ]);
+  });
+
+  test("rejects mode drift in a persisted state tree while accepting legacy source modes", () => {
+    const sourceRepoRoot = gitRepo();
+    const sourcePath = join(sourceRepoRoot, ".reviewgate", "fp-ledger.jsonl");
+    chmodSync(sourcePath, 0o644);
+    const outputRoot = mkdtempSync(join(tmpdir(), "rg-policy-state-output-"));
+    const snapshot = createPolicyStateSnapshot({ sourceRepoRoot, outputRoot });
+    const persistedPath = join(outputRoot, snapshot.stateRef, "fp-ledger.jsonl");
+    expect(lstatSync(persistedPath).mode & 0o7777).toBe(0o600);
+    chmodSync(persistedPath, 0o644);
+
+    expect(() =>
+      verifyPolicyStateSnapshot({
+        outputRoot,
+        ref: snapshot.ref,
+        sha256: snapshot.sha256,
+        expectedStateSha256: snapshot.stateSha256,
+      }),
+    ).toThrow(/0600|mode/i);
   });
 
   test("rejects hardlinked and special state entries", () => {

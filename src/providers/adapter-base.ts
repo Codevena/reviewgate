@@ -49,6 +49,21 @@ export interface Preflight {
   error: string | null;
 }
 
+/** Internal recording-only identity. It carries no prompt, path, config, environment, or secret. */
+export interface PolicyReplayCallContext {
+  runId: string;
+  iter: number;
+  kind: "reviewer" | "grounding" | "critic";
+  /** Sparse logical response order across the policy iteration. */
+  ordinal: number;
+  /** Kind-local logical call slot (for example the configured reviewer slot). */
+  slot: number;
+  /** Physical provider attempt within the logical slot. */
+  attempt: number;
+  /** Repeated invocation of the same logical identity. */
+  occurrence: number;
+}
+
 export interface ReviewInput {
   promptFile: string;
   /** Optional in-memory prompt used by capability probes that must not create a
@@ -71,6 +86,8 @@ export interface ReviewInput {
   /** Execute at most one physical provider invocation. Benchmark call ceilings
    * set this so an adapter-local retry cannot escape the recorded budget. */
   disableRetries?: boolean | undefined;
+  /** Internal Rig recording metadata; adapters other than RecordingAdapter ignore it. */
+  policyReplayCall?: PolicyReplayCallContext | undefined;
 }
 
 export type ReviewStatus = "ok" | "error" | "abstain" | "timeout" | "quota-exhausted";
@@ -139,6 +156,8 @@ export interface CompleteOptions {
   // grounding lookup) reasoning adds no value, so disabling it makes the output
   // deterministic and cheap. OpenRouter honors this via `reasoning:{enabled:false}`.
   disableReasoning?: boolean;
+  /** Internal Rig recording metadata; adapters other than RecordingAdapter ignore it. */
+  policyReplayCall?: PolicyReplayCallContext | undefined;
 }
 
 export interface ProviderAdapter {

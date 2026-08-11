@@ -14,6 +14,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 import type { AuditLogger } from "../audit/logger.ts";
 import { computeBehaviorHash } from "../cache/behavior-hash.ts";
 import { computeCacheKey, getCachedReview, putCachedReview } from "../cache/cache.ts";
+import { completeKey, reviewKey } from "../cassette/matching.ts";
 import { cassetteFromEnv } from "../cassette/store.ts";
 import {
   BUDGET_ATTRIBUTION_SLACK_MS,
@@ -26,7 +27,12 @@ import type { ReviewgateConfig } from "../config/define-config.ts";
 import { parseChangedRanges, parseDeletedPaths } from "../diff/hunks.ts";
 import { sanitizeDiff } from "../diff/sanitizer.ts";
 import { computeSignature } from "../diff/signature.ts";
-import type { ProviderAdapter, ProviderConfig, ReviewResult } from "../providers/adapter-base.ts";
+import type {
+  PolicyReplayCallContext,
+  ProviderAdapter,
+  ProviderConfig,
+  ReviewResult,
+} from "../providers/adapter-base.ts";
 import { isProviderAvailable } from "../providers/availability.ts";
 import { type ProviderId, SUBPROCESSLESS_PROVIDERS } from "../providers/registry.ts";
 import { parseReviewOutput } from "../providers/review-output.ts";
@@ -53,6 +59,7 @@ import type { RunSummary } from "../schemas/audit-event.ts";
 import { type MemoryProposal, VALID_EVIDENCE_KINDS } from "../schemas/brain.ts";
 import type { Finding, FindingCategory } from "../schemas/finding.ts";
 import { NO_PANEL_REVIEWER_ID } from "../schemas/pending-report.ts";
+import { type PolicyReplayEnvelopeInput, policyReplayCallId } from "../schemas/policy-replay.ts";
 import {
   type PolicySummary,
   PolicySummarySchema,
@@ -79,7 +86,7 @@ import { decayPass } from "./brain/lifecycle.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
 import { BrainStore } from "./brain/store.ts";
 import { runChecks } from "./checks/runner.ts";
-import { type CriticVerdict, runCritic } from "./critic.ts";
+import { type CriticVerdict, buildCriticPrompt, runCritic } from "./critic.ts";
 import { attestEvidence, validateFindingFacts } from "./fact-check.ts";
 import { computeFpClusters } from "./fp-ledger/clusters.ts";
 import { buildFpFewShot } from "./fp-ledger/few-shot.ts";
@@ -92,7 +99,12 @@ import {
   fragmentingFpClasses,
 } from "./fp-ledger/fragmentation.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
-import { applyGroundingJudgeVerdicts, groundFindings, judgeGrounding } from "./grounding.ts";
+import {
+  applyGroundingJudgeVerdicts,
+  buildGroundingJudgePrompt,
+  groundFindings,
+  judgeGrounding,
+} from "./grounding.ts";
 import { renderHouseRules } from "./house-rules.ts";
 import { demoteHypotheticalCriticals } from "./hypothetical-demote.ts";
 import { ImplicitOutcomeStore, deriveImplicitOutcomes } from "./learnings/implicit-outcomes.ts";
@@ -701,6 +713,12 @@ interface ReviewerRun {
   provider: ProviderId;
   persona: string;
   model: string;
+  /** Actual adapter-call attempt within this logical reviewer slot (skips do not count). */
+  attempt?: number;
+  /** Exact prompt digest used by RecordingAdapter for this call. */
+  promptSha256?: string;
+  /** Exact caller identity sent to RecordingAdapter for authoritative Rig capture. */
+  policyReplayCall?: PolicyReplayCallContext;
   // Deadline-aware budgets: true when this run's granted window was MATERIALLY
   // shortened by the remaining-budget clamp (more than BUDGET_ATTRIBUTION_SLACK_MS
   // below the provider's configured timeoutMs). A timeout under such a window is
@@ -951,9 +969,8 @@ export class Orchestrator {
     const fpFullSnapshot = fpStore ? await fpStore.snapshot() : undefined;
     // Pass the run timestamp so a sticky/active whose window has expired is
     // re-evaluated at read time and never served as suppressing (F-017).
-    const fpActiveSnapshot = fpStore
-      ? await fpStore.activeSnapshot(this.input.now?.() ?? new Date())
-      : undefined;
+    const fpObservedAt = this.input.now?.() ?? new Date();
+    const fpActiveSnapshot = fpStore ? await fpStore.activeSnapshot(fpObservedAt) : undefined;
 
     // M6: Context7 library docs. Fetched PRE-CACHE — before the behavior-hash —
     // so the docs-corpus identity feeds the cache key (a docs change must
@@ -1647,9 +1664,30 @@ export class Orchestrator {
       findingsPath: string,
       diffPath: string,
       tmpDir: string,
+      attempt: number,
+      logicalSlot: number,
     ): Promise<ReviewerRun> => {
       const adapter = this.input.adapters[provider];
       const reviewStart = Date.now();
+      let promptSha256: string | undefined;
+      try {
+        promptSha256 = createHash("sha256").update(readFileSync(promptFile)).digest("hex");
+      } catch {
+        // Capture-only identity. The provider call retains its production behavior; an
+        // unavailable prompt digest simply prevents an authoritative replay envelope.
+      }
+      const policyReplayCall: PolicyReplayCallContext | undefined =
+        this.input.policyReplayCapture === undefined || promptSha256 === undefined
+          ? undefined
+          : {
+              runId: opts.runId,
+              iter: opts.iter,
+              kind: "reviewer",
+              ordinal: logicalSlot,
+              slot: logicalSlot,
+              attempt,
+              occurrence: 0,
+            };
       // #7: clamp this reviewer's per-run timeout to the triage cap for a small diff (never
       // ABOVE the provider's own timeout). The full panel still runs — only the wall-clock
       // ceiling drops, so a tiny change can't stall behind one slow slot for the full default.
@@ -1684,6 +1722,9 @@ export class Orchestrator {
           provider,
           persona,
           model,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         };
       }
       // Build a per-reviewer sandbox profile and forward { profile, mode } so the
@@ -1728,8 +1769,18 @@ export class Orchestrator {
           diffPath,
           ...(opts.signal ? { signal: opts.signal } : {}),
           ...(sandbox ? { sandbox } : {}),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         });
-        return { res, provider, persona, model, budgetCapped };
+        return {
+          res,
+          provider,
+          persona,
+          model,
+          budgetCapped,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
+        };
       } catch (err) {
         // strict + isolation-unavailable: fail closed for this reviewer with a
         // legible statusDetail, so the "0 ok reviewers → ERROR/block" gate handles
@@ -1754,6 +1805,9 @@ export class Orchestrator {
           persona,
           model,
           budgetCapped,
+          attempt,
+          ...(promptSha256 === undefined ? {} : { promptSha256 }),
+          ...(policyReplayCall === undefined ? {} : { policyReplayCall }),
         };
       }
     };
@@ -1794,7 +1848,7 @@ export class Orchestrator {
     }
 
     const tasks = panelReviewers.map(
-      async (r): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
+      async (r, logicalSlot): Promise<{ run: ReviewerRun; effects: CooldownEffect[] } | null> => {
         const adapter = this.input.adapters[r.provider];
         const providerCfg = this.input.config.providers[r.provider] as ProviderConfig | undefined;
         if (!adapter || !providerCfg || !providerCfg.enabled) return null;
@@ -1813,6 +1867,7 @@ export class Orchestrator {
         // default perms — it MUST be removed even on a thrown adapter, else every
         // review leaks a /tmp dir with the (untrusted) diff in it.
         try {
+          let actualAttempt = 0;
           const promptFile = join(runDir, "prompt.txt");
           const findingsPath = join(runDir, "findings.md");
           const diffPath = join(runDir, "diff.patch");
@@ -1997,6 +2052,8 @@ export class Orchestrator {
               findingsPath,
               diffPath,
               runDir,
+              ++actualAttempt,
+              logicalSlot,
             );
             const eff = effectFor(r.provider, run.res, run.budgetCapped);
             if (eff) effects.push(eff);
@@ -2037,6 +2094,8 @@ export class Orchestrator {
                 findingsPath,
                 diffPath,
                 runDir,
+                ++actualAttempt,
+                logicalSlot,
               );
               run.res.statusDetail =
                 `[fallback from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
@@ -2086,6 +2145,8 @@ export class Orchestrator {
                 findingsPath,
                 diffPath,
                 runDir,
+                ++actualAttempt,
+                logicalSlot,
               );
               run.res.statusDetail =
                 `[last-resort from ${fromProvider}: ${fromStatus}] ${run.res.statusDetail ?? ""}`
@@ -2264,9 +2325,68 @@ export class Orchestrator {
       .filter((f) => !isExcludedFromReview(f.file));
     const symbolFindings = await this.applySymbolSignatures(rawFindings);
     const reviewerResponseHashes = new OrderedResponseHashes();
+    const responseCalls: PolicyReplayEnvelopeInput["response_calls"] = [];
+    const recordResponseCall = (input: {
+      kind: "reviewer" | "grounding" | "critic";
+      provider: ProviderId;
+      method: "review" | "complete";
+      key: string;
+      promptSha256: string;
+      ordinal: number;
+      slot: number;
+      attempt: number;
+      occurrence: number;
+      responseSha256: string;
+    }): void => {
+      responseCalls.push({
+        call_id: policyReplayCallId({
+          runId: opts.runId,
+          iter: opts.iter,
+          kind: input.kind,
+          provider: input.provider,
+          method: input.method,
+          key: input.key,
+          promptSha256: input.promptSha256,
+          ordinal: input.ordinal,
+          slot: input.slot,
+          attempt: input.attempt,
+          occurrence: input.occurrence,
+        }),
+        kind: input.kind,
+        provider: input.provider,
+        method: input.method,
+        key: input.key,
+        prompt_sha256: input.promptSha256,
+        ordinal: input.ordinal,
+        slot: input.slot,
+        attempt: input.attempt,
+        occurrence: input.occurrence,
+        response_sha256: input.responseSha256,
+      });
+    };
     if (policyExecution.trace !== "off") {
       for (const [ordinal, run] of settled.entries()) {
         reviewerResponseHashes.record(`reviewer:${run.provider}`, ordinal, run.res.rawText);
+        if (
+          run.res.rawText !== undefined &&
+          run.promptSha256 !== undefined &&
+          run.policyReplayCall !== undefined
+        ) {
+          recordResponseCall({
+            kind: "reviewer",
+            provider: run.provider,
+            method: "review",
+            key: reviewKey(run.res.reviewerId),
+            promptSha256: run.promptSha256,
+            ordinal: run.policyReplayCall.ordinal,
+            slot: run.policyReplayCall.slot,
+            attempt: run.policyReplayCall.attempt,
+            occurrence: run.policyReplayCall.occurrence,
+            responseSha256: createHash("sha256")
+              .update(Buffer.from(run.res.rawText, "utf8"))
+              .digest("hex"),
+          });
+        }
       }
     }
     const rawResponseSha256 = reviewerResponseHashes.values();
@@ -2340,6 +2460,14 @@ export class Orchestrator {
         | ProviderConfig
         | undefined;
       if (gAdapter && gProviderCfg) {
+        const groundingPromptSha256 = createHash("sha256")
+          .update(
+            buildGroundingJudgePrompt(
+              groundedFindings.filter((finding) => finding.severity === "CRITICAL"),
+              groundingCorpus,
+            ),
+          )
+          .digest("hex");
         const {
           map,
           status: groundingStatus,
@@ -2352,6 +2480,19 @@ export class Orchestrator {
             ...(gProviderCfg.auth ? { auth: gProviderCfg.auth } : {}),
             timeoutMs: gProviderCfg.timeoutMs,
             ...(opts.signal ? { signal: opts.signal } : {}),
+            ...(this.input.policyReplayCapture === undefined
+              ? {}
+              : {
+                  policyReplayCall: {
+                    runId: opts.runId,
+                    iter: opts.iter,
+                    kind: "grounding" as const,
+                    ordinal: panelReviewers.length,
+                    slot: 0,
+                    attempt: 1,
+                    occurrence: 0,
+                  },
+                }),
             ...(gProviderCfg.openrouterProvider
               ? { openrouterProvider: gProviderCfg.openrouterProvider }
               : {}),
@@ -2364,6 +2505,18 @@ export class Orchestrator {
           groundingStatus === "ran" ? "ran" : groundingStatus === "error" ? "error" : "not-run";
         if (groundingResponseSha256 !== undefined) {
           rawResponseSha256.push(groundingResponseSha256);
+          recordResponseCall({
+            kind: "grounding",
+            provider: groundingCfg.provider,
+            method: "complete",
+            key: completeKey(groundingCfg.provider, groundingPromptSha256),
+            promptSha256: groundingPromptSha256,
+            ordinal: panelReviewers.length,
+            slot: 0,
+            attempt: 1,
+            occurrence: 0,
+            responseSha256: groundingResponseSha256,
+          });
           groundedFindings = applyGroundingJudgeVerdicts(groundedFindings, map, policyRuntime);
         } else {
           policyRuntime?.markInactive("judgment.grounding-llm", "stage-precondition-miss");
@@ -2417,8 +2570,38 @@ export class Orchestrator {
         // and makes the critic a silent no-op. No cost is attributed: complete()
         // returns only text (no usage envelope), so the critic phase is $0 here.
         criticAttempted = true;
+        const criticPromptSha256 = createHash("sha256")
+          .update(buildCriticPrompt(groundedFindings))
+          .digest("hex");
+        let criticPhysicalAttempt = 0;
+        const successfulCriticCalls: PolicyReplayCallContext[] = [];
+        const replayCriticAdapter: Pick<ProviderAdapter, "complete"> =
+          this.input.policyReplayCapture === undefined ||
+          typeof criticAdapter.complete !== "function"
+            ? criticAdapter
+            : {
+                complete: async (prompt, completeOptions) => {
+                  const attempt = ++criticPhysicalAttempt;
+                  const policyReplayCall: PolicyReplayCallContext = {
+                    runId: opts.runId,
+                    iter: opts.iter,
+                    kind: "critic",
+                    ordinal: panelReviewers.length + attempt,
+                    slot: 0,
+                    attempt,
+                    occurrence: attempt - 1,
+                  };
+                  const text = await criticAdapter.complete?.call(criticAdapter, prompt, {
+                    ...completeOptions,
+                    policyReplayCall,
+                  });
+                  if (text === undefined) throw new Error("critic completion unavailable");
+                  successfulCriticCalls.push(policyReplayCall);
+                  return text;
+                },
+              };
         const r = await runCritic(
-          criticAdapter,
+          replayCriticAdapter,
           criticCfg.provider,
           {
             model: criticCfg.model ?? cProviderCfg.model,
@@ -2437,9 +2620,40 @@ export class Orchestrator {
         criticMap = r.map;
         criticInfo = r.info;
         if (r.rawResponseSha256s !== undefined) {
-          rawResponseSha256.push(...r.rawResponseSha256s);
+          for (const [index, responseSha256] of r.rawResponseSha256s.entries()) {
+            rawResponseSha256.push(responseSha256);
+            const policyReplayCall = successfulCriticCalls[index];
+            if (policyReplayCall === undefined) continue;
+            recordResponseCall({
+              kind: "critic",
+              provider: criticCfg.provider,
+              method: "complete",
+              key: completeKey(criticCfg.provider, criticPromptSha256),
+              promptSha256: criticPromptSha256,
+              ordinal: policyReplayCall.ordinal,
+              slot: policyReplayCall.slot,
+              attempt: policyReplayCall.attempt,
+              occurrence: policyReplayCall.occurrence,
+              responseSha256,
+            });
+          }
         } else if (r.rawResponseSha256 !== undefined) {
           rawResponseSha256.push(r.rawResponseSha256);
+          const policyReplayCall = successfulCriticCalls[0];
+          if (policyReplayCall !== undefined) {
+            recordResponseCall({
+              kind: "critic",
+              provider: criticCfg.provider,
+              method: "complete",
+              key: completeKey(criticCfg.provider, criticPromptSha256),
+              promptSha256: criticPromptSha256,
+              ordinal: policyReplayCall.ordinal,
+              slot: policyReplayCall.slot,
+              attempt: policyReplayCall.attempt,
+              occurrence: policyReplayCall.occurrence,
+              responseSha256: r.rawResponseSha256,
+            });
+          }
         }
       } else {
         criticInfo = { provider: criticCfg.provider, status: "misconfigured", verdicts: 0 };
@@ -2619,12 +2833,14 @@ export class Orchestrator {
     // outcomes so downstream learners have signal. NEVER changes the verdict or
     // report — a failure here is swallowed.
     const ioCfg = this.input.config.phases.implicitOutcomes;
+    let implicitOutcomeCreatedAt: string | null = null;
     if (ioCfg?.enabled) {
       try {
+        implicitOutcomeCreatedAt = new Date().toISOString();
         const outcomes = deriveImplicitOutcomes(agg.dedupedFindings, agg.criticDropped, {
           runId: opts.runId,
           iter: opts.iter,
-          nowIso: new Date().toISOString(),
+          nowIso: implicitOutcomeCreatedAt,
         });
         await new ImplicitOutcomeStore(repo).append(outcomes, ioCfg.cap);
       } catch (err) {
@@ -2847,6 +3063,39 @@ export class Orchestrator {
             },
             state_sha256: policyReplayStateSha256,
             raw_response_sha256: [...rawResponseSha256],
+            response_calls: responseCalls,
+            history: {
+              fp_ledger:
+                fpStore === null
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      active_at: fpObservedAt.toISOString(),
+                      clusters_at: now.toISOString(),
+                    },
+              reputation:
+                repCfg?.enabled !== true
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      observed_at: now.toISOString(),
+                      min_samples: repCfg.minSamples,
+                      trust_floor: repCfg.trustFloor,
+                      half_life_days: repCfg.halfLifeDays,
+                    },
+              cycle_state: {
+                source: "state.json",
+                region_rejected_enabled: activeRegions !== null,
+              },
+              implicit_outcomes:
+                ioCfg?.enabled !== true || implicitOutcomeCreatedAt === null
+                  ? { enabled: false }
+                  : {
+                      enabled: true,
+                      cap: ioCfg.cap,
+                      created_at: implicitOutcomeCreatedAt,
+                    },
+            },
             policy_trace: policyTrace,
             lossless: true,
           },

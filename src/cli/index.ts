@@ -3,10 +3,11 @@ import { homedir } from "node:os";
 import { defineCommand, runMain } from "citty";
 import { fmtMetric } from "../bench/report.ts";
 import { controlPlaneStatus } from "../config/control-plane.ts";
+import { POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import type { AgentHostSelection } from "../hosts/hooks.ts";
 import { repoClaudeHookActive } from "../hosts/user-hooks.ts";
 import type { ProviderId } from "../providers/registry.ts";
-import { SUPPRESSION_LAYERS, type SuppressionLayer, isSuppressionLayer } from "../rig/ablate.ts";
+import { SUPPRESSION_LAYERS } from "../rig/ablate.ts";
 import { RigAuthorityError } from "../rig/policy-replay-state.ts";
 import { RG_VERSION } from "../version.ts";
 import { runAuditVerify } from "./commands/audit.ts";
@@ -42,6 +43,7 @@ import { runReport } from "./commands/report.ts";
 import { runReset } from "./commands/reset.ts";
 import { runReviewPlan } from "./commands/review-plan.ts";
 import {
+  RigLayerSelectorError,
   runRigAblate,
   runRigHarvest,
   runRigReplay,
@@ -64,6 +66,10 @@ async function runRigAuthorityCommand<T>(run: () => T | Promise<T>): Promise<T> 
   try {
     return await run();
   } catch (error) {
+    if (error instanceof RigLayerSelectorError) {
+      process.stderr.write(`${error.message}\n`);
+      process.exit(error.exitCode);
+    }
     if (!(error instanceof RigAuthorityError)) throw error;
     process.stderr.write(`${error.message}\n`);
     process.exit(error.exitCode);
@@ -1141,24 +1147,18 @@ const rig = defineCommand({
         },
         layer: {
           type: "string",
-          description: `One of ${SUPPRESSION_LAYERS.join(" | ")} (default: all)`,
+          description: `Exact: one closed-catalog id (${POLICY_PASS_IDS.join(" | ")}); legacy: ${SUPPRESSION_LAYERS.join(" | ")} (default: all)`,
         },
       },
       async run({ args }) {
         const layer = args.layer as string | undefined;
-        if (layer !== undefined && !isSuppressionLayer(layer)) {
-          console.error(
-            `reviewgate rig ablate: --layer must be one of ${SUPPRESSION_LAYERS.join(", ")}`,
-          );
-          process.exit(2);
-        }
         process.stdout.write(
           await runRigAuthorityCommand(() =>
             runRigAblate({
               resultPath: args.result as string,
               scriptPath: args.script as string,
               sourceRepoRoot: process.cwd(),
-              ...(layer === undefined ? {} : { layer: layer as SuppressionLayer }),
+              ...(layer === undefined ? {} : { layer }),
             }),
           ),
         );

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { makeMetric, summarizeSpread } from "../../src/bench/metrics.ts";
-import { POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
+import { RigLayerSelectorError, runRigAblate } from "../../src/cli/commands/rig.ts";
+import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import { ablate, renderAblationMatrix } from "../../src/rig/ablate.ts";
 import { renderPolicyAblationRows } from "../../src/rig/replay.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
@@ -88,6 +92,81 @@ function result(turns: RigTurnRecord[], over: Partial<RigResult> = {}): RigResul
 const NO_TAGS = new Map<number, string[]>();
 
 describe("rig ablate", () => {
+  test("keeps exact catalog selectors and legacy aliases in their own result modes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-layer-selector-"));
+    const scriptPath = join(root, "script.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "selector-script",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+    const legacyPath = join(root, "legacy.json");
+    writeFileSync(legacyPath, JSON.stringify(result([turn({ index: 1 })])));
+    await expect(
+      runRigAblate({
+        resultPath: legacyPath,
+        scriptPath,
+        layer: "judgment.confidence",
+      }),
+    ).rejects.toBeInstanceOf(RigLayerSelectorError);
+
+    const exactPath = join(root, "exact.json");
+    writeFileSync(
+      exactPath,
+      JSON.stringify(
+        result([turn({ index: 1 })], {
+          policyReplay: {
+            authoritative: true,
+            catalogVersion: POLICY_CATALOG_VERSION,
+            sourceCommit: "a".repeat(40),
+            passIds: [...POLICY_PASS_IDS],
+            reason: null,
+          },
+        }),
+      ),
+    );
+    await expect(
+      runRigAblate({ resultPath: exactPath, scriptPath, layer: "critic" }),
+    ).rejects.toBeInstanceOf(RigLayerSelectorError);
+  });
+
+  test("maps an invalid mode-specific CLI selector to exact exit 2", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-layer-selector-cli-"));
+    const resultPath = join(root, "legacy.json");
+    const scriptPath = join(root, "script.json");
+    writeFileSync(resultPath, JSON.stringify(result([turn({ index: 1 })])));
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "selector-cli",
+        turns: [{ index: 1, prompt: "safe", seeded: null }],
+      }),
+    );
+    const child = Bun.spawn(
+      [
+        "bun",
+        "run",
+        "src/cli/index.ts",
+        "rig",
+        "ablate",
+        "--result",
+        resultPath,
+        "--script",
+        scriptPath,
+        "--layer",
+        "judgment.confidence",
+      ],
+      { cwd: join(import.meta.dir, "..", ".."), stdout: "pipe", stderr: "pipe" },
+    );
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("legacy --layer");
+  });
+
   test("exact rows use every closed catalog ID and keep Lore separate", () => {
     const rendered = renderPolicyAblationRows(
       POLICY_PASS_IDS.map((passId) => ({

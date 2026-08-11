@@ -26,6 +26,7 @@ import { CassetteEntrySchema } from "../schemas/cassette.ts";
 import type { PolicyReplayEnvelope } from "../schemas/policy-replay.ts";
 import type { RigManifest } from "../schemas/rig-manifest.ts";
 import { writeFileIfAbsent } from "../utils/atomic-write.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 
 const STATE_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const STATE_MAX_TOTAL_BYTES = 64 * 1024 * 1024;
@@ -70,7 +71,10 @@ const PolicyStateManifestSchema = z
           message: "invalid state path",
         });
       }
-      if (index > 0 && (value.files[index - 1]?.path ?? "") >= (entry?.path ?? "")) {
+      if (
+        index > 0 &&
+        compareCodeUnits(value.files[index - 1]?.path ?? "", entry?.path ?? "") >= 0
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["files", index, "path"],
@@ -216,7 +220,7 @@ function readStableFile(
   }
 }
 
-function collectStateEntries(stateRoot: string): StateEntry[] {
+function collectStateEntries(stateRoot: string, requireMode0600 = false): StateEntry[] {
   const rootStat = lstatSync(stateRoot);
   if (rootStat.isSymbolicLink()) throw new Error(`policy state root is a symlink: ${stateRoot}`);
   if (!rootStat.isDirectory())
@@ -236,7 +240,7 @@ function collectStateEntries(stateRoot: string): StateEntry[] {
     if (!isContained(rootReal, directoryReal)) {
       throw new Error(`policy state directory escapes root: ${directory}`);
     }
-    const names = readdirSync(directory).sort((a, b) => a.localeCompare(b));
+    const names = readdirSync(directory).sort(compareCodeUnits);
     for (const name of names) {
       const path = join(directory, name);
       const stat = lstatSync(path);
@@ -248,7 +252,7 @@ function collectStateEntries(stateRoot: string): StateEntry[] {
       if (!stat.isFile()) throw new Error(`policy state contains special file: ${path}`);
       const rel = relative(rootReal, realpathSync(path)).split(sep).join("/");
       validateRelativeStatePath(rel);
-      const bytes = readStableFile(path);
+      const bytes = readStableFile(path, STATE_MAX_FILE_BYTES, requireMode0600);
       totalBytes += bytes.length;
       if (entries.length + 1 > STATE_MAX_FILES) throw new Error("policy state exceeds file limit");
       if (totalBytes > STATE_MAX_TOTAL_BYTES) throw new Error("policy state exceeds byte limit");
@@ -257,7 +261,7 @@ function collectStateEntries(stateRoot: string): StateEntry[] {
   };
 
   visit(rootReal);
-  return entries.sort((a, b) => a.path.localeCompare(b.path));
+  return entries.sort((a, b) => compareCodeUnits(a.path, b.path));
 }
 
 function stateDigest(entries: StateEntry[]): string {
@@ -284,20 +288,69 @@ function exactDirectory(path: string): string {
   return realpathSync(path);
 }
 
+function mkdirIfMissing(path: string): void {
+  if (existsSync(path)) return;
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+}
+
+function ensureContainedDirectory(
+  rootPath: string,
+  rootReal: string,
+  parent: string,
+  name: string,
+): string {
+  if (name.length === 0 || name === "." || name === ".." || name.includes(sep)) {
+    throw new Error(`invalid policy state directory component: ${name}`);
+  }
+  const parentReal = exactDirectory(parent);
+  if (!isContained(rootReal, parentReal)) {
+    throw new Error(`policy state directory parent escapes root: ${parent}`);
+  }
+  const path = join(parent, name);
+  if (!isContained(rootPath, path)) throw new Error(`policy state directory escapes root: ${path}`);
+  mkdirIfMissing(path);
+  const pathReal = exactDirectory(path);
+  if (!isContained(rootReal, pathReal)) {
+    throw new Error(`policy state directory escapes real root: ${path}`);
+  }
+  return path;
+}
+
+function ensureDirectoryChain(rootPath: string, components: string[]): string {
+  const rootReal = exactDirectory(rootPath);
+  let current = rootReal;
+  for (const component of components) {
+    current = ensureContainedDirectory(rootReal, rootReal, current, component);
+  }
+  return current;
+}
+
+function ensureRelativeParent(destinationRoot: string, relativePath: string): string {
+  const components = relativePath.split("/").slice(0, -1);
+  return ensureDirectoryChain(destinationRoot, components);
+}
+
 function copyEntries(entries: StateEntry[], destinationRoot: string): void {
-  mkdirSync(destinationRoot, { recursive: true, mode: 0o700 });
-  const destinationReal = realpathSync(destinationRoot);
+  const destinationReal = exactDirectory(destinationRoot);
   for (const entry of entries) {
     validateRelativeStatePath(entry.path);
     const destination = resolve(destinationReal, entry.path);
     if (!isContained(destinationReal, destination)) {
       throw new Error(`policy state copy escapes destination: ${entry.path}`);
     }
-    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    ensureRelativeParent(destinationReal, entry.path);
     writeFileSync(destination, entry.bytes, { flag: "wx", mode: 0o600 });
     const copied = lstatSync(destination);
     if (!copied.isFile() || copied.isSymbolicLink() || copied.nlink !== 1) {
       throw new Error(`policy state copy did not produce a private file: ${entry.path}`);
+    }
+    const copiedBytes = readStableFile(destination, STATE_MAX_FILE_BYTES, true);
+    if (!copiedBytes.equals(entry.bytes)) {
+      throw new Error(`policy state copy changed bytes: ${entry.path}`);
     }
   }
 }
@@ -326,8 +379,8 @@ function advanceBranchState(input: {
   );
   const branchStateRoot = join(input.checkoutRoot, ".reviewgate");
   const branch = new Map(collectStateEntries(branchStateRoot).map((entry) => [entry.path, entry]));
-  const paths = [...new Set([...previous.keys(), ...next.keys(), ...branch.keys()])].sort((a, b) =>
-    a.localeCompare(b),
+  const paths = [...new Set([...previous.keys(), ...next.keys(), ...branch.keys()])].sort(
+    compareCodeUnits,
   );
   const merged: StateEntry[] = [];
   for (const path of paths) {
@@ -345,6 +398,7 @@ function advanceBranchState(input: {
     if (selected !== undefined) merged.push(selected);
   }
   rmSync(branchStateRoot, { recursive: true, force: true });
+  ensureDirectoryChain(input.checkoutRoot, [".reviewgate"]);
   copyEntries(merged, branchStateRoot);
 }
 
@@ -386,8 +440,13 @@ export function createPolicyStateSnapshot(input: {
   const stateDestination = resolve(outputReal, stateRef);
   if (!isContained(outputReal, stateDestination))
     throw new Error("policy state output escapes root");
-  if (!existsSync(stateDestination)) copyEntries(entries, stateDestination);
-  if (digestPolicyState(stateDestination) !== stateSha256) {
+  if (!existsSync(stateDestination)) {
+    ensureDirectoryChain(outputReal, ["policy-state", stateSha256, ".reviewgate"]);
+    copyEntries(entries, stateDestination);
+  } else {
+    exactDirectory(stateDestination);
+  }
+  if (stateDigest(collectStateEntries(stateDestination, true)) !== stateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
 
@@ -407,7 +466,7 @@ export function createPolicyStateSnapshot(input: {
   if (!STATE_MANIFEST_REF.test(ref)) throw new Error("invalid policy state manifest reference");
   const destination = resolve(outputReal, ref);
   if (!isContained(outputReal, destination)) throw new Error("policy state manifest escapes root");
-  mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+  ensureDirectoryChain(outputReal, ["policy-state"]);
   if (!writeFileIfAbsent(destination, bytes, { mode: 0o600 })) {
     const existing = readStableFile(destination, STATE_MAX_FILE_BYTES, true);
     if (!existing.equals(Buffer.from(bytes, "utf8"))) {
@@ -461,7 +520,7 @@ export function verifyPolicyStateSnapshot(input: {
   ) {
     throw new Error("policy state tree escapes root");
   }
-  const entries = collectStateEntries(stateRoot);
+  const entries = collectStateEntries(stateRoot, true);
   if (stateDigest(entries) !== manifest.state_sha256)
     throw new Error("policy state tree digest mismatch");
   const actualFiles = entries.map(({ path, size, sha256: contentSha256 }) => ({
@@ -479,14 +538,32 @@ function authority(code: RigAuthorityInvalidity, message: string): never {
   throw new RigAuthorityError(code, message);
 }
 
-function responseHashesFromCassette(bytes: Buffer): string[] {
+interface CassetteResponseBinding {
+  provider: string;
+  method: "review" | "complete";
+  key: string;
+  promptSha256: string;
+  responseSha256: string | null;
+  policyReplayCall?: {
+    callId: string;
+    runId: string;
+    iter: number;
+    kind: "reviewer" | "grounding" | "critic";
+    ordinal: number;
+    slot: number;
+    attempt: number;
+    occurrence: number;
+  };
+}
+
+function responseBindingsFromCassette(bytes: Buffer): CassetteResponseBinding[] {
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     return authority("invalid-cassette", "cassette is not valid UTF-8");
   }
-  const hashes: string[] = [];
+  const bindings: CassetteResponseBinding[] = [];
   for (const [index, line] of text.split("\n").entries()) {
     if (line.trim().length === 0) continue;
     let decoded: unknown;
@@ -500,12 +577,23 @@ function responseHashesFromCassette(bytes: Buffer): string[] {
       return authority("invalid-cassette", `cassette line ${index + 1} is malformed`);
     }
     const entry = parsed.data;
+    if (entry.method === "embed") continue;
+    if (!/^[0-9a-f]{64}$/.test(entry.promptSha256)) {
+      return authority("invalid-cassette", `cassette line ${index + 1} has an invalid prompt hash`);
+    }
     let raw: string | undefined;
     if (entry.method === "review" && "rawText" in entry.result) raw = entry.result.rawText;
     if (entry.method === "complete" && "text" in entry.result) raw = entry.result.text;
-    if (raw !== undefined) hashes.push(sha256(raw));
+    bindings.push({
+      provider: entry.provider,
+      method: entry.method,
+      key: entry.key,
+      promptSha256: entry.promptSha256,
+      responseSha256: raw === undefined ? null : sha256(raw),
+      ...(entry.policyReplayCall === undefined ? {} : { policyReplayCall: entry.policyReplayCall }),
+    });
   }
-  return hashes;
+  return bindings;
 }
 
 /** Validate every artifact before authoritative harvest/replay is allowed to count anything. */
@@ -553,8 +641,16 @@ export function validateRigPolicyReplayArtifacts(input: {
   if (sha256(cassetteBytes) !== metadata.cassetteSha256) {
     return authority("cassette-hash-mismatch", "cassette bytes do not match the manifest");
   }
-  const cassetteResponseHashes = responseHashesFromCassette(cassetteBytes);
-  const requiredResponseHashes: string[] = [];
+  const cassetteResponses = responseBindingsFromCassette(cassetteBytes);
+  const cassetteByCallId = new Map<string, CassetteResponseBinding>();
+  for (const response of cassetteResponses) {
+    const callId = response.policyReplayCall?.callId;
+    if (callId === undefined) continue;
+    if (cassetteByCallId.has(callId)) {
+      return authority("invalid-cassette", `duplicate policy replay call id ${callId}`);
+    }
+    cassetteByCallId.set(callId, response);
+  }
   const turns = new Map<
     number,
     Array<{ ref: string; sha256: string; envelope: PolicyReplayEnvelope; stateRoot: string }>
@@ -622,7 +718,7 @@ export function validateRigPolicyReplayArtifacts(input: {
       try {
         if (
           !isContained(outputRoot, stateRoot) ||
-          digestPolicyState(stateRoot) !== envelope.state_sha256
+          stateDigest(collectStateEntries(stateRoot, true)) !== envelope.state_sha256
         ) {
           return authority(
             "state-digest-mismatch",
@@ -632,7 +728,32 @@ export function validateRigPolicyReplayArtifacts(input: {
       } catch (error) {
         return authority("state-digest-mismatch", String(error));
       }
-      requiredResponseHashes.push(...envelope.raw_response_sha256);
+      for (const call of envelope.response_calls) {
+        const recorded = cassetteByCallId.get(call.call_id);
+        const metadata = recorded?.policyReplayCall;
+        if (
+          recorded === undefined ||
+          metadata === undefined ||
+          recorded.provider !== call.provider ||
+          recorded.method !== call.method ||
+          recorded.key !== call.key ||
+          recorded.promptSha256 !== call.prompt_sha256 ||
+          metadata.runId !== envelope.run_id ||
+          metadata.iter !== envelope.iter ||
+          metadata.kind !== call.kind ||
+          metadata.ordinal !== call.ordinal ||
+          metadata.slot !== call.slot ||
+          metadata.attempt !== call.attempt ||
+          metadata.occurrence !== call.occurrence ||
+          recorded.responseSha256 === null ||
+          recorded.responseSha256 !== call.response_sha256
+        ) {
+          return authority(
+            "response-hash-mismatch",
+            `logical response call ${call.call_id} does not exactly match its cassette recording`,
+          );
+        }
+      }
       validated.push({ ...trace, envelope, stateRoot });
     }
     const sequenceRunId = validated[0]?.envelope.run_id;
@@ -649,16 +770,6 @@ export function validateRigPolicyReplayArtifacts(input: {
       );
     }
     turns.set(turn.index, validated);
-  }
-
-  if (
-    cassetteResponseHashes.length !== requiredResponseHashes.length ||
-    requiredResponseHashes.some((hash, index) => hash !== cassetteResponseHashes[index])
-  ) {
-    return authority(
-      "response-hash-mismatch",
-      "cassette response hashes do not exactly match the captured order",
-    );
   }
 
   return {
@@ -712,7 +823,8 @@ function prepareBranch(input: {
   });
   const stateDestination = join(input.destination, ".reviewgate");
   if (existsSync(stateDestination)) rmSync(stateDestination, { recursive: true, force: true });
-  const entries = collectStateEntries(input.stateSnapshotRoot);
+  ensureDirectoryChain(exactDirectory(input.destination), [".reviewgate"]);
+  const entries = collectStateEntries(input.stateSnapshotRoot, true);
   if (stateDigest(entries) !== input.expectedStateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
@@ -757,7 +869,7 @@ export function createReplayBranches(input: {
     },
   ).trim();
   if (resolvedCommit !== input.sourceCommit) throw new Error("source commit identity mismatch");
-  if (digestPolicyState(stateReal) !== input.expectedStateSha256) {
+  if (stateDigest(collectStateEntries(stateReal, true)) !== input.expectedStateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
 
@@ -816,10 +928,15 @@ export function advanceReplayBranches(input: {
       throw new Error("policy state transition snapshot aliases source or replay state");
     }
   }
-  if (digestPolicyState(input.previousStateSnapshotRoot) !== input.previousStateSha256) {
+  if (
+    stateDigest(collectStateEntries(input.previousStateSnapshotRoot, true)) !==
+    input.previousStateSha256
+  ) {
     throw new Error("previous policy state snapshot digest mismatch");
   }
-  if (digestPolicyState(input.nextStateSnapshotRoot) !== input.nextStateSha256) {
+  if (
+    stateDigest(collectStateEntries(input.nextStateSnapshotRoot, true)) !== input.nextStateSha256
+  ) {
     throw new Error("next policy state snapshot digest mismatch");
   }
   for (const [label, branch] of [
@@ -850,12 +967,6 @@ export function advanceReplayBranches(input: {
       previousStateSnapshotRoot: input.previousStateSnapshotRoot,
       nextStateSnapshotRoot: input.nextStateSnapshotRoot,
     });
-  }
-  if (
-    digestPolicyState(join(input.branches.baseline.checkoutRoot, ".reviewgate")) !==
-    input.nextStateSha256
-  ) {
-    throw new Error("baseline replay state does not reproduce the next captured digest");
   }
   assertNoAliasedFiles(
     join(input.branches.baseline.checkoutRoot, ".reviewgate"),

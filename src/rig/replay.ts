@@ -3,21 +3,34 @@
 // checkouts. Legacy runs retain the older deterministic harvest/heuristic self-check, explicitly
 // non-authoritative for policy ablation rather than pretending missing opportunities were zero.
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { canonicalJson } from "../audit/canonical.ts";
 import { type AggregateInput, aggregate } from "../core/aggregator.ts";
 import { validateFindingFacts } from "../core/fact-check.ts";
+import { computeFpClusters } from "../core/fp-ledger/clusters.ts";
+import { learnFromDecisions } from "../core/fp-ledger/learn.ts";
+import { FpLedgerStore } from "../core/fp-ledger/store.ts";
 import { applyGroundingJudgeVerdicts, groundFindings } from "../core/grounding.ts";
 import { demoteHypotheticalCriticals } from "../core/hypothetical-demote.ts";
+import {
+  ImplicitOutcomeStore,
+  deriveImplicitOutcomes,
+} from "../core/learnings/implicit-outcomes.ts";
 import type { PolicyPassId } from "../core/policy/catalog.ts";
 import { POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import { PolicyTraceRecorder } from "../core/policy/trace.ts";
+import { mergeRegions } from "../core/region-memory.ts";
+import { learnReputationFromDecisions } from "../core/reputation/learn.ts";
+import { ReputationStore } from "../core/reputation/store.ts";
 import { demoteSelfRefuting } from "../core/self-refutation.ts";
+import { StateStore } from "../core/state-store.ts";
 import { parseDeletedPaths } from "../diff/hunks.ts";
 import { CassetteEntrySchema } from "../schemas/cassette.ts";
 import type { PolicyReplayEnvelope } from "../schemas/policy-replay.ts";
 import type { PolicyTrace } from "../schemas/policy-trace.ts";
 import { RigManifestSchema } from "../schemas/rig-manifest.ts";
 import type { RigResult } from "../schemas/rig-result.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 import { type RigAblation, SUPPRESSION_LAYERS, ablate, seededTagsFromScript } from "./ablate.ts";
 import { harvest } from "./harvest.ts";
 import {
@@ -26,6 +39,7 @@ import {
   advanceReplayBranches,
   cleanupReplayBranches,
   createReplayBranches,
+  digestPolicyState,
   validateRigPolicyReplayArtifacts,
 } from "./policy-replay-state.ts";
 
@@ -56,18 +70,22 @@ export interface ReplayReport {
 export interface PolicyReplayPair {
   baseline: PolicyTrace;
   counterfactual: PolicyTrace;
+  state: {
+    baseline: PolicyReplayBranchStateEvidence;
+    counterfactual: PolicyReplayBranchStateEvidence;
+  };
+}
+
+export interface PolicyReplayBranchStateEvidence {
+  digest: string;
+  implicit_outcomes: number;
+  history_reads: number;
+  history_writes: number;
 }
 
 export interface PolicyReplaySequenceItem {
   envelope: PolicyReplayEnvelope;
   stateSnapshotRoot: string;
-}
-
-export interface PolicyReplaySequenceStep {
-  index: number;
-  item: PolicyReplaySequenceItem;
-  branches: ReplayBranches;
-  pair: PolicyReplayPair;
 }
 
 export interface RigPolicyAblationRow {
@@ -101,12 +119,148 @@ export function runWithReplayProviderCeiling<T>(operation: () => T): T {
   };
   globalThis.fetch = (() => reject("a network call")) as unknown as typeof fetch;
   bunRuntime.spawn = () => reject("a provider subprocess call");
-  try {
-    return operation();
-  } finally {
+  const restore = (): void => {
     globalThis.fetch = originalFetch;
     bunRuntime.spawn = originalSpawn;
+  };
+  try {
+    const result = operation();
+    if (result instanceof Promise) {
+      return result.finally(restore) as T;
+    }
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
   }
+}
+
+function historyMismatch(label: string): never {
+  throw new RigAuthorityError(
+    "state-digest-mismatch",
+    `branch-local production history does not match captured ${label}`,
+  );
+}
+
+async function assertBranchHistoryInputs(
+  envelope: PolicyReplayEnvelope,
+  checkoutRoot: string,
+): Promise<number> {
+  let reads = 0;
+  if (envelope.history.fp_ledger.enabled) {
+    const store = new FpLedgerStore(checkoutRoot);
+    const full = await store.snapshot();
+    reads += 1;
+    const active = await store.activeSnapshot(new Date(envelope.history.fp_ledger.active_at));
+    reads += 1;
+    const actualActive = [...active]
+      .map(([signature, value]) => ({ signature, id: value.id }))
+      .sort((left, right) => compareCodeUnits(left.signature, right.signature));
+    const actualClusters = computeFpClusters(full.entries, envelope.history.fp_ledger.clusters_at)
+      .filter((cluster) => cluster.stage === "active" || cluster.stage === "sticky")
+      .map((cluster) => ({
+        key: cluster.key,
+        member_ids: [...cluster.member_ids].sort(compareCodeUnits),
+      }))
+      .sort((left, right) => compareCodeUnits(left.key, right.key));
+    if (canonicalJson(actualActive) !== canonicalJson(envelope.aggregate.fp_active)) {
+      historyMismatch("fp-ledger active signatures");
+    }
+    if (canonicalJson(actualClusters) !== canonicalJson(envelope.aggregate.fp_active_clusters)) {
+      historyMismatch("fp-ledger clusters");
+    }
+  } else if (
+    envelope.aggregate.fp_active.length > 0 ||
+    envelope.aggregate.fp_active_clusters.length > 0
+  ) {
+    historyMismatch("disabled fp-ledger inputs");
+  }
+
+  if (envelope.history.reputation.enabled) {
+    const config = envelope.history.reputation;
+    const unreliable = await new ReputationStore(checkoutRoot).unreliableReviewers(
+      {
+        enabled: true,
+        minSamples: config.min_samples,
+        trustFloor: config.trust_floor,
+        halfLifeDays: config.half_life_days,
+      },
+      new Date(config.observed_at),
+    );
+    reads += 1;
+    const actual = [...unreliable].sort(compareCodeUnits);
+    if (canonicalJson(actual) !== canonicalJson(envelope.aggregate.rep_unreliable)) {
+      historyMismatch("reviewer reputation");
+    }
+  } else if (envelope.aggregate.rep_unreliable.length > 0) {
+    historyMismatch("disabled reputation inputs");
+  }
+
+  const state = await new StateStore(checkoutRoot).load();
+  reads += 1;
+  const cycleRejected = [...state.cycle_rejected_signatures].sort(compareCodeUnits);
+  const claimedFixed = Object.entries(state.claimed_fixed_signatures)
+    .map(([signature, iter]) => ({ signature, iter }))
+    .sort((left, right) => compareCodeUnits(left.signature, right.signature));
+  const rejectedRegions = envelope.history.cycle_state.region_rejected_enabled
+    ? mergeRegions(state.cycle_rejected_dispositions)
+        .map((region) => ({
+          ...region,
+          categories: [...region.categories].sort(compareCodeUnits),
+        }))
+        .sort(
+          (left, right) =>
+            compareCodeUnits(left.file, right.file) ||
+            left.start_line - right.start_line ||
+            left.end_line - right.end_line,
+        )
+    : [];
+  if (canonicalJson(cycleRejected) !== canonicalJson(envelope.aggregate.cycle_rejected)) {
+    historyMismatch("cycle-rejected signatures");
+  }
+  if (canonicalJson(claimedFixed) !== canonicalJson(envelope.aggregate.claimed_fixed)) {
+    historyMismatch("claimed-fixed signatures");
+  }
+  if (canonicalJson(rejectedRegions) !== canonicalJson(envelope.aggregate.rejected_regions)) {
+    historyMismatch("cycle region memory");
+  }
+  return reads;
+}
+
+async function applyCapturedHumanLearning(
+  envelope: PolicyReplayEnvelope,
+  checkoutRoot: string,
+): Promise<number> {
+  const state = await new StateStore(checkoutRoot).load();
+  if (state.iteration < 1) return 0;
+  let writes = 0;
+  if (envelope.history.fp_ledger.enabled) {
+    const store = new FpLedgerStore(checkoutRoot);
+    await learnFromDecisions({
+      repoRoot: checkoutRoot,
+      prevIter: state.iteration,
+      sessionId: state.session_id,
+      cycleSeq: state.reputation_cycle_seq,
+      store,
+      nowIso: envelope.history.fp_ledger.active_at,
+    });
+    await store.decayPass(envelope.history.fp_ledger.active_at);
+    writes += 1;
+  }
+  if (envelope.history.reputation.enabled) {
+    await learnReputationFromDecisions({
+      repoRoot: checkoutRoot,
+      iter: state.iteration,
+      sessionId: state.session_id,
+      cycleSeq: state.reputation_cycle_seq,
+      store: new ReputationStore(checkoutRoot),
+      nowIso: envelope.history.reputation.observed_at,
+      halfLifeDays: envelope.history.reputation.half_life_days,
+    });
+    writes += 1;
+  }
+  return writes;
 }
 
 function aggregateInputFromEnvelope(
@@ -159,12 +313,18 @@ function aggregateInputFromEnvelope(
   };
 }
 
+interface ReplayPolicyExecution {
+  trace: PolicyTrace;
+  dedupedFindings: PolicyReplayEnvelope["policy_final_findings"];
+  criticDropped: PolicyReplayEnvelope["policy_final_findings"];
+}
+
 function replayEnvelopeProductionPath(input: {
   envelope: PolicyReplayEnvelope;
   checkoutRoot: string;
   ablated: ReadonlySet<PolicyPassId>;
   verifyOriginal: boolean;
-}): PolicyTrace {
+}): ReplayPolicyExecution {
   const { envelope } = input;
   const runtime = PolicyTraceRecorder.start({
     runId: envelope.run_id,
@@ -262,44 +422,118 @@ function replayEnvelopeProductionPath(input: {
       canonicalJson(trace.final.finding_severities) === canonicalJson(expectedPolicySeverities);
     if (!equal) throw new Error("production baseline replay does not reproduce its policy trace");
   }
-  return trace;
+  return {
+    trace,
+    dedupedFindings: result.dedupedFindings,
+    criticDropped: result.criticDropped,
+  };
 }
 
-function replayPolicyEnvelopeInBranches(input: {
+async function persistBranchPolicyOutcomes(input: {
+  envelope: PolicyReplayEnvelope;
+  checkoutRoot: string;
+  execution: ReplayPolicyExecution;
+}): Promise<number> {
+  if (!input.envelope.history.implicit_outcomes.enabled) return 0;
+  const outcomes = deriveImplicitOutcomes(
+    input.execution.dedupedFindings,
+    input.execution.criticDropped,
+    {
+      runId: input.envelope.run_id,
+      iter: input.envelope.iter,
+      nowIso: input.envelope.history.implicit_outcomes.created_at,
+    },
+  );
+  await new ImplicitOutcomeStore(input.checkoutRoot).append(
+    outcomes,
+    input.envelope.history.implicit_outcomes.cap,
+  );
+  return outcomes.length;
+}
+
+async function branchStateEvidence(input: {
+  checkoutRoot: string;
+  historyReads: number;
+  historyWrites: number;
+}): Promise<PolicyReplayBranchStateEvidence> {
+  return {
+    digest: digestPolicyState(join(input.checkoutRoot, ".reviewgate")),
+    implicit_outcomes: (await new ImplicitOutcomeStore(input.checkoutRoot).load()).length,
+    history_reads: input.historyReads,
+    history_writes: input.historyWrites,
+  };
+}
+
+async function replayPolicyEnvelopeInBranches(input: {
   envelope: PolicyReplayEnvelope;
   passId: PolicyPassId;
   branches: ReplayBranches;
-}): PolicyReplayPair {
-  return runWithReplayProviderCeiling(() => {
-    const baseline = replayEnvelopeProductionPath({
+  humanLearningWrites?: { baseline: number; counterfactual: number };
+}): Promise<PolicyReplayPair> {
+  return runWithReplayProviderCeiling(async () => {
+    const humanLearningWrites = input.humanLearningWrites ?? { baseline: 0, counterfactual: 0 };
+    const baselineReads = await assertBranchHistoryInputs(
+      input.envelope,
+      input.branches.baseline.checkoutRoot,
+    );
+    const counterfactualReads = await assertBranchHistoryInputs(
+      input.envelope,
+      input.branches.counterfactual.checkoutRoot,
+    );
+    const baselineExecution = replayEnvelopeProductionPath({
       envelope: input.envelope,
       checkoutRoot: input.branches.baseline.checkoutRoot,
       ablated: new Set(),
       verifyOriginal: true,
     });
-    const counterfactual = replayEnvelopeProductionPath({
+    const counterfactualExecution = replayEnvelopeProductionPath({
       envelope: input.envelope,
       checkoutRoot: input.branches.counterfactual.checkoutRoot,
       ablated: new Set([input.passId]),
       verifyOriginal: false,
     });
     if (
-      canonicalJson(baseline.raw_response_sha256) !==
-      canonicalJson(counterfactual.raw_response_sha256)
+      canonicalJson(baselineExecution.trace.raw_response_sha256) !==
+      canonicalJson(counterfactualExecution.trace.raw_response_sha256)
     ) {
       throw new Error("baseline and counterfactual ordered response hashes differ");
     }
-    return { baseline, counterfactual };
+    const baselineOutcomeWrites = await persistBranchPolicyOutcomes({
+      envelope: input.envelope,
+      checkoutRoot: input.branches.baseline.checkoutRoot,
+      execution: baselineExecution,
+    });
+    const counterfactualOutcomeWrites = await persistBranchPolicyOutcomes({
+      envelope: input.envelope,
+      checkoutRoot: input.branches.counterfactual.checkoutRoot,
+      execution: counterfactualExecution,
+    });
+    return {
+      baseline: baselineExecution.trace,
+      counterfactual: counterfactualExecution.trace,
+      state: {
+        baseline: await branchStateEvidence({
+          checkoutRoot: input.branches.baseline.checkoutRoot,
+          historyReads: baselineReads,
+          historyWrites: humanLearningWrites.baseline + baselineOutcomeWrites,
+        }),
+        counterfactual: await branchStateEvidence({
+          checkoutRoot: input.branches.counterfactual.checkoutRoot,
+          historyReads: counterfactualReads,
+          historyWrites: humanLearningWrites.counterfactual + counterfactualOutcomeWrites,
+        }),
+      },
+    };
   });
 }
 
 /** One exact baseline/counterfactual pair. No adapter/provider capability enters this API. */
-export function replayPolicyEnvelopePair(input: {
+export async function replayPolicyEnvelopePair(input: {
   sourceRepoRoot: string;
   envelope: PolicyReplayEnvelope;
   stateSnapshotRoot: string;
   passId: PolicyPassId;
-}): PolicyReplayPair {
+}): Promise<PolicyReplayPair> {
   const branches = createReplayBranches({
     sourceRepoRoot: input.sourceRepoRoot,
     sourceCommit: input.envelope.source_commit,
@@ -308,7 +542,7 @@ export function replayPolicyEnvelopePair(input: {
     exactDiff: input.envelope.exact_diff,
   });
   try {
-    return replayPolicyEnvelopeInBranches({
+    return await replayPolicyEnvelopeInBranches({
       envelope: input.envelope,
       passId: input.passId,
       branches,
@@ -319,15 +553,13 @@ export function replayPolicyEnvelopePair(input: {
 }
 
 /**
- * Replay an ordered multi-turn sequence in one persistent branch pair. The optional callback is
- * the branch-local boundary used by existing production Store APIs; replay itself never invents a
- * store transition or interprets a learning schema.
+ * Replay an ordered multi-turn sequence in one persistent branch pair. Production Store APIs own
+ * every branch-local read/write; replay neither exposes a mutation callback nor models learning.
  */
 export async function replayPolicyEnvelopeSequence(input: {
   sourceRepoRoot: string;
   items: PolicyReplaySequenceItem[];
   passId: PolicyPassId;
-  afterEnvelope?: (step: PolicyReplaySequenceStep) => void | Promise<void>;
 }): Promise<PolicyReplayPair[]> {
   const first = input.items[0];
   if (first === undefined) {
@@ -363,13 +595,26 @@ export async function replayPolicyEnvelopeSequence(input: {
           nextStateSha256: item.envelope.state_sha256,
         });
       }
-      const pair = replayPolicyEnvelopeInBranches({
+      const humanLearningWrites =
+        previous === undefined
+          ? { baseline: 0, counterfactual: 0 }
+          : {
+              baseline: await applyCapturedHumanLearning(
+                item.envelope,
+                branches.baseline.checkoutRoot,
+              ),
+              counterfactual: await applyCapturedHumanLearning(
+                item.envelope,
+                branches.counterfactual.checkoutRoot,
+              ),
+            };
+      const pair = await replayPolicyEnvelopeInBranches({
         envelope: item.envelope,
         passId: input.passId,
         branches,
+        humanLearningWrites,
       });
       pairs.push(pair);
-      await input.afterEnvelope?.({ index, item, branches, pair });
     }
     return pairs;
   } finally {
@@ -380,6 +625,7 @@ export async function replayPolicyEnvelopeSequence(input: {
 export async function replayPolicyAblations(input: {
   manifestPath: string;
   sourceRepoRoot: string;
+  passId?: PolicyPassId;
 }): Promise<RigPolicyAblationRow[]> {
   const manifest = RigManifestSchema.parse(
     JSON.parse(readFileSync(input.manifestPath, "utf8")) as unknown,
@@ -400,7 +646,8 @@ export async function replayPolicyAblations(input: {
     stateSnapshotRoot: stateRoot,
   }));
   const rows: RigPolicyAblationRow[] = [];
-  for (const passId of POLICY_PASS_IDS) {
+  const requestedPasses = input.passId === undefined ? POLICY_PASS_IDS : [input.passId];
+  for (const passId of requestedPasses) {
     let opportunities = 0;
     let applied = 0;
     let wouldApplyWithoutMutation = 0;

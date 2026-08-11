@@ -48,6 +48,38 @@ describe("cassette schema", () => {
     expect((e.result as { vector: number[] }).vector).toHaveLength(3);
   });
 
+  it("retains strict additive policy replay call identity while legacy entries stay parseable", () => {
+    const legacy = {
+      schema: "reviewgate.cassette.entry.v1",
+      provider: "codex",
+      key: "codex-security",
+      method: "review",
+      promptSha256: "a".repeat(64),
+      result: reviewResult,
+    };
+    expect(CassetteEntrySchema.parse(legacy)).not.toHaveProperty("policyReplayCall");
+
+    const policyReplayCall = {
+      callId: "b".repeat(64),
+      runId: "rig-run",
+      iter: 2,
+      kind: "reviewer" as const,
+      ordinal: 3,
+      slot: 1,
+      attempt: 2,
+      occurrence: 1,
+    };
+    expect(CassetteEntrySchema.parse({ ...legacy, policyReplayCall }).policyReplayCall).toEqual(
+      policyReplayCall,
+    );
+    expect(() =>
+      CassetteEntrySchema.parse({
+        ...legacy,
+        policyReplayCall: { ...policyReplayCall, prompt: "must never persist" },
+      }),
+    ).toThrow();
+  });
+
   it("rejects an unknown provider", () => {
     expect(() =>
       CassetteEntrySchema.parse({
