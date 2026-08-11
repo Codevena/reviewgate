@@ -206,6 +206,11 @@ const UNSAFE_REPLAY_STRINGS = [
   "Authorization: Basic YTpi",
   "https://user:password@example.com/private",
   "Authorization: Bearer short-but-secret",
+  "ｐａｓｓｗｏｒｄ=hunter2",
+  "password：hunter2",
+  "ａｐｉ＿ｋｅｙ＝notverysecret",
+  'payload ｛"ｐａｓｓｗｏｒｄ"："hunter2"｝',
+  "https://example.com/download？ａｐｉ＿ｋｅｙ＝notverysecret",
   "open %2Fusr%2Flocal%2Fbin%2Freviewgate",
   "open file%3A%2F%2F%2Fetc%2Fpasswd",
   "open file%253A%252F%252F%252Fetc%252Fpasswd",
@@ -219,8 +224,6 @@ const UNSAFE_REPLAY_STRINGS = [
   "https://example.com/download?signature=notverysecret",
   "https://example.com/download?password=hunter2",
   "https://example.com/download?api-key=notverysecret",
-  "invalid percent %ZZ",
-  "invalid percent %2",
   "open %2525252Fusr%2525252Flocal%2525252Fbin",
   "request used ghp_abcdefghijklmnopqrstuvwxyz123456",
   "request used sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz012345",
@@ -237,6 +240,12 @@ const SAFE_REPLAY_STRINGS = [
   "probe http://[::1]:3000/api/health/check",
   "probe https://[2001:db8::1]/reviewgate/status",
   "see https://docs.example.com/search?topic=policy&case=safe-value",
+  "quota is 50% remaining",
+  "100% utilization",
+  "see https://example.com/search?q=100%25+coverage",
+  "see https://example.com/search?signatureAlgorithm=ed25519",
+  "see https://example.com/search?token_count=128",
+  "see https://example.com/search?passwordPolicy=strict",
 ];
 
 function parseThrowableSnapshot(snapshot: unknown) {

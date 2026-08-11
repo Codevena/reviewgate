@@ -214,7 +214,7 @@ export type ThrowableSafeValue =
   | { [key: string]: ThrowableSafeValue };
 
 const MAX_PERCENT_DECODE_PASSES = 3;
-const SENSITIVE_KEY_PARTS = [
+const SENSITIVE_THROWABLE_KEYS = new Set([
   "authorization",
   "cookie",
   "credential",
@@ -222,17 +222,23 @@ const SENSITIVE_KEY_PARTS = [
   "passwd",
   "secret",
   "token",
+  "apitoken",
   "apikey",
   "privatekey",
+  "clientsecret",
+  "accesstoken",
   "signature",
-] as const;
+  "xamzsignature",
+  "xamzcredential",
+  "xamzsecuritytoken",
+]);
 
 function isSensitiveThrowableKey(value: string): boolean {
   const normalized = value
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
-  return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
+  return SENSITIVE_THROWABLE_KEYS.has(normalized);
 }
 
 const SensitiveThrowableFieldSchema = z
@@ -248,18 +254,25 @@ const KEY_VALUE_PAIR =
   /(?:"([^"\r\n]{1,128})"|'([^'\r\n]{1,128})'|([A-Za-z][A-Za-z0-9_.-]{0,127}))\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\]]+)/g;
 const CREDENTIAL_VALUE =
   /(?:\bBearer\s+\S+|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bxox[baprs]-[A-Za-z0-9-]{10,}\b)/i;
+const PERCENT_ENCODED_BYTE = /%[0-9A-Fa-f]{2}/;
+const PERCENT_ENCODED_RUN = /(?:%[0-9A-Fa-f]{2})+/g;
 
 function decodePercentToFixedPoint(value: string): string | null {
   let decoded = value;
   for (let pass = 0; pass < MAX_PERCENT_DECODE_PASSES; pass += 1) {
-    if (!decoded.includes("%")) return decoded;
-    try {
-      decoded = decodeURIComponent(decoded);
-    } catch {
-      return null;
-    }
+    if (!PERCENT_ENCODED_BYTE.test(decoded)) return decoded;
+    let invalidRun = false;
+    decoded = decoded.replace(PERCENT_ENCODED_RUN, (run) => {
+      try {
+        return decodeURIComponent(run);
+      } catch {
+        invalidRun = true;
+        return run;
+      }
+    });
+    if (invalidRun) return null;
   }
-  return decoded.includes("%") ? null : decoded;
+  return PERCENT_ENCODED_BYTE.test(decoded) ? null : decoded;
 }
 
 function hasSensitiveKeyValuePair(value: string): boolean {
@@ -306,7 +319,7 @@ function maskSafeHttpUrls(value: string): string | null {
 
 /** Shared at-rest boundary for every string in a captured provider throw. */
 export function isAuthoritativeThrowableString(value: string): boolean {
-  const decodedValue = decodePercentToFixedPoint(value);
+  const decodedValue = decodePercentToFixedPoint(value.normalize("NFKC"));
   if (decodedValue === null) return false;
   const hasUnsafeControlCharacter = Array.from(decodedValue).some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
