@@ -1,18 +1,21 @@
-import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { POLICY_PASSES, type PolicyPassId } from "../../src/core/policy/catalog.ts";
 import {
   PolicyPassClassificationSchema,
   type PolicyPassEvidence,
 } from "../../src/schemas/policy-measurement.ts";
 import {
-  classifyPolicyPasses,
-  type PolicyPassClassificationFacts,
   type PolicyInteractionEvidenceInput,
+  type PolicyPassClassificationFacts,
+  classifyPolicyPasses,
 } from "../../src/stats/policy/classify.ts";
 
-const pass = POLICY_PASSES.find((entry) => entry.id === "judgment.hypothetical");
-if (pass === undefined) throw new Error("fixture pass missing from catalog");
+function defaultPass() {
+  const value = POLICY_PASSES.find((entry) => entry.id === "judgment.hypothetical");
+  if (value === undefined) throw new Error("fixture pass missing from catalog");
+  return value;
+}
 
 type FixtureOptions = {
   opportunityCases?: number;
@@ -25,15 +28,18 @@ type FixtureOptions = {
 };
 
 function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
-  const fixturePass = POLICY_PASSES.find((entry) => entry.id === (options.passId ?? pass.id));
+  const fixturePass = POLICY_PASSES.find(
+    (entry) => entry.id === (options.passId ?? defaultPass().id),
+  );
   if (fixturePass === undefined) throw new Error("fixture pass missing from catalog");
   const ref = options.rawEvidenceRefs?.[0] ?? "artifacts/policy/evidence.json";
   return [
     {
       pass_id: fixturePass.id,
-      lane: fixturePass.id.startsWith("history.") || fixturePass.id === "judgment.reputation"
-        ? "stateful-rig"
-        : "stateless-bench",
+      lane:
+        fixturePass.id.startsWith("history.") || fixturePass.id === "judgment.reputation"
+          ? "stateful-rig"
+          : "stateless-bench",
       catalog_snapshot: {
         order: fixturePass.order,
         class: fixturePass.class,
@@ -42,7 +48,12 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
       },
       eligibility: { stateless: true, stateful: false, dogfood: true },
       authority: { stateless: options.authoritative ?? true, stateful: false, dogfood: true },
-      opportunities: { cases: options.opportunityCases ?? 8, signatures: options.signatures ?? 15, turns: 0, runs: 3 },
+      opportunities: {
+        cases: options.opportunityCases ?? 8,
+        signatures: options.signatures ?? 15,
+        turns: 0,
+        runs: 3,
+      },
       exclusions: [],
       truth_effects: {
         baseline: { blocking_fp: 2, blocking_fn: 2, blocking_tp: 4 },
@@ -64,12 +75,18 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
   ];
 }
 
+function onlyPass(evidence: readonly PolicyPassEvidence[]): PolicyPassEvidence {
+  const value = evidence[0];
+  if (value === undefined) throw new Error("fixture must contain one pass");
+  return value;
+}
+
 function facts(
   input: Partial<PolicyPassClassificationFacts> = {},
 ): PolicyPassClassificationFacts[] {
   return [
     {
-      pass_id: pass.id,
+      pass_id: defaultPass().id,
       ground_truth_harms: [],
       dogfood_dispositions: [],
       beneficial_effects: [],
@@ -104,17 +121,29 @@ describe("policy pass classification", () => {
     );
   });
 
-  test("retains a direct unique contribution before considering harm", () => {
+  test("retains a direct unique contribution before considering two distinct harms", () => {
     const evidence = onePass({ uniqueContribution: "prevented-blocking-fp" });
-    evidence[0]!.truth_effects.baseline.blocking_fn = 3;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 4;
     expect(
-      classify(evidence, facts({ ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }] }))[0],
-    ).toMatchObject({ classification: "retain", harm_observed: true, vetoes: ["unique-prevented-fp"] });
+      classify(
+        evidence,
+        facts({
+          ground_truth_harms: [
+            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
+            { identity: "case-b", evidence_ref: "artifacts/policy/evidence.json" },
+          ],
+        }),
+      )[0],
+    ).toMatchObject({
+      classification: "retain",
+      harm_observed: true,
+      vetoes: ["unique-prevented-fp"],
+    });
   });
 
   test("labels two distinct ground-truth harms harmful", () => {
     const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 4;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 4;
     expect(
       classify(
         evidence,
@@ -130,7 +159,7 @@ describe("policy pass classification", () => {
 
   test("labels one ground-truth harm plus sufficient dogfood suppressed TP harmful", () => {
     const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 3;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
     const dogfood = [
       ["a", "run-1", 1, "tp", "suppressed"],
       ["b", "run-2", 1, "fp", "none"],
@@ -146,20 +175,35 @@ describe("policy pass classification", () => {
       evidence_ref: "artifacts/policy/evidence.json",
     }));
     expect(
-      classify(evidence, facts({ ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }], dogfood_dispositions: dogfood }))[0]?.classification,
+      classify(
+        evidence,
+        facts({
+          ground_truth_harms: [
+            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
+          ],
+          dogfood_dispositions: dogfood,
+        }),
+      )[0]?.classification,
     ).toBe("harmful-candidate");
   });
 
-  test("does not infer a dogfood label from missing or historical unsigned decisions", () => {
-    const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 3;
-    evidence[0]!.exclusions = [
+  test("does not manufacture dogfood TP harm from missing or historical unsigned decisions", () => {
+    const withoutExcludedDecisions = onePass();
+    onlyPass(withoutExcludedDecisions).truth_effects.baseline.blocking_fn = 3;
+    const withExcludedDecisions = onePass();
+    onlyPass(withExcludedDecisions).truth_effects.baseline.blocking_fn = 3;
+    onlyPass(withExcludedDecisions).exclusions = [
       { lane: "dogfood", code: "missing-decision", count: 1 },
       { lane: "dogfood", code: "historical-unsigned-decision", count: 1 },
     ];
-    expect(
-      classify(evidence, facts({ ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }] }))[0]?.classification,
-    ).toBe("inconclusive");
+    const passFacts = facts({
+      ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }],
+    });
+    const without = classify(withoutExcludedDecisions, passFacts)[0];
+    const withExcluded = classify(withExcludedDecisions, passFacts)[0];
+    expect(withExcluded?.classification).toBe(without?.classification);
+    expect(withExcluded?.harm_observed).toBe(without?.harm_observed);
+    expect(withExcluded?.classification).toBe("inconclusive");
   });
 
   test("returns delete-candidate for sufficient zero effect without benefits", () => {
@@ -173,20 +217,20 @@ describe("policy pass classification", () => {
 
   test("requires three stateful sequences with two opportunity turns each", () => {
     const base = onePass({ passId: "history.fp-signature" });
-    base[0]!.opportunities = { cases: 3, signatures: 0, turns: 6, runs: 3 };
+    onlyPass(base).opportunities = { cases: 3, signatures: 0, turns: 6, runs: 3 };
     const statefulFacts = facts({ pass_id: "history.fp-signature" });
     expect(classify(base, statefulFacts)[0]?.classification).toBe("delete-candidate");
 
-    base[0]!.opportunities.cases = 2;
+    onlyPass(base).opportunities.cases = 2;
     expect(classify(base, statefulFacts)[0]?.classification).toBe("inconclusive");
-    base[0]!.opportunities.cases = 3;
-    base[0]!.opportunities.turns = 5;
+    onlyPass(base).opportunities.cases = 3;
+    onlyPass(base).opportunities.turns = 5;
     expect(classify(base, statefulFacts)[0]?.classification).toBe("inconclusive");
   });
 
   test("requires five dogfood dispositions from three runs before one harm corroborates", () => {
     const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 3;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
     const disposition = (identity: string, run_id: string, iter: number) => ({
       identity,
       run_id,
@@ -202,7 +246,15 @@ describe("policy pass classification", () => {
       disposition("d", "run-1", 2),
     ];
     expect(
-      classify(evidence, facts({ ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }], dogfood_dispositions: fourAcrossThree }))[0]?.classification,
+      classify(
+        evidence,
+        facts({
+          ground_truth_harms: [
+            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
+          ],
+          dogfood_dispositions: fourAcrossThree,
+        }),
+      )[0]?.classification,
     ).toBe("inconclusive");
 
     const fiveAcrossTwo = [
@@ -213,20 +265,32 @@ describe("policy pass classification", () => {
       disposition("e", "run-1", 1),
     ];
     expect(
-      classify(evidence, facts({ ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }], dogfood_dispositions: fiveAcrossTwo }))[0]?.classification,
+      classify(
+        evidence,
+        facts({
+          ground_truth_harms: [
+            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
+          ],
+          dogfood_dispositions: fiveAcrossTwo,
+        }),
+      )[0]?.classification,
     ).toBe("inconclusive");
   });
 
   test("allows only a retained overlapping pass to cover an observed benefit", () => {
-    const retained = onePass({
-      passId: "evidence.fact-location",
-      uniqueContribution: "prevented-blocking-fp",
-      rawEvidenceRefs: ["artifacts/policy/fact.json"],
-    })[0]!;
-    const target = onePass({
-      passId: "evidence.self-refutation",
-      rawEvidenceRefs: ["artifacts/policy/self.json"],
-    })[0]!;
+    const retained = onlyPass(
+      onePass({
+        passId: "evidence.fact-location",
+        uniqueContribution: "prevented-blocking-fp",
+        rawEvidenceRefs: ["artifacts/policy/fact.json"],
+      }),
+    );
+    const target = onlyPass(
+      onePass({
+        passId: "evidence.self-refutation",
+        rawEvidenceRefs: ["artifacts/policy/self.json"],
+      }),
+    );
     target.truth_effects.ablated.blocking_fp = 3;
     const targetFacts = {
       pass_id: target.pass_id,
@@ -240,20 +304,55 @@ describe("policy pass classification", () => {
         },
       ],
     } satisfies PolicyPassClassificationFacts;
-    expect(classifyPolicyPasses([target, retained], { passFacts: [targetFacts] }).map((row) => row.classification)).toEqual([
-      "retain",
-      "delete-candidate",
-    ]);
-
     expect(
-      classifyPolicyPasses([target], { passFacts: [targetFacts] })[0]?.classification,
-    ).toBe("inconclusive");
+      classifyPolicyPasses([target, retained], { passFacts: [targetFacts] }).map(
+        (row) => row.classification,
+      ),
+    ).toEqual(["retain", "delete-candidate"]);
+
+    expect(classifyPolicyPasses([target], { passFacts: [targetFacts] })[0]?.classification).toBe(
+      "inconclusive",
+    );
   });
 
-  test("keeps group-only removal harm inconclusive without allocating a retain", () => {
-    const evidence = onePass({ rawEvidenceRefs: ["artifacts/policy/evidence.json", "interactions/0.json"] });
+  test("keeps harmful group removal inconclusive without allocating a retain", () => {
+    const evidence = onePass({
+      rawEvidenceRefs: ["artifacts/policy/evidence.json", "interactions/0.json"],
+    });
     const interaction = {
-      pass_ids: [pass.id],
+      pass_ids: [defaultPass().id],
+      artifact: { ref: "interactions/0.json", sha256: "b".repeat(64) },
+      evidence: {
+        authoritative: true,
+        eligibility: { stateless: true, stateful: false, dogfood: false },
+        authority: { stateless: true, stateful: false, dogfood: false },
+        opportunities: { cases: 8, signatures: 15, turns: 0, runs: 0 },
+        exclusions: [],
+        truth_effects: {
+          baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+          ablated: { blocking_fp: 1, blocking_fn: 0, blocking_tp: 1 },
+          error_reduction: 1,
+        },
+        statistics: {
+          raw_effects: [-1, -1, -1],
+          interval: { lo: -1, hi: -1 },
+          p_value: 1,
+          adjusted_p_value: 1,
+        },
+        raw_evidence_refs: ["interactions/0.json"],
+      },
+    } as PolicyInteractionEvidenceInput;
+    const result = classifyPolicyPasses(evidence, { interactions: [interaction] })[0];
+    expect(result).toMatchObject({ classification: "inconclusive", vetoes: [] });
+    expect(result?.reasons).toContain("interaction-removal-harm");
+  });
+
+  test("does not veto deletion when group ablation improves the primary error", () => {
+    const evidence = onePass({
+      rawEvidenceRefs: ["artifacts/policy/evidence.json", "interactions/0.json"],
+    });
+    const interaction = {
+      pass_ids: [defaultPass().id],
       artifact: { ref: "interactions/0.json", sha256: "b".repeat(64) },
       evidence: {
         authoritative: true,
@@ -275,23 +374,41 @@ describe("policy pass classification", () => {
         raw_evidence_refs: ["interactions/0.json"],
       },
     } as PolicyInteractionEvidenceInput;
-    const result = classifyPolicyPasses(evidence, { interactions: [interaction] })[0];
-    expect(result).toMatchObject({ classification: "inconclusive", vetoes: [] });
-    expect(result?.reasons).toContain("interaction-removal-harm");
+    expect(classifyPolicyPasses(evidence, { interactions: [interaction] })[0]?.classification).toBe(
+      "delete-candidate",
+    );
+  });
+
+  test("blocks deletion when negative primary error reduction lacks bound harm facts", () => {
+    const evidence = onePass();
+    onlyPass(evidence).truth_effects.error_reduction = -1;
+    expect(classify(evidence)[0]).toMatchObject({
+      classification: "inconclusive",
+      reasons: ["incomplete-authority"],
+    });
   });
 
   test("requires facts for aggregate harm and rejects an unknown raw reference", () => {
     const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 3;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
     expect(classify(evidence)[0]?.reasons).toContain("incomplete-authority");
     expect(
-      classify(onePass(), facts({ beneficial_effects: [{ identity: "benefit", evidence_ref: "outside-ref", reproduced_by_pass_ids: [] }] }))[0]?.reasons,
+      classify(
+        onePass(),
+        facts({
+          beneficial_effects: [
+            { identity: "benefit", evidence_ref: "outside-ref", reproduced_by_pass_ids: [] },
+          ],
+        }),
+      )[0]?.reasons,
     ).toContain("incomplete-authority");
   });
 
   test("does not retain an unbound unique contribution or unordered identity facts", () => {
     const invalidContribution = onePass({ uniqueContribution: "prevented-blocking-fp" });
-    invalidContribution[0]!.unique_contributions[0]!.evidence.ref = "outside-ref";
+    const uniqueContribution = onlyPass(invalidContribution).unique_contributions[0];
+    if (uniqueContribution === undefined) throw new Error("fixture unique contribution missing");
+    uniqueContribution.evidence.ref = "outside-ref";
     expect(classify(invalidContribution)[0]).toMatchObject({
       classification: "inconclusive",
       vetoes: [],
@@ -305,7 +422,7 @@ describe("policy pass classification", () => {
       ],
     });
     const evidence = onePass();
-    evidence[0]!.truth_effects.baseline.blocking_fn = 4;
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 4;
     expect(classify(evidence, unordered)[0]?.reasons).toContain("incomplete-authority");
   });
 });

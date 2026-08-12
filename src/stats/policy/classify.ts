@@ -1,9 +1,12 @@
-import { POLICY_PASS_IDS, POLICY_PASSES, type PolicyPassId } from "../../core/policy/catalog.ts";
-import { POLICY_MEASUREMENT_THRESHOLDS, type PolicyClassification } from "../../core/policy/measurement-contract.ts";
+import { POLICY_PASSES, POLICY_PASS_IDS, type PolicyPassId } from "../../core/policy/catalog.ts";
 import {
-  type PolicyMeasurement,
-  type PolicyPassClassification,
-  type PolicyPassEvidence,
+  POLICY_MEASUREMENT_THRESHOLDS,
+  type PolicyClassification,
+} from "../../core/policy/measurement-contract.ts";
+import type {
+  PolicyMeasurement,
+  PolicyPassClassification,
+  PolicyPassEvidence,
 } from "../../schemas/policy-measurement.ts";
 
 export type PolicyPassEvidenceInput = PolicyPassEvidence;
@@ -15,7 +18,10 @@ type DogfoodEffect = "suppressed" | "preserved" | "none";
 /** Identity-level facts are assembled from schema-validated source artifacts by Task 8. */
 export interface PolicyPassClassificationFacts {
   readonly pass_id: PolicyPassId;
-  readonly ground_truth_harms: readonly { readonly identity: string; readonly evidence_ref: string }[];
+  readonly ground_truth_harms: readonly {
+    readonly identity: string;
+    readonly evidence_ref: string;
+  }[];
   readonly dogfood_dispositions: readonly {
     readonly identity: string;
     readonly run_id: string;
@@ -46,7 +52,10 @@ const EMPTY_FACTS: PolicyPassClassificationFacts = {
   beneficial_effects: [],
 };
 
-function addReason(reasons: PolicyClassificationReason[], reason: PolicyClassificationReason): void {
+function addReason(
+  reasons: PolicyClassificationReason[],
+  reason: PolicyClassificationReason,
+): void {
   if (!reasons.includes(reason)) reasons.push(reason);
 }
 
@@ -59,14 +68,20 @@ function uniqueByIdentity<T extends { readonly identity: string }>(rows: readonl
   return true;
 }
 
-function codeUnitSortedByIdentity<T extends { readonly identity: string }>(rows: readonly T[]): boolean {
-  return rows.every((row, index) => index === 0 || (rows[index - 1]?.identity ?? "") < row.identity);
+function codeUnitSortedByIdentity<T extends { readonly identity: string }>(
+  rows: readonly T[],
+): boolean {
+  return rows.every(
+    (row, index) => index === 0 || (rows[index - 1]?.identity ?? "") < row.identity,
+  );
 }
 
 function allEligibleLanesAuthoritative(evidence: PolicyPassEvidence): boolean {
-  return (!evidence.eligibility.stateless || evidence.authority.stateless) &&
+  return (
+    (!evidence.eligibility.stateless || evidence.authority.stateless) &&
     (!evidence.eligibility.stateful || evidence.authority.stateful) &&
-    (!evidence.eligibility.dogfood || evidence.authority.dogfood);
+    (!evidence.eligibility.dogfood || evidence.authority.dogfood)
+  );
 }
 
 function stableStatelessDirection(evidence: PolicyPassEvidence): boolean {
@@ -74,27 +89,38 @@ function stableStatelessDirection(evidence: PolicyPassEvidence): boolean {
   if (effects.length !== 3) return false;
   const positive = effects.filter((effect) => effect > 0).length;
   const negative = effects.filter((effect) => effect < 0).length;
-  return (positive >= 2 && negative === 0) || (negative >= 2 && positive === 0) ||
-    (positive === 0 && negative === 0);
+  return (
+    (positive >= 2 && negative === 0) ||
+    (negative >= 2 && positive === 0) ||
+    (positive === 0 && negative === 0)
+  );
 }
 
 function hasSufficientPrimaryEvidence(evidence: PolicyPassEvidence): boolean {
   if (!allEligibleLanesAuthoritative(evidence)) return false;
   if (evidence.lane === "stateless-bench") {
-    return evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statelessCases &&
+    return (
+      evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statelessCases &&
       evidence.opportunities.signatures >= POLICY_MEASUREMENT_THRESHOLDS.statelessSignatures &&
-      stableStatelessDirection(evidence);
+      stableStatelessDirection(evidence)
+    );
   }
-  return evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statefulSequences &&
+  return (
+    evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statefulSequences &&
     evidence.opportunities.turns >=
       POLICY_MEASUREMENT_THRESHOLDS.statefulSequences *
-        POLICY_MEASUREMENT_THRESHOLDS.opportunityTurnsPerSequence;
+        POLICY_MEASUREMENT_THRESHOLDS.opportunityTurnsPerSequence
+  );
 }
 
 function totalGroundTruthError(evidence: PolicyPassEvidence): number {
   const counts = evidence.truth_effects;
-  return counts.ablated.blocking_fp + counts.ablated.blocking_fn -
-    counts.baseline.blocking_fp - counts.baseline.blocking_fn;
+  return (
+    counts.ablated.blocking_fp +
+    counts.ablated.blocking_fn -
+    counts.baseline.blocking_fp -
+    counts.baseline.blocking_fn
+  );
 }
 
 function hasAggregateBenefit(evidence: PolicyPassEvidence): boolean {
@@ -102,8 +128,11 @@ function hasAggregateBenefit(evidence: PolicyPassEvidence): boolean {
 }
 
 function hasAggregateHarm(evidence: PolicyPassEvidence): boolean {
-  return totalGroundTruthError(evidence) < 0 ||
-    evidence.truth_effects.baseline.blocking_tp < evidence.truth_effects.ablated.blocking_tp;
+  return (
+    totalGroundTruthError(evidence) < 0 ||
+    evidence.truth_effects.error_reduction < 0 ||
+    evidence.truth_effects.baseline.blocking_tp < evidence.truth_effects.ablated.blocking_tp
+  );
 }
 
 function factsAreBound(
@@ -111,19 +140,25 @@ function factsAreBound(
   facts: PolicyPassClassificationFacts,
 ): boolean {
   const refs = new Set(evidence.raw_evidence_refs);
-  return uniqueByIdentity(facts.ground_truth_harms) && uniqueByIdentity(facts.dogfood_dispositions) &&
-    uniqueByIdentity(facts.beneficial_effects) && codeUnitSortedByIdentity(facts.ground_truth_harms) &&
+  return (
+    uniqueByIdentity(facts.ground_truth_harms) &&
+    uniqueByIdentity(facts.dogfood_dispositions) &&
+    uniqueByIdentity(facts.beneficial_effects) &&
+    codeUnitSortedByIdentity(facts.ground_truth_harms) &&
     codeUnitSortedByIdentity(facts.dogfood_dispositions) &&
     codeUnitSortedByIdentity(facts.beneficial_effects) &&
     facts.ground_truth_harms.every((fact) => refs.has(fact.evidence_ref)) &&
     facts.dogfood_dispositions.every((fact) => refs.has(fact.evidence_ref)) &&
-    facts.beneficial_effects.every((fact) => refs.has(fact.evidence_ref));
+    facts.beneficial_effects.every((fact) => refs.has(fact.evidence_ref))
+  );
 }
 
 function dogfoodIsSufficient(facts: PolicyPassClassificationFacts): boolean {
-  return facts.dogfood_dispositions.length >= POLICY_MEASUREMENT_THRESHOLDS.dogfoodDispositions &&
+  return (
+    facts.dogfood_dispositions.length >= POLICY_MEASUREMENT_THRESHOLDS.dogfoodDispositions &&
     new Set(facts.dogfood_dispositions.map((fact) => `${fact.run_id}\u0000${fact.iter}`)).size >=
-      POLICY_MEASUREMENT_THRESHOLDS.dogfoodRuns;
+      POLICY_MEASUREMENT_THRESHOLDS.dogfoodRuns
+  );
 }
 
 function uniqueContributionsAreBound(evidence: PolicyPassEvidence): boolean {
@@ -135,11 +170,12 @@ function directVetoes(evidence: PolicyPassEvidence): SafetyVeto[] {
   if (!uniqueContributionsAreBound(evidence)) return [];
   const vetoes: SafetyVeto[] = [];
   for (const contribution of evidence.unique_contributions) {
-    const veto = contribution.kind === "prevented-blocking-fp"
-      ? "unique-prevented-fp"
-      : contribution.kind === "preserved-blocking-tp"
-      ? "unique-preserved-tp"
-      : "required-backstop";
+    const veto =
+      contribution.kind === "prevented-blocking-fp"
+        ? "unique-prevented-fp"
+        : contribution.kind === "preserved-blocking-tp"
+          ? "unique-preserved-tp"
+          : "required-backstop";
     if (!vetoes.includes(veto)) vetoes.push(veto);
   }
   return vetoes;
@@ -157,16 +193,22 @@ function interactionStatus(
   for (const interaction of interactions) {
     if (!interaction.pass_ids.includes(passId)) continue;
     const row = interaction.evidence;
-    const authoritative = (!row.eligibility.stateless || row.authority.stateless) &&
+    const authoritative =
+      (!row.eligibility.stateless || row.authority.stateless) &&
       (!row.eligibility.stateful || row.authority.stateful) &&
       (!row.eligibility.dogfood || row.authority.dogfood);
-    if (!row.authoritative || !authoritative || !refs.has(interaction.artifact.ref) ||
-      !row.raw_evidence_refs.every((ref) => refs.has(ref))) {
+    if (
+      !row.authoritative ||
+      !authoritative ||
+      !refs.has(interaction.artifact.ref) ||
+      !row.raw_evidence_refs.every((ref) => refs.has(ref))
+    ) {
       return "incomplete-authority";
     }
-    const harm = row.truth_effects.ablated.blocking_fp + row.truth_effects.ablated.blocking_fn <
-      row.truth_effects.baseline.blocking_fp + row.truth_effects.baseline.blocking_fn ||
-      row.truth_effects.baseline.blocking_tp < row.truth_effects.ablated.blocking_tp;
+    const harm =
+      row.truth_effects.ablated.blocking_fp + row.truth_effects.ablated.blocking_fn >
+        row.truth_effects.baseline.blocking_fp + row.truth_effects.baseline.blocking_fn ||
+      row.truth_effects.ablated.blocking_tp < row.truth_effects.baseline.blocking_tp;
     harmObserved ||= harm;
   }
   return harmObserved ? "harm" : "none";
@@ -217,7 +259,12 @@ export function classifyPolicyPasses(
     );
     const harmObserved = harms > 0 || (dogfoodSufficient && suppressedTp);
 
-    if (!factsBound || !uniqueContributionsAreBound(row) || (aggregateHarm && harms === 0) || (aggregateBenefit && facts.beneficial_effects.length === 0 && harms === 0)) {
+    if (
+      !factsBound ||
+      !uniqueContributionsAreBound(row) ||
+      (aggregateHarm && harms === 0) ||
+      (aggregateBenefit && facts.beneficial_effects.length === 0 && harms === 0)
+    ) {
       addReason(reasons, "incomplete-authority");
     }
     if (!allEligibleLanesAuthoritative(row)) addReason(reasons, "incomplete-authority");
@@ -263,17 +310,27 @@ export function classifyPolicyPasses(
     }
 
     const coversEveryBenefit = facts.beneficial_effects.every((benefit) =>
-      benefit.reproduced_by_pass_ids.some(
-        (cover) => retained.has(cover) && POLICY_PASSES.find((pass) => pass.id === row.pass_id)?.overlaps_with.includes(cover),
-      ),
+      benefit.reproduced_by_pass_ids.some((cover) => {
+        const targetPass = POLICY_PASSES.find((pass) => pass.id === row.pass_id);
+        return (
+          retained.has(cover) &&
+          targetPass !== undefined &&
+          (targetPass.overlaps_with as readonly PolicyPassId[]).includes(cover)
+        );
+      }),
     );
     const interaction = interactionStatus(row.pass_id, row, context.interactions ?? []);
     const interactionHarm = interaction === "harm";
     if (interaction === "incomplete-authority") addReason(reasons, "incomplete-authority");
     if (interactionHarm) addReason(reasons, "interaction-removal-harm");
-    if (facts.beneficial_effects.length > 0 && !coversEveryBenefit) addReason(reasons, "uncovered-benefit");
+    if (facts.beneficial_effects.length > 0 && !coversEveryBenefit)
+      addReason(reasons, "uncovered-benefit");
 
-    const canDelete = reasons.length === 0 && hasSufficientPrimaryEvidence(row) && coversEveryBenefit && !interactionHarm;
+    const canDelete =
+      reasons.length === 0 &&
+      hasSufficientPrimaryEvidence(row) &&
+      coversEveryBenefit &&
+      !interactionHarm;
     if (canDelete) addReason(reasons, "sufficient-covered-zero-unique-benefit");
     return {
       pass_id: row.pass_id,
