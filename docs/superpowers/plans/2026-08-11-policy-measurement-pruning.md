@@ -934,7 +934,7 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 10: Kill dogfood mutants**
+- [x] **Step 10: Kill dogfood mutants**
 
 Emit representative only, locale-sort signatures, accept agent-only decisions, accept an
 attestation for a different manifest, join by finding ID, skip trace verification, count missing

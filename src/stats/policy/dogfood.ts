@@ -63,7 +63,7 @@ function contained(root: string, candidate: string): boolean {
 }
 
 /** Exact 0600, nlink=1, final-leaf no-follow, single-FD bounded read. */
-function stableRead(root: string, ref: string): Buffer {
+function stableRead(root: string, ref: string, onRead?: () => void): Buffer {
   if (!validRef(ref)) throw new Error("dogfood source has an invalid reference");
   const realRoot = realpathSync(root);
   const path = resolve(root, ...ref.split("/"));
@@ -106,6 +106,7 @@ function stableRead(root: string, ref: string): Buffer {
       throw new Error("dogfood source identity changed before read");
     }
     const bytes = readFileSync(fd);
+    onRead?.();
     const after = fstatSync(fd);
     const pathAfter = lstatSync(path);
     if (
@@ -337,6 +338,8 @@ export function harvestPolicyDogfood(input: {
   preregistration: PolicyMeasurementPreregistration;
   inputManifest: PolicyDogfoodInputManifest;
   attestation: PolicyDogfoodAttestation;
+  /** Observability-only hook; callers cannot change the frozen source set. */
+  onFrozenSourceRead?: (entry: ManifestEntry) => void;
 }): PolicyDogfoodSnapshot {
   const exclusionsByCode = exclusions();
   const manifest = PolicyDogfoodInputManifestSchema.parse(input.inputManifest);
@@ -369,7 +372,7 @@ export function harvestPolicyDogfood(input: {
   for (const entry of manifest.entries) {
     let bytes: Buffer;
     try {
-      bytes = stableRead(process.cwd(), entry.ref);
+      bytes = stableRead(process.cwd(), entry.ref, () => input.onFrozenSourceRead?.(entry));
     } catch {
       increment(exclusionsByCode, "changed-source-file");
       continue;
