@@ -683,8 +683,12 @@ git commit -m "feat(stats): add paired policy statistics"
 - Consumes schema-validated per-pass evidence summaries and corrected statistics.
 - Produces ordered `PolicyPassClassification[]` with machine-readable reasons, vetoes, and
   `harm_observed`.
+- Keeps the one-argument call compatible and accepts optional schema-validated interaction rows plus
+  raw-ref-bound identity facts: `classifyPolicyPasses(evidence, { passFacts, interactions })`. Task 8
+  assembles that pure context from validated identity-level sources; classification never infers it
+  from aggregate counts.
 
-- [ ] **Step 1: Write the classification RED matrix**
+- [x] **Step 1: Write the classification RED matrix**
 
 Create literal fixtures for:
 
@@ -711,17 +715,18 @@ Add stateful 2-sequence/3-sequence boundary tests, dogfood 4/5 and 2/3 run bound
 repeat directions, one-positive-plus-two-zero, historical unsigned decisions, and one unique
 benefit coexisting with harm (`retain` plus `harm_observed: true`).
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `bun test tests/unit/policy-classify.test.ts`
 
 Expected: missing module failure.
 
-- [ ] **Step 3: Implement two-phase classification**
+- [x] **Step 3: Implement two-phase classification**
 
 ```ts
 export function classifyPolicyPasses(
   evidence: readonly PolicyPassEvidenceInput[],
+  context?: { passFacts?: readonly PolicyPassClassificationFacts[]; interactions?: readonly PolicyInteractionEvidenceInput[] },
 ): PolicyPassClassification[] {
   const retained = new Set<PolicyPassId>();
   // Phase 1: direct unique contribution and safety-retention vetoes only.
@@ -731,6 +736,7 @@ export function classifyPolicyPasses(
 }
 
 export type PolicyPassEvidenceInput = PolicyPassEvidence;
+export type PolicyInteractionEvidenceInput = PolicyMeasurement["interactions"][number];
 ```
 
 Use closed reason codes:
@@ -755,17 +761,17 @@ Never branch on p-value significance. Persist raw evidence refs for every reason
 direct, pass-identifiable unique protection/backstop evidence; an interaction row may veto deletion
 and emit `interaction-removal-harm`, but cannot itself produce `retain`.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run: `bun test tests/unit/policy-classify.test.ts tests/unit/policy-statistics.test.ts`
 
-- [ ] **Step 5: Kill classification mutants**
+- [x] **Step 5: Kill classification mutants**
 
 Change each numeric threshold by one, invert classification precedence, treat missing decisions as
 FP, remove unique-contribution veto, accept coverage by an inconclusive pass, and ignore interaction
 harm. Every mutant must fail a named literal matrix row; restore SHA.
 
-- [ ] **Step 6: Review and commit**
+- [x] **Step 6: Review and commit**
 
 ```bash
 git commit -m "feat(stats): classify policy pass evidence"
