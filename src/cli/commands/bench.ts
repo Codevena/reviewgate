@@ -458,6 +458,21 @@ function outcomeToCaseResult(
     latency_ms: out.latencyMs,
     error: out.error,
     ...(out.critic ? { critic: out.critic } : {}),
+    ...(out.policyTruth
+      ? {
+          policy_truth: {
+            expected_label_count: out.policyTruth.expectedLabelCount,
+            findings: out.policyTruth.findings.map((finding) => ({
+              signature: finding.signature,
+              severity: finding.severity,
+              outcome: finding.outcome,
+              label_index: finding.labelIndex,
+              near_miss: finding.nearMiss,
+            })),
+            fn_label_indexes: out.policyTruth.fnLabelIndexes,
+          },
+        }
+      : {}),
     ...(out.policy
       ? {
           policy_trace: {

@@ -4,7 +4,9 @@ import { z } from "zod";
 import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import { redactHighEntropy } from "../diff/sanitizer.ts";
+import { Severity } from "./finding.ts";
 import { PolicyTraceSchema } from "./policy-trace.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 
 // reviewgate bench — result schema (spec §5, §7.2). What `bench run` writes and
 // `bench report` reads. Every rate carries its raw numerator/denominator + a Wilson
@@ -585,6 +587,110 @@ export const BenchPolicyTraceRunSchema = z
     }
   });
 
+export const BenchPolicyTruthSchema = z
+  .object({
+    expected_label_count: z.number().int().nonnegative(),
+    findings: z.array(
+      z
+        .object({
+          signature: z.string().min(1),
+          severity: Severity,
+          outcome: z.enum(["TP", "FP", "NEUTRAL"]),
+          label_index: z.number().int().nonnegative().nullable(),
+          near_miss: z.boolean(),
+        })
+        .strict(),
+    ),
+    fn_label_indexes: z.array(z.number().int().nonnegative()),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const tpLabelIndexes = new Set<number>();
+    const signatures = new Set<string>();
+    for (const [index, finding] of value.findings.entries()) {
+      if (signatures.has(finding.signature)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["findings", index, "signature"],
+          message: "policy truth finding signatures must be unique",
+        });
+      }
+      signatures.add(finding.signature);
+      if (
+        index > 0 &&
+        compareCodeUnits(value.findings[index - 1]?.signature ?? "", finding.signature) >= 0
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["findings", index, "signature"],
+          message: "policy truth finding signatures must use strict code-unit order",
+        });
+      }
+      if (finding.outcome === "TP") {
+        if (finding.label_index === null) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["findings", index, "label_index"],
+            message: "TP policy truth finding requires a label index",
+          });
+        } else if (finding.label_index >= value.expected_label_count) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["findings", index, "label_index"],
+            message: "policy truth label index exceeds expected label count",
+          });
+        } else if (tpLabelIndexes.has(finding.label_index)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["findings", index, "label_index"],
+            message: "policy truth labels may have only one TP",
+          });
+        } else {
+          tpLabelIndexes.add(finding.label_index);
+        }
+      } else if (finding.label_index !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["findings", index, "label_index"],
+          message: "only TP policy truth findings may carry a label index",
+        });
+      }
+    }
+
+    const fnLabelIndexes = new Set<number>();
+    for (const [index, labelIndex] of value.fn_label_indexes.entries()) {
+      if (labelIndex >= value.expected_label_count || tpLabelIndexes.has(labelIndex)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fn_label_indexes", index],
+          message: "FN policy truth labels must be unmatched expected labels",
+        });
+      }
+      if (fnLabelIndexes.has(labelIndex)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fn_label_indexes", index],
+          message: "FN policy truth label indexes must be unique",
+        });
+      }
+      if (index > 0 && (value.fn_label_indexes[index - 1] ?? -1) >= labelIndex) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["fn_label_indexes", index],
+          message: "FN policy truth label indexes must be strictly ascending",
+        });
+      }
+      fnLabelIndexes.add(labelIndex);
+    }
+    if (tpLabelIndexes.size + fnLabelIndexes.size !== value.expected_label_count) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["fn_label_indexes"],
+        message: "policy truth must account for every expected label as TP or FN",
+      });
+    }
+  });
+
 export const CaseResultSchema = z
   .object({
     id: z.string(),
@@ -615,8 +721,20 @@ export const CaseResultSchema = z
     // Additive: legacy BenchResult v1 rows without traces remain parseable, but
     // exact policy matrix runs require this block before they can be scored.
     policy_trace: BenchPolicyTraceRunSchema.optional(),
+    // Additive identity-level match outcome for policy measurement. Legacy rows
+    // stay parseable, but a truth block is meaningful only for a scored case.
+    policy_truth: BenchPolicyTruthSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.policy_truth !== undefined && value.status !== "scored") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["policy_truth"],
+        message: "policy truth is only valid for a scored case",
+      });
+    }
+  });
 
 // One metric's spread across the K repeats (spec §10#3). `stddev` is the population
 // standard deviation; stats are null when no repeat had a defined value (den=0).
@@ -994,6 +1112,7 @@ export type BenchMatrix = z.infer<typeof BenchMatrixSchema>;
 export type PhasesSnapshot = z.infer<typeof PhasesSnapshotSchema>;
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 export type CaseResult = z.infer<typeof CaseResultSchema>;
+export type BenchPolicyTruth = z.infer<typeof BenchPolicyTruthSchema>;
 export type BenchPolicyTraceRun = z.infer<typeof BenchPolicyTraceRunSchema>;
 export type BenchResponseManifest = z.infer<typeof BenchResponseManifestSchema>;
 export type BenchPolicyTraceSet = z.infer<typeof BenchPolicyTraceSetSchema>;

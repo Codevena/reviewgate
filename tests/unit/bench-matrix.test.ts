@@ -22,6 +22,7 @@ import { canonicalJson } from "../../src/audit/canonical.ts";
 import {
   type AuthoritativeTraceInvalidityCode,
   type AuthoritativeTraceRun,
+  validateAuthoritativeTraceProfilePair,
   validateAuthoritativeTracePair,
 } from "../../src/bench/runner.ts";
 import {
@@ -258,7 +259,7 @@ function sha256(value: string): string {
 
 function emptyTrace(ablated: PolicyTrace["ablated"]): PolicyTrace {
   const passes = POLICY_PASS_IDS.map((passId) =>
-    passId === "judgment.confidence"
+    passId === "judgment.confidence" || ablated.includes(passId)
       ? {
           pass_id: passId,
           status: "ran" as const,
@@ -366,6 +367,19 @@ describe("runBenchMatrix", () => {
     expect(baseline?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.ablated_pass_id).toBe("judgment.confidence");
+    expect(baselineResult.cases.find((row) => row.kind === "seeded-bug")?.policy_truth).toEqual({
+      expected_label_count: 1,
+      findings: [
+        {
+          signature: "8dfccfb7ed70068875825c18167afc1bc34258d715a9ff9007b76ec32b6ea669",
+          severity: "CRITICAL",
+          outcome: "TP",
+          label_index: 0,
+          near_miss: false,
+        },
+      ],
+      fn_label_indexes: [],
+    });
     const resultRefs = [m.artifacts?.baseline, ...(m.artifacts?.variants ?? [])];
     for (const resultRef of resultRefs) {
       expect(resultRef).toBeDefined();
@@ -985,6 +999,72 @@ describe("runBenchMatrix", () => {
         expect(result.code, testCase.name).toBe(testCase.code);
         expect(result.reason.length, testCase.name).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it("accepts only an exact ordered multi-pass trace profile and keeps the legacy guard", () => {
+    const expected = ["scope.diff", "scope.delta", "scope.session"] as const;
+    const baseline = traceRun([]);
+    const grouped = traceRun([...expected]);
+
+    expect(validateAuthoritativeTraceProfilePair(baseline, grouped, expected)).toEqual({ ok: true });
+    // WITH legacy guard = 1 rejection; WITHOUT it = 0 rejections for the valid group.
+    expect(validateAuthoritativeTracePair(baseline, grouped).ok).toBe(false);
+
+    const invalidProfiles: Array<{
+      name: string;
+      requested: string[];
+      mutate?: (trace: NonNullable<AuthoritativeTraceRun["trace"]>) => void;
+      code?: AuthoritativeTraceInvalidityCode;
+      updateTraceProfile?: boolean;
+    }> = [
+      {
+        name: "missing requested pass",
+        requested: ["scope.diff", "scope.delta"],
+        code: "requested-pass-mismatch",
+        updateTraceProfile: true,
+      },
+      {
+        name: "extra requested pass",
+        requested: ["scope.diff", "scope.delta", "scope.session", "judgment.confidence"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "reordered requested pass",
+        requested: ["scope.delta", "scope.diff", "scope.session"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "duplicate requested pass",
+        requested: ["scope.diff", "scope.diff", "scope.session"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "requested pass did not run",
+        requested: [...expected],
+        mutate: (trace) => {
+          trace.passes = trace.passes.map((row) =>
+            row.pass_id === "scope.delta"
+              ? { pass_id: "scope.delta", status: "not-run", reason_code: "configured-off" }
+              : row,
+          );
+        },
+        code: "pass-not-run",
+      },
+    ];
+
+    for (const invalid of invalidProfiles) {
+      const variant = structuredClone(grouped);
+      variant.requestedAblations = invalid.requested as typeof variant.requestedAblations;
+      if (variant.trace) {
+        if (invalid.updateTraceProfile) {
+          variant.trace.ablated = [...invalid.requested] as typeof variant.trace.ablated;
+        }
+        invalid.mutate?.(variant.trace);
+      }
+      const result = validateAuthoritativeTraceProfilePair(baseline, variant, expected);
+      expect(result.ok, invalid.name).toBe(false);
+      if (!result.ok && invalid.code) expect(result.code, invalid.name).toBe(invalid.code);
     }
   });
 

@@ -39,11 +39,13 @@ import type {
 } from "../providers/adapter-base.ts";
 import type { ProviderId } from "../providers/registry.ts";
 import type { BenchCase } from "../schemas/bench-case.ts";
+import type { BenchPolicyTruth } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { type PendingReport, PendingReportSchema } from "../schemas/pending-report.ts";
 import { type PolicyTrace, PolicyTraceSchema } from "../schemas/policy-trace.ts";
 import type { GitInfo } from "../utils/git.ts";
 import { planReviewJsonPath, reviewgateDir } from "../utils/paths.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
 import { collectChangedHunks, parseUnifiedDiff, validateDiffPaths } from "./diff-hunks.ts";
 import {
@@ -213,6 +215,18 @@ export interface CaseRunOutcome {
   providerCosts: ProviderCaseCost[];
   /** aggregated-panel match; null on invalid / review-error. */
   aggregatedMatch: MatchResult | null;
+  /** Additive identity-level match truth; present only for scored cases. */
+  policyTruth?: {
+    expectedLabelCount: number;
+    findings: Array<{
+      signature: string;
+      severity: BenchPolicyTruth["findings"][number]["severity"];
+      outcome: BenchPolicyTruth["findings"][number]["outcome"];
+      labelIndex: number | null;
+      nearMiss: boolean;
+    }>;
+    fnLabelIndexes: number[];
+  };
   critic?: {
     provider: string;
     eligible: boolean;
@@ -284,10 +298,21 @@ function sha256Text(value: string): string {
   return createHash("sha256").update(Buffer.from(value, "utf8")).digest("hex");
 }
 
-/** Fail-closed validation used before an ablation pair can contribute metrics. */
-export function validateAuthoritativeTracePair(
+function isCatalogOrderedPassSet(passIds: readonly PolicyPassId[]): boolean {
+  let previousOrder = -1;
+  for (const passId of passIds) {
+    const order = POLICY_PASS_IDS.indexOf(passId);
+    if (order < 0 || order <= previousOrder) return false;
+    previousOrder = order;
+  }
+  return true;
+}
+
+/** Fail-closed validation used before an ablation profile can contribute metrics. */
+export function validateAuthoritativeTraceProfilePair(
   baseline: AuthoritativeTraceRun,
   counterfactual: AuthoritativeTraceRun,
+  expectedAblations: readonly PolicyPassId[],
 ): AuthoritativeTracePairValidation {
   const runs = [
     ["baseline", baseline],
@@ -363,10 +388,16 @@ export function validateAuthoritativeTracePair(
       "baseline must not request a policy ablation",
     );
   }
-  if (counterfactual.requestedAblations.length !== 1) {
+  if (!isCatalogOrderedPassSet(expectedAblations)) {
     return invalidTracePair(
       "requested-pass-mismatch",
-      "counterfactual must request exactly one policy ablation",
+      "expected policy ablations must be an exact catalog-ordered set",
+    );
+  }
+  if (!sameStrings(counterfactual.requestedAblations, expectedAblations)) {
+    return invalidTracePair(
+      "requested-pass-mismatch",
+      "counterfactual requested ablations do not match the expected profile",
     );
   }
   if (baseline.effectiveConfigSha256 !== counterfactual.effectiveConfigSha256) {
@@ -419,6 +450,24 @@ export function validateAuthoritativeTracePair(
   }
 
   return { ok: true };
+}
+
+/** Legacy singleton-only wrapper retained for existing matrix consumers. */
+export function validateAuthoritativeTracePair(
+  baseline: AuthoritativeTraceRun,
+  counterfactual: AuthoritativeTraceRun,
+): AuthoritativeTracePairValidation {
+  if (counterfactual.requestedAblations.length !== 1) {
+    return invalidTracePair(
+      "requested-pass-mismatch",
+      "counterfactual must request exactly one policy ablation",
+    );
+  }
+  return validateAuthoritativeTraceProfilePair(
+    baseline,
+    counterfactual,
+    counterfactual.requestedAblations,
+  );
 }
 
 export interface RunBenchCaseInput {
@@ -734,6 +783,31 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       ...matchBase,
       findings: toMatcherFindings(aggregatedFindings),
     });
+    const reportFindingByMatcherId = new Map(
+      toMatcherFindings(aggregatedFindings).map((matcherFinding, index) => [
+        matcherFinding.id,
+        aggregatedFindings[index] as Finding,
+      ]),
+    );
+    const policyTruth = {
+      expectedLabelCount: benchCase.expected.length,
+      findings: aggregatedMatch.findings
+        .map((classification) => {
+          const finding = reportFindingByMatcherId.get(classification.findingId);
+          if (finding === undefined) {
+            throw new Error(`matcher finding ${classification.findingId} is absent from the report`);
+          }
+          return {
+            signature: finding.signature,
+            severity: finding.severity,
+            outcome: classification.outcome,
+            labelIndex: classification.labelIndex,
+            nearMiss: classification.nearMiss,
+          };
+        })
+        .sort((left, right) => compareCodeUnits(left.signature, right.signature)),
+      fnLabelIndexes: [...aggregatedMatch.fnLabels],
+    } satisfies CaseRunOutcome["policyTruth"];
 
     const critic = config.phases.critic
       ? report.critic
@@ -781,6 +855,7 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
       perProvider,
       providerCosts,
       aggregatedMatch,
+      policyTruth,
       ...(critic ? { critic } : {}),
       ...(policy ? { policy } : {}),
     };

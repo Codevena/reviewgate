@@ -467,7 +467,7 @@ git commit -m "feat(policy): define measurement contracts"
 - Produces additive `CaseResult.policy_truth` and
   `validateAuthoritativeTraceProfilePair(baseline, counterfactual, expectedAblations)`.
 
-- [ ] **Step 1: Write RED tests for truth identities**
+- [x] **Step 1: Write RED tests for truth identities**
 
 ```ts
 expect(result.cases[0]?.policy_truth).toEqual({
@@ -488,7 +488,7 @@ expect(result.cases[0]?.policy_truth).toEqual({
 Add schema failures for duplicate signatures, TP without a label, FP with a label, a label outside
 `expected_label_count`, mismatched FN indexes, and policy-truth data on a non-scored case.
 
-- [ ] **Step 2: Write RED tests for group pairing**
+- [x] **Step 2: Write RED tests for group pairing**
 
 ```ts
 expect(
@@ -503,13 +503,13 @@ expect(
 Require exact catalog order inside the expected ablation set and reject missing, extra, reordered,
 duplicate, or `not-run` requested pass rows. Keep the old one-pass wrapper green.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `bun test tests/unit/bench-result-schema.test.ts tests/unit/bench-runner.test.ts tests/unit/bench-matrix.test.ts`
 
 Expected: the new `policy_truth` and group validator assertions fail.
 
-- [ ] **Step 4: Add the additive truth schema and runner mapping**
+- [x] **Step 4: Add the additive truth schema and runner mapping**
 
 ```ts
 export const BenchPolicyTruthSchema = z.object({
@@ -534,7 +534,7 @@ return it as `CaseRunOutcome.policyTruth`. In `outcomeToCaseResult()` in
 label indexes exactly. The focused Matrix test must parse the written Bench result and assert the
 persisted block, not only the in-memory runner value.
 
-- [ ] **Step 5: Generalize trace-pair validation**
+- [x] **Step 5: Generalize trace-pair validation**
 
 ```ts
 export function validateAuthoritativeTraceProfilePair(
@@ -566,7 +566,7 @@ row's `status: ran`. Add a compatibility regression in which the new group valid
 valid two-pass group while the legacy `validateAuthoritativeTracePair` rejects that same pair: WITH
 legacy guard = 1 rejection; WITHOUT it = 0 rejections.
 
-- [ ] **Step 6: Run GREEN and byte-neutral regressions**
+- [x] **Step 6: Run GREEN and byte-neutral regressions**
 
 Run:
 
@@ -576,12 +576,12 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 7: Kill truth/profile mutants**
+- [x] **Step 7: Kill truth/profile mutants**
 
 Drop `policy_truth`, map finding IDs as signatures, allow group subsets, skip group row `ran` checks,
 and compare response hashes as a multiset. Named tests must kill all five; restore SHAs.
 
-- [ ] **Step 8: Review and commit**
+- [x] **Step 8: Review and commit**
 
 ```bash
 git commit -m "feat(bench): persist policy truth identities"
