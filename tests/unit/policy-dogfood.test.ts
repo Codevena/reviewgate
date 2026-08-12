@@ -93,7 +93,7 @@ function trace(runId: string): PolicyTrace {
   };
 }
 
-function frozenFixture(disposition: "tp" | "fp") {
+function frozenFixture(disposition: "tp" | "fp", opts: { legacyAgentDecision?: boolean } = {}) {
   const root = mkdtempSync(join(process.cwd(), ".rg-policy-dogfood-"));
   const auditDir = join(root, "audit");
   mkdirSync(auditDir, { recursive: true, mode: 0o700 });
@@ -120,6 +120,20 @@ function frozenFixture(disposition: "tp" | "fp") {
         policy_trace_sha256: stored.sha256,
       },
     });
+    if (opts.legacyAgentDecision) {
+      await log.append({
+        event: "decision.applied",
+        run_id: "run-a",
+        iter: 1,
+        trigger: "stop-hook",
+        decision_outcome: {
+          finding_id: "F-legacy",
+          severity: "WARN",
+          bucket: "fp",
+          providers: ["codex"],
+        },
+      });
+    }
     await log.append({
       event: "decision.applied",
       run_id: "run-a",
@@ -237,6 +251,45 @@ describe("policy dogfood harvesting", () => {
         },
       ]);
       expect(Object.values(snapshot.exclusions).every((count) => count === 0)).toBe(true);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("excludes agent-authored legacy labels and an attestation without a decision", async () => {
+    const fixture = await frozenFixture("tp", { legacyAgentDecision: true });
+    try {
+      const rows = [
+        ...fixture.attestation.rows,
+        {
+          run_id: "run-a",
+          iter: 1,
+          finding_signature: "sig-no-decision",
+          disposition: "fp" as const,
+        },
+      ];
+      const preflight = policyDogfoodAttestationPreflight({
+        manifest: fixture.manifest,
+        actor: "Markus",
+        rows,
+      });
+      const attestation = attestPolicyDogfood({
+        manifest: fixture.manifest,
+        actor: "Markus",
+        rows,
+        confirmation: preflight.challenge,
+        now: new Date("2026-08-12T09:00:00.000Z"),
+      });
+      const snapshot = harvestPolicyDogfood({
+        preregistration: {
+          ...fixture.preregistration,
+          dogfood: { ...fixture.preregistration.dogfood, attestation_sha256: sha256(attestation) },
+        },
+        inputManifest: fixture.manifest,
+        attestation,
+      });
+      expect(snapshot.exclusions["agent-only-decision"]).toBe(1);
+      expect(snapshot.exclusions["missing-decision"]).toBe(1);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
