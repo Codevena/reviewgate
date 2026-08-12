@@ -4,9 +4,9 @@ import { z } from "zod";
 import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import { redactHighEntropy } from "../diff/sanitizer.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 import { Severity } from "./finding.ts";
 import { PolicyTraceSchema } from "./policy-trace.ts";
-import { compareCodeUnits } from "../utils/compare.ts";
 
 // reviewgate bench — result schema (spec §5, §7.2). What `bench run` writes and
 // `bench report` reads. Every rate carries its raw numerator/denominator + a Wilson

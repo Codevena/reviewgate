@@ -43,9 +43,9 @@ import type { BenchPolicyTruth } from "../schemas/bench-result.ts";
 import type { Finding } from "../schemas/finding.ts";
 import { type PendingReport, PendingReportSchema } from "../schemas/pending-report.ts";
 import { type PolicyTrace, PolicyTraceSchema } from "../schemas/policy-trace.ts";
+import { compareCodeUnits } from "../utils/compare.ts";
 import type { GitInfo } from "../utils/git.ts";
 import { planReviewJsonPath, reviewgateDir } from "../utils/paths.ts";
-import { compareCodeUnits } from "../utils/compare.ts";
 import { spawnCapture } from "../utils/spawn-capture.ts";
 import { collectChangedHunks, parseUnifiedDiff, validateDiffPaths } from "./diff-hunks.ts";
 import {
@@ -795,7 +795,9 @@ export async function runBenchCase(input: RunBenchCaseInput): Promise<CaseRunOut
         .map((classification) => {
           const finding = reportFindingByMatcherId.get(classification.findingId);
           if (finding === undefined) {
-            throw new Error(`matcher finding ${classification.findingId} is absent from the report`);
+            throw new Error(
+              `matcher finding ${classification.findingId} is absent from the report`,
+            );
           }
           return {
             signature: finding.signature,

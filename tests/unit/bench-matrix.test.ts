@@ -22,8 +22,8 @@ import { canonicalJson } from "../../src/audit/canonical.ts";
 import {
   type AuthoritativeTraceInvalidityCode,
   type AuthoritativeTraceRun,
-  validateAuthoritativeTraceProfilePair,
   validateAuthoritativeTracePair,
+  validateAuthoritativeTraceProfilePair,
 } from "../../src/bench/runner.ts";
 import {
   captureThrowableSnapshot,
@@ -1028,7 +1028,9 @@ describe("runBenchMatrix", () => {
     const baseline = traceRun([]);
     const grouped = traceRun([...expected]);
 
-    expect(validateAuthoritativeTraceProfilePair(baseline, grouped, expected)).toEqual({ ok: true });
+    expect(validateAuthoritativeTraceProfilePair(baseline, grouped, expected)).toEqual({
+      ok: true,
+    });
     // WITH legacy guard = 1 rejection; WITHOUT it = 0 rejections for the valid group.
     expect(validateAuthoritativeTracePair(baseline, grouped).ok).toBe(false);
 
