@@ -56,7 +56,7 @@ import type { LoadedRun } from "../stats/load.ts";
 import { loadAuditWindow } from "../stats/load.ts";
 import { RG_VERSION } from "../version.ts";
 import { validateRigPolicyReplayArtifacts } from "./policy-replay-state.ts";
-import { loadTurnScript } from "./turn-script.ts";
+import { readTurnScript } from "./turn-script.ts";
 
 /** Below this many defined FP-burden points the slope is not reported at all. */
 const SLOPE_MIN_POINTS = 5;
@@ -367,7 +367,7 @@ export function matchesAddedLine(re: RegExp, patch: string): boolean {
  * as it did before this check existed, because shipping a feature must not silently re-score
  * every run recorded before it.
  */
-function checkSeedLanded(
+export function checkSeedLanded(
   snapshotDir: string,
   index: number,
   seeded: RigTurn["seeded"],
@@ -526,10 +526,15 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
   const manifestBytes = readFileSync(manifestPath);
   const manifest = RigManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")) as unknown);
   const policyReplay = validateRigPolicyReplayArtifacts({ manifest, manifestPath });
-  const script = loadTurnScript(scriptPath);
-  if (manifest.scriptId !== script.id) {
+  const scriptArtifact = readTurnScript(scriptPath);
+  const script = scriptArtifact.script;
+  const scriptSha256 = createHash("sha256").update(scriptArtifact.bytes).digest("hex");
+  const exactScriptHashMissing = policyReplay !== null && manifest.scriptSha256 === undefined;
+  const presentScriptHashDiffers =
+    manifest.scriptSha256 !== undefined && manifest.scriptSha256 !== scriptSha256;
+  if (manifest.scriptId !== script.id || exactScriptHashMissing || presentScriptHashDiffers) {
     throw new Error(
-      `rig harvest: the manifest was produced by turn script "${manifest.scriptId}" but "${scriptPath}" is "${script.id}". Ground truth (which turn seeded which defect) comes from the script, so harvesting one run against another script's labels would mislabel every seeded turn instead of failing.`,
+      `rig harvest: the manifest's turn-script identity/content address does not match "${scriptPath}". Ground truth comes from those exact script bytes, so changed or unbound labels cannot be harvested.`,
     );
   }
 
@@ -661,6 +666,7 @@ export function harvest(manifestPath: string, scriptPath: string): RigResult {
         manifestRef: basename(manifestPath),
         manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
         scriptId: manifest.scriptId,
+        scriptSha256,
         initialStateRef: metadata.initialStateRef,
         initialStateSha256: metadata.initialStateSha256,
         initialStateDigest: metadata.initialStateDigest,

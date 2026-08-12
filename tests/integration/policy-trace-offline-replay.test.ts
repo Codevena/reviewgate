@@ -475,6 +475,9 @@ describe("policy trace offline replay", () => {
         ).toEqual(["WARN"]);
         expect(pair.baseline.final.verdict).toBe("PASS");
         expect(pair.counterfactual.final.verdict).toBe("SOFT-PASS");
+        expect(pair.findings.baseline).not.toBe(fixture.envelope.policy_final_findings);
+        expect(pair.findings.baseline.map((finding) => finding.severity)).toEqual(["INFO"]);
+        expect(pair.findings.counterfactual.map((finding) => finding.severity)).toEqual(["WARN"]);
         expect(pair.state.baseline.history_reads).toBeGreaterThan(0);
         expect(pair.state.baseline.history_writes).toBe(1);
         expect(pair.state.counterfactual.history_writes).toBe(0);

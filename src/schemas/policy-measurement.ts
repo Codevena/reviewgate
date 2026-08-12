@@ -340,8 +340,10 @@ export const PolicyRigScenarioManifestSchema = z
       z
         .object({
           id: z.string().min(1),
-          pass_id: PolicyPassIdSchema,
+          pass_id: StatefulPolicyPassIdSchema,
           manifest: ArtifactBindingSchema,
+          result: ArtifactBindingSchema,
+          script: ArtifactBindingSchema,
           initial_state: ArtifactBindingSchema,
           expected_opportunity_turns: z.number().int().min(2),
         })
@@ -351,6 +353,8 @@ export const PolicyRigScenarioManifestSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const ids = new Set<string>();
+    const artifactRefs = new Set<string>();
+    const artifactHashes = new Set<string>();
     const counts = new Map<string, number>();
     for (const [index, scenario] of value.scenarios.entries()) {
       if (ids.has(scenario.id)) {
@@ -362,6 +366,26 @@ export const PolicyRigScenarioManifestSchema = z
       }
       ids.add(scenario.id);
       counts.set(scenario.pass_id, (counts.get(scenario.pass_id) ?? 0) + 1);
+      for (const field of ["manifest", "result", "script"] as const) {
+        const ref = scenario[field].ref;
+        if (artifactRefs.has(ref)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["scenarios", index, field, "ref"],
+            message: "independent scenarios must not reuse manifest, result, or script refs",
+          });
+        }
+        artifactRefs.add(ref);
+        const hash = scenario[field].sha256;
+        if (artifactHashes.has(hash)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["scenarios", index, field, "sha256"],
+            message: "independent scenarios must not reuse manifest, result, or script content",
+          });
+        }
+        artifactHashes.add(hash);
+      }
     }
     if (
       value.scenarios.length !== POLICY_MEASUREMENT_STATEFUL_PASS_IDS.length * 3 ||
@@ -376,6 +400,123 @@ export const PolicyRigScenarioManifestSchema = z
         message: "manifest requires exactly three unique scenarios for each stateful pass",
       });
     }
+  });
+
+const PolicyRigOpportunitySchema = z
+  .object({
+    summary: z.number().int().nonnegative(),
+    evaluations: z.number().int().nonnegative(),
+    stages: z.number().int().nonnegative(),
+    observed: z.boolean(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const observed = value.summary + value.evaluations + value.stages > 0;
+    if (value.observed !== observed) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["observed"],
+        message: "opportunity observation must come from a summary, evaluation, or stage carrier",
+      });
+    }
+  });
+
+const PolicyRigStateEvidenceSchema = z
+  .object({
+    digest: Sha256Schema,
+    implicit_outcomes: z.number().int().nonnegative(),
+    history_reads: z.number().int().nonnegative(),
+    history_writes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const PolicyRigTurnEvidenceSchema = z
+  .object({
+    turn_index: z.number().int().positive(),
+    opportunity: PolicyRigOpportunitySchema,
+    baseline: z.object({ truth: TruthCountsSchema, state: PolicyRigStateEvidenceSchema }).strict(),
+    counterfactual: z
+      .object({ truth: TruthCountsSchema, state: PolicyRigStateEvidenceSchema })
+      .strict(),
+  })
+  .strict();
+
+const CATALOG_HISTORY_INTERACTION = POLICY_PASS_IDS.filter((passId) =>
+  POLICY_MEASUREMENT_INTERACTIONS[2].includes(passId as never),
+);
+
+function sumTruthCounts(
+  turns: readonly z.infer<typeof PolicyRigTurnEvidenceSchema>[],
+  branch: "baseline" | "counterfactual",
+): z.infer<typeof TruthCountsSchema> {
+  return turns.reduce(
+    (total, turn) => ({
+      blocking_fp: total.blocking_fp + turn[branch].truth.blocking_fp,
+      blocking_fn: total.blocking_fn + turn[branch].truth.blocking_fn,
+      blocking_tp: total.blocking_tp + turn[branch].truth.blocking_tp,
+    }),
+    { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+  );
+}
+
+function refineRigProfile(
+  value: {
+    opportunity_turns: number;
+    truth_effects: z.infer<typeof TruthEffectsSchema>;
+    turns: z.infer<typeof PolicyRigTurnEvidenceSchema>[];
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const opportunities = value.turns.filter((turn) => turn.opportunity.observed).length;
+  if (opportunities !== value.opportunity_turns) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["opportunity_turns"],
+      message: "opportunity turn count must equal the real trace carriers",
+    });
+  }
+  const baseline = sumTruthCounts(value.turns, "baseline");
+  const ablated = sumTruthCounts(value.turns, "counterfactual");
+  const errorReduction =
+    ablated.blocking_fp + ablated.blocking_fn - baseline.blocking_fp - baseline.blocking_fn;
+  if (
+    JSON.stringify(value.truth_effects.baseline) !== JSON.stringify(baseline) ||
+    JSON.stringify(value.truth_effects.ablated) !== JSON.stringify(ablated) ||
+    value.truth_effects.error_reduction !== errorReduction
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["truth_effects"],
+      message: "profile truth effects must be the exact sum of its turn evidence",
+    });
+  }
+  const indices = value.turns.map((turn) => turn.turn_index);
+  if (!isCodeUnitSortedUnique(indices.map((index) => String(index).padStart(12, "0")))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["turns"],
+      message: "turn evidence must be ordered and unique",
+    });
+  }
+}
+
+const PolicyRigInteractionEvidenceSchema = z
+  .object({
+    pass_ids: z.array(PolicyPassIdSchema),
+    opportunity_turns: z.number().int().min(2),
+    truth_effects: TruthEffectsSchema,
+    turns: z.array(PolicyRigTurnEvidenceSchema).min(2),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (!sameStringList(value.pass_ids, CATALOG_HISTORY_INTERACTION)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["pass_ids"],
+        message: "history interaction evidence requires all four passes in catalog order",
+      });
+    }
+    refineRigProfile(value, ctx);
   });
 
 export const PolicyBenchBundleSchema = z
@@ -441,10 +582,15 @@ export const PolicyRigEvidenceSchema = z
         .object({
           scenario_id: z.string().min(1),
           pass_id: StatefulPolicyPassIdSchema,
+          authoritative: z.literal(true),
           opportunity_turns: z.number().int().min(2),
+          truth_effects: TruthEffectsSchema,
+          turns: z.array(PolicyRigTurnEvidenceSchema).min(2),
+          history_interaction: PolicyRigInteractionEvidenceSchema.nullable(),
           manifest: ArtifactBindingSchema,
+          result: ArtifactBindingSchema,
+          script: ArtifactBindingSchema,
           initial_state: ArtifactBindingSchema,
-          artifact: ArtifactBindingSchema,
         })
         .strict(),
     ),
@@ -461,6 +607,10 @@ export const PolicyRigEvidenceSchema = z
         sequence.pass_id !== scenario.pass_id ||
         sequence.manifest.ref !== scenario.manifest.ref ||
         sequence.manifest.sha256 !== scenario.manifest.sha256 ||
+        sequence.result.ref !== scenario.result.ref ||
+        sequence.result.sha256 !== scenario.result.sha256 ||
+        sequence.script.ref !== scenario.script.ref ||
+        sequence.script.sha256 !== scenario.script.sha256 ||
         sequence.initial_state.ref !== scenario.initial_state.ref ||
         sequence.initial_state.sha256 !== scenario.initial_state.sha256
       ) {
@@ -468,9 +618,18 @@ export const PolicyRigEvidenceSchema = z
           code: z.ZodIssueCode.custom,
           path: ["sequences", index],
           message:
-            "sequence evidence must bind one declared scenario, pass, manifest, and initial state",
+            "sequence evidence must bind one declared scenario, pass, manifest, result, script, and initial state",
         });
       }
+      const requiresInteraction = CATALOG_HISTORY_INTERACTION.includes(sequence.pass_id);
+      if (requiresInteraction !== (sequence.history_interaction !== null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["sequences", index, "history_interaction"],
+          message: "every applicable history sequence requires the four-pass interaction replay",
+        });
+      }
+      refineRigProfile(sequence, ctx);
       ids.add(sequence.scenario_id);
     }
     if (

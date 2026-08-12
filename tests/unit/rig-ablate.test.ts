@@ -97,11 +97,24 @@ function result(turns: RigTurnRecord[], over: Partial<RigResult> = {}): RigResul
 
 const NO_TAGS = new Map<number, string[]>();
 
+function exactScriptBytes(scriptId: string): string {
+  return JSON.stringify({
+    schema: "reviewgate.rig.turn-script.v1",
+    id: scriptId,
+    turns: [{ index: 1, prompt: "safe", seeded: null }],
+  });
+}
+
+function exactScriptSha256(scriptId: string): string {
+  return new Bun.CryptoHasher("sha256").update(exactScriptBytes(scriptId)).digest("hex");
+}
+
 function exactManifest(runId: string, scriptId: string, sourceCommit: string) {
   return {
     schema: "reviewgate.rig.manifest.v1",
     runId,
     scriptId,
+    scriptSha256: exactScriptSha256(scriptId),
     outDir: "/unused",
     cassettePath: null,
     policyReplay: {
@@ -172,6 +185,7 @@ function exactResultForManifest(
         manifestRef: "manifest.json",
         manifestSha256,
         scriptId: manifest.scriptId,
+        scriptSha256: manifest.scriptSha256,
         initialStateRef: manifest.policyReplay.initialStateRef,
         initialStateSha256: manifest.policyReplay.initialStateSha256,
         initialStateDigest: manifest.policyReplay.initialStateDigest,
@@ -204,6 +218,7 @@ describe("rig ablate", () => {
         manifestPath: "/artifact/manifest.json",
         manifestBytes,
         scriptId: "script-a",
+        scriptSha256: exactScriptSha256("script-a"),
       });
     expect(() => validate(validResult)).not.toThrow();
 
@@ -231,6 +246,9 @@ describe("rig ablate", () => {
         authority(candidate).binding.cassetteSha256 = "7".repeat(64);
       },
       (candidate) => {
+        authority(candidate).binding.scriptSha256 = "7".repeat(64);
+      },
+      (candidate) => {
         authority(candidate).firstTrace.sha256 = "8".repeat(64);
       },
     ];
@@ -244,6 +262,25 @@ describe("rig ablate", () => {
         expect(error).toBeInstanceOf(RigAuthorityError);
         expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
       }
+    }
+
+    const missingResultHash = structuredClone(validResult);
+    authority(missingResultHash).binding.scriptSha256 = undefined;
+    expect(() => validate(missingResultHash)).toThrow(/script identity/i);
+
+    for (const scriptSha256 of [undefined, "9".repeat(64)]) {
+      const changedManifest = structuredClone(manifest);
+      changedManifest.scriptSha256 = scriptSha256;
+      expect(() =>
+        assertRigResultManifestBinding({
+          result: validResult,
+          manifest: changedManifest,
+          manifestPath: "/artifact/manifest.json",
+          manifestBytes,
+          scriptId: "script-a",
+          scriptSha256: exactScriptSha256("script-a"),
+        }),
+      ).toThrow(/script identity/i);
     }
   });
 
@@ -265,14 +302,7 @@ describe("rig ablate", () => {
     const resultPath = join(root, "result.json");
     writeFileSync(resultPath, JSON.stringify(exact));
     const scriptPath = join(root, "script-a.json");
-    writeFileSync(
-      scriptPath,
-      JSON.stringify({
-        schema: "reviewgate.rig.turn-script.v1",
-        id: "script-a",
-        turns: [{ index: 1, prompt: "safe", seeded: null }],
-      }),
-    );
+    writeFileSync(scriptPath, exactScriptBytes("script-a"));
 
     try {
       await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
@@ -322,14 +352,7 @@ describe("rig ablate", () => {
     const resultPath = join(root, "result.json");
     writeFileSync(resultPath, JSON.stringify(exact));
     const scriptPath = join(root, "script-b.json");
-    writeFileSync(
-      scriptPath,
-      JSON.stringify({
-        schema: "reviewgate.rig.turn-script.v1",
-        id: "script-b",
-        turns: [{ index: 1, prompt: "safe", seeded: null }],
-      }),
-    );
+    writeFileSync(scriptPath, exactScriptBytes("script-b"));
 
     try {
       await runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root });
@@ -338,6 +361,33 @@ describe("rig ablate", () => {
       expect(error).toBeInstanceOf(RigAuthorityError);
       expect((error as RigAuthorityError).code).toBe("result-manifest-mismatch");
     }
+  });
+
+  test("rejects changed same-id authoritative script bytes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-exact-script-content-bind-"));
+    const manifest = exactManifest("run-a", "script-a", "c".repeat(40));
+    const manifestBytes = `${JSON.stringify(manifest)}\n`;
+    writeFileSync(join(root, "manifest.json"), manifestBytes);
+    const exact = exactResultForManifest(
+      manifest,
+      new Bun.CryptoHasher("sha256").update(manifestBytes).digest("hex"),
+    );
+    exact.provenance.manifest_path = join(root, "manifest.json");
+    const resultPath = join(root, "result.json");
+    writeFileSync(resultPath, JSON.stringify(exact));
+    const scriptPath = join(root, "script-a.json");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "script-a",
+        turns: [{ index: 1, prompt: "changed labels", seeded: null }],
+      }),
+    );
+
+    await expect(runRigAblate({ resultPath, scriptPath, sourceRepoRoot: root })).rejects.toThrow(
+      /script identity/i,
+    );
   });
 
   test("keeps exact catalog selectors and legacy aliases in their own result modes", async () => {

@@ -27,6 +27,7 @@ import { demoteSelfRefuting } from "../core/self-refutation.ts";
 import { StateStore } from "../core/state-store.ts";
 import { parseDeletedPaths } from "../diff/hunks.ts";
 import { CassetteEntrySchema } from "../schemas/cassette.ts";
+import type { Finding } from "../schemas/finding.ts";
 import type { PolicyReplayEnvelope } from "../schemas/policy-replay.ts";
 import type { PolicyTrace } from "../schemas/policy-trace.ts";
 import { type RigManifest, RigManifestSchema } from "../schemas/rig-manifest.ts";
@@ -73,6 +74,8 @@ export interface ReplayReport {
 export interface PolicyReplayPair {
   baseline: PolicyTrace;
   counterfactual: PolicyTrace;
+  /** Final production findings, retained as structured data for truth matching. */
+  findings: { baseline: Finding[]; counterfactual: Finding[] };
   state: {
     baseline: PolicyReplayBranchStateEvidence;
     counterfactual: PolicyReplayBranchStateEvidence;
@@ -228,6 +231,12 @@ async function assertBranchHistoryInputs(
   if (canonicalJson(rejectedRegions) !== canonicalJson(envelope.aggregate.rejected_regions)) {
     historyMismatch("cycle region memory");
   }
+  if (envelope.history.implicit_outcomes.enabled) {
+    // The production store is write-only for policy decisions. Reading it here establishes that
+    // the branch-local persisted input is real without inventing a causal policy dependency.
+    await new ImplicitOutcomeStore(checkoutRoot).load();
+    reads += 1;
+  }
   return reads;
 }
 
@@ -344,6 +353,22 @@ interface ReplayPolicyExecution {
   trace: PolicyTrace;
   dedupedFindings: PolicyReplayEnvelope["policy_final_findings"];
   criticDropped: PolicyReplayEnvelope["policy_final_findings"];
+}
+
+function normalizeAblatedPassIds(passIds: readonly PolicyPassId[]): PolicyPassId[] {
+  const requested = new Set<string>(passIds);
+  if (requested.size === 0) {
+    throw new RigAuthorityError(
+      "invalid-trace",
+      "policy replay profile requires at least one pass",
+    );
+  }
+  for (const passId of requested) {
+    if (!POLICY_PASS_IDS.includes(passId as PolicyPassId)) {
+      throw new RigAuthorityError("invalid-trace", `unknown policy replay pass ${passId}`);
+    }
+  }
+  return POLICY_PASS_IDS.filter((passId) => requested.has(passId));
 }
 
 function replayEnvelopeProductionPath(input: {
@@ -497,11 +522,12 @@ async function branchStateEvidence(input: {
 
 async function replayPolicyEnvelopeInBranches(input: {
   envelope: PolicyReplayEnvelope;
-  passId: PolicyPassId;
+  ablatedPassIds: readonly PolicyPassId[];
   branches: ReplayBranches;
   humanLearningWrites?: { baseline: number; counterfactual: number };
 }): Promise<PolicyReplayPair> {
   return runWithReplayProviderCeiling(async () => {
+    const ablatedPassIds = normalizeAblatedPassIds(input.ablatedPassIds);
     const humanLearningWrites = input.humanLearningWrites ?? { baseline: 0, counterfactual: 0 };
     const baselineReads = await assertBranchHistoryInputs(
       input.envelope,
@@ -520,7 +546,7 @@ async function replayPolicyEnvelopeInBranches(input: {
     const counterfactualExecution = replayEnvelopeProductionPath({
       envelope: input.envelope,
       checkoutRoot: input.branches.counterfactual.checkoutRoot,
-      ablated: new Set([input.passId]),
+      ablated: new Set(ablatedPassIds),
       verifyOriginal: false,
     });
     if (
@@ -542,6 +568,10 @@ async function replayPolicyEnvelopeInBranches(input: {
     return {
       baseline: baselineExecution.trace,
       counterfactual: counterfactualExecution.trace,
+      findings: {
+        baseline: structuredClone(baselineExecution.dedupedFindings),
+        counterfactual: structuredClone(counterfactualExecution.dedupedFindings),
+      },
       state: {
         baseline: await branchStateEvidence({
           checkoutRoot: input.branches.baseline.checkoutRoot,
@@ -565,22 +595,14 @@ export async function replayPolicyEnvelopePair(input: {
   stateSnapshotRoot: string;
   passId: PolicyPassId;
 }): Promise<PolicyReplayPair> {
-  const branches = createReplayBranches({
+  const pairs = await replayPolicyProfileSequence({
     sourceRepoRoot: input.sourceRepoRoot,
-    sourceCommit: input.envelope.source_commit,
-    stateSnapshotRoot: input.stateSnapshotRoot,
-    expectedStateSha256: input.envelope.state_sha256,
-    exactDiff: input.envelope.exact_diff,
+    items: [{ envelope: input.envelope, stateSnapshotRoot: input.stateSnapshotRoot }],
+    ablatedPassIds: [input.passId],
   });
-  try {
-    return await replayPolicyEnvelopeInBranches({
-      envelope: input.envelope,
-      passId: input.passId,
-      branches,
-    });
-  } finally {
-    cleanupReplayBranches(branches);
-  }
+  const pair = pairs[0];
+  if (pair === undefined) throw new RigAuthorityError("invalid-trace", "replay produced no pair");
+  return pair;
 }
 
 /**
@@ -592,6 +614,24 @@ export async function replayPolicyEnvelopeSequence(input: {
   items: PolicyReplaySequenceItem[];
   passId: PolicyPassId;
 }): Promise<PolicyReplayPair[]> {
+  return replayPolicyProfileSequence({
+    sourceRepoRoot: input.sourceRepoRoot,
+    items: input.items,
+    ablatedPassIds: [input.passId],
+  });
+}
+
+/**
+ * Replay an ordered multi-turn profile in one branch pair. Both branches start from the exact
+ * captured snapshot; later captured snapshots contribute only exogenous changes via
+ * `advanceReplayBranches`, never branch-owned writes from the other side.
+ */
+export async function replayPolicyProfileSequence(input: {
+  sourceRepoRoot: string;
+  items: PolicyReplaySequenceItem[];
+  ablatedPassIds: readonly PolicyPassId[];
+}): Promise<PolicyReplayPair[]> {
+  const ablatedPassIds = normalizeAblatedPassIds(input.ablatedPassIds);
   const first = input.items[0];
   if (first === undefined) {
     throw new RigAuthorityError("missing-trace", "policy replay sequence is empty");
@@ -638,7 +678,7 @@ export async function replayPolicyEnvelopeSequence(input: {
             };
       const pair = await replayPolicyEnvelopeInBranches({
         envelope: item.envelope,
-        passId: input.passId,
+        ablatedPassIds,
         branches,
         humanLearningWrites,
       });
@@ -654,7 +694,7 @@ export async function replayPolicyAblations(input: {
   manifestPath: string;
   sourceRepoRoot: string;
   passId?: PolicyPassId;
-  authority?: { result: RigResult; scriptId: string };
+  authority?: { result: RigResult; scriptId: string; scriptSha256: string };
 }): Promise<RigPolicyAblationRow[]> {
   const manifestBytes = readFileSync(input.manifestPath);
   const manifest = RigManifestSchema.parse(JSON.parse(manifestBytes.toString("utf8")) as unknown);
@@ -665,6 +705,7 @@ export async function replayPolicyAblations(input: {
       manifestPath: input.manifestPath,
       manifestBytes,
       scriptId: input.authority.scriptId,
+      scriptSha256: input.authority.scriptSha256,
     });
   }
   const validated = validateRigPolicyReplayArtifacts({
@@ -747,6 +788,7 @@ export function assertRigResultManifestBinding(input: {
   manifestPath: string;
   manifestBytes: Buffer;
   scriptId: string;
+  scriptSha256: string;
 }): void {
   const statement = input.result.policyReplay;
   const binding = statement?.artifactBinding;
@@ -769,9 +811,13 @@ export function assertRigResultManifestBinding(input: {
   if (
     input.result.provenance.script_id !== input.manifest.scriptId ||
     binding.scriptId !== input.manifest.scriptId ||
-    input.scriptId !== input.manifest.scriptId
+    input.scriptId !== input.manifest.scriptId ||
+    input.scriptSha256 !== input.manifest.scriptSha256 ||
+    input.manifest.scriptSha256 === undefined ||
+    binding.scriptSha256 === undefined ||
+    binding.scriptSha256 !== input.manifest.scriptSha256
   ) {
-    authorityMismatch("selected script does not match the harvested manifest script id");
+    authorityMismatch("selected script does not match the harvested manifest script identity");
   }
   if (
     statement.catalogVersion !== metadata.catalogVersion ||

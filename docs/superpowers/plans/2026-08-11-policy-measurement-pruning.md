@@ -953,17 +953,32 @@ git commit -m "feat(audit): bind decisions to policy signatures"
 
 **Files:**
 - Modify: `src/rig/replay.ts:73-106,349-650,653-742`
+- Modify: `src/rig/turn-script.ts`
+- Modify: `src/rig/driver.ts`
+- Modify: `src/rig/harvest.ts`
+- Modify: `src/cli/commands/rig.ts`
 - Create: `src/stats/policy/rig.ts`
+- Modify: `src/schemas/policy-measurement.ts`
+- Modify: `src/schemas/rig-manifest.ts`
+- Modify: `src/schemas/rig-result.ts`
 - Modify: `tests/unit/rig-replay.test.ts`
 - Create: `tests/unit/policy-rig-evidence.test.ts`
+- Modify: `tests/unit/policy-measurement-schema.test.ts`
+- Modify: `tests/unit/rig-ablate.test.ts`
+- Modify: `tests/unit/rig-driver.test.ts`
+- Modify: `tests/unit/rig-harvest.test.ts`
 - Modify: `tests/integration/policy-trace-offline-replay.test.ts`
 
 **Interfaces:**
 - Produces `replayPolicyProfileSequence(...)` for one or more ablated pass IDs and
   `collectPolicyRigEvidence(...)` for a strict scenario manifest.
 - Preserves `replayPolicyEnvelopePair`, `replayPolicyEnvelopeSequence`, and `runRigAblate` behavior.
+- Extends the producer boundary so the driver's exact single-read script bytes are content-addressed
+  in the Rig manifest, verified by harvest before labels are used, copied into the Rig result, and
+  required by exact ablation and Task-7 evidence collection. The additive persisted fields remain
+  optional for legacy schema parseability; exact authority rejects their absence.
 
-- [ ] **Step 1: Write RED for multi-pass persistent replay**
+- [x] **Step 1: Write RED for multi-pass persistent replay**
 
 ```ts
 const pairs = await replayPolicyProfileSequence({
@@ -988,20 +1003,26 @@ expect(pairs[1]?.state.counterfactual.digest).not.toBe(pairs[1]?.state.baseline.
 The expected trace order is catalog order, independent of CLI input order. Assert both branches
 carry final findings, not only trace counts.
 
-- [ ] **Step 2: Write RED for scenario sufficiency and truth**
+- [x] **Step 2: Write RED for scenario sufficiency and truth**
 
 Create three independent fixture sequences for each of the five stateful passes, each with two
 opportunity turns, plus controls at 2 sequences and at one opportunity turn. The fixture builder must
 write real `FpLedgerStore`, `ReputationStore`, region/cycle state, and `ImplicitOutcomeStore` inputs;
 it may parameterize file construction but may not inject state callbacks or bypass production replay.
+All five families must begin with equal, isolated branch roots and perform real persisted-state reads.
+Only the three production outcome-writing families (`history.fp-signature`, `history.fp-cluster`, and
+`judgment.reputation`) are expected to diverge after turn one. `history.cycle-rejected` and
+`history.region-rejected` are read-only in this replay contract and therefore remain byte/digest
+equal with zero branch writes absent an exogenous change. This replaces the invalid 5/5-divergence
+witness; no write-only `ImplicitOutcomeStore` policy causality or invented learning write is inferred.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `bun test tests/unit/rig-replay.test.ts tests/unit/policy-rig-evidence.test.ts`
 
 Expected: missing profile replay/evidence APIs.
 
-- [ ] **Step 4: Generalize replay while keeping wrappers**
+- [x] **Step 4: Generalize replay while keeping wrappers**
 
 ```ts
 export interface PolicyReplayPair {
@@ -1022,7 +1043,7 @@ Normalize the ablation set to catalog order. Single-pass APIs call the profile A
 Return structured-cloned production final findings from `ReplayPolicyExecution`; keep provider
 ceiling and exact baseline reproduction.
 
-- [ ] **Step 5: Implement scenario evidence collection**
+- [x] **Step 5: Implement scenario evidence collection**
 
 ```ts
 export async function collectPolicyRigEvidence(input: {
@@ -1038,7 +1059,7 @@ opportunities, state reads/writes/digests, and sequence authority. Replay the fo
 on every applicable sequence. Never infer later policy causality from `ImplicitOutcomeStore` because
 production does not read it as a policy input.
 
-- [ ] **Step 6: Run GREEN and legacy regressions**
+- [x] **Step 6: Run GREEN and legacy regressions**
 
 ```bash
 bun test tests/unit/rig-replay.test.ts tests/unit/policy-rig-evidence.test.ts tests/unit/rig-ablate.test.ts tests/integration/policy-trace-offline-replay.test.ts
@@ -1046,13 +1067,13 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 7: Kill stateful mutants**
+- [x] **Step 7: Kill stateful mutants**
 
 Use a fresh branch pair per turn, share state directories, import baseline-owned absent paths into
 counterfactual, replace real store reads with envelope fields, omit one group member, and count
 `ran` with zero opportunities as an opportunity turn. Named tests must kill all six; restore SHAs.
 
-- [ ] **Step 8: Review and commit**
+- [x] **Step 8: Review and commit**
 
 ```bash
 git commit -m "feat(rig): collect stateful policy evidence"
@@ -1615,7 +1636,7 @@ inputs remain fixed. The implementing test must assert both columns before its t
 | T6 audit read identity | 1 stable Buffer read per source | 2 reads under hash reread mutant |
 | T7 stateful scenario sufficiency | 5/5 passes have 3 sequences × 2 opportunity turns | 0/5 sufficient at 2 sequences or 1 opportunity turn |
 | T7 four-history profile order | 4/4 IDs in catalog order | 3/4 when one member is omitted |
-| T7 branch persistence | turn-2 baseline/counterfactual digests differ in 5/5 seeded pass fixtures | 0/5 differ under fresh-pair/share/import mutants |
+| T7 branch persistence | 5/5 isolated real reads; exactly 3/5 write-producing families diverge and 2/5 read-only families remain equal with zero writes | expected 3/5 divergence is lost or branch isolation fails under fresh-pair/share/import mutants |
 | T7 opportunity carrier | 2/2 turns have opportunities | 0/2 valid when only `ran` with zero opportunities is supplied |
 | T7 final identity output | baseline + counterfactual findings present in 2/2 branches | 1/2 after one branch output is dropped |
 | T8 exact profile schedule | 23 profiles = 1 + 18 + 4 | 22 after one singleton/group drop |

@@ -4,6 +4,7 @@
 // layer (fp-ledger, reputation, region memory, lore, agent-lessons) inert. The rig measures
 // what that structurally cannot: the gate as an interactive loop, over a run whose history
 // accumulates.
+import { createHash } from "node:crypto";
 import {
   constants,
   accessSync,
@@ -39,7 +40,7 @@ import {
   replayPolicyAblations,
 } from "../../rig/replay.ts";
 import { renderRigReport } from "../../rig/report.ts";
-import { loadTurnScript } from "../../rig/turn-script.ts";
+import { loadTurnScript, readTurnScript } from "../../rig/turn-script.ts";
 import { type RigResult, RigResultSchema } from "../../schemas/rig-result.ts";
 import { writeFileAtomic } from "../../utils/atomic-write.ts";
 import { gitHeadSha, workingTreeDirtyFiles } from "../../utils/git.ts";
@@ -251,7 +252,9 @@ export async function runRigAblate(input: RigAblateInput): Promise<string> {
         `rig ablate: exact --layer must be one closed-catalog id: ${POLICY_PASS_IDS.join(", ")}`,
       );
     }
-    const script = loadTurnScript(input.scriptPath);
+    const scriptArtifact = readTurnScript(input.scriptPath);
+    const script = scriptArtifact.script;
+    const scriptSha256 = createHash("sha256").update(scriptArtifact.bytes).digest("hex");
     const siblingManifest = resolve(
       dirname(input.resultPath),
       base.policyReplay.artifactBinding?.manifestRef ?? "manifest.json",
@@ -263,7 +266,7 @@ export async function runRigAblate(input: RigAblateInput): Promise<string> {
       await replayPolicyAblations({
         manifestPath,
         sourceRepoRoot: input.sourceRepoRoot ?? process.cwd(),
-        authority: { result: base, scriptId: script.id },
+        authority: { result: base, scriptId: script.id, scriptSha256 },
         ...(passId === undefined ? {} : { passId: passId as PolicyPassId }),
       }),
     );

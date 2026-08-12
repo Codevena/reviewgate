@@ -21,8 +21,15 @@ const STATEFUL = [
   "history.region-rejected",
 ];
 
+const HISTORY_INTERACTION = [
+  "history.fp-signature",
+  "history.cycle-rejected",
+  "history.fp-cluster",
+  "history.region-rejected",
+];
+
 function binding(ref: string): Record<string, string> {
-  return { ref, sha256: SHA };
+  return { ref, sha256: createHash("sha256").update(ref).digest("hex") };
 }
 
 function catalogSnapshot(passId: string): Record<string, unknown> {
@@ -46,10 +53,79 @@ function scenarios(): Record<string, unknown> {
         id: `${passId}-${index + 1}`,
         pass_id: passId,
         manifest: binding(`rig/${passId}-${index + 1}.json`),
+        result: binding(`rig/${passId}-${index + 1}.result.json`),
+        script: binding(`rig/${passId}-${index + 1}.script.json`),
         initial_state: binding(`state/${passId}-${index + 1}.json`),
         expected_opportunity_turns: 2,
       })),
     ),
+  };
+}
+
+function truth(blockingFp: number, blockingFn: number, blockingTp: number) {
+  return { blocking_fp: blockingFp, blocking_fn: blockingFn, blocking_tp: blockingTp };
+}
+
+function rigTurn(turnIndex: number) {
+  return {
+    turn_index: turnIndex,
+    opportunity: { summary: 1, evaluations: 1, stages: 0, observed: true },
+    baseline: {
+      truth: truth(0, 1, 0),
+      state: {
+        digest: "c".repeat(64),
+        implicit_outcomes: turnIndex,
+        history_reads: 4,
+        history_writes: 1,
+      },
+    },
+    counterfactual: {
+      truth: truth(0, 0, 1),
+      state: {
+        digest: "d".repeat(64),
+        implicit_outcomes: 0,
+        history_reads: 4,
+        history_writes: 0,
+      },
+    },
+  };
+}
+
+function rigEvidence() {
+  const manifest = scenarios();
+  return {
+    schema: "reviewgate.policy-rig-evidence.v1",
+    scenario_manifest: binding("rig/scenarios.json"),
+    manifest,
+    authoritative: true,
+    sequences: (manifest.scenarios as Record<string, unknown>[]).map((scenario) => ({
+      scenario_id: scenario.id,
+      pass_id: scenario.pass_id,
+      authoritative: true,
+      opportunity_turns: 2,
+      truth_effects: {
+        baseline: truth(0, 2, 0),
+        ablated: truth(0, 0, 2),
+        error_reduction: -2,
+      },
+      turns: [rigTurn(1), rigTurn(2)],
+      history_interaction: HISTORY_INTERACTION.includes(String(scenario.pass_id))
+        ? {
+            pass_ids: HISTORY_INTERACTION,
+            opportunity_turns: 2,
+            truth_effects: {
+              baseline: truth(0, 2, 0),
+              ablated: truth(0, 0, 2),
+              error_reduction: -2,
+            },
+            turns: [rigTurn(1), rigTurn(2)],
+          }
+        : null,
+      manifest: scenario.manifest,
+      result: scenario.result,
+      script: scenario.script,
+      initial_state: scenario.initial_state,
+    })),
   };
 }
 
@@ -341,21 +417,46 @@ describe("policy measurement result contracts", () => {
     const incomplete = scenarios();
     (incomplete.scenarios as unknown[]).pop();
     expect(() => PolicyRigScenarioManifestSchema.parse(incomplete)).toThrow();
-    const evidence = {
-      schema: "reviewgate.policy-rig-evidence.v1",
-      scenario_manifest: binding("rig/scenarios.json"),
-      manifest: scenarios(),
-      authoritative: true,
-      sequences: (scenarios().scenarios as Record<string, unknown>[]).map((scenario) => ({
-        scenario_id: scenario.id,
-        pass_id: scenario.pass_id,
-        opportunity_turns: 2,
-        manifest: scenario.manifest,
-        initial_state: scenario.initial_state,
-        artifact: binding(`evidence/${scenario.id}.json`),
-      })),
+    const missingResult = scenarios();
+    first(missingResult.scenarios as Record<string, unknown>[]).result = undefined;
+    expect(() => PolicyRigScenarioManifestSchema.parse(missingResult)).toThrow();
+    const duplicateArtifacts = scenarios();
+    const declared = duplicateArtifacts.scenarios as Record<string, unknown>[];
+    declared[1] = { ...declared[1], manifest: declared[0]?.manifest };
+    expect(() => PolicyRigScenarioManifestSchema.parse(duplicateArtifacts)).toThrow();
+    const duplicateContent = scenarios();
+    const contentDeclared = duplicateContent.scenarios as Record<string, unknown>[];
+    contentDeclared[1] = {
+      ...contentDeclared[1],
+      manifest: {
+        ...(contentDeclared[1]?.manifest as Record<string, unknown>),
+        sha256: (contentDeclared[0]?.manifest as Record<string, unknown>).sha256,
+      },
     };
+    expect(() => PolicyRigScenarioManifestSchema.parse(duplicateContent)).toThrow();
+    const evidence = rigEvidence();
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).not.toThrow();
+    const swapped = structuredClone(evidence);
+    const firstSequence = first(swapped.sequences);
+    firstSequence.script = binding("rig/swapped-script.json");
+    expect(() => PolicyRigEvidenceSchema.parse(swapped)).toThrow();
+    const missingInteractionMember = rigEvidence();
+    const firstHistory = first(
+      missingInteractionMember.sequences.filter((sequence) => sequence.history_interaction),
+    );
+    firstHistory.history_interaction?.pass_ids.pop();
+    expect(() => PolicyRigEvidenceSchema.parse(missingInteractionMember)).toThrow();
+    const inconsistentTruth = rigEvidence();
+    first(inconsistentTruth.sequences).truth_effects.baseline.blocking_fn = 1;
+    expect(() => PolicyRigEvidenceSchema.parse(inconsistentTruth)).toThrow();
+    const ranWithoutOpportunity = rigEvidence();
+    first(first(ranWithoutOpportunity.sequences).turns).opportunity = {
+      summary: 0,
+      evaluations: 0,
+      stages: 0,
+      observed: true,
+    };
+    expect(() => PolicyRigEvidenceSchema.parse(ranWithoutOpportunity)).toThrow();
     evidence.sequences.pop();
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
   });
@@ -367,20 +468,7 @@ describe("policy measurement result contracts", () => {
   });
 
   test("rejects Rig evidence below two opportunity turns", () => {
-    const evidence = {
-      schema: "reviewgate.policy-rig-evidence.v1",
-      scenario_manifest: binding("rig/scenarios.json"),
-      manifest: scenarios(),
-      authoritative: true,
-      sequences: (scenarios().scenarios as Record<string, unknown>[]).map((scenario) => ({
-        scenario_id: scenario.id,
-        pass_id: scenario.pass_id,
-        opportunity_turns: 2,
-        manifest: scenario.manifest,
-        initial_state: scenario.initial_state,
-        artifact: binding(`evidence/${scenario.id}.json`),
-      })),
-    };
+    const evidence = rigEvidence();
     first(evidence.sequences).opportunity_turns = 1;
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
   });

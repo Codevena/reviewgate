@@ -6,6 +6,17 @@
 import { readFileSync } from "node:fs";
 import { type RigTurnScript, RigTurnScriptSchema } from "../schemas/rig-turn-script.ts";
 
+/** Parse exactly the bytes whose content address is persisted by driver/harvester. */
+export function parseTurnScriptBytes(bytes: Buffer): RigTurnScript {
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return RigTurnScriptSchema.parse(JSON.parse(text));
+}
+
+export function readTurnScript(path: string): { bytes: Buffer; script: RigTurnScript } {
+  const bytes = readFileSync(path);
+  return { bytes, script: parseTurnScriptBytes(bytes) };
+}
+
 export function loadTurnScript(path: string): RigTurnScript {
-  return RigTurnScriptSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  return readTurnScript(path).script;
 }
