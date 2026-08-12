@@ -427,6 +427,65 @@ describe("policy dogfood harvesting", () => {
     }
   });
 
+  test("rejects a runtime artifact that swaps trace entries across two audit-run identities", async () => {
+    const fixture = await frozenMultiFixture();
+    try {
+      const bound = boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root });
+      const swapped = {
+        ...fixture.manifest,
+        entries: fixture.manifest.entries.map((entry) =>
+          entry.kind === "trace"
+            ? {
+                ...entry,
+                run_id: entry.run_id === "run-a" ? "run-b" : "run-a",
+              }
+            : entry,
+        ),
+      };
+      const bytes = Buffer.from(canonicalJson(swapped), "utf8");
+      const hash = sourceSha256(bytes);
+      const ref = `artifacts/policy-dogfood-input/${hash}.json`;
+      writeFileSync(join(fixture.root, ref), bytes, { mode: 0o600 });
+      const challengeSha256 = sourceSha256(
+        Buffer.from(canonicalJson({ actor: "Markus", manifest: swapped, rows: fixture.rows }), "utf8"),
+      );
+      const attestation = {
+        schema: "reviewgate.policy-dogfood-attestation.v1" as const,
+        actor: "Markus",
+        attested_at: "2026-08-12T09:00:00.000Z",
+        challenge_sha256: challengeSha256,
+        input_manifest_sha256: hash,
+        rows: fixture.rows,
+      };
+      const attestationBytes = Buffer.from(canonicalJson(attestation), "utf8");
+      const attestationSha256 = sourceSha256(attestationBytes);
+      const attestationRef = `artifacts/policy-dogfood-attestation/${attestationSha256}.json`;
+      writeFileSync(join(fixture.root, attestationRef), attestationBytes, { mode: 0o600 });
+      const reads: string[] = [];
+      const snapshot = harvestPolicyDogfood({
+        ...bound,
+        preregistration: {
+          ...bound.preregistration,
+          dogfood: {
+            ...bound.preregistration.dogfood,
+            input_manifest_ref: ref,
+            input_manifest_sha256: hash,
+            attestation_ref: attestationRef,
+            attestation_sha256: attestationSha256,
+          },
+        },
+        inputManifest: swapped,
+        attestation,
+        onFrozenSourceRead: (entry) => reads.push(entry.ref),
+      });
+      expect(snapshot.labels).toHaveLength(0);
+      expect(snapshot.exclusions["attestation-input-manifest-mismatch"]).toBe(1);
+      expect(reads).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("validates preregistered manifest and attestation artifacts before opening frozen sources", async () => {
     const fixture = await frozenFixture("tp");
     try {

@@ -420,13 +420,12 @@ export function harvestPolicyDogfood(input: {
         auditRunBindings.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256 });
       }
     } else {
-      const key = pairKey(entry.run_id, entry.iter);
       try {
         const trace = PolicyTraceSchema.parse(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         );
         if (trace.run_id !== entry.run_id || trace.iter !== entry.iter) throw new Error("identity");
-        traces.set(key, trace);
+        traces.set(`${entry.audit_ref}\u0000${entry.trace_ref}`, trace);
       } catch {
         increment(exclusionsByCode, "incomplete-trace");
       }
@@ -437,7 +436,9 @@ export function harvestPolicyDogfood(input: {
   for (const row of attestation.rows) {
     const key = pairKey(row.run_id, row.iter);
     const events = auditEvents.get(key);
-    const trace = traces.get(key);
+    const binding = auditRunBindings.get(key);
+    const trace =
+      binding === undefined ? undefined : traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
     if (events === undefined || trace === undefined) {
       increment(exclusionsByCode, "incomplete-trace");
       continue;
@@ -469,7 +470,6 @@ export function harvestPolicyDogfood(input: {
     }
     const decision = decisions[0];
     const completion = completions[0];
-    const binding = auditRunBindings.get(key);
     if (
       decision === undefined ||
       completion === undefined ||

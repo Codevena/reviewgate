@@ -193,6 +193,31 @@ describe("policy measurement result contracts", () => {
     ).toThrow();
   });
 
+  test("rejects a trace entry whose audit binding belongs to another run identity", () => {
+    const manifest = {
+      schema: "reviewgate.policy-dogfood-input-manifest.v1",
+      since: "2026-08-01T00:00:00.000Z",
+      until: "2026-08-12T09:00:00.000Z",
+      entries: [
+        {
+          kind: "audit",
+          ref: "audit/a.jsonl",
+          sha256: SHA,
+          bytes: 1,
+          runs: [
+            { run_id: "run-a", iter: 1, trace_ref: "trace/a.json", trace_sha256: SHA },
+            { run_id: "run-b", iter: 1, trace_ref: "trace/b.json", trace_sha256: SHA },
+          ],
+        },
+        { kind: "trace", ref: "source/trace-a.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/a.json", sha256: SHA, bytes: 1, run_id: "run-b", iter: 1 },
+        { kind: "trace", ref: "source/trace-b.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/b.json", sha256: SHA, bytes: 1, run_id: "run-a", iter: 1 },
+      ],
+    };
+    expect(() => PolicyDogfoodInputManifestSchema.parse(manifest)).toThrow(
+      /same run_id and iter/i,
+    );
+  });
+
   test("requires a content-bound human TP/FP attestation", () => {
     const attestation = {
       schema: "reviewgate.policy-dogfood-attestation.v1",

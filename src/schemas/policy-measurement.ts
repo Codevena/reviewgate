@@ -197,15 +197,21 @@ export const PolicyDogfoodInputManifestSchema = z
       previous = entry.ref;
       keys.add(`${entry.kind}:${entry.ref}`);
     }
-    const traces = new Map<string, { ref: string; sha256: string }>();
-    const auditedRuns = new Map<string, { auditRef: string; traceRef: string; sha256: string }>();
+    const traces = new Map<string, { sha256: string; runId: string; iter: number }>();
+    const auditedRuns = new Map<string, {
+      auditRef: string;
+      traceRef: string;
+      sha256: string;
+      runId: string;
+      iter: number;
+    }>();
     for (const entry of value.entries) {
       if (entry.kind === "trace") {
         const key = `${entry.audit_ref}\u0000${entry.trace_ref}`;
         if (traces.has(key)) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "trace run identities must be unique" });
         }
-        traces.set(key, { ref: entry.ref, sha256: entry.sha256 });
+        traces.set(key, { sha256: entry.sha256, runId: entry.run_id, iter: entry.iter });
       } else {
         let previousRun = "";
         const seenRuns = new Set<string>();
@@ -216,17 +222,22 @@ export const PolicyDogfoodInputManifestSchema = z
           }
           previousRun = key;
           seenRuns.add(key);
-          auditedRuns.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256 });
+          auditedRuns.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256, runId: run.run_id, iter: run.iter });
         }
       }
     }
     for (const [key, binding] of auditedRuns) {
       const trace = traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
-      if (trace === undefined || trace.sha256 !== binding.sha256) {
+      if (
+        trace === undefined ||
+        trace.sha256 !== binding.sha256 ||
+        trace.runId !== binding.runId ||
+        trace.iter !== binding.iter
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["entries"],
-          message: "every audited run needs its exact unique trace inventory binding",
+          message: "every audited run needs its exact unique trace inventory binding with the same run_id and iter",
         });
       }
     }
