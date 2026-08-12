@@ -257,6 +257,20 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function traceArtifactRef(trace: PolicyTrace, traceSha256: string): string {
+  return `artifacts/policy-traces/2026/07/01/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`;
+}
+
+/** Rebind test-fixture identity after mutating embedded trace bytes. */
+function refreshTraceIdentity(run: AuthoritativeTraceRun): void {
+  const trace = run.trace;
+  if (trace === undefined) return;
+  const traceSha256 = sha256(canonicalJson(trace));
+  run.traceSha256 = traceSha256;
+  run.traceRef = traceArtifactRef(trace, traceSha256);
+  run.finalIdentitySha256 = sha256(canonicalJson(trace.final));
+}
+
 function emptyTrace(ablated: PolicyTrace["ablated"]): PolicyTrace {
   const passes = POLICY_PASS_IDS.map((passId) =>
     passId === "judgment.confidence" || ablated.includes(passId)
@@ -314,7 +328,7 @@ function traceRun(ablated: PolicyTrace["ablated"]): AuthoritativeTraceRun {
     catalogVersion: POLICY_CATALOG_VERSION,
     requestedAblations: ablated,
     trace,
-    traceRef: `artifacts/policy-traces/2026/07/01/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`,
+    traceRef: traceArtifactRef(trace, traceSha256),
     traceSha256,
     requestIdentitySha256: "c".repeat(64),
     effectiveConfigSha256: "d".repeat(64),
@@ -868,6 +882,7 @@ describe("runBenchMatrix", () => {
       name: string;
       mutate: (base: AuthoritativeTraceRun, variant: AuthoritativeTraceRun) => void;
       code: AuthoritativeTraceInvalidityCode;
+      refreshTraceIdentity?: "baseline" | "counterfactual";
     }> = [
       {
         name: "missing trace",
@@ -882,6 +897,7 @@ describe("runBenchMatrix", () => {
           if (variant.trace) variant.trace.passes = variant.trace.passes.slice(1);
         },
         code: "missing-pass-row",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "ablated pass not run",
@@ -899,6 +915,7 @@ describe("runBenchMatrix", () => {
           }
         },
         code: "pass-not-run",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "trace error",
@@ -948,6 +965,7 @@ describe("runBenchMatrix", () => {
           if (variant.trace) variant.trace.raw_response_sha256.reverse();
         },
         code: "response-hash-mismatch",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "request mismatch",
@@ -986,6 +1004,7 @@ describe("runBenchMatrix", () => {
           if (row?.status === "ran") Reflect.deleteProperty(row, "opportunities");
         },
         code: "missing-counter",
+        refreshTraceIdentity: "counterfactual",
       },
     ];
 
@@ -993,6 +1012,8 @@ describe("runBenchMatrix", () => {
       const nextBaseline = structuredClone(baseline);
       const nextVariant = structuredClone(counterfactual);
       testCase.mutate(nextBaseline, nextVariant);
+      if (testCase.refreshTraceIdentity === "baseline") refreshTraceIdentity(nextBaseline);
+      if (testCase.refreshTraceIdentity === "counterfactual") refreshTraceIdentity(nextVariant);
       const result = validateAuthoritativeTracePair(nextBaseline, nextVariant);
       expect(result.ok, testCase.name).toBe(false);
       if (!result.ok) {
@@ -1061,6 +1082,7 @@ describe("runBenchMatrix", () => {
           variant.trace.ablated = [...invalid.requested] as typeof variant.trace.ablated;
         }
         invalid.mutate?.(variant.trace);
+        refreshTraceIdentity(variant);
       }
       const result = validateAuthoritativeTraceProfilePair(baseline, variant, expected);
       expect(result.ok, invalid.name).toBe(false);
