@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASSES, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
@@ -7,6 +8,10 @@ import {
   type PolicyClassification,
   type PolicyMeasurementLane,
 } from "../core/policy/measurement-contract.ts";
+import {
+  BenchPolicyProfileArtifactBindingSchema,
+  PolicyBenchProfileArtifactSchema,
+} from "./bench-result.ts";
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i);
 const PolicyPassIdSchema = z.enum(POLICY_PASS_IDS);
@@ -528,8 +533,8 @@ export const PolicyBenchBundleSchema = z
         .object({
           id: z.string().min(1),
           ablated_pass_ids: z.array(PolicyPassIdSchema),
-          repeats: z.array(z.number().int().min(1).max(3)).length(3),
-          artifact: ArtifactBindingSchema,
+          artifact: BenchPolicyProfileArtifactBindingSchema,
+          data: PolicyBenchProfileArtifactSchema,
         })
         .strict(),
     ),
@@ -560,13 +565,69 @@ export const PolicyBenchBundleSchema = z
         message: "bundle must contain the closed baseline/singleton/interaction profile inventory",
       });
     }
+    const artifactHashes = new Set<string>();
     for (const [index, profile] of bundle.profiles.entries()) {
-      if (!sameStringList(profile.repeats.map(String), ["1", "2", "3"])) {
+      const expectedId =
+        index === 0
+          ? "baseline"
+          : index <= POLICY_PASS_IDS.length
+            ? `single:${POLICY_PASS_IDS[index - 1]}`
+            : `interaction:${index - POLICY_PASS_IDS.length}`;
+      const canonicalData = canonicalJson(profile.data);
+      const dataSha256 = createHash("sha256").update(canonicalData).digest("hex");
+      if (
+        profile.id !== expectedId ||
+        profile.data.profile_id !== profile.id ||
+        !sameStringList(profile.data.ablated_pass_ids, profile.ablated_pass_ids)
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ["profiles", index, "repeats"],
-          message: "each profile must bind repeats one, two, and three exactly once",
+          path: ["profiles", index],
+          message: "profile id and ablation identity must match the closed schedule",
         });
+      }
+      if (
+        profile.artifact.sha256 !== dataSha256 ||
+        profile.artifact.ref !== `artifacts/policy-profiles/${dataSha256}.json` ||
+        artifactHashes.has(dataSha256)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["profiles", index, "artifact"],
+          message: "every profile requires one unique content-addressed immutable artifact",
+        });
+      }
+      artifactHashes.add(dataSha256);
+    }
+    for (const repeatIndex of [0, 1, 2]) {
+      const baseline = bundle.profiles[0]?.data.repeats[repeatIndex];
+      for (const [profileIndex, profile] of bundle.profiles.entries()) {
+        const repeat = profile.data.repeats[repeatIndex];
+        if (
+          baseline === undefined ||
+          repeat === undefined ||
+          repeat.response_manifest.ref !== baseline.response_manifest.ref ||
+          repeat.response_manifest.sha256 !== baseline.response_manifest.sha256 ||
+          repeat.policy_trace_set.ref !== baseline.policy_trace_set.ref ||
+          repeat.policy_trace_set.sha256 !== baseline.policy_trace_set.sha256 ||
+          !sameStringList(repeat.ordered_response_sha256, baseline.ordered_response_sha256) ||
+          repeat.cases.some((row, caseIndex) => {
+            const baselineCase = baseline.cases[caseIndex];
+            return (
+              baselineCase === undefined ||
+              row.case_id !== baselineCase.case_id ||
+              row.repeat !== baselineCase.repeat ||
+              row.content_sha256 !== baselineCase.content_sha256
+            );
+          })
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["profiles", profileIndex, "data", "repeats", repeatIndex],
+            message:
+              "all profiles in one repeat must bind the same cases, ordered responses, and trace set",
+          });
+        }
       }
     }
   });

@@ -1086,16 +1086,19 @@ git commit -m "feat(rig): collect stateful policy evidence"
 **Files:**
 - Modify: `src/cli/commands/bench.ts:1049-1248,2357-2810`
 - Modify: `src/schemas/bench-result.ts:804-1000`
+- Modify: `src/schemas/policy-measurement.ts:528-610`
 - Create: `tests/unit/bench-policy.test.ts`
-- Modify: `tests/unit/bench-matrix.test.ts`
-- Modify: `tests/unit/bench-preregistration.test.ts`
+- Verify unchanged regression contract: `tests/unit/bench-matrix.test.ts`
+- Verify unchanged regression contract: `tests/unit/bench-preregistration.test.ts`
+- Modify: `tests/unit/policy-measurement-schema.test.ts`
 
 **Interfaces:**
 - Produces `runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunOutput>` and an immutable
-  `PolicyBenchBundle`.
+  `PolicyBenchBundle` whose `PolicyBenchProfileArtifact` rows bind all three repeat identities,
+  response/result/trace-set refs and hashes, ordered response hashes, case truth, and pass authority.
 - Keeps `runBenchMatrix` as a singleton-profile wrapper over the shared capture engine.
 
-- [ ] **Step 1: Write the exact schedule RED**
+- [x] **Step 1: Write the exact schedule RED**
 
 Use the internal capture engine with a two-case unit fixture and the exact closed 23 profiles; do not
 weaken or override the production preregistration schema. A separate command-level test builds 30
@@ -1120,7 +1123,7 @@ expect(calls.preflight).toBe(baselineExpectedPreflights);
 Variant adapters throw if any live method is reached. Assert all profile traces in each repeat have
 identical ordered response hashes.
 
-- [ ] **Step 2: Write invalidity RED cases**
+- [x] **Step 2: Write invalidity RED cases**
 
 Cover incomplete profile inventory, group member/order mismatch, one unconsumed response, changed
 request/config hash, a `not-run` requested pass, cross-repeat response reuse, non-authoritative case,
@@ -1129,13 +1132,13 @@ reviewer/critic retry ceilings, max output tokens, candidate/veto/correction lit
 output path before adapter creation. Routing fixtures independently alter `only`, `order`, and
 `allowFallbacks`. A provider factory spy must remain at zero for every mismatch.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `bun test tests/unit/bench-policy.test.ts`
 
 Expected: missing `runBenchPolicy` and bundle schema support.
 
-- [ ] **Step 4: Refactor the capture engine around profiles**
+- [x] **Step 4: Refactor the capture engine around profiles**
 
 ```ts
 export interface BenchPolicyInput {
@@ -1165,13 +1168,13 @@ OpenRouter routing (`only`, ordered `order`, `allowFallbacks`)/retries/
 output ceiling/analysis rules/output paths against the effective run before adapter creation, and
 passes the exact closed 23 profiles.
 
-- [ ] **Step 5: Persist the strict Bench policy bundle**
+- [x] **Step 5: Persist the strict Bench policy bundle**
 
 Write response manifests, results, traces, and trace sets through Task 1's artifact boundary. Bind
 profile ID, ordered ablation IDs, repeat/case identity, truth block, result refs/hashes, and exact
 response-manifest ref/hash. Publish the Bench input bundle only after every artifact reverifies.
 
-- [ ] **Step 6: Run GREEN and Bench regressions**
+- [x] **Step 6: Run GREEN and Bench regressions**
 
 ```bash
 bun test tests/unit/bench-policy.test.ts tests/unit/bench-matrix.test.ts tests/unit/bench-result-schema.test.ts tests/unit/bench-preregistration.test.ts tests/unit/bench-runner.test.ts
@@ -1179,17 +1182,17 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 7: Kill schedule/pairing mutants**
+- [x] **Step 7: Kill schedule/pairing mutants**
 
 Drop one singleton, drop one group, reuse only the final repeat, allow a variant preflight, compare
 response hashes as sets, skip full consumption, ignore truth tamper, default a `not-run` pass to
 zero opportunities, and construct an adapter before rejecting each route/retry/output/output-path
 mismatch. Each must fail a named test; restore SHAs.
 
-- [ ] **Step 8: Review and commit**
+- [x] **Step 8: Review and commit**
 
 ```bash
-git commit -m "feat(bench): run full policy evidence schedule"
+git commit -m "feat(bench): execute preregistered policy schedule"
 ```
 
 ---

@@ -206,6 +206,48 @@ const ResultArtifactRefSchema = z.string().regex(/^artifacts\/results\/[0-9a-f]{
 const ResponseManifestArtifactRefSchema = z
   .string()
   .regex(/^artifacts\/responses\/[0-9a-f]{64}\.json$/);
+const PolicyProfileArtifactRefSchema = z
+  .string()
+  .regex(/^artifacts\/policy-profiles\/[0-9a-f]{64}\.json$/);
+const PolicyRepeatResultArtifactRefSchema = z
+  .string()
+  .regex(/^artifacts\/policy-repeat-results\/[0-9a-f]{64}\.json$/);
+
+function contentAddressedBinding(refSchema: z.ZodType<string>, directory: string) {
+  return z
+    .object({ ref: refSchema, sha256: Sha256Schema })
+    .strict()
+    .superRefine((value, ctx) => {
+      if (value.ref !== `artifacts/${directory}/${value.sha256}.json`) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["ref"],
+          message: `${directory} artifact path/hash identity mismatch`,
+        });
+      }
+    });
+}
+
+export const BenchResultArtifactBindingSchema = contentAddressedBinding(
+  ResultArtifactRefSchema,
+  "results",
+);
+export const BenchResponseManifestArtifactBindingSchema = contentAddressedBinding(
+  ResponseManifestArtifactRefSchema,
+  "responses",
+);
+export const BenchPolicyTraceSetArtifactBindingSchema = contentAddressedBinding(
+  PolicyTraceSetArtifactRefSchema,
+  "policy-trace-sets",
+);
+export const BenchPolicyProfileArtifactBindingSchema = contentAddressedBinding(
+  PolicyProfileArtifactRefSchema,
+  "policy-profiles",
+);
+export const BenchPolicyRepeatResultArtifactBindingSchema = contentAddressedBinding(
+  PolicyRepeatResultArtifactRefSchema,
+  "policy-repeat-results",
+);
 
 export type ThrowableSafeValue =
   | null
@@ -440,12 +482,29 @@ export const CapturedThrowableSnapshotSchema: z.ZodType<CapturedThrowableSnapsho
 export const BenchResponseManifestSchema = z
   .object({
     schema: z.literal("reviewgate.bench.provider-response-hashes.v2"),
+    /** Additive Slice-2A capture identity; legacy Matrix manifests omit it. */
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+    preflights: z
+      .array(
+        z
+          .object({
+            provider: z.string().min(1),
+            ordinal: z.number().int().nonnegative(),
+            repeat: z.number().int().positive().optional(),
+            request_sha256: Sha256Schema,
+            response_sha256: Sha256Schema,
+            outcome: z.enum(["return", "throw"]),
+          })
+          .strict(),
+      )
+      .optional(),
     entries: z.array(
       z
         .object({
           provider: z.string().min(1),
           kind: z.enum(["review", "complete"]),
           ordinal: z.number().int().nonnegative(),
+          repeat: z.number().int().positive().optional(),
           request_sha256: Sha256Schema,
           response_sha256: Sha256Schema,
           outcome: z.enum(["return", "throw"]),
@@ -482,6 +541,24 @@ export const BenchResponseManifestSchema = z
         code: z.ZodIssueCode.custom,
         path: ["entries"],
         message: "response ordinals must be globally contiguous",
+      });
+    }
+    if (value.preflights?.some((entry, index) => entry.ordinal !== index)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preflights"],
+        message: "preflight ordinals must be globally contiguous",
+      });
+    }
+    if (
+      value.repeat !== undefined &&
+      (value.entries.some((entry) => entry.repeat !== value.repeat) ||
+        value.preflights?.some((entry) => entry.repeat !== value.repeat))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entries"],
+        message: "policy response entries and preflights must belong to their capture repeat",
       });
     }
   });
@@ -895,6 +972,39 @@ export const BenchResultSchema = z
   })
   .strict();
 
+/** Repeat-scoped view of one profile's pooled Bench result. */
+export const BenchPolicyRepeatResultSchema = z
+  .object({
+    schema: z.literal("reviewgate.bench.policy-repeat-result.v1"),
+    profile_id: z.string().min(1),
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    source_result: BenchResultArtifactBindingSchema,
+    cases: z.array(CaseResultSchema).length(30),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    let previous = "";
+    for (const [index, row] of value.cases.entries()) {
+      if (
+        row.repeat !== value.repeat ||
+        row.id <= previous ||
+        row.status !== "scored" ||
+        row.policy_trace?.authoritative !== true ||
+        row.policy_truth === undefined
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["cases", index],
+          message:
+            "repeat result cases must be sorted, scored, authoritative, truth-bound, and repeat-scoped",
+        });
+      }
+      previous = row.id;
+    }
+  });
+
+export type BenchPolicyRepeatResult = z.infer<typeof BenchPolicyRepeatResultSchema>;
+
 const BenchPolicyTraceSetRunSchema = z
   .object({
     label: z.string().min(1),
@@ -1012,6 +1122,203 @@ export const BenchPolicyTraceSetSchema = z
       }
     }
   });
+
+const BenchPolicyProfileTraceSetRunSchema = z
+  .object({
+    profile_id: z.string().min(1),
+    ablated_pass_ids: z.array(PolicyPassIdSchema),
+    result: BenchPolicyRepeatResultArtifactBindingSchema,
+    traces: z.array(BenchPolicyTraceSetRunSchema.shape.traces.element).length(30),
+  })
+  .strict();
+
+/** One independently identified repeat containing the closed multi-pass profile schedule. */
+export const BenchPolicyProfileTraceSetSchema = z
+  .object({
+    schema: z.literal("reviewgate.bench.policy-profile-trace-set.v1"),
+    catalog_version: z.literal(POLICY_CATALOG_VERSION),
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    response_manifest: BenchResponseManifestArtifactBindingSchema,
+    runs: z.array(BenchPolicyProfileTraceSetRunSchema).length(23),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const baseline = value.runs[0];
+    if (baseline?.profile_id !== "baseline" || baseline.ablated_pass_ids.length !== 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["runs", 0],
+        message: "policy profile trace set must start with the unabated baseline",
+      });
+      return;
+    }
+    const profileIds = new Set<string>();
+    for (const [runIndex, run] of value.runs.entries()) {
+      if (profileIds.has(run.profile_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["runs", runIndex, "profile_id"],
+          message: "policy profile trace-set ids must be unique",
+        });
+      }
+      profileIds.add(run.profile_id);
+      if (baseline === undefined || run.traces.length !== baseline.traces.length) continue;
+      for (const [traceIndex, trace] of run.traces.entries()) {
+        const base = baseline.traces[traceIndex];
+        if (
+          trace.repeat !== value.repeat ||
+          base === undefined ||
+          trace.case_id !== base.case_id ||
+          trace.repeat !== base.repeat ||
+          trace.effective_config_sha256 !== base.effective_config_sha256 ||
+          trace.request_identity_sha256 !== base.request_identity_sha256 ||
+          trace.raw_response_sha256.length !== base.raw_response_sha256.length ||
+          trace.raw_response_sha256.some(
+            (hash, hashIndex) => hash !== base.raw_response_sha256[hashIndex],
+          )
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["runs", runIndex, "traces", traceIndex],
+            message: "policy profile trace-set pair identity mismatch",
+          });
+        }
+      }
+    }
+  });
+
+export type BenchPolicyProfileTraceSet = z.infer<typeof BenchPolicyProfileTraceSetSchema>;
+
+const PolicyBenchProfileCaseIdentitySchema = z
+  .object({
+    case_id: z.string().min(1),
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    content_sha256: Sha256Schema,
+    policy_truth_sha256: Sha256Schema,
+  })
+  .strict();
+
+const PolicyBenchProfileRepeatSchema = z
+  .object({
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    authoritative: z.literal(true),
+    fully_consumed: z.literal(true),
+    response_manifest: BenchResponseManifestArtifactBindingSchema,
+    result: BenchPolicyRepeatResultArtifactBindingSchema,
+    policy_trace_set: BenchPolicyTraceSetArtifactBindingSchema,
+    ordered_response_sha256: z.array(Sha256Schema).min(1),
+    requested_passes: z.array(
+      z
+        .object({
+          pass_id: PolicyPassIdSchema,
+          ran_cases: z.number().int().positive(),
+          opportunities: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    cases: z.array(PolicyBenchProfileCaseIdentitySchema).length(30),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const caseIds = new Set<string>();
+    let previous = "";
+    for (const [index, row] of value.cases.entries()) {
+      if (row.repeat !== value.repeat) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["cases", index, "repeat"],
+          message: "case repeat identity must equal its enclosing capture repeat",
+        });
+      }
+      if (row.case_id <= previous || caseIds.has(row.case_id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["cases", index, "case_id"],
+          message: "repeat cases must be code-unit sorted and unique",
+        });
+      }
+      previous = row.case_id;
+      caseIds.add(row.case_id);
+    }
+    const requestedIds = new Set<string>();
+    for (const [index, requested] of value.requested_passes.entries()) {
+      if (requestedIds.has(requested.pass_id) || requested.ran_cases !== value.cases.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["requested_passes", index],
+          message: "every requested pass must have one ran row for every case",
+        });
+      }
+      requestedIds.add(requested.pass_id);
+    }
+  });
+
+/**
+ * Immutable profile-level authority record for Slice 2A. The raw Bench artifacts stay in their
+ * existing schemas; this record binds the exact three capture identities that make one profile
+ * admissible for policy analysis.
+ */
+export const PolicyBenchProfileArtifactSchema = z
+  .object({
+    schema: z.literal("reviewgate.policy-bench-profile.v1"),
+    profile_id: z.string().min(1),
+    ablated_pass_ids: z.array(PolicyPassIdSchema),
+    repeats: z.array(PolicyBenchProfileRepeatSchema).length(3),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.repeats.some((repeat, index) => repeat.repeat !== index + 1)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repeats"],
+        message: "profile captures must bind repeats one, two, and three in order",
+      });
+    }
+    const manifestHashes = new Set(value.repeats.map((repeat) => repeat.response_manifest.sha256));
+    const resultHashes = new Set(value.repeats.map((repeat) => repeat.result.sha256));
+    const traceSetHashes = new Set(value.repeats.map((repeat) => repeat.policy_trace_set.sha256));
+    if (manifestHashes.size !== 3 || resultHashes.size !== 3 || traceSetHashes.size !== 3) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["repeats"],
+        message: "each repeat requires isolated response, result, and trace-set identities",
+      });
+    }
+    const baselineCases = value.repeats[0]?.cases;
+    for (const [repeatIndex, repeat] of value.repeats.entries()) {
+      if (
+        repeat.requested_passes.length !== value.ablated_pass_ids.length ||
+        repeat.requested_passes.some(
+          (requested, index) => requested.pass_id !== value.ablated_pass_ids[index],
+        )
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repeats", repeatIndex, "requested_passes"],
+          message: "requested-pass authority must equal the exact profile ablation inventory",
+        });
+      }
+      if (
+        baselineCases === undefined ||
+        repeat.cases.some((row, index) => {
+          const baseline = baselineCases[index];
+          return (
+            baseline === undefined ||
+            row.case_id !== baseline.case_id ||
+            row.content_sha256 !== baseline.content_sha256
+          );
+        })
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repeats", repeatIndex, "cases"],
+          message: "all repeats must bind the same ordered frozen case identities",
+        });
+      }
+    }
+  });
+
+export type PolicyBenchProfileArtifact = z.infer<typeof PolicyBenchProfileArtifactSchema>;
 
 // reviewgate bench matrix (spec §8) — the ablation Δ table. One variant per row:
 // the baseline (full suppression) plus one row per ablated layer, each carrying

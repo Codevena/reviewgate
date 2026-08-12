@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { canonicalJson } from "../../src/audit/canonical.ts";
 import { POLICY_PASSES, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import { POLICY_MEASUREMENT_INTERACTIONS } from "../../src/core/policy/measurement-contract.ts";
+import { PolicyBenchProfileArtifactSchema } from "../../src/schemas/bench-result.ts";
 import {
   PolicyBenchBundleSchema,
   PolicyDogfoodAttestationSchema,
@@ -30,6 +32,77 @@ const HISTORY_INTERACTION = [
 
 function binding(ref: string): Record<string, string> {
   return { ref, sha256: createHash("sha256").update(ref).digest("hex") };
+}
+
+function contentBinding(directory: string, seed: string): Record<string, string> {
+  const sha256 = createHash("sha256").update(seed).digest("hex");
+  return { ref: `artifacts/${directory}/${sha256}.json`, sha256 };
+}
+
+function policyProfileArtifact(id: string, ablatedPassIds: readonly string[]) {
+  return {
+    schema: "reviewgate.policy-bench-profile.v1",
+    profile_id: id,
+    ablated_pass_ids: [...ablatedPassIds],
+    repeats: [1, 2, 3].map((repeat) => ({
+      repeat,
+      authoritative: true,
+      fully_consumed: true,
+      response_manifest: contentBinding("responses", `responses:${repeat}`),
+      result: contentBinding("policy-repeat-results", `${id}:result:${repeat}`),
+      policy_trace_set: contentBinding("policy-trace-sets", `trace-set:${repeat}`),
+      ordered_response_sha256: [
+        createHash("sha256").update(`review:${repeat}`).digest("hex"),
+        createHash("sha256").update(`complete:${repeat}`).digest("hex"),
+      ],
+      requested_passes: ablatedPassIds.map((passId) => ({
+        pass_id: passId,
+        ran_cases: 30,
+        opportunities: 0,
+      })),
+      cases: Array.from({ length: 30 }, (_, index) => ({
+        case_id: `case-${String(index + 1).padStart(2, "0")}`,
+        repeat,
+        content_sha256: createHash("sha256").update(`case:${index}`).digest("hex"),
+        policy_truth_sha256: createHash("sha256")
+          .update(`${id}:truth:${repeat}:${index}`)
+          .digest("hex"),
+      })),
+    })),
+  };
+}
+
+function policyBenchBundle() {
+  const profiles = [
+    { id: "baseline", ablated: [] as string[] },
+    ...POLICY_PASS_IDS.map((passId) => ({ id: `single:${passId}`, ablated: [passId] })),
+    ...POLICY_MEASUREMENT_INTERACTIONS.map((group, index) => ({
+      id: `interaction:${index + 1}`,
+      ablated: [...group],
+    })),
+  ].map(({ id, ablated }) => {
+    const data = policyProfileArtifact(id, ablated);
+    const sha256 = createHash("sha256").update(canonicalJson(data)).digest("hex");
+    return {
+      id,
+      ablated_pass_ids: ablated,
+      artifact: { ref: `artifacts/policy-profiles/${sha256}.json`, sha256 },
+      data,
+    };
+  });
+  return {
+    schema: "reviewgate.policy-bench-bundle.v1",
+    preregistration: binding("pre.json"),
+    profiles,
+  };
+}
+
+function rebindPolicyProfile(profile: {
+  artifact: { ref: string; sha256: string };
+  data: unknown;
+}): void {
+  const sha256 = createHash("sha256").update(canonicalJson(profile.data)).digest("hex");
+  profile.artifact = { ref: `artifacts/policy-profiles/${sha256}.json`, sha256 };
 }
 
 function catalogSnapshot(passId: string): Record<string, unknown> {
@@ -473,34 +546,89 @@ describe("policy measurement result contracts", () => {
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
   });
 
-  test("requires each Bench profile to bind repeats one, two, and three exactly once", () => {
-    const profiles = [
-      {
-        id: "baseline",
-        ablated_pass_ids: [],
-        repeats: [1, 2, 3],
-        artifact: binding("bench/base.json"),
-      },
-      ...POLICY_PASS_IDS.map((passId) => ({
-        id: `single:${passId}`,
-        ablated_pass_ids: [passId],
-        repeats: [1, 2, 3],
-        artifact: binding(`bench/${passId}.json`),
-      })),
-      ...POLICY_MEASUREMENT_INTERACTIONS.map((group, index) => ({
-        id: `interaction:${index}`,
-        ablated_pass_ids: [...group],
-        repeats: [1, 2, 3],
-        artifact: binding(`bench/interaction-${index}.json`),
-      })),
-    ];
-    const bundle = {
-      schema: "reviewgate.policy-bench-bundle.v1",
-      preregistration: binding("pre.json"),
-      profiles,
-    };
+  test("binds exact isolated repeat identities and every immutable Bench profile artifact", () => {
+    const bundle = policyBenchBundle();
     expect(() => PolicyBenchBundleSchema.parse(bundle)).not.toThrow();
-    first(profiles).repeats = [1, 1, 1];
-    expect(() => PolicyBenchBundleSchema.parse(bundle)).toThrow();
-  });
+    expect(() => PolicyBenchProfileArtifactSchema.parse(first(bundle.profiles).data)).not.toThrow();
+
+    const missingRepeat = structuredClone(bundle);
+    const missingRepeatProfile = first(missingRepeat.profiles);
+    missingRepeatProfile.data.repeats.pop();
+    rebindPolicyProfile(missingRepeatProfile);
+    expect(() => PolicyBenchBundleSchema.parse(missingRepeat)).toThrow();
+
+    const swappedRepeatIdentity = structuredClone(bundle);
+    const swappedRepeats = first(swappedRepeatIdentity.profiles).data.repeats;
+    const firstRepeat = first(swappedRepeats);
+    const secondRepeat = swappedRepeats[1];
+    if (secondRepeat === undefined) throw new Error("missing second repeat fixture");
+    firstRepeat.response_manifest = secondRepeat.response_manifest;
+    rebindPolicyProfile(first(swappedRepeatIdentity.profiles));
+    expect(() => PolicyBenchBundleSchema.parse(swappedRepeatIdentity)).toThrow();
+
+    const reusedRepeatResult = structuredClone(bundle);
+    const reusedResultRepeats = first(reusedRepeatResult.profiles).data.repeats;
+    const reusedResultSecond = reusedResultRepeats[1];
+    if (reusedResultSecond === undefined) throw new Error("missing reused-result repeat fixture");
+    reusedResultSecond.result = first(reusedResultRepeats).result;
+    rebindPolicyProfile(first(reusedRepeatResult.profiles));
+    expect(() => PolicyBenchBundleSchema.parse(reusedRepeatResult)).toThrow();
+
+    const identicalLogicalResponses = structuredClone(bundle);
+    for (const profile of identicalLogicalResponses.profiles) {
+      const identicalFirst = first(profile.data.repeats);
+      const identicalThird = profile.data.repeats[2];
+      if (identicalThird === undefined) throw new Error("missing third repeat fixture");
+      identicalThird.ordered_response_sha256 = identicalFirst.ordered_response_sha256;
+      rebindPolicyProfile(profile);
+    }
+    expect(() => PolicyBenchBundleSchema.parse(identicalLogicalResponses)).not.toThrow();
+
+    const responseSetOnlyMatch = structuredClone(bundle);
+    const reorderedProfile = responseSetOnlyMatch.profiles[1];
+    if (reorderedProfile === undefined) throw new Error("missing reordered profile fixture");
+    first(reorderedProfile.data.repeats).ordered_response_sha256.reverse();
+    rebindPolicyProfile(reorderedProfile);
+    expect(() => PolicyBenchBundleSchema.parse(responseSetOnlyMatch)).toThrow();
+
+    const mismatchedArtifactHash = structuredClone(bundle);
+    first(mismatchedArtifactHash.profiles).artifact.sha256 = "f".repeat(64);
+    expect(() => PolicyBenchBundleSchema.parse(mismatchedArtifactHash)).toThrow();
+
+    const wrongCaseRepeat = structuredClone(bundle);
+    const wrongCaseProfile = first(wrongCaseRepeat.profiles);
+    const wrongRepeatCase = first(first(wrongCaseProfile.data.repeats).cases);
+    wrongRepeatCase.repeat = 2;
+    rebindPolicyProfile(wrongCaseProfile);
+    expect(() => PolicyBenchBundleSchema.parse(wrongCaseRepeat)).toThrow();
+
+    const notRunRequestedPass = structuredClone(bundle);
+    const singletonProfile = notRunRequestedPass.profiles[1];
+    if (singletonProfile === undefined) throw new Error("missing singleton profile fixture");
+    const requestedPass = first(first(singletonProfile.data.repeats).requested_passes);
+    requestedPass.ran_cases = 0;
+    rebindPolicyProfile(singletonProfile);
+    expect(() => PolicyBenchBundleSchema.parse(notRunRequestedPass)).toThrow();
+
+    const nonAuthoritativeCase = structuredClone(bundle);
+    const nonAuthoritativeProfile = first(nonAuthoritativeCase.profiles);
+    first(nonAuthoritativeProfile.data.repeats).authoritative = false as true;
+    rebindPolicyProfile(nonAuthoritativeProfile);
+    expect(() => PolicyBenchBundleSchema.parse(nonAuthoritativeCase)).toThrow();
+
+    const tamperedTruth = structuredClone(bundle);
+    const tamperedProfile = first(tamperedTruth.profiles);
+    for (const repeat of tamperedProfile.data.repeats) {
+      first(repeat.cases).policy_truth_sha256 = "e".repeat(64);
+    }
+    rebindPolicyProfile(tamperedProfile);
+    expect(() => PolicyBenchBundleSchema.parse(tamperedTruth)).not.toThrow();
+
+    const reusedProfileArtifact = structuredClone(bundle);
+    const firstProfile = first(reusedProfileArtifact.profiles);
+    const secondProfile = reusedProfileArtifact.profiles[1];
+    if (secondProfile === undefined) throw new Error("missing second profile fixture");
+    secondProfile.artifact = firstProfile.artifact;
+    expect(() => PolicyBenchBundleSchema.parse(reusedProfileArtifact)).toThrow();
+  }, 30_000);
 });

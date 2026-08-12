@@ -39,6 +39,7 @@ import {
   buildBenchConfig,
   runBenchCase,
   validateAuthoritativeTracePair,
+  validateAuthoritativeTraceProfilePair,
 } from "../../bench/runner.ts";
 import type { ReviewgateConfig } from "../../config/define-config.ts";
 import {
@@ -46,6 +47,7 @@ import {
   POLICY_PASS_IDS,
   type PolicyPassId,
 } from "../../core/policy/catalog.ts";
+import { POLICY_MEASUREMENT_INTERACTIONS } from "../../core/policy/measurement-contract.ts";
 import type { PolicyExecutionOptions } from "../../core/policy/replay.ts";
 import type {
   OpenRouterProviderRouting,
@@ -64,6 +66,10 @@ import {
 import {
   type BenchMatrix,
   BenchMatrixSchema,
+  type BenchPolicyProfileTraceSet,
+  BenchPolicyProfileTraceSetSchema,
+  type BenchPolicyRepeatResult,
+  BenchPolicyRepeatResultSchema,
   type BenchPolicyTraceSet,
   BenchPolicyTraceSetSchema,
   type BenchResponseManifest,
@@ -77,9 +83,19 @@ import {
   type Cost,
   type MatrixVariant,
   type Metric,
+  type PolicyBenchProfileArtifact,
+  PolicyBenchProfileArtifactSchema,
   type ProviderResult,
   isAuthoritativeThrowableString,
 } from "../../schemas/bench-result.ts";
+import {
+  type PolicyMeasurementPreregistration,
+  PolicyMeasurementPreregistrationSchema,
+} from "../../schemas/policy-measurement-preregistration.ts";
+import {
+  type PolicyBenchBundle,
+  PolicyBenchBundleSchema,
+} from "../../schemas/policy-measurement.ts";
 import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 import { spawnCapture } from "../../utils/spawn-capture.ts";
 import { RG_VERSION } from "../../version.ts";
@@ -142,6 +158,8 @@ export interface BenchRunInput {
   ablationLabels?: string[];
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  /** Exact reviewer-side OpenRouter route for preregistered policy capture. */
+  reviewerOpenrouterProvider?: OpenRouterProviderRouting;
   /** Pin a reviewer's upstream model, so provenance records what actually ran
    * instead of a "default" sentinel that resolves outside the repo. */
   providerModels?: Partial<Record<ProviderId, string>>;
@@ -173,6 +191,8 @@ export interface BenchRunInput {
   policyExecution?: PolicyExecutionOptions;
   /** Internal Matrix-owned real artifact sink for per-case policy traces. */
   policyTraceStore?: { root: string; refPrefix: string; now?: Date };
+  /** Internal capture-owned repeat cursor; never accepted from the CLI boundary. */
+  captureContext?: { repeat: number };
 }
 
 export interface BenchRunnerInfo {
@@ -676,6 +696,11 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
       ...(input.providerModels ? { providerModels: input.providerModels } : {}),
       ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
     });
+    if (input.reviewerOpenrouterProvider !== undefined && config.providers.openrouter) {
+      config.providers.openrouter.openrouterProvider = structuredClone(
+        input.reviewerOpenrouterProvider,
+      );
+    }
   } catch (err) {
     return usage(err instanceof Error ? err.message : String(err));
   }
@@ -739,6 +764,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
   let scoredCount = 0;
 
   for (let r = 1; r <= repeat; r++) {
+    if (input.captureContext !== undefined) input.captureContext.repeat = r;
     for (const loaded of loadedCases) {
       if (loaded.benchCase === null) {
         caseResults.push(invalidCaseResult(loaded, panelConfigured, r));
@@ -1086,6 +1112,8 @@ export interface BenchMatrixInput {
   criticProvider?: ProviderId;
   criticModel?: string;
   criticOpenrouterProvider?: OpenRouterProviderRouting;
+  reviewerOpenrouterProvider?: OpenRouterProviderRouting;
+  providerModels?: Partial<Record<ProviderId, string>>;
   criticMaxAttempts?: number;
   reviewerMaxAttempts?: number;
   maxProviderCalls?: number;
@@ -1102,6 +1130,19 @@ export interface BenchMatrixInput {
   adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
   providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
   now?: () => Date;
+}
+
+export interface BenchPolicyInput {
+  repoRoot: string;
+  preregistration: string;
+  out: string;
+  adapters?: Partial<Record<ProviderId, ProviderAdapter>>;
+  providerAvailable?: (id: ProviderId, apiKeyEnv?: string) => boolean;
+  now?: () => Date;
+  /** Internal deterministic test seam; production derives the compiled binary identity. */
+  runnerInfo?: BenchRunnerInfo;
+  /** Internal boundary spy; semantic validation must finish before this is invoked. */
+  adapterFactory?: typeof buildAdapters;
 }
 
 function canonicalMatrixCommand(input: BenchMatrixInput): string[] {
@@ -1669,6 +1710,7 @@ interface CapturedReviewEntry {
   provider: ProviderId;
   kind: "review" | "complete";
   ordinal: number;
+  repeat: number;
   request_sha256: string;
   response_sha256: string;
   outcome: "return" | "throw";
@@ -1677,12 +1719,14 @@ interface CapturedReviewEntry {
 
 type CapturedPreflightEntry =
   | {
+      repeat: number;
       request_sha256: string;
       response_sha256: string;
       outcome: "return";
       value: Preflight;
     }
   | {
+      repeat: number;
       request_sha256: string;
       response_sha256: string;
       outcome: "throw";
@@ -1699,6 +1743,7 @@ interface ReviewCaptureState {
   throws: Map<number, CapturedThrowableSnapshot>;
   nextOrdinal: number;
   mismatch: string | null;
+  context: { repeat: number };
 }
 
 function normalizedReview(result: ReviewResult): ReviewResult {
@@ -1793,6 +1838,7 @@ function captureReviewerAdapters(
         try {
           const value = structuredClone(await adapter.preflight(cfg));
           entries.push({
+            repeat: state.context.repeat,
             request_sha256: requestHash,
             response_sha256: sha256(stableJson(value)),
             outcome: "return",
@@ -1806,6 +1852,7 @@ function captureReviewerAdapters(
             throw error;
           }
           entries.push({
+            repeat: state.context.repeat,
             request_sha256: requestHash,
             response_sha256: captured.sha256,
             outcome: "throw",
@@ -1825,6 +1872,7 @@ function captureReviewerAdapters(
             provider,
             kind: "review",
             ordinal,
+            repeat: state.context.repeat,
             request_sha256: requestHash,
             response_sha256: responseHash,
             outcome: "return",
@@ -1841,6 +1889,7 @@ function captureReviewerAdapters(
             provider,
             kind: "review",
             ordinal,
+            repeat: state.context.repeat,
             request_sha256: requestHash,
             response_sha256: captured.sha256,
             outcome: "throw",
@@ -1861,6 +1910,7 @@ function captureReviewerAdapters(
                   provider,
                   kind: "complete",
                   ordinal,
+                  repeat: state.context.repeat,
                   request_sha256: requestHash,
                   response_sha256: sha256(response),
                   outcome: "return",
@@ -1877,6 +1927,7 @@ function captureReviewerAdapters(
                   provider,
                   kind: "complete",
                   ordinal,
+                  repeat: state.context.repeat,
                   request_sha256: requestHash,
                   response_sha256: captured.sha256,
                   outcome: "throw",
@@ -2095,6 +2146,7 @@ function authoritativeTraceRunFromCase(caseResult: CaseResult): AuthoritativeTra
 function validateBenchResultTracePairs(
   baseline: BenchResult,
   counterfactual: BenchResult,
+  expectedAblations?: readonly PolicyPassId[],
 ): { ok: true } | { ok: false; reason: string } {
   if (baseline.cases.length !== counterfactual.cases.length) {
     return { ok: false, reason: "case identity mismatch: result cardinality differs" };
@@ -2114,7 +2166,14 @@ function validateBenchResultTracePairs(
     if (baselineTrace === null || counterfactualTrace === null) {
       return { ok: false, reason: `missing-trace: case ${baselineCase.id}` };
     }
-    const validation = validateAuthoritativeTracePair(baselineTrace, counterfactualTrace);
+    const validation =
+      expectedAblations === undefined
+        ? validateAuthoritativeTracePair(baselineTrace, counterfactualTrace)
+        : validateAuthoritativeTraceProfilePair(
+            baselineTrace,
+            counterfactualTrace,
+            expectedAblations,
+          );
     if (!validation.ok) {
       return {
         ok: false,
@@ -2260,6 +2319,943 @@ function traceSetRun(
   };
 }
 
+interface BenchExecutionProfile {
+  id: "baseline" | `single:${PolicyPassId}` | `interaction:${number}`;
+  ablatedPassIds: readonly PolicyPassId[];
+}
+
+const POLICY_BENCH_EXECUTION_PROFILES: readonly BenchExecutionProfile[] = [
+  { id: "baseline", ablatedPassIds: [] },
+  ...POLICY_PASS_IDS.map((passId) => ({
+    id: `single:${passId}` as const,
+    ablatedPassIds: [passId] as const,
+  })),
+  ...POLICY_MEASUREMENT_INTERACTIONS.map((group, index) => ({
+    id: `interaction:${index + 1}` as const,
+    ablatedPassIds: group,
+  })),
+];
+
+interface CapturedProfileRun {
+  profile: BenchExecutionProfile;
+  result: BenchResult;
+}
+
+type CapturedProfilesResult =
+  | { ok: false; output: BenchRunOutput }
+  | { ok: true; runs: CapturedProfileRun[]; capture: ReviewCaptureState };
+
+async function executeCapturedProfileSchedule<T>(input: {
+  profiles: readonly BenchExecutionProfile[];
+  underlying: Partial<Record<ProviderId, ProviderAdapter>>;
+  execute: (
+    profile: BenchExecutionProfile,
+    adapters: Partial<Record<ProviderId, ProviderAdapter>>,
+    live: boolean,
+    index: number,
+    context: { repeat: number },
+  ) => Promise<T>;
+}): Promise<{ values: T[]; capture: ReviewCaptureState }> {
+  const firstProfile = input.profiles[0];
+  if (firstProfile?.id !== "baseline" || firstProfile.ablatedPassIds.length !== 0) {
+    throw new Error("schedule must start with baseline");
+  }
+  const capture: ReviewCaptureState = {
+    entries: [],
+    preflights: new Map(),
+    responses: new Map(),
+    throws: new Map(),
+    nextOrdinal: 0,
+    mismatch: null,
+    context: { repeat: 1 },
+  };
+  const values = [
+    await input.execute(
+      firstProfile,
+      captureReviewerAdapters(input.underlying, capture),
+      true,
+      0,
+      capture.context,
+    ),
+  ];
+  capture.entries.sort((left, right) => left.ordinal - right.ordinal);
+  if (capture.mismatch !== null) throw new Error(capture.mismatch);
+  for (const [index, profile] of input.profiles.slice(1).entries()) {
+    const replay = replayReviewerAdapters(input.underlying, capture);
+    values.push(await input.execute(profile, replay.adapters, false, index + 1, capture.context));
+    if (!replay.consumed() || capture.mismatch !== null) {
+      throw new Error(capture.mismatch ?? "profile replay was not fully consumed");
+    }
+  }
+  return { values, capture };
+}
+
+export const __benchPolicyTest = {
+  profiles: POLICY_BENCH_EXECUTION_PROFILES,
+  executeCapturedProfileSchedule,
+  responseManifestForRepeat,
+};
+
+/** Shared live-baseline/offline-profile engine used by legacy Matrix and policy measurement. */
+async function runCapturedProfiles(
+  input: BenchMatrixInput,
+  profiles: readonly BenchExecutionProfile[],
+  underlying: Partial<Record<ProviderId, ProviderAdapter>>,
+  budget: ProviderCallBudget,
+  runnerInfo: BenchRunnerInfo,
+  work: string,
+  stagingArtifactRoot: string,
+): Promise<CapturedProfilesResult> {
+  const firstProfile = profiles[0];
+  if (firstProfile?.id !== "baseline" || firstProfile.ablatedPassIds.length !== 0) {
+    return {
+      ok: false,
+      output: {
+        exitCode: 4,
+        stdout: "",
+        stderr: "bench profiles: benchmark-invalid — schedule must start with baseline\n",
+      },
+    };
+  }
+  const runVariant = async (
+    profile: BenchExecutionProfile,
+    adapters: Partial<Record<ProviderId, ProviderAdapter>>,
+    countProviderCalls: boolean,
+    index: number,
+    captureContext: { repeat: number },
+  ): Promise<{ result?: BenchResult; output: BenchRunOutput }> => {
+    const out = join(work, `profile-${String(index).padStart(2, "0")}.json`);
+    const output = await runBenchRunInternal({
+      repoRoot: input.repoRoot,
+      corpus: input.corpus,
+      out,
+      ...(input.providers ? { providers: input.providers } : {}),
+      ...(input.repeat !== undefined ? { repeat: input.repeat } : {}),
+      ...(input.window !== undefined ? { window: input.window } : {}),
+      includeAdvisory: input.includeAdvisory ?? false,
+      ...(input.minClean !== undefined ? { minClean: input.minClean } : {}),
+      ...(input.minSeeded !== undefined ? { minSeeded: input.minSeeded } : {}),
+      ...(input.maxFailedFrac !== undefined ? { maxFailedFrac: input.maxFailedFrac } : {}),
+      adapters,
+      ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+      ...(input.now ? { now: input.now } : {}),
+      ...(input.criticModel ? { criticModel: input.criticModel } : {}),
+      ...(input.criticOpenrouterProvider
+        ? { criticOpenrouterProvider: input.criticOpenrouterProvider }
+        : {}),
+      ...(input.reviewerOpenrouterProvider
+        ? { reviewerOpenrouterProvider: input.reviewerOpenrouterProvider }
+        : {}),
+      ...(input.providerModels ? { providerModels: input.providerModels } : {}),
+      ...(input.criticMaxAttempts !== undefined
+        ? { criticMaxAttempts: input.criticMaxAttempts }
+        : {}),
+      ...(input.reviewerMaxAttempts !== undefined
+        ? { reviewerMaxAttempts: input.reviewerMaxAttempts }
+        : {}),
+      ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
+      ...(input.maxProviderCalls !== undefined ? { maxProviderCalls: input.maxProviderCalls } : {}),
+      ...(input.preregistration ? { preregistration: input.preregistration } : {}),
+      authoritative: input.authoritative ?? false,
+      callBudget: budget,
+      countProviderCalls,
+      countCompletionCalls: countProviderCalls,
+      runnerInfo,
+      suppressors: {
+        ...(input.criticProvider ? { critic: input.criticProvider } : {}),
+      },
+      ablationLabels: [...profile.ablatedPassIds],
+      policyExecution: {
+        trace: "memory",
+        policyAblations: new Set(profile.ablatedPassIds),
+        authoritative: true,
+      },
+      policyTraceStore: {
+        root: join(stagingArtifactRoot, "artifacts", "policy-traces"),
+        refPrefix: "artifacts/policy-traces",
+        ...(input.now === undefined ? {} : { now: input.now() }),
+      },
+      captureContext,
+    });
+    if (!existsSync(out)) return { output };
+    return {
+      result: BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8"))),
+      output,
+    };
+  };
+
+  let scheduled: {
+    values: Array<{ result?: BenchResult; output: BenchRunOutput }>;
+    capture: ReviewCaptureState;
+  };
+  try {
+    scheduled = await executeCapturedProfileSchedule({
+      profiles,
+      underlying,
+      execute: runVariant,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      output: {
+        exitCode: 4,
+        stdout: "",
+        stderr: `bench profiles: benchmark-invalid — ${error instanceof Error ? error.message : String(error)}\n`,
+      },
+    };
+  }
+  const baselineRun = scheduled.values[0];
+  if (baselineRun === undefined) {
+    return {
+      ok: false,
+      output: {
+        exitCode: 4,
+        stdout: "",
+        stderr: "bench profiles: benchmark-invalid — baseline output is missing\n",
+      },
+    };
+  }
+  if (baselineRun.output.exitCode !== 0 || baselineRun.result === undefined) {
+    return { ok: false, output: baselineRun.output };
+  }
+  const baseline = baselineRun.result;
+  const capture = scheduled.capture;
+  const runs: CapturedProfileRun[] = [{ profile: firstProfile, result: baseline }];
+  for (const [index, profile] of profiles.slice(1).entries()) {
+    const variantRun = scheduled.values[index + 1];
+    if (
+      variantRun === undefined ||
+      variantRun.output.exitCode !== 0 ||
+      variantRun.result === undefined
+    ) {
+      return {
+        ok: false,
+        output: {
+          exitCode: variantRun?.output.exitCode === 0 ? 4 : (variantRun?.output.exitCode ?? 4),
+          stdout: variantRun?.output.stdout ?? "",
+          stderr: variantRun?.output.stderr ?? "bench profiles: missing variant output\n",
+        },
+      };
+    }
+    const provenanceMismatch = matrixVariantProvenanceMismatch(baseline, variantRun.result);
+    if (provenanceMismatch.length > 0) {
+      return {
+        ok: false,
+        output: {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench profiles: benchmark-invalid — ${provenanceMismatch.join("; ")}\n`,
+        },
+      };
+    }
+    const traceValidation = validateBenchResultTracePairs(
+      baseline,
+      variantRun.result,
+      profile.ablatedPassIds,
+    );
+    if (!traceValidation.ok) {
+      return {
+        ok: false,
+        output: {
+          exitCode: 4,
+          stdout: "",
+          stderr: `bench profiles: benchmark-invalid — ${traceValidation.reason}\n`,
+        },
+      };
+    }
+    runs.push({ profile, result: variantRun.result });
+  }
+  return { ok: true, runs, capture };
+}
+
+function policyInvalid(reasons: readonly string[]): BenchRunOutput {
+  return {
+    exitCode: 4,
+    stdout: "",
+    stderr: `bench policy: benchmark-invalid before provider calls — ${reasons.join("; ")}\n`,
+  };
+}
+
+function sameCanonical(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function responseManifestForRepeat(
+  capture: ReviewCaptureState,
+  repeat: 1 | 2 | 3,
+): BenchResponseManifest {
+  const preflights = [...capture.preflights.entries()]
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .flatMap(([provider, entries]) =>
+      entries
+        .filter((entry) => entry.repeat === repeat)
+        .map((entry) => ({
+          provider,
+          ordinal: 0,
+          repeat: entry.repeat,
+          request_sha256: entry.request_sha256,
+          response_sha256: entry.response_sha256,
+          outcome: entry.outcome,
+        })),
+    )
+    .map((entry, ordinal) => ({ ...entry, ordinal }));
+  const entries = capture.entries
+    .filter((entry) => entry.repeat === repeat)
+    .map((entry, ordinal) => ({ ...entry, ordinal }));
+  return BenchResponseManifestSchema.parse({
+    schema: "reviewgate.bench.provider-response-hashes.v2",
+    repeat,
+    preflights,
+    entries,
+  });
+}
+
+function policyTraceSetRun(
+  run: CapturedProfileRun,
+  result: { ref: string; sha256: string },
+  repeat: 1 | 2 | 3,
+) {
+  return {
+    profile_id: run.profile.id,
+    ablated_pass_ids: [...run.profile.ablatedPassIds],
+    result,
+    traces: run.result.cases
+      .filter((row) => row.repeat === repeat)
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+      .map((row) => {
+        const policy = row.policy_trace;
+        if (
+          policy?.trace === undefined ||
+          policy.trace_ref === undefined ||
+          policy.trace_sha256 === undefined
+        ) {
+          throw new Error(`missing persisted policy trace for ${row.id} repeat ${repeat}`);
+        }
+        return {
+          case_id: row.id,
+          repeat,
+          trace_ref: policy.trace_ref,
+          trace_sha256: policy.trace_sha256,
+          effective_config_sha256: policy.effective_config_sha256,
+          request_identity_sha256: policy.request_identity_sha256,
+          final_identity_sha256: policy.final_identity_sha256,
+          raw_response_sha256: policy.trace.raw_response_sha256,
+        };
+      }),
+  };
+}
+
+function profileRepeatAuthority(input: {
+  run: CapturedProfileRun;
+  repeat: 1 | 2 | 3;
+  responseManifest: { ref: string; sha256: string };
+  result: { ref: string; sha256: string };
+  traceSet: { ref: string; sha256: string };
+  orderedResponses: readonly string[];
+}): PolicyBenchProfileArtifact["repeats"][number] {
+  const cases = input.run.result.cases
+    .filter((row) => row.repeat === input.repeat)
+    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const requestedPasses = input.run.profile.ablatedPassIds.map((passId) => {
+    let ranCases = 0;
+    let opportunities = 0;
+    for (const row of cases) {
+      const pass = row.policy_trace?.trace?.passes.find(
+        (candidate) => candidate.pass_id === passId,
+      );
+      if (pass?.status === "ran") {
+        ranCases += 1;
+        opportunities += pass.opportunities;
+      }
+    }
+    return { pass_id: passId, ran_cases: ranCases, opportunities };
+  });
+  return {
+    repeat: input.repeat,
+    authoritative: true,
+    fully_consumed: true,
+    response_manifest: input.responseManifest,
+    result: input.result,
+    policy_trace_set: input.traceSet,
+    ordered_response_sha256: [...input.orderedResponses],
+    requested_passes: requestedPasses,
+    cases: cases.map((row) => {
+      if (row.policy_truth === undefined) {
+        throw new Error(`missing policy truth for ${row.id} repeat ${input.repeat}`);
+      }
+      return {
+        case_id: row.id,
+        repeat: input.repeat,
+        content_sha256: row.content_hash,
+        policy_truth_sha256: sha256(canonicalJson(row.policy_truth)),
+      };
+    }),
+  };
+}
+
+export function verifyPolicyBenchBundleArtifacts(
+  root: string,
+  bundle: PolicyBenchBundle,
+): { ok: true } | { ok: false; reason: string } {
+  for (const profile of bundle.profiles) {
+    const verifiedProfile = verifyCanonicalJsonArtifact({
+      root,
+      directory: "policy-profiles",
+      schema: PolicyBenchProfileArtifactSchema,
+      ref: profile.artifact.ref,
+      sha256: profile.artifact.sha256,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
+    if (!verifiedProfile.ok || !sameCanonical(verifiedProfile.value, profile.data)) {
+      return {
+        ok: false,
+        reason: `${profile.id} profile ${verifiedProfile.ok ? "identity-mismatch" : verifiedProfile.reason}`,
+      };
+    }
+    for (const repeat of profile.data.repeats) {
+      const response = verifyCanonicalJsonArtifact({
+        root,
+        directory: "responses",
+        schema: BenchResponseManifestSchema,
+        ref: repeat.response_manifest.ref,
+        sha256: repeat.response_manifest.sha256,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      if (
+        !response.ok ||
+        response.value.repeat !== repeat.repeat ||
+        !sameCanonical(
+          response.value.entries.map((entry) => entry.response_sha256),
+          repeat.ordered_response_sha256,
+        )
+      ) {
+        return {
+          ok: false,
+          reason: `${profile.id} repeat ${repeat.repeat} response manifest mismatch`,
+        };
+      }
+      const result = verifyCanonicalJsonArtifact({
+        root,
+        directory: "policy-repeat-results",
+        schema: BenchPolicyRepeatResultSchema,
+        ref: repeat.result.ref,
+        sha256: repeat.result.sha256,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      if (
+        !result.ok ||
+        result.value.profile_id !== profile.id ||
+        result.value.repeat !== repeat.repeat
+      ) {
+        return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} result mismatch` };
+      }
+      const sourceResult = verifyCanonicalJsonArtifact({
+        root,
+        directory: "results",
+        schema: BenchResultSchema,
+        ref: result.value.source_result.ref,
+        sha256: result.value.source_result.sha256,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      const resultCases = result.value.cases;
+      const sourceCases = sourceResult.ok
+        ? sourceResult.value.cases
+            .filter((row) => row.repeat === repeat.repeat)
+            .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0))
+        : [];
+      if (
+        !sourceResult.ok ||
+        sourceResult.value.verdict?.authoritative !== true ||
+        !sameCanonical(sourceCases, resultCases) ||
+        resultCases.length !== repeat.cases.length ||
+        resultCases.some((row, index) => {
+          const authority = repeat.cases[index];
+          return authority === undefined || !verifyPolicyBenchCaseAuthority(row, authority);
+        })
+      ) {
+        return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} case/truth mismatch` };
+      }
+      for (const requested of repeat.requested_passes) {
+        let ran = 0;
+        let opportunities = 0;
+        for (const row of resultCases) {
+          const pass = row.policy_trace?.trace?.passes.find(
+            (candidate) => candidate.pass_id === requested.pass_id,
+          );
+          if (pass?.status === "ran") {
+            ran += 1;
+            opportunities += pass.opportunities;
+          }
+        }
+        if (ran !== requested.ran_cases || opportunities !== requested.opportunities) {
+          return {
+            ok: false,
+            reason: `${profile.id} repeat ${repeat.repeat} requested-pass authority mismatch`,
+          };
+        }
+      }
+      const traceSet = verifyCanonicalJsonArtifact({
+        root,
+        directory: "policy-trace-sets",
+        schema: BenchPolicyProfileTraceSetSchema,
+        ref: repeat.policy_trace_set.ref,
+        sha256: repeat.policy_trace_set.sha256,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      if (
+        !traceSet.ok ||
+        traceSet.value.repeat !== repeat.repeat ||
+        traceSet.value.response_manifest.sha256 !== repeat.response_manifest.sha256 ||
+        !traceSet.value.runs.some(
+          (run) =>
+            run.profile_id === profile.id &&
+            run.result.sha256 === repeat.result.sha256 &&
+            sameCanonical(run.ablated_pass_ids, profile.ablated_pass_ids),
+        )
+      ) {
+        return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} trace-set mismatch` };
+      }
+    }
+  }
+  return { ok: true };
+}
+
+export function verifyPolicyBenchCaseAuthority(
+  row: CaseResult,
+  authority: PolicyBenchProfileArtifact["repeats"][number]["cases"][number],
+): boolean {
+  return (
+    row.id === authority.case_id &&
+    row.repeat === authority.repeat &&
+    row.content_hash === authority.content_sha256 &&
+    row.policy_truth !== undefined &&
+    sha256(canonicalJson(row.policy_truth)) === authority.policy_truth_sha256 &&
+    row.policy_trace?.authoritative === true
+  );
+}
+
+function buildPolicyConfig(
+  preregistration: PolicyMeasurementPreregistration,
+): { config: ReviewgateConfig; matrix: Omit<BenchMatrixInput, "repoRoot" | "out"> } | null {
+  const reviewerProviders: ProviderId[] = [];
+  const providerModels: Partial<Record<ProviderId, string>> = {};
+  for (const reviewer of preregistration.roster.reviewers) {
+    if (!KNOWN_PROVIDERS.has(reviewer.provider)) return null;
+    const provider = reviewer.provider as ProviderId;
+    if (reviewerProviders.includes(provider)) return null;
+    reviewerProviders.push(provider);
+    providerModels[provider] = reviewer.model;
+  }
+  const critic = preregistration.roster.critic;
+  if (critic !== null && !KNOWN_PROVIDERS.has(critic.provider)) return null;
+  const criticProvider = critic?.provider as ProviderId | undefined;
+  if (criticProvider !== undefined && critic !== null)
+    providerModels[criticProvider] = critic.model;
+  const reviewerRoutes = preregistration.roster.reviewers
+    .filter((reviewer) => reviewer.provider === "openrouter")
+    .map((reviewer) => reviewer.openrouter_provider);
+  const reviewerRoute = reviewerRoutes[0] ?? null;
+  const criticRoute = critic?.provider === "openrouter" ? critic.openrouter_provider : null;
+  if (
+    reviewerRoute !== null &&
+    criticRoute !== null &&
+    !sameCanonical(reviewerRoute, criticRoute)
+  ) {
+    return null;
+  }
+  const config = buildBenchConfig({
+    providers: reviewerProviders,
+    suppressors: { ...(criticProvider === undefined ? {} : { critic: criticProvider }) },
+    providerModels,
+    ...(critic?.model === undefined ? {} : { criticModel: critic.model }),
+    ...(criticRoute === null ? {} : { criticOpenrouterProvider: criticRoute }),
+    maxOutputTokens: preregistration.execution.max_output_tokens,
+  });
+  if (reviewerRoute !== null && config.providers.openrouter) {
+    config.providers.openrouter.openrouterProvider = structuredClone(reviewerRoute);
+  }
+  return {
+    config,
+    matrix: {
+      corpus: preregistration.corpus.path,
+      ablate: [],
+      providers: reviewerProviders,
+      ...(criticProvider === undefined ? {} : { criticProvider }),
+      ...(critic?.model === undefined ? {} : { criticModel: critic.model }),
+      ...(criticRoute === null ? {} : { criticOpenrouterProvider: criticRoute }),
+      ...(reviewerRoute === null ? {} : { reviewerOpenrouterProvider: reviewerRoute }),
+      providerModels,
+      criticMaxAttempts: preregistration.execution.critic_max_attempts,
+      reviewerMaxAttempts: preregistration.execution.reviewer_max_attempts,
+      maxProviderCalls: preregistration.hard_gates.maximum_provider_calls,
+      maxOutputTokens: preregistration.execution.max_output_tokens,
+      authoritative: true,
+      repeat: 3,
+      minClean: 16,
+      minSeeded: 14,
+      maxFailedFrac: 0,
+    },
+  };
+}
+
+export function validatePolicyEffectiveConfiguration(
+  preregistration: PolicyMeasurementPreregistration,
+  config: ReviewgateConfig,
+  runtime: {
+    reviewerMaxAttempts: number;
+    criticMaxAttempts: number;
+    maxOutputTokens: number;
+    out: string;
+  },
+): string[] {
+  const reasons: string[] = [];
+  const effectiveReviewers = config.phases.review.reviewers.map((reviewer) => ({
+    provider: reviewer.provider,
+    model: config.providers[reviewer.provider]?.model ?? "unknown",
+    persona: reviewer.persona,
+    openrouter_provider:
+      reviewer.provider === "openrouter"
+        ? (config.providers.openrouter?.openrouterProvider ?? null)
+        : null,
+  }));
+  const effectiveCritic = config.phases.critic
+    ? {
+        provider: config.phases.critic.provider,
+        model:
+          config.phases.critic.model ??
+          config.providers[config.phases.critic.provider]?.model ??
+          "unknown",
+        persona: config.phases.critic.persona,
+        openrouter_provider:
+          config.phases.critic.provider === "openrouter"
+            ? (config.providers.openrouter?.openrouterProvider ?? null)
+            : null,
+      }
+    : null;
+  if (!sameCanonical(effectiveReviewers, preregistration.roster.reviewers)) {
+    reasons.push("reviewer roster/model/persona/route differs");
+  }
+  if (!sameCanonical(effectiveCritic, preregistration.roster.critic)) {
+    reasons.push("critic model/persona/route differs");
+  }
+  if (runtime.reviewerMaxAttempts !== preregistration.execution.reviewer_max_attempts) {
+    reasons.push("reviewer-attempt limit differs");
+  }
+  if (runtime.criticMaxAttempts !== preregistration.execution.critic_max_attempts) {
+    reasons.push("critic-attempt limit differs");
+  }
+  if (runtime.maxOutputTokens !== preregistration.execution.max_output_tokens) {
+    reasons.push("output-token ceiling differs");
+  }
+  if (runtime.out !== preregistration.outputs.bench_bundle) {
+    reasons.push("Bench output path differs");
+  }
+  return reasons;
+}
+
+/** Execute the exact committed 30×3×23 Slice-2A stateless policy schedule. */
+export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunOutput> {
+  const outPath = resolve(input.repoRoot, input.out);
+  if (existsSync(outPath)) {
+    return {
+      exitCode: 2,
+      stdout: "",
+      stderr: `bench policy: output already exists (immutable): ${outPath}\n`,
+    };
+  }
+  const preregPath = resolve(input.repoRoot, input.preregistration);
+  let preregBytes: string;
+  let preregistration: PolicyMeasurementPreregistration;
+  try {
+    const stat = lstatSync(preregPath);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.nlink !== 1) {
+      return policyInvalid(["preregistration is not a regular single-link file"]);
+    }
+    preregBytes = readFileSync(preregPath, "utf8");
+    preregistration = PolicyMeasurementPreregistrationSchema.parse(JSON.parse(preregBytes));
+  } catch (error) {
+    return policyInvalid([
+      `invalid preregistration: ${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  }
+  const reasons: string[] = [];
+  if (preregBytes !== canonicalJson(preregistration))
+    reasons.push("preregistration is non-canonical");
+  if (preregistration.release !== RG_VERSION && preregistration.release !== `v${RG_VERSION}`) {
+    reasons.push("release version differs");
+  }
+  const preregRel = relative(resolve(input.repoRoot), preregPath).split("\\").join("/");
+  const outRel = relative(resolve(input.repoRoot), outPath).split("\\").join("/");
+  if (outRel !== preregistration.outputs.bench_bundle) reasons.push("Bench output path differs");
+  const expectedCommand = [
+    preregistration.source.runner,
+    "bench",
+    "policy",
+    "--preregistration",
+    preregRel,
+    "--out",
+    outRel,
+  ];
+  if (!sameCanonical(preregistration.commands.bench, expectedCommand)) {
+    reasons.push("Bench command differs");
+  }
+  const corpusRoot = resolve(input.repoRoot, preregistration.corpus.path);
+  let loadedCases: LoadedCase[] = [];
+  try {
+    loadedCases = listCaseDirs(corpusRoot).map((id) => loadCase(corpusRoot, id));
+  } catch (error) {
+    reasons.push(`cannot verify corpus: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const content = Object.fromEntries(
+    loadedCases.map((row) => [`cases/${row.id}.json`, row.contentHash] as const),
+  );
+  if (!sameCanonical(content, preregistration.corpus.content_sha256)) {
+    reasons.push("corpus content hashes differ");
+  }
+  if (sha256(JSON.stringify(content)) !== preregistration.corpus.manifest_sha256) {
+    reasons.push("corpus manifest differs");
+  }
+  if (
+    loadedCases.length !== 30 ||
+    loadedCases.filter((row) => row.rawKind === "clean").length !== 16 ||
+    loadedCases.filter((row) => row.rawKind === "seeded-bug").length !== 14
+  ) {
+    reasons.push("corpus composition differs");
+  }
+  const built = buildPolicyConfig(preregistration);
+  if (built === null) {
+    reasons.push("provider roster or OpenRouter route cannot be represented exactly");
+  } else {
+    reasons.push(
+      ...validatePolicyEffectiveConfiguration(preregistration, built.config, {
+        reviewerMaxAttempts: built.matrix.reviewerMaxAttempts ?? 1,
+        criticMaxAttempts: built.matrix.criticMaxAttempts ?? 1,
+        maxOutputTokens: built.matrix.maxOutputTokens ?? 0,
+        out: outRel,
+      }),
+    );
+  }
+  const git = await repositoryGitState(input.repoRoot, corpusRoot);
+  const preregDigest = await preregistrationDigest(input.repoRoot, git, preregRel);
+  const runnerInfo = input.runnerInfo ?? detectRunnerInfo(input.adapters);
+  const sourceRef = await spawnCapture("git", ["rev-parse", preregistration.source.ref], {
+    cwd: input.repoRoot,
+    timeoutMs: 15_000,
+  });
+  if (
+    git.root === null ||
+    git.repositoryDirty ||
+    git.corpusDirty ||
+    !preregDigest.tracked ||
+    sourceRef.status !== 0 ||
+    sourceRef.stdout.trim() !== git.commit ||
+    runnerInfo.kind !== "compiled" ||
+    !FULL_SHA256.test(runnerInfo.sha256)
+  ) {
+    reasons.push("source must be an exact clean tracked HEAD with a compiled runner hash");
+  }
+  if (reasons.length > 0 || built === null) return policyInvalid(reasons);
+
+  const adapterFactory = input.adapterFactory ?? buildAdapters;
+  const underlying = adapterFactory(built.config, input.adapters);
+  const budget = createCallBudget(preregistration.hard_gates.maximum_provider_calls);
+  const work = mkdtempSync(join(tmpdir(), "rg-bench-policy-"));
+  const stagingArtifactRoot = join(work, "artifact-root");
+  const artifactRoot = dirname(outPath);
+  try {
+    if (!ensureDirectoryWithoutSymlinks(join(stagingArtifactRoot, "artifacts"))) {
+      return policyInvalid(["trace staging path is unsafe"]);
+    }
+    const matrixInput: BenchMatrixInput = {
+      repoRoot: input.repoRoot,
+      out: input.out,
+      preregistration: preregRel,
+      ...(input.adapters === undefined ? {} : { adapters: input.adapters }),
+      ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
+      ...(input.now ? { now: input.now } : {}),
+      runnerInfo,
+      ...built.matrix,
+    };
+    const captured = await runCapturedProfiles(
+      matrixInput,
+      POLICY_BENCH_EXECUTION_PROFILES,
+      underlying,
+      budget,
+      runnerInfo,
+      work,
+      stagingArtifactRoot,
+    );
+    if (!captured.ok) return captured.output;
+    const publishedTraces = publishResultTraces(
+      stagingArtifactRoot,
+      artifactRoot,
+      captured.runs.map((run) => run.result),
+    );
+    if (!publishedTraces.ok) return policyInvalid([`policy trace ${publishedTraces.reason}`]);
+
+    const responseArtifacts = new Map<number, { ref: string; sha256: string }>();
+    const responseManifests = new Map<number, BenchResponseManifest>();
+    for (const repeat of [1, 2, 3] as const) {
+      const manifest = responseManifestForRepeat(captured.capture, repeat);
+      const artifact = persistBenchArtifact({
+        root: artifactRoot,
+        kind: "response-manifest",
+        value: manifest,
+      });
+      if (!artifact.ok) return policyInvalid([`response manifest ${artifact.reason}`]);
+      responseArtifacts.set(repeat, { ref: artifact.ref, sha256: artifact.sha256 });
+      responseManifests.set(repeat, manifest);
+    }
+    const resultArtifacts = new Map<string, { ref: string; sha256: string }>();
+    for (const run of captured.runs) {
+      const artifact = persistBenchArtifact({
+        root: artifactRoot,
+        kind: "bench-result",
+        value: run.result,
+      });
+      if (!artifact.ok) return policyInvalid([`result ${run.profile.id} ${artifact.reason}`]);
+      const verified = verifyResultTraceArtifacts(artifactRoot, run.result);
+      if (!verified.ok) return policyInvalid([`result ${run.profile.id} ${verified.reason}`]);
+      resultArtifacts.set(run.profile.id, { ref: artifact.ref, sha256: artifact.sha256 });
+    }
+    const repeatResultArtifacts = new Map<
+      string,
+      Map<1 | 2 | 3, { ref: string; sha256: string }>
+    >();
+    for (const run of captured.runs) {
+      const sourceResult = resultArtifacts.get(run.profile.id);
+      if (sourceResult === undefined) throw new Error(`missing source result ${run.profile.id}`);
+      const byRepeat = new Map<1 | 2 | 3, { ref: string; sha256: string }>();
+      for (const repeat of [1, 2, 3] as const) {
+        const repeatResult: BenchPolicyRepeatResult = BenchPolicyRepeatResultSchema.parse({
+          schema: "reviewgate.bench.policy-repeat-result.v1",
+          profile_id: run.profile.id,
+          repeat,
+          source_result: sourceResult,
+          cases: run.result.cases
+            .filter((row) => row.repeat === repeat)
+            .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
+        });
+        const artifact = writeCanonicalJsonArtifact({
+          root: artifactRoot,
+          directory: "policy-repeat-results",
+          schema: BenchPolicyRepeatResultSchema,
+          value: repeatResult,
+          maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+        });
+        if (!artifact.ok) {
+          return policyInvalid([`repeat result ${run.profile.id}/${repeat} ${artifact.reason}`]);
+        }
+        byRepeat.set(repeat, { ref: artifact.ref, sha256: artifact.sha256 });
+      }
+      repeatResultArtifacts.set(run.profile.id, byRepeat);
+    }
+    const traceSetArtifacts = new Map<number, { ref: string; sha256: string }>();
+    for (const repeat of [1, 2, 3] as const) {
+      const responseManifest = responseArtifacts.get(repeat);
+      if (responseManifest === undefined) throw new Error(`missing response repeat ${repeat}`);
+      const traceSet: BenchPolicyProfileTraceSet = BenchPolicyProfileTraceSetSchema.parse({
+        schema: "reviewgate.bench.policy-profile-trace-set.v1",
+        catalog_version: POLICY_CATALOG_VERSION,
+        repeat,
+        response_manifest: responseManifest,
+        runs: captured.runs.map((run) => {
+          const result = repeatResultArtifacts.get(run.profile.id)?.get(repeat);
+          if (result === undefined) throw new Error(`missing result ${run.profile.id}`);
+          return policyTraceSetRun(run, result, repeat);
+        }),
+      });
+      const artifact = writeCanonicalJsonArtifact({
+        root: artifactRoot,
+        directory: "policy-trace-sets",
+        schema: BenchPolicyProfileTraceSetSchema,
+        value: traceSet,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      if (!artifact.ok) return policyInvalid([`policy trace set ${artifact.reason}`]);
+      traceSetArtifacts.set(repeat, { ref: artifact.ref, sha256: artifact.sha256 });
+    }
+
+    const profiles: PolicyBenchBundle["profiles"] = [];
+    for (const run of captured.runs) {
+      const data: PolicyBenchProfileArtifact = PolicyBenchProfileArtifactSchema.parse({
+        schema: "reviewgate.policy-bench-profile.v1",
+        profile_id: run.profile.id,
+        ablated_pass_ids: [...run.profile.ablatedPassIds],
+        repeats: ([1, 2, 3] as const).map((repeat) => {
+          const responseManifest = responseArtifacts.get(repeat);
+          const response = responseManifests.get(repeat);
+          const traceSet = traceSetArtifacts.get(repeat);
+          const result = repeatResultArtifacts.get(run.profile.id)?.get(repeat);
+          if (
+            responseManifest === undefined ||
+            response === undefined ||
+            traceSet === undefined ||
+            result === undefined
+          ) {
+            throw new Error(`missing repeat authority ${repeat}`);
+          }
+          return profileRepeatAuthority({
+            run,
+            repeat,
+            responseManifest,
+            result,
+            traceSet,
+            orderedResponses: response.entries.map((entry) => entry.response_sha256),
+          });
+        }),
+      });
+      const artifact = writeCanonicalJsonArtifact({
+        root: artifactRoot,
+        directory: "policy-profiles",
+        schema: PolicyBenchProfileArtifactSchema,
+        value: data,
+        maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+      });
+      if (!artifact.ok)
+        return policyInvalid([`policy profile ${run.profile.id} ${artifact.reason}`]);
+      profiles.push({
+        id: run.profile.id,
+        ablated_pass_ids: [...run.profile.ablatedPassIds],
+        artifact: { ref: artifact.ref, sha256: artifact.sha256 },
+        data,
+      });
+    }
+    const bundle: PolicyBenchBundle = PolicyBenchBundleSchema.parse({
+      schema: "reviewgate.policy-bench-bundle.v1",
+      preregistration: { ref: preregRel, sha256: sha256(preregBytes) },
+      profiles,
+    });
+    const verifiedBundle = verifyPolicyBenchBundleArtifacts(artifactRoot, bundle);
+    if (!verifiedBundle.ok) return policyInvalid([verifiedBundle.reason]);
+    const bundleArtifact = writeCanonicalJsonArtifact({
+      root: artifactRoot,
+      directory: "policy-bundles",
+      schema: PolicyBenchBundleSchema,
+      value: bundle,
+      maxBytes: BENCH_ARTIFACT_MAX_BYTES,
+    });
+    if (!bundleArtifact.ok) return policyInvalid([`policy bundle ${bundleArtifact.reason}`]);
+    if (!ensureDirectoryWithoutSymlinks(artifactRoot)) {
+      return policyInvalid(["output path is not a safe directory"]);
+    }
+    if (!writeFileIfAbsent(outPath, canonicalJson(bundle), { mode: 0o600 })) {
+      return {
+        exitCode: 2,
+        stdout: "",
+        stderr: `bench policy: output already exists (immutable): ${outPath}\n`,
+      };
+    }
+    return { exitCode: 0, stdout: `${input.out}\n`, stderr: "" };
+  } catch (error) {
+    return policyInvalid([
+      `execution artifact mismatch: ${error instanceof Error ? error.message : String(error)}`,
+    ]);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
+
 /**
  * Ablation matrix (spec §8): run the corpus once as a BASELINE (full suppression)
  * and once per `--ablate` layer with that ONE layer turned off, then report the
@@ -2363,15 +3359,6 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
     }
   }
   const underlying = buildAdapters(baselineConfig, input.adapters);
-  const capture: ReviewCaptureState = {
-    entries: [],
-    preflights: new Map(),
-    responses: new Map(),
-    throws: new Map(),
-    nextOrdinal: 0,
-    mismatch: null,
-  };
-  const capturingAdapters = captureReviewerAdapters(underlying, capture);
   const budget = createCallBudget(input.maxProviderCalls);
   const runnerInfo = input.runnerInfo ?? detectRunnerInfo(input.adapters);
   const work = mkdtempSync(join(tmpdir(), "rg-bench-matrix-"));
@@ -2384,83 +3371,26 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
         stderr: "bench matrix: benchmark-invalid — trace staging path is unsafe\n",
       };
     }
-    const runVariant = async (
-      label: string,
-      requestedAblations: PolicyPassId[],
-      adapters: Partial<Record<ProviderId, ProviderAdapter>>,
-      countProviderCalls: boolean,
-    ): Promise<{ result?: BenchResult; output: BenchRunOutput; tempPath: string }> => {
-      const out = join(work, `${label}.json`);
-      const output = await runBenchRunInternal({
-        repoRoot: input.repoRoot,
-        corpus: input.corpus,
-        out,
-        ...(input.providers ? { providers: input.providers } : {}),
-        ...(input.repeat !== undefined ? { repeat: input.repeat } : {}),
-        ...(input.window !== undefined ? { window: input.window } : {}),
-        includeAdvisory: input.includeAdvisory ?? false,
-        ...(input.minClean !== undefined ? { minClean: input.minClean } : {}),
-        ...(input.minSeeded !== undefined ? { minSeeded: input.minSeeded } : {}),
-        ...(input.maxFailedFrac !== undefined ? { maxFailedFrac: input.maxFailedFrac } : {}),
-        adapters,
-        ...(input.providerAvailable ? { providerAvailable: input.providerAvailable } : {}),
-        ...(input.now ? { now: input.now } : {}),
-        ...(input.criticModel ? { criticModel: input.criticModel } : {}),
-        ...(input.criticOpenrouterProvider
-          ? { criticOpenrouterProvider: input.criticOpenrouterProvider }
-          : {}),
-        ...(input.criticMaxAttempts !== undefined
-          ? { criticMaxAttempts: input.criticMaxAttempts }
-          : {}),
-        ...(input.reviewerMaxAttempts !== undefined
-          ? { reviewerMaxAttempts: input.reviewerMaxAttempts }
-          : {}),
-        ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
-        ...(input.maxProviderCalls !== undefined
-          ? { maxProviderCalls: input.maxProviderCalls }
-          : {}),
-        ...(input.preregistration ? { preregistration: input.preregistration } : {}),
-        authoritative: input.authoritative ?? false,
-        callBudget: budget,
-        countProviderCalls,
-        // Baseline is the sole live path. Variants replay review + every judge/
-        // critic completion from the same captured logical response sequence.
-        countCompletionCalls: countProviderCalls,
-        runnerInfo,
-        suppressors: baselineSuppressors,
-        ablationLabels: requestedAblations,
-        policyExecution: {
-          trace: "memory",
-          policyAblations: new Set(requestedAblations),
-          authoritative: true,
-        },
-        policyTraceStore: {
-          root: join(stagingArtifactRoot, "artifacts", "policy-traces"),
-          refPrefix: "artifacts/policy-traces",
-          ...(input.now === undefined ? {} : { now: input.now() }),
-        },
-      });
-      if (!existsSync(out)) return { output, tempPath: out };
-      return {
-        result: BenchResultSchema.parse(JSON.parse(readFileSync(out, "utf8"))),
-        output,
-        tempPath: out,
-      };
-    };
-
-    const baselineRun = await runVariant("baseline", [], capturingAdapters, true);
-    if (baselineRun.output.exitCode !== 0 || !baselineRun.result) {
-      return baselineRun.output;
-    }
-    const baseline = baselineRun.result;
-    capture.entries.sort((left, right) => left.ordinal - right.ordinal);
-    if (capture.mismatch !== null) {
-      return {
-        exitCode: 4,
-        stdout: "",
-        stderr: `bench matrix: benchmark-invalid — ${capture.mismatch}\n`,
-      };
-    }
+    const profiles: BenchExecutionProfile[] = [
+      { id: "baseline", ablatedPassIds: [] },
+      ...ablatedPassIds.map((passId) => ({
+        id: `single:${passId}` as const,
+        ablatedPassIds: [passId] as const,
+      })),
+    ];
+    const captured = await runCapturedProfiles(
+      input,
+      profiles,
+      underlying,
+      budget,
+      runnerInfo,
+      work,
+      stagingArtifactRoot,
+    );
+    if (!captured.ok) return captured.output;
+    const capture = captured.capture;
+    const baseline = captured.runs[0]?.result;
+    if (baseline === undefined) throw new Error("captured Matrix is missing its baseline");
     const manifest = BenchResponseManifestSchema.parse({
       schema: "reviewgate.bench.provider-response-hashes.v2",
       entries: [...capture.entries],
@@ -2469,38 +3399,11 @@ export async function runBenchMatrix(input: BenchMatrixInput): Promise<BenchRunO
       label: string;
       passId: PolicyPassId | null;
       result: BenchResult;
-    }> = [{ label: "baseline", passId: null, result: baseline }];
-
-    for (const passId of ablatedPassIds) {
-      const replay = replayReviewerAdapters(underlying, capture);
-      const variantRun = await runVariant(`no-${passId}`, [passId], replay.adapters, false);
-      replay.consumed();
-      if (variantRun.output.exitCode !== 0 || !variantRun.result || capture.mismatch) {
-        return {
-          exitCode: variantRun.output.exitCode === 0 ? 4 : variantRun.output.exitCode,
-          stdout: variantRun.output.stdout,
-          stderr: `${variantRun.output.stderr}${capture.mismatch ? `bench matrix: ${capture.mismatch}\n` : ""}`,
-        };
-      }
-      const r = variantRun.result;
-      const provenanceMismatch = matrixVariantProvenanceMismatch(baseline, r);
-      if (provenanceMismatch.length > 0) {
-        return {
-          exitCode: 4,
-          stdout: "",
-          stderr: `bench matrix: benchmark-invalid — ${provenanceMismatch.join("; ")}\n`,
-        };
-      }
-      const traceValidation = validateBenchResultTracePairs(baseline, r);
-      if (!traceValidation.ok) {
-        return {
-          exitCode: 4,
-          stdout: "",
-          stderr: `bench matrix: benchmark-invalid — ${traceValidation.reason}\n`,
-        };
-      }
-      executed.push({ label: `-${passId}`, passId, result: r });
-    }
+    }> = captured.runs.map((run, index) => ({
+      label: index === 0 ? "baseline" : `-${run.profile.ablatedPassIds[0]}`,
+      passId: index === 0 ? null : (run.profile.ablatedPassIds[0] ?? null),
+      result: run.result,
+    }));
 
     const publishedTraces = publishResultTraces(
       stagingArtifactRoot,
