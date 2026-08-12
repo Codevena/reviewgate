@@ -798,7 +798,7 @@ git commit -m "feat(stats): classify policy pass evidence"
   `finding_signatures`, `verifyAuditBytes(...)`, `createPolicyDogfoodInputManifest(...)`,
   content-bound `attestPolicyDogfood(...)`, and `harvestPolicyDogfood(...)`.
 
-- [ ] **Step 1: Write RED for representative/member signatures**
+- [x] **Step 1: Write RED for representative/member signatures**
 
 ```ts
 expect(findingSignatures(clustered)).toEqual(["member-a", "member-z", "representative"]);
@@ -812,7 +812,7 @@ expect(audit.events[0]?.finding_signatures).toEqual([
 
 Require code-unit sorting and deduplication. Keep `decision_outcome` bytes unchanged.
 
-- [ ] **Step 2: Write dogfood harvester RED cases**
+- [x] **Step 2: Write dogfood harvester RED cases**
 
 Build a real temporary audit chain and stored policy trace. Assert one human-attested joined `tp`,
 one human-attested joined `fp`, and exclusion counts for agent-only decision, missing attestation,
@@ -821,7 +821,7 @@ signature absent from lineage, malformed chain, changed source file, and dogfood
 `registered_at`. A legacy `decision.applied` row without human attestation must remain excluded even
 when its derived `decision_outcome.bucket` says `tp` or `fp`.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run:
 
@@ -831,7 +831,7 @@ bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisio
 
 Expected: missing signatures/harvester APIs.
 
-- [ ] **Step 4: Implement shared signatures and additive emission**
+- [x] **Step 4: Implement shared signatures and additive emission**
 
 ```ts
 export function findingSignatures(f: Finding): string[] {
@@ -849,7 +849,7 @@ await audit.append({
 });
 ```
 
-- [ ] **Step 5: Refactor audit verification to verified bytes**
+- [x] **Step 5: Refactor audit verification to verified bytes**
 
 ```ts
 export function verifyAuditBytes(input: {
@@ -868,7 +868,7 @@ export async function verifyChain(path: string): Promise<VerifyResult> {
 
 Preserve current broken-line semantics and policy-trace reference checks.
 
-- [ ] **Step 6: Freeze the source inventory before preregistration**
+- [x] **Step 6: Freeze the source inventory before preregistration**
 
 ```ts
 export function createPolicyDogfoodInputManifest(input: {
@@ -884,7 +884,7 @@ code-unit-sorted inventory of audit/trace refs, SHA-256 values, byte counts and 
 The immutable input manifest is persisted through Task 1 before the policy preregistration is
 written; the preregistration binds its exact ref/SHA and identical `[since, until)` cutoff.
 
-- [ ] **Step 7: Require an explicit human attestation**
+- [x] **Step 7: Require an explicit human attestation**
 
 ```ts
 export function policyDogfoodAttestationPreflight(input: {
@@ -910,7 +910,7 @@ echo a fresh challenge after mismatch. Task 10 wires this API to a TTY-only
 decision files are candidate evidence only; without this content-bound human attestation they are
 never TP/FP labels.
 
-- [ ] **Step 8: Implement dogfood harvesting**
+- [x] **Step 8: Implement dogfood harvesting**
 
 ```ts
 export function harvestPolicyDogfood(input: {
@@ -926,7 +926,7 @@ attribute only attested evaluations/effects whose `source_signatures` intersect 
 decision signatures. Count every exclusion by a closed code. Write no files in this function and
 never rescan an audit root for later files.
 
-- [ ] **Step 9: Run GREEN and regressions**
+- [x] **Step 9: Run GREEN and regressions**
 
 ```bash
 bun test tests/unit/decision-outcome.test.ts tests/unit/loop-driver-emit-decisions.test.ts tests/unit/policy-dogfood-attestation.test.ts tests/unit/policy-dogfood.test.ts tests/unit/audit-verify-corruption.test.ts tests/unit/stats-load.test.ts
@@ -941,7 +941,7 @@ attestation for a different manifest, join by finding ID, skip trace verificatio
 decisions as FP, rescan beyond the frozen inventory, and reread audit bytes for hashing. Named tests
 must kill all mutants; restore SHAs.
 
-- [ ] **Step 11: Review and commit**
+- [x] **Step 11: Review and commit**
 
 ```bash
 git commit -m "feat(audit): bind decisions to policy signatures"

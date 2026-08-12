@@ -30,7 +30,7 @@ import type { Adjudication } from "./adjudications.ts";
 import { learnLessonsFromDecisions } from "./agent-lessons/learn.ts";
 import { AgentLessonsStore } from "./agent-lessons/store.ts";
 import { ProposalStore } from "./brain/proposal-store.ts";
-import { buildDecisionOutcome } from "./decision-outcome.ts";
+import { buildDecisionOutcome, findingSignatures } from "./decision-outcome.ts";
 import { learnFromDecisions } from "./fp-ledger/learn.ts";
 import { computeRejectRate } from "./fp-ledger/reject-rate.ts";
 import { FpLedgerStore } from "./fp-ledger/store.ts";
@@ -533,6 +533,7 @@ export async function emitDecisionOutcomes(
       run_id: sessionId,
       iter,
       trigger: "stop-hook",
+      finding_signatures: findingSignatures(f),
       decision_outcome: buildDecisionOutcome(d, f),
     });
   }

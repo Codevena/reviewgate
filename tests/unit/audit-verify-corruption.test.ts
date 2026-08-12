@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuditLogger } from "../../src/audit/logger.ts";
-import { verifyChain } from "../../src/audit/verifier.ts";
+import { verifyAuditBytes, verifyChain } from "../../src/audit/verifier.ts";
 import { runAuditVerify } from "../../src/cli/commands/audit.ts";
 
 function tmp() {
@@ -23,6 +23,25 @@ async function writeChain(): Promise<string> {
 }
 
 describe("verifyChain on a corrupt/non-JSON line", () => {
+  it("verifies the exact supplied bytes and preserves the corrupt line number", async () => {
+    const path = await writeChain();
+    const bytes = readFileSync(path);
+    const result = verifyAuditBytes({
+      bytes,
+      auditDir: join(path, "..", "..", "..", ".."),
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    const lines = bytes.toString("utf8").trim().split("\n");
+    lines[1] = "{not valid json,,,";
+    expect(
+      verifyAuditBytes({
+        bytes: Buffer.from(`${lines.join("\n")}\n`),
+        auditDir: join(path, "..", "..", "..", ".."),
+      }),
+    ).toMatchObject({ ok: false, brokenAtLine: 2, totalLines: 3 });
+  });
+
   it("reports a broken chain (no exception) when a line is not valid JSON", async () => {
     const path = await writeChain();
     const lines = readFileSync(path, "utf8").trim().split("\n");

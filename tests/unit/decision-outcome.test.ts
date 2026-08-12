@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildDecisionOutcome,
   classifyDecision,
+  findingSignatures,
   normalizeProviders,
 } from "../../src/core/decision-outcome.ts";
 import type { DecisionEntry } from "../../src/schemas/decision.ts";
@@ -117,6 +118,32 @@ describe("normalizeProviders", () => {
       ],
     });
     expect(normalizeProviders(f)).toEqual(["claude-code", "codex", "gemini"]);
+  });
+});
+
+describe("findingSignatures", () => {
+  it("returns representative and cluster-member signatures code-unit sorted and unique", () => {
+    const clustered = finding({
+      signature: "representative",
+      members: [
+        { signature: "member-z", provider: "codex", rule_id: "r", category: "correctness" },
+        { signature: "representative", provider: "codex", rule_id: "r", category: "correctness" },
+        { signature: "member-a", provider: "codex", rule_id: "r", category: "correctness" },
+      ],
+    });
+
+    expect(findingSignatures(clustered)).toEqual(["member-a", "member-z", "representative"]);
+  });
+
+  it("uses code-unit ordering rather than locale collation", () => {
+    const clustered = finding({
+      signature: "ä",
+      members: [
+        { signature: "z", provider: "codex", rule_id: "r", category: "correctness" },
+        { signature: "a", provider: "codex", rule_id: "r", category: "correctness" },
+      ],
+    });
+    expect(findingSignatures(clustered)).toEqual(["a", "z", "ä"]);
   });
 });
 
