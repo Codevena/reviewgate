@@ -600,7 +600,7 @@ git commit -m "feat(bench): persist policy truth identities"
 - Produces case-collapsed effects, repeat direction, deterministic bootstrap intervals, exact sign
   p-values, and Holm-adjusted p-values.
 
-- [ ] **Step 1: Write RED tests for independence and exact math**
+- [x] **Step 1: Write RED tests for independence and exact math**
 
 ```ts
 expect(collapseCaseRepeats([
@@ -621,13 +621,13 @@ expect(repeatDirection([1, 0, 0])).toBe("insufficient");
 Add a bootstrap test that calls the function twice with seed `20260811` and requires byte-identical
 intervals, plus a different-seed control.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 Run: `bun test tests/unit/policy-statistics.test.ts`
 
 Expected: missing module failure.
 
-- [ ] **Step 3: Implement pure statistics**
+- [x] **Step 3: Implement pure statistics**
 
 ```ts
 export interface RepeatCaseEffect {
@@ -652,20 +652,20 @@ export function repeatDirection(repeatMeans: readonly [number, number, number]):
 Use a local deterministic 32-bit PRNG seeded from the preregistration. Sort case IDs with
 `compareCodeUnits`. Reject duplicate `(caseId, repeat)` rows and repeats outside 1..3.
 
-- [ ] **Step 4: Run GREEN and property checks**
+- [x] **Step 4: Run GREEN and property checks**
 
 Run: `bun test tests/unit/policy-statistics.test.ts`
 
 Also assert every adjusted p-value is in `[raw, 1]`, adjusted sorted order is monotone, empty sign
 tests return `1`, and empty bootstrap returns `null`.
 
-- [ ] **Step 5: Kill statistics mutants**
+- [x] **Step 5: Kill statistics mutants**
 
 Count repeats as cases, change 10,000 resamples, use nondeterministic `Math.random`, make the sign
 test one-sided, remove Holm cumulative maxima, and combine singleton/interaction p-values. Named
 tests must kill each mutant; restore SHA.
 
-- [ ] **Step 6: Review and commit**
+- [x] **Step 6: Review and commit**
 
 ```bash
 git commit -m "feat(stats): add paired policy statistics"
