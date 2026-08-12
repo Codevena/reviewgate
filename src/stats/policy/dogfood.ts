@@ -5,12 +5,13 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canonicalJson } from "../../audit/canonical.ts";
+import { verifyCanonicalJsonArtifact } from "../../artifacts/canonical-json.ts";
 import { verifyAuditBytes } from "../../audit/verifier.ts";
 import type { PolicyMeasurementPreregistration } from "../../schemas/policy-measurement-preregistration.ts";
 import {
@@ -40,6 +41,14 @@ export const POLICY_DOGFOOD_EXCLUSION_CODES = [
 
 type DogfoodExclusionCode = (typeof POLICY_DOGFOOD_EXCLUSION_CODES)[number];
 type ManifestEntry = PolicyDogfoodInputManifest["entries"][number];
+
+export const __test: {
+  readSync: (fd: number, buffer: Buffer) => number;
+  afterRead: (() => void) | undefined;
+} = {
+  readSync: (fd, buffer) => readSync(fd, buffer, 0, buffer.length, null),
+  afterRead: undefined,
+};
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
@@ -105,8 +114,14 @@ function stableRead(root: string, ref: string, onRead?: () => void): Buffer {
     ) {
       throw new Error("dogfood source identity changed before read");
     }
-    const bytes = readFileSync(fd);
+    const bounded = Buffer.allocUnsafe(POLICY_DOGFOOD_SOURCE_MAX_BYTES + 1);
+    const bytesRead = __test.readSync(fd, bounded);
+    if (bytesRead > POLICY_DOGFOOD_SOURCE_MAX_BYTES) {
+      throw new Error("dogfood source exceeds bounded read limit");
+    }
+    const bytes = bounded.subarray(0, bytesRead);
     onRead?.();
+    __test.afterRead?.();
     const after = fstatSync(fd);
     const pathAfter = lstatSync(path);
     if (
@@ -192,8 +207,15 @@ function completeRunEvents(events: readonly Record<string, unknown>[]): Array<{
   return rows;
 }
 
-function timestampInWindow(value: unknown, since: string, until: string): boolean {
-  return typeof value === "string" && value >= since && value < until;
+function parseTimestamp(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? milliseconds : null;
+}
+
+function timestampInWindow(value: unknown, since: number, until: number): boolean {
+  const milliseconds = parseTimestamp(value);
+  return milliseconds !== null && milliseconds >= since && milliseconds < until;
 }
 
 export function createPolicyDogfoodInputManifest(input: {
@@ -201,11 +223,9 @@ export function createPolicyDogfoodInputManifest(input: {
   since: string;
   until: string;
 }): PolicyDogfoodInputManifest {
-  if (
-    Number.isNaN(Date.parse(input.since)) ||
-    Number.isNaN(Date.parse(input.until)) ||
-    input.since >= input.until
-  ) {
+  const since = parseTimestamp(input.since);
+  const until = parseTimestamp(input.until);
+  if (since === null || until === null || since >= until) {
     throw new Error("dogfood window must be a valid non-empty [since, until) interval");
   }
   const repoRoot = process.cwd();
@@ -224,50 +244,26 @@ export function createPolicyDogfoodInputManifest(input: {
       if (!verified.ok)
         throw new Error(`dogfood audit chain is malformed at line ${verified.brokenAtLine}`);
       const complete = completeRunEvents(verified.events).filter((event) =>
-        verified.events.some(
-          (candidate) =>
-            candidate.event === "run.complete" &&
-            candidate.run_id === event.runId &&
-            candidate.iter === event.iter &&
-            timestampInWindow(event.ts, input.since, input.until),
-        ),
+        timestampInWindow(event.ts, since, until),
       );
       if (complete.length === 0) continue;
-      // The v1 inventory pairs a whole audit chain with one trace identity; an
-      // ambiguous multi-run chain cannot be frozen without duplicating its ref.
-      if (complete.length !== 1)
-        throw new Error("dogfood audit chain has ambiguous run/iteration inventory");
-      const row = complete[0];
-      if (row === undefined) continue;
-      const tracePath = resolve(auditRoot, ...row.ref.split("/"));
-      const traceRef = rootRelative(repoRoot, tracePath);
-      const traceBytes = stableRead(repoRoot, traceRef);
-      if (sha256(traceBytes) !== row.sha256)
-        throw new Error("dogfood trace hash differs from audit reference");
-      const trace = PolicyTraceSchema.parse(
-        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(traceBytes)),
-      );
-      if (trace.run_id !== row.runId || trace.iter !== row.iter) {
-        throw new Error("dogfood trace identity differs from audit run/iteration");
+      const runs: Extract<ManifestEntry, { kind: "audit" }> ["runs"] = [];
+      for (const row of complete) {
+        const tracePath = resolve(auditRoot, ...row.ref.split("/"));
+        const traceRef = rootRelative(repoRoot, tracePath);
+        const traceBytes = stableRead(repoRoot, traceRef);
+        if (sha256(traceBytes) !== row.sha256)
+          throw new Error("dogfood trace hash differs from audit reference");
+        const trace = PolicyTraceSchema.parse(
+          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(traceBytes)),
+        );
+        if (trace.run_id !== row.runId || trace.iter !== row.iter) {
+          throw new Error("dogfood trace identity differs from audit run/iteration");
+        }
+        runs.push({ run_id: row.runId, iter: row.iter, trace_ref: row.ref, trace_sha256: row.sha256 });
+        entries.push({ kind: "trace", ref: traceRef, audit_ref: auditRef, trace_ref: row.ref, sha256: sha256(traceBytes), bytes: traceBytes.length, run_id: row.runId, iter: row.iter });
       }
-      entries.push(
-        {
-          kind: "audit",
-          ref: auditRef,
-          sha256: sha256(auditBytes),
-          bytes: auditBytes.length,
-          run_id: row.runId,
-          iter: row.iter,
-        },
-        {
-          kind: "trace",
-          ref: traceRef,
-          sha256: sha256(traceBytes),
-          bytes: traceBytes.length,
-          run_id: row.runId,
-          iter: row.iter,
-        },
-      );
+      entries.push({ kind: "audit", ref: auditRef, sha256: sha256(auditBytes), bytes: auditBytes.length, runs: runs.sort((left, right) => compareCodeUnits(pairKey(left.run_id, left.iter), pairKey(right.run_id, right.iter))) });
     }
   }
   return PolicyDogfoodInputManifestSchema.parse({
@@ -338,13 +334,40 @@ export function harvestPolicyDogfood(input: {
   preregistration: PolicyMeasurementPreregistration;
   inputManifest: PolicyDogfoodInputManifest;
   attestation: PolicyDogfoodAttestation;
+  artifactRoot: string;
   /** Observability-only hook; callers cannot change the frozen source set. */
   onFrozenSourceRead?: (entry: ManifestEntry) => void;
 }): PolicyDogfoodSnapshot {
   const exclusionsByCode = exclusions();
-  const manifest = PolicyDogfoodInputManifestSchema.parse(input.inputManifest);
-  const attestation = PolicyDogfoodAttestationSchema.parse(input.attestation);
   const pre = input.preregistration.dogfood;
+  const manifestArtifact = verifyCanonicalJsonArtifact({
+    root: input.artifactRoot,
+    directory: "policy-dogfood-input",
+    schema: PolicyDogfoodInputManifestSchema,
+    ref: pre.input_manifest_ref,
+    sha256: pre.input_manifest_sha256,
+    maxBytes: POLICY_DOGFOOD_SOURCE_MAX_BYTES,
+  });
+  const attestationArtifact = verifyCanonicalJsonArtifact({
+    root: input.artifactRoot,
+    directory: "policy-dogfood-attestation",
+    schema: PolicyDogfoodAttestationSchema,
+    ref: pre.attestation_ref,
+    sha256: pre.attestation_sha256,
+    maxBytes: POLICY_DOGFOOD_SOURCE_MAX_BYTES,
+  });
+  if (!manifestArtifact.ok || !attestationArtifact.ok) {
+    increment(exclusionsByCode, "attestation-input-manifest-mismatch");
+    return emptySnapshot({ preregistration: input.preregistration, exclusions: exclusionsByCode });
+  }
+  const manifest = manifestArtifact.value;
+  const attestation = attestationArtifact.value;
+  const since = parseTimestamp(pre.since);
+  const until = parseTimestamp(pre.until);
+  if (since === null || until === null || since >= until) {
+    increment(exclusionsByCode, "attestation-input-manifest-mismatch");
+    return emptySnapshot({ preregistration: input.preregistration, exclusions: exclusionsByCode });
+  }
   const sourceManifestSha = manifestSha256(manifest);
   const sourceAttestationSha = attestationSha256(attestation);
   const expectedPreflight = policyDogfoodAttestationPreflight({
@@ -368,6 +391,7 @@ export function harvestPolicyDogfood(input: {
   }
 
   const auditEvents = new Map<string, Record<string, unknown>[]>();
+  const auditRunBindings = new Map<string, { auditRef: string; traceRef: string; sha256: string }>();
   const traces = new Map<string, PolicyTrace>();
   for (const entry of manifest.entries) {
     let bytes: Buffer;
@@ -381,7 +405,6 @@ export function harvestPolicyDogfood(input: {
       increment(exclusionsByCode, "changed-source-file");
       continue;
     }
-    const key = pairKey(entry.run_id, entry.iter);
     if (entry.kind === "audit") {
       const result = verifyAuditBytes({
         bytes,
@@ -391,8 +414,13 @@ export function harvestPolicyDogfood(input: {
         increment(exclusionsByCode, "malformed-chain");
         continue;
       }
-      auditEvents.set(key, result.events);
+      for (const run of entry.runs) {
+        const key = pairKey(run.run_id, run.iter);
+        auditEvents.set(key, result.events);
+        auditRunBindings.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256 });
+      }
     } else {
+      const key = pairKey(entry.run_id, entry.iter);
       try {
         const trace = PolicyTraceSchema.parse(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
@@ -441,11 +469,15 @@ export function harvestPolicyDogfood(input: {
     }
     const decision = decisions[0];
     const completion = completions[0];
+    const binding = auditRunBindings.get(key);
     if (
       decision === undefined ||
       completion === undefined ||
-      !timestampInWindow(decision.ts, manifest.since, pre.until) ||
-      !timestampInWindow(completion.ts, manifest.since, pre.until)
+      binding === undefined ||
+      binding.traceRef !== completion.ref ||
+      binding.sha256 !== completion.sha256 ||
+      !timestampInWindow(decision.ts, since, until) ||
+      !timestampInWindow(completion.ts, since, until)
     ) {
       increment(exclusionsByCode, "post-registered-at");
       continue;

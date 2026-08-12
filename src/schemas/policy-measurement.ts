@@ -146,16 +146,40 @@ export const PolicyDogfoodInputManifestSchema = z
     since: z.string().min(1),
     until: z.string().min(1),
     entries: z.array(
-      z
-        .object({
-          kind: z.enum(["audit", "trace"]),
-          ref: ArtifactRefSchema,
-          sha256: Sha256Schema,
-          bytes: z.number().int().positive(),
-          run_id: z.string().min(1),
-          iter: z.number().int().positive(),
-        })
-        .strict(),
+      z.discriminatedUnion("kind", [
+        z
+          .object({
+            kind: z.literal("audit"),
+            ref: ArtifactRefSchema,
+            sha256: Sha256Schema,
+            bytes: z.number().int().positive(),
+            runs: z
+              .array(
+                z
+                  .object({
+                    run_id: z.string().min(1),
+                    iter: z.number().int().positive(),
+                    trace_ref: ArtifactRefSchema,
+                    trace_sha256: Sha256Schema,
+                  })
+                  .strict(),
+              )
+              .min(1),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("trace"),
+            ref: ArtifactRefSchema,
+            audit_ref: ArtifactRefSchema,
+            trace_ref: ArtifactRefSchema,
+            sha256: Sha256Schema,
+            bytes: z.number().int().positive(),
+            run_id: z.string().min(1),
+            iter: z.number().int().positive(),
+          })
+          .strict(),
+      ]),
     ),
   })
   .strict()
@@ -173,20 +197,42 @@ export const PolicyDogfoodInputManifestSchema = z
       previous = entry.ref;
       keys.add(`${entry.kind}:${entry.ref}`);
     }
-    const pairs = new Map<string, Set<string>>();
+    const traces = new Map<string, { ref: string; sha256: string }>();
+    const auditedRuns = new Map<string, { auditRef: string; traceRef: string; sha256: string }>();
     for (const entry of value.entries) {
-      const key = `${entry.run_id}\u0000${entry.iter}`;
-      const kinds = pairs.get(key) ?? new Set<string>();
-      kinds.add(entry.kind);
-      pairs.set(key, kinds);
+      if (entry.kind === "trace") {
+        const key = `${entry.audit_ref}\u0000${entry.trace_ref}`;
+        if (traces.has(key)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "trace run identities must be unique" });
+        }
+        traces.set(key, { ref: entry.ref, sha256: entry.sha256 });
+      } else {
+        let previousRun = "";
+        const seenRuns = new Set<string>();
+        for (const run of entry.runs) {
+          const key = `${run.run_id}\u0000${run.iter}`;
+          if (key <= previousRun || seenRuns.has(key) || auditedRuns.has(key)) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "audit run identities must be code-unit sorted and unique" });
+          }
+          previousRun = key;
+          seenRuns.add(key);
+          auditedRuns.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256 });
+        }
+      }
     }
-    for (const kinds of pairs.values()) {
-      if (!kinds.has("audit") || !kinds.has("trace")) {
+    for (const [key, binding] of auditedRuns) {
+      const trace = traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
+      if (trace === undefined || trace.sha256 !== binding.sha256) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["entries"],
-          message: "every run/iteration inventory needs audit and trace refs",
+          message: "every audited run needs its exact unique trace inventory binding",
         });
+      }
+    }
+    for (const [traceKey] of traces) {
+      if (![...auditedRuns.values()].some((binding) => `${binding.auditRef}\u0000${binding.traceRef}` === traceKey)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "every trace needs an audit run binding" });
       }
     }
   });
