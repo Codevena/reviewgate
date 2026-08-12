@@ -198,18 +198,25 @@ export const PolicyDogfoodInputManifestSchema = z
       keys.add(`${entry.kind}:${entry.ref}`);
     }
     const traces = new Map<string, { sha256: string; runId: string; iter: number }>();
-    const auditedRuns = new Map<string, {
-      auditRef: string;
-      traceRef: string;
-      sha256: string;
-      runId: string;
-      iter: number;
-    }>();
+    const auditedRuns = new Map<
+      string,
+      {
+        auditRef: string;
+        traceRef: string;
+        sha256: string;
+        runId: string;
+        iter: number;
+      }
+    >();
     for (const entry of value.entries) {
       if (entry.kind === "trace") {
         const key = `${entry.audit_ref}\u0000${entry.trace_ref}`;
         if (traces.has(key)) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "trace run identities must be unique" });
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["entries"],
+            message: "trace run identities must be unique",
+          });
         }
         traces.set(key, { sha256: entry.sha256, runId: entry.run_id, iter: entry.iter });
       } else {
@@ -218,11 +225,21 @@ export const PolicyDogfoodInputManifestSchema = z
         for (const run of entry.runs) {
           const key = `${run.run_id}\u0000${run.iter}`;
           if (key <= previousRun || seenRuns.has(key) || auditedRuns.has(key)) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "audit run identities must be code-unit sorted and unique" });
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["entries"],
+              message: "audit run identities must be code-unit sorted and unique",
+            });
           }
           previousRun = key;
           seenRuns.add(key);
-          auditedRuns.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256, runId: run.run_id, iter: run.iter });
+          auditedRuns.set(key, {
+            auditRef: entry.ref,
+            traceRef: run.trace_ref,
+            sha256: run.trace_sha256,
+            runId: run.run_id,
+            iter: run.iter,
+          });
         }
       }
     }
@@ -237,13 +254,22 @@ export const PolicyDogfoodInputManifestSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ["entries"],
-          message: "every audited run needs its exact unique trace inventory binding with the same run_id and iter",
+          message:
+            "every audited run needs its exact unique trace inventory binding with the same run_id and iter",
         });
       }
     }
     for (const [traceKey] of traces) {
-      if (![...auditedRuns.values()].some((binding) => `${binding.auditRef}\u0000${binding.traceRef}` === traceKey)) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["entries"], message: "every trace needs an audit run binding" });
+      if (
+        ![...auditedRuns.values()].some(
+          (binding) => `${binding.auditRef}\u0000${binding.traceRef}` === traceKey,
+        )
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["entries"],
+          message: "every trace needs an audit run binding",
+        });
       }
     }
   });

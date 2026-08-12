@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { join, relative } from "node:path";
+import { writeCanonicalJsonArtifact } from "../../src/artifacts/canonical-json.ts";
 import { canonicalJson } from "../../src/audit/canonical.ts";
 import { AuditLogger } from "../../src/audit/logger.ts";
-import { writeCanonicalJsonArtifact } from "../../src/artifacts/canonical-json.ts";
 import { POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts";
 import type {
   PolicyDogfoodAdjudication,
@@ -22,8 +22,8 @@ import {
 } from "../../src/stats/policy/dogfood-attestation.ts";
 import {
   POLICY_DOGFOOD_EXCLUSION_CODES,
-  __test as dogfoodTest,
   createPolicyDogfoodInputManifest,
+  __test as dogfoodTest,
   harvestPolicyDogfood,
 } from "../../src/stats/policy/dogfood.ts";
 
@@ -121,7 +121,9 @@ function rewriteAuditTimestamps(path: string, timestamps: readonly string[]): vo
     event.this_event_hash = createHash("sha256").update(canonicalJson(hashInput)).digest("hex");
     previous = event.this_event_hash;
   }
-  writeFileSync(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, { mode: 0o600 });
+  writeFileSync(path, `${events.map((event) => JSON.stringify(event)).join("\n")}\n`, {
+    mode: 0o600,
+  });
 }
 
 function replaceManifestEntry(
@@ -145,7 +147,7 @@ function boundInput(
     attestationManifest?: PolicyDogfoodInputManifest;
     artifactRoot?: string;
   } = {},
-) {
+): Parameters<typeof harvestPolicyDogfood>[0] {
   const artifactRoot = overrides.artifactRoot;
   if (artifactRoot === undefined) throw new Error("test fixture needs an artifact root");
   const attestationManifest = overrides.attestationManifest ?? manifest;
@@ -285,8 +287,20 @@ function frozenFixture(
       now,
     });
     const artifactRoot = join(root, "artifacts");
-    const inputArtifact = writeCanonicalJsonArtifact({ root: artifactRoot, directory: "policy-dogfood-input", schema: PolicyDogfoodInputManifestSchema, value: manifest, maxBytes: 1_048_576 });
-    const attestationArtifact = writeCanonicalJsonArtifact({ root: artifactRoot, directory: "policy-dogfood-attestation", schema: PolicyDogfoodAttestationSchema, value: attestation, maxBytes: 1_048_576 });
+    const inputArtifact = writeCanonicalJsonArtifact({
+      root: artifactRoot,
+      directory: "policy-dogfood-input",
+      schema: PolicyDogfoodInputManifestSchema,
+      value: manifest,
+      maxBytes: 1_048_576,
+    });
+    const attestationArtifact = writeCanonicalJsonArtifact({
+      root: artifactRoot,
+      directory: "policy-dogfood-attestation",
+      schema: PolicyDogfoodAttestationSchema,
+      value: attestation,
+      maxBytes: 1_048_576,
+    });
     if (!inputArtifact.ok || !attestationArtifact.ok) throw new Error("expected fixture artifacts");
     const preregistration = {
       dogfood: {
@@ -396,7 +410,11 @@ describe("policy dogfood harvesting", () => {
         expect.objectContaining({ run_id: "run-b", iter: 1 }),
       ]);
       expect(traces).toHaveLength(2);
-      expect(harvestPolicyDogfood(boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root })).labels).toHaveLength(2);
+      expect(
+        harvestPolicyDogfood(
+          boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root }),
+        ).labels,
+      ).toHaveLength(2);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -411,7 +429,10 @@ describe("policy dogfood harvesting", () => {
         ...fixture.manifest,
         entries: fixture.manifest.entries.map((entry) =>
           entry.kind === "audit"
-            ? { ...entry, runs: entry.runs.map((run) => ({ ...run, trace_sha256: "f".repeat(64) })) }
+            ? {
+                ...entry,
+                runs: entry.runs.map((run) => ({ ...run, trace_sha256: "f".repeat(64) })),
+              }
             : entry,
         ),
       };
@@ -447,7 +468,10 @@ describe("policy dogfood harvesting", () => {
       const ref = `artifacts/policy-dogfood-input/${hash}.json`;
       writeFileSync(join(fixture.root, ref), bytes, { mode: 0o600 });
       const challengeSha256 = sourceSha256(
-        Buffer.from(canonicalJson({ actor: "Markus", manifest: swapped, rows: fixture.rows }), "utf8"),
+        Buffer.from(
+          canonicalJson({ actor: "Markus", manifest: swapped, rows: fixture.rows }),
+          "utf8",
+        ),
       );
       const attestation = {
         schema: "reviewgate.policy-dogfood-attestation.v1" as const,
@@ -455,7 +479,7 @@ describe("policy dogfood harvesting", () => {
         attested_at: "2026-08-12T09:00:00.000Z",
         challenge_sha256: challengeSha256,
         input_manifest_sha256: hash,
-        rows: fixture.rows,
+        rows: [...fixture.rows],
       };
       const attestationBytes = Buffer.from(canonicalJson(attestation), "utf8");
       const attestationSha256 = sourceSha256(attestationBytes);
@@ -515,12 +539,17 @@ describe("policy dogfood harvesting", () => {
         reads += 1;
         return originalRead(fd, buffer);
       };
-      harvestPolicyDogfood(boundInput(fixture.manifest, fixture.attestation.rows, { artifactRoot: fixture.root }));
+      harvestPolicyDogfood(
+        boundInput(fixture.manifest, fixture.attestation.rows, { artifactRoot: fixture.root }),
+      );
       expect(reads).toBe(2);
       const audit = fixture.manifest.entries.find((entry) => entry.kind === "audit");
       if (audit === undefined) throw new Error("missing audit");
-      dogfoodTest.afterRead = () => writeFileSync(join(process.cwd(), audit.ref), "growth", { flag: "a" });
-      const grown = harvestPolicyDogfood(boundInput(fixture.manifest, fixture.attestation.rows, { artifactRoot: fixture.root }));
+      dogfoodTest.afterRead = () =>
+        writeFileSync(join(process.cwd(), audit.ref), "growth", { flag: "a" });
+      const grown = harvestPolicyDogfood(
+        boundInput(fixture.manifest, fixture.attestation.rows, { artifactRoot: fixture.root }),
+      );
       expect(grown.exclusions["changed-source-file"]).toBe(1);
     } finally {
       dogfoodTest.readSync = originalRead;
@@ -541,7 +570,11 @@ describe("policy dogfood harvesting", () => {
         since: "2026-08-12T10:00:00+02:00",
         until: "2026-08-12T08:00:00.001Z",
       });
-      expect(harvestPolicyDogfood(boundInput(inclusiveManifest, fixture.attestation.rows, { artifactRoot: fixture.root })).labels).toHaveLength(1);
+      expect(
+        harvestPolicyDogfood(
+          boundInput(inclusiveManifest, fixture.attestation.rows, { artifactRoot: fixture.root }),
+        ).labels,
+      ).toHaveLength(1);
 
       rewriteAuditTimestamps(auditPath, ["2026-08-12T08:00:00.000Z", "2026-08-12T08:00:00.001Z"]);
       const exclusiveManifest = createPolicyDogfoodInputManifest({
@@ -549,7 +582,11 @@ describe("policy dogfood harvesting", () => {
         since: "2026-08-12T08:00:00.000Z",
         until: "2026-08-12T08:00:00.001Z",
       });
-      expect(harvestPolicyDogfood(boundInput(exclusiveManifest, fixture.attestation.rows, { artifactRoot: fixture.root })).exclusions["post-registered-at"]).toBe(1);
+      expect(
+        harvestPolicyDogfood(
+          boundInput(exclusiveManifest, fixture.attestation.rows, { artifactRoot: fixture.root }),
+        ).exclusions["post-registered-at"],
+      ).toBe(1);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -653,12 +690,16 @@ describe("policy dogfood harvesting", () => {
   test("keeps two matching human attestations eligible by signature lineage, not finding ID", async () => {
     const fixture = await frozenMultiFixture(false);
     try {
-      const matched = harvestPolicyDogfood(boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root }));
+      const matched = harvestPolicyDogfood(
+        boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root }),
+      );
       const unmatchedRows = fixture.rows.map((row) => ({
         ...row,
         finding_signature: `missing-${row.finding_signature}`,
       }));
-      const unmatched = harvestPolicyDogfood(boundInput(fixture.manifest, unmatchedRows, { artifactRoot: fixture.root }));
+      const unmatched = harvestPolicyDogfood(
+        boundInput(fixture.manifest, unmatchedRows, { artifactRoot: fixture.root }),
+      );
 
       // The decision IDs deliberately differ from every trace signature. Both labels
       // prove the join is through finding_signatures/source_signatures, not F-ids.
@@ -677,7 +718,10 @@ describe("policy dogfood harvesting", () => {
     try {
       const foreignManifest = { ...fixture.manifest, since: "1999-01-01T00:00:00.000Z" };
       const snapshot = harvestPolicyDogfood(
-        boundInput(fixture.manifest, fixture.rows, { artifactRoot: fixture.root, attestationManifest: foreignManifest }),
+        boundInput(fixture.manifest, fixture.rows, {
+          artifactRoot: fixture.root,
+          attestationManifest: foreignManifest,
+        }),
       );
       expect(snapshot.labels).toHaveLength(0);
       expect(snapshot.exclusions["attestation-input-manifest-mismatch"]).toBe(1);
@@ -692,7 +736,12 @@ describe("policy dogfood harvesting", () => {
       const later = await fixture.writeRun("run-later", "sig-later", "F-later");
       const rows = [
         ...fixture.rows,
-        { run_id: "run-later", iter: 1, finding_signature: "sig-later", disposition: "tp" as const },
+        {
+          run_id: "run-later",
+          iter: 1,
+          finding_signature: "sig-later",
+          disposition: "tp" as const,
+        },
       ];
       const reads: string[] = [];
       const snapshot = harvestPolicyDogfood({
@@ -700,9 +749,15 @@ describe("policy dogfood harvesting", () => {
         onFrozenSourceRead: (entry) => reads.push(entry.ref),
       });
       expect(fixture.manifest.entries).toHaveLength(4);
-      expect(fixture.manifest.entries.some((entry) => entry.ref === relative(process.cwd(), later.auditPath))).toBe(false);
+      expect(
+        fixture.manifest.entries.some(
+          (entry) => entry.ref === relative(process.cwd(), later.auditPath),
+        ),
+      ).toBe(false);
       expect(reads).toHaveLength(4);
-      expect(reads.filter((ref) => ref === relative(process.cwd(), later.auditPath))).toHaveLength(0);
+      expect(reads.filter((ref) => ref === relative(process.cwd(), later.auditPath))).toHaveLength(
+        0,
+      );
       expect(snapshot.labels).toHaveLength(2);
       expect(snapshot.exclusions["incomplete-trace"]).toBe(1);
     } finally {
@@ -739,16 +794,31 @@ describe("policy dogfood harvesting", () => {
       const changedPath = join(process.cwd(), changedAudit.ref);
       writeFileSync(changedPath, Buffer.concat([readFileSync(changedPath), Buffer.from("\n")]));
       chmodSync(changedPath, 0o600);
-      expect(harvestPolicyDogfood(boundInput(changed.manifest, changed.rows, { artifactRoot: changed.root })).exclusions["changed-source-file"]).toBe(1);
+      expect(
+        harvestPolicyDogfood(
+          boundInput(changed.manifest, changed.rows, { artifactRoot: changed.root }),
+        ).exclusions["changed-source-file"],
+      ).toBe(1);
 
       const malformedAudit = malformed.manifest.entries.find((entry) => entry.kind === "audit");
       if (malformedAudit === undefined) throw new Error("missing frozen audit");
       const malformedPath = join(process.cwd(), malformedAudit.ref);
-      const malformedBytes = Buffer.concat([readFileSync(malformedPath), Buffer.from("not-json\n")]);
+      const malformedBytes = Buffer.concat([
+        readFileSync(malformedPath),
+        Buffer.from("not-json\n"),
+      ]);
       writeFileSync(malformedPath, malformedBytes);
       chmodSync(malformedPath, 0o600);
-      const mutatedManifest = replaceManifestEntry(malformed.manifest, malformedAudit.ref, malformedBytes);
-      expect(harvestPolicyDogfood(boundInput(mutatedManifest, malformed.rows, { artifactRoot: malformed.root })).exclusions["malformed-chain"]).toBe(1);
+      const mutatedManifest = replaceManifestEntry(
+        malformed.manifest,
+        malformedAudit.ref,
+        malformedBytes,
+      );
+      expect(
+        harvestPolicyDogfood(
+          boundInput(mutatedManifest, malformed.rows, { artifactRoot: malformed.root }),
+        ).exclusions["malformed-chain"],
+      ).toBe(1);
     } finally {
       rmSync(changed.root, { recursive: true, force: true });
       rmSync(malformed.root, { recursive: true, force: true });
@@ -762,43 +832,167 @@ describe("policy dogfood harvesting", () => {
     try {
       const incompleteLog = new AuditLogger(auditDir);
       await incompleteLog.append({
-        event: "run.complete", run_id: "run-incomplete", iter: 1, trigger: "stop-hook",
-        run_summary: { verdict: "PASS", source: "panel", counts: { critical: 0, warn: 0, info: 0 }, cost_usd: 0, duration_ms: 1, demoted: 0, signatures: [], providers: [], policy_trace_status: "error" },
+        event: "run.complete",
+        run_id: "run-incomplete",
+        iter: 1,
+        trigger: "stop-hook",
+        run_summary: {
+          verdict: "PASS",
+          source: "panel",
+          counts: { critical: 0, warn: 0, info: 0 },
+          cost_usd: 0,
+          duration_ms: 1,
+          demoted: 0,
+          signatures: [],
+          providers: [],
+          policy_trace_status: "error",
+        },
       });
       await incompleteLog.append({
-        event: "decision.applied", run_id: "run-incomplete", iter: 1, trigger: "stop-hook", finding_signatures: ["sig-incomplete"],
-        decision_outcome: { finding_id: "F-incomplete", severity: "WARN", bucket: "tp", providers: ["codex"] },
+        event: "decision.applied",
+        run_id: "run-incomplete",
+        iter: 1,
+        trigger: "stop-hook",
+        finding_signatures: ["sig-incomplete"],
+        decision_outcome: {
+          finding_id: "F-incomplete",
+          severity: "WARN",
+          bucket: "tp",
+          providers: ["codex"],
+        },
       });
       const invalidTracePath = join(auditDir, "invalid-trace.json");
       writeFileSync(invalidTracePath, "{}", { mode: 0o600 });
       const incompleteAuditPath = incompleteLog.currentFilePath();
       const incompleteManifest: PolicyDogfoodInputManifest = {
-        schema: "reviewgate.policy-dogfood-input-manifest.v1", since: "2000-01-01T00:00:00.000Z", until: "2100-01-01T00:00:00.000Z",
+        schema: "reviewgate.policy-dogfood-input-manifest.v1",
+        since: "2000-01-01T00:00:00.000Z",
+        until: "2100-01-01T00:00:00.000Z",
         entries: [
-          { kind: "audit" as const, ref: relative(process.cwd(), incompleteAuditPath), sha256: sourceSha256(readFileSync(incompleteAuditPath)), bytes: readFileSync(incompleteAuditPath).length, runs: [{ run_id: "run-incomplete", iter: 1, trace_ref: relative(process.cwd(), invalidTracePath), trace_sha256: sourceSha256(readFileSync(invalidTracePath)) }] },
-          { kind: "trace" as const, ref: relative(process.cwd(), invalidTracePath), audit_ref: relative(process.cwd(), incompleteAuditPath), trace_ref: relative(process.cwd(), invalidTracePath), sha256: sourceSha256(readFileSync(invalidTracePath)), bytes: 2, run_id: "run-incomplete", iter: 1 },
+          {
+            kind: "audit" as const,
+            ref: relative(process.cwd(), incompleteAuditPath),
+            sha256: sourceSha256(readFileSync(incompleteAuditPath)),
+            bytes: readFileSync(incompleteAuditPath).length,
+            runs: [
+              {
+                run_id: "run-incomplete",
+                iter: 1,
+                trace_ref: relative(process.cwd(), invalidTracePath),
+                trace_sha256: sourceSha256(readFileSync(invalidTracePath)),
+              },
+            ],
+          },
+          {
+            kind: "trace" as const,
+            ref: relative(process.cwd(), invalidTracePath),
+            audit_ref: relative(process.cwd(), incompleteAuditPath),
+            trace_ref: relative(process.cwd(), invalidTracePath),
+            sha256: sourceSha256(readFileSync(invalidTracePath)),
+            bytes: 2,
+            run_id: "run-incomplete",
+            iter: 1,
+          },
         ].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
       };
-      const incompleteRows = [{ run_id: "run-incomplete", iter: 1, finding_signature: "sig-incomplete", disposition: "tp" }] as const;
+      const incompleteRows = [
+        {
+          run_id: "run-incomplete",
+          iter: 1,
+          finding_signature: "sig-incomplete",
+          disposition: "tp",
+        },
+      ] as const;
       // One invalid trace entry is counted at source validation and once for the
       // attested row that consequently lacks a complete trace: 2 exact outcomes.
-      expect(harvestPolicyDogfood(boundInput(incompleteManifest, incompleteRows, { artifactRoot: root })).exclusions["incomplete-trace"]).toBe(2);
+      expect(
+        harvestPolicyDogfood(boundInput(incompleteManifest, incompleteRows, { artifactRoot: root }))
+          .exclusions["incomplete-trace"],
+      ).toBe(2);
 
       const ambiguousLog = new AuditLogger(auditDir);
       const stored = ambiguousLog.writePolicyTrace(trace("run-ambiguous", "sig-ambiguous"));
       if (stored.status !== "complete") throw new Error("expected trace");
-      const summary = { verdict: "PASS" as const, source: "panel" as const, counts: { critical: 0, warn: 0, info: 0 }, cost_usd: 0, duration_ms: 1, demoted: 0, signatures: [], providers: [], policy_trace_status: "complete" as const, policy_trace_ref: stored.ref, policy_trace_sha256: stored.sha256 };
-      await ambiguousLog.append({ event: "run.complete", run_id: "run-ambiguous", iter: 1, trigger: "stop-hook", run_summary: summary });
-      await ambiguousLog.append({ event: "run.complete", run_id: "run-ambiguous", iter: 1, trigger: "stop-hook", run_summary: summary });
-      await ambiguousLog.append({ event: "decision.applied", run_id: "run-ambiguous", iter: 1, trigger: "stop-hook", finding_signatures: ["sig-ambiguous"], decision_outcome: { finding_id: "F-ambiguous", severity: "WARN", bucket: "tp", providers: ["codex"] } });
+      const summary = {
+        verdict: "PASS" as const,
+        source: "panel" as const,
+        counts: { critical: 0, warn: 0, info: 0 },
+        cost_usd: 0,
+        duration_ms: 1,
+        demoted: 0,
+        signatures: [],
+        providers: [],
+        policy_trace_status: "complete" as const,
+        policy_trace_ref: stored.ref,
+        policy_trace_sha256: stored.sha256,
+      };
+      await ambiguousLog.append({
+        event: "run.complete",
+        run_id: "run-ambiguous",
+        iter: 1,
+        trigger: "stop-hook",
+        run_summary: summary,
+      });
+      await ambiguousLog.append({
+        event: "run.complete",
+        run_id: "run-ambiguous",
+        iter: 1,
+        trigger: "stop-hook",
+        run_summary: summary,
+      });
+      await ambiguousLog.append({
+        event: "decision.applied",
+        run_id: "run-ambiguous",
+        iter: 1,
+        trigger: "stop-hook",
+        finding_signatures: ["sig-ambiguous"],
+        decision_outcome: {
+          finding_id: "F-ambiguous",
+          severity: "WARN",
+          bucket: "tp",
+          providers: ["codex"],
+        },
+      });
       const ambiguousAudit = ambiguousLog.currentFilePath();
       const ambiguousTrace = join(auditDir, ...stored.ref.split("/"));
-      const ambiguousManifest: PolicyDogfoodInputManifest = { schema: "reviewgate.policy-dogfood-input-manifest.v1", since: "2000-01-01T00:00:00.000Z", until: "2100-01-01T00:00:00.000Z", entries: [
-        { kind: "audit" as const, ref: relative(process.cwd(), ambiguousAudit), sha256: sourceSha256(readFileSync(ambiguousAudit)), bytes: readFileSync(ambiguousAudit).length, runs: [{ run_id: "run-ambiguous", iter: 1, trace_ref: stored.ref, trace_sha256: sourceSha256(readFileSync(ambiguousTrace)) }] },
-        { kind: "trace" as const, ref: relative(process.cwd(), ambiguousTrace), audit_ref: relative(process.cwd(), ambiguousAudit), trace_ref: stored.ref, sha256: sourceSha256(readFileSync(ambiguousTrace)), bytes: readFileSync(ambiguousTrace).length, run_id: "run-ambiguous", iter: 1 },
-      ].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)) };
-      const ambiguousRows = [{ run_id: "run-ambiguous", iter: 1, finding_signature: "sig-ambiguous", disposition: "tp" }] as const;
-      expect(harvestPolicyDogfood(boundInput(ambiguousManifest, ambiguousRows, { artifactRoot: root })).exclusions["ambiguous-run-iter"]).toBe(1);
+      const ambiguousManifest: PolicyDogfoodInputManifest = {
+        schema: "reviewgate.policy-dogfood-input-manifest.v1",
+        since: "2000-01-01T00:00:00.000Z",
+        until: "2100-01-01T00:00:00.000Z",
+        entries: [
+          {
+            kind: "audit" as const,
+            ref: relative(process.cwd(), ambiguousAudit),
+            sha256: sourceSha256(readFileSync(ambiguousAudit)),
+            bytes: readFileSync(ambiguousAudit).length,
+            runs: [
+              {
+                run_id: "run-ambiguous",
+                iter: 1,
+                trace_ref: stored.ref,
+                trace_sha256: sourceSha256(readFileSync(ambiguousTrace)),
+              },
+            ],
+          },
+          {
+            kind: "trace" as const,
+            ref: relative(process.cwd(), ambiguousTrace),
+            audit_ref: relative(process.cwd(), ambiguousAudit),
+            trace_ref: stored.ref,
+            sha256: sourceSha256(readFileSync(ambiguousTrace)),
+            bytes: readFileSync(ambiguousTrace).length,
+            run_id: "run-ambiguous",
+            iter: 1,
+          },
+        ].sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0)),
+      };
+      const ambiguousRows = [
+        { run_id: "run-ambiguous", iter: 1, finding_signature: "sig-ambiguous", disposition: "tp" },
+      ] as const;
+      expect(
+        harvestPolicyDogfood(boundInput(ambiguousManifest, ambiguousRows, { artifactRoot: root }))
+          .exclusions["ambiguous-run-iter"],
+      ).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -808,15 +1002,29 @@ describe("policy dogfood harvesting", () => {
     const lineage = await frozenFixture("tp", { extraDecisionSignature: "sig-not-in-trace" });
     const post = await frozenFixture("tp");
     try {
-      const rows = [{ run_id: "run-a", iter: 1, finding_signature: "sig-not-in-trace", disposition: "tp" }] as const;
-      const preflight = policyDogfoodAttestationPreflight({ manifest: lineage.manifest, actor: "Markus", rows });
-      const attestation = attestPolicyDogfood({ manifest: lineage.manifest, actor: "Markus", rows, confirmation: preflight.challenge, now: new Date() });
+      const rows = [
+        { run_id: "run-a", iter: 1, finding_signature: "sig-not-in-trace", disposition: "tp" },
+      ] as const;
+      const preflight = policyDogfoodAttestationPreflight({
+        manifest: lineage.manifest,
+        actor: "Markus",
+        rows,
+      });
+      const attestation = attestPolicyDogfood({
+        manifest: lineage.manifest,
+        actor: "Markus",
+        rows,
+        confirmation: preflight.challenge,
+        now: new Date(),
+      });
       // The matching decision makes the row reach the trace-lineage guard.
       const lineageInput = boundInput(lineage.manifest, rows, { artifactRoot: lineage.root });
       expect(harvestPolicyDogfood(lineageInput).exclusions["signature-absent-lineage"]).toBe(1);
 
       const lateManifest = { ...post.manifest, until: "2026-08-12T00:00:00.000Z" };
-      const lateInput = boundInput(lateManifest, post.attestation.rows, { artifactRoot: post.root });
+      const lateInput = boundInput(lateManifest, post.attestation.rows, {
+        artifactRoot: post.root,
+      });
       expect(harvestPolicyDogfood(lateInput).exclusions["post-registered-at"]).toBe(1);
     } finally {
       rmSync(lineage.root, { recursive: true, force: true });

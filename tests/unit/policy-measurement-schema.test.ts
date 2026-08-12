@@ -177,8 +177,26 @@ describe("policy measurement result contracts", () => {
             },
           ],
         },
-        { kind: "trace", ref: "source/trace-a.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/a.json", sha256: SHA, bytes: 1, run_id: "run-a", iter: 1 },
-        { kind: "trace", ref: "source/trace-b.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/b.json", sha256: SHA, bytes: 1, run_id: "run-b", iter: 1 },
+        {
+          kind: "trace",
+          ref: "source/trace-a.json",
+          audit_ref: "audit/a.jsonl",
+          trace_ref: "trace/a.json",
+          sha256: SHA,
+          bytes: 1,
+          run_id: "run-a",
+          iter: 1,
+        },
+        {
+          kind: "trace",
+          ref: "source/trace-b.json",
+          audit_ref: "audit/a.jsonl",
+          trace_ref: "trace/b.json",
+          sha256: SHA,
+          bytes: 1,
+          run_id: "run-b",
+          iter: 1,
+        },
       ],
     };
     expect(() => PolicyDogfoodInputManifestSchema.parse(manifest)).not.toThrow();
@@ -209,13 +227,29 @@ describe("policy measurement result contracts", () => {
             { run_id: "run-b", iter: 1, trace_ref: "trace/b.json", trace_sha256: SHA },
           ],
         },
-        { kind: "trace", ref: "source/trace-a.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/a.json", sha256: SHA, bytes: 1, run_id: "run-b", iter: 1 },
-        { kind: "trace", ref: "source/trace-b.json", audit_ref: "audit/a.jsonl", trace_ref: "trace/b.json", sha256: SHA, bytes: 1, run_id: "run-a", iter: 1 },
+        {
+          kind: "trace",
+          ref: "source/trace-a.json",
+          audit_ref: "audit/a.jsonl",
+          trace_ref: "trace/a.json",
+          sha256: SHA,
+          bytes: 1,
+          run_id: "run-b",
+          iter: 1,
+        },
+        {
+          kind: "trace",
+          ref: "source/trace-b.json",
+          audit_ref: "audit/a.jsonl",
+          trace_ref: "trace/b.json",
+          sha256: SHA,
+          bytes: 1,
+          run_id: "run-a",
+          iter: 1,
+        },
       ],
     };
-    expect(() => PolicyDogfoodInputManifestSchema.parse(manifest)).toThrow(
-      /same run_id and iter/i,
-    );
+    expect(() => PolicyDogfoodInputManifestSchema.parse(manifest)).toThrow(/same run_id and iter/i);
   });
 
   test("requires a content-bound human TP/FP attestation", () => {

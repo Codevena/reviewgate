@@ -10,8 +10,8 @@ import {
   realpathSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { canonicalJson } from "../../audit/canonical.ts";
 import { verifyCanonicalJsonArtifact } from "../../artifacts/canonical-json.ts";
+import { canonicalJson } from "../../audit/canonical.ts";
 import { verifyAuditBytes } from "../../audit/verifier.ts";
 import type { PolicyMeasurementPreregistration } from "../../schemas/policy-measurement-preregistration.ts";
 import {
@@ -247,7 +247,7 @@ export function createPolicyDogfoodInputManifest(input: {
         timestampInWindow(event.ts, since, until),
       );
       if (complete.length === 0) continue;
-      const runs: Extract<ManifestEntry, { kind: "audit" }> ["runs"] = [];
+      const runs: Extract<ManifestEntry, { kind: "audit" }>["runs"] = [];
       for (const row of complete) {
         const tracePath = resolve(auditRoot, ...row.ref.split("/"));
         const traceRef = rootRelative(repoRoot, tracePath);
@@ -260,10 +260,32 @@ export function createPolicyDogfoodInputManifest(input: {
         if (trace.run_id !== row.runId || trace.iter !== row.iter) {
           throw new Error("dogfood trace identity differs from audit run/iteration");
         }
-        runs.push({ run_id: row.runId, iter: row.iter, trace_ref: row.ref, trace_sha256: row.sha256 });
-        entries.push({ kind: "trace", ref: traceRef, audit_ref: auditRef, trace_ref: row.ref, sha256: sha256(traceBytes), bytes: traceBytes.length, run_id: row.runId, iter: row.iter });
+        runs.push({
+          run_id: row.runId,
+          iter: row.iter,
+          trace_ref: row.ref,
+          trace_sha256: row.sha256,
+        });
+        entries.push({
+          kind: "trace",
+          ref: traceRef,
+          audit_ref: auditRef,
+          trace_ref: row.ref,
+          sha256: sha256(traceBytes),
+          bytes: traceBytes.length,
+          run_id: row.runId,
+          iter: row.iter,
+        });
       }
-      entries.push({ kind: "audit", ref: auditRef, sha256: sha256(auditBytes), bytes: auditBytes.length, runs: runs.sort((left, right) => compareCodeUnits(pairKey(left.run_id, left.iter), pairKey(right.run_id, right.iter))) });
+      entries.push({
+        kind: "audit",
+        ref: auditRef,
+        sha256: sha256(auditBytes),
+        bytes: auditBytes.length,
+        runs: runs.sort((left, right) =>
+          compareCodeUnits(pairKey(left.run_id, left.iter), pairKey(right.run_id, right.iter)),
+        ),
+      });
     }
   }
   return PolicyDogfoodInputManifestSchema.parse({
@@ -391,7 +413,10 @@ export function harvestPolicyDogfood(input: {
   }
 
   const auditEvents = new Map<string, Record<string, unknown>[]>();
-  const auditRunBindings = new Map<string, { auditRef: string; traceRef: string; sha256: string }>();
+  const auditRunBindings = new Map<
+    string,
+    { auditRef: string; traceRef: string; sha256: string }
+  >();
   const traces = new Map<string, PolicyTrace>();
   for (const entry of manifest.entries) {
     let bytes: Buffer;
@@ -417,7 +442,11 @@ export function harvestPolicyDogfood(input: {
       for (const run of entry.runs) {
         const key = pairKey(run.run_id, run.iter);
         auditEvents.set(key, result.events);
-        auditRunBindings.set(key, { auditRef: entry.ref, traceRef: run.trace_ref, sha256: run.trace_sha256 });
+        auditRunBindings.set(key, {
+          auditRef: entry.ref,
+          traceRef: run.trace_ref,
+          sha256: run.trace_sha256,
+        });
       }
     } else {
       try {
@@ -438,7 +467,9 @@ export function harvestPolicyDogfood(input: {
     const events = auditEvents.get(key);
     const binding = auditRunBindings.get(key);
     const trace =
-      binding === undefined ? undefined : traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
+      binding === undefined
+        ? undefined
+        : traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
     if (events === undefined || trace === undefined) {
       increment(exclusionsByCode, "incomplete-trace");
       continue;
