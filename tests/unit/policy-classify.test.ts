@@ -188,22 +188,50 @@ describe("policy pass classification", () => {
   });
 
   test("does not manufacture dogfood TP harm from missing or historical unsigned decisions", () => {
-    const withoutExcludedDecisions = onePass();
-    onlyPass(withoutExcludedDecisions).truth_effects.baseline.blocking_fn = 3;
-    const withExcludedDecisions = onePass();
-    onlyPass(withExcludedDecisions).truth_effects.baseline.blocking_fn = 3;
-    onlyPass(withExcludedDecisions).exclusions = [
+    const evidence = onePass();
+    onlyPass(evidence).exclusions = [
       { lane: "dogfood", code: "missing-decision", count: 1 },
       { lane: "dogfood", code: "historical-unsigned-decision", count: 1 },
     ];
     const passFacts = facts({
-      ground_truth_harms: [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }],
+      dogfood_dispositions: [
+        {
+          identity: "a",
+          run_id: "run-1",
+          iter: 1,
+          disposition: "fp",
+          effect: "none",
+          evidence_ref: "artifacts/policy/evidence.json",
+        },
+        {
+          identity: "b",
+          run_id: "run-2",
+          iter: 1,
+          disposition: "tp",
+          effect: "preserved",
+          evidence_ref: "artifacts/policy/evidence.json",
+        },
+        {
+          identity: "c",
+          run_id: "run-3",
+          iter: 1,
+          disposition: "fp",
+          effect: "none",
+          evidence_ref: "artifacts/policy/evidence.json",
+        },
+        {
+          identity: "d",
+          run_id: "run-1",
+          iter: 2,
+          disposition: "tp",
+          effect: "preserved",
+          evidence_ref: "artifacts/policy/evidence.json",
+        },
+      ],
     });
-    const without = classify(withoutExcludedDecisions, passFacts)[0];
-    const withExcluded = classify(withExcludedDecisions, passFacts)[0];
-    expect(withExcluded?.classification).toBe(without?.classification);
-    expect(withExcluded?.harm_observed).toBe(without?.harm_observed);
-    expect(withExcluded?.classification).toBe("inconclusive");
+    const result = classify(evidence, passFacts)[0];
+    expect(result?.classification).toBe("inconclusive");
+    expect(result?.harm_observed).toBe(false);
   });
 
   test("returns delete-candidate for sufficient zero effect without benefits", () => {
