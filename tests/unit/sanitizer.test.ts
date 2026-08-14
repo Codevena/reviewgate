@@ -24,6 +24,34 @@ describe("sanitizeDiff", () => {
     expect(flaggedPatternCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps a raw marker distinguishable from an already-escaped literal (injectivity)", () => {
+    // A prompt-security test asserts BOTH that the raw tag is gone AND that the
+    // escaped form remains — two DIFFERENT strings. Before this guard, sanitising
+    // mapped the raw tag onto the escaped literal, so both reached the reviewer as
+    // the same bytes and the assertion pair read as a self-contradiction. That
+    // produced the same phantom CRITICAL three times across two gate iterations.
+    //
+    // WITH the fix : raw -> "&lt;system&gt;"      escaped -> "&amp;lt;system&amp;gt;"  (2 distinct forms)
+    // WITHOUT it   : raw -> "&lt;system&gt;"      escaped -> "&lt;system&gt;"          (1 form, collapsed)
+    const { text } = sanitizeDiff({
+      diff: 'expect(x).not.toContain("<system>");\nexpect(x).toContain("&lt;system&gt;");',
+      personaReaffirm: "x",
+    });
+
+    // The live control token must still be gone — the defence is unchanged.
+    expect(text).not.toMatch(/<system>/);
+
+    // Both source literals must survive as DISTINCT renderings.
+    expect(text).toContain("&lt;system&gt;"); // came from the raw tag
+    expect(text).toContain("&amp;lt;system&amp;gt;"); // came from the escaped literal
+
+    // The load-bearing property, stated directly: the two assertion lines must not
+    // have become byte-identical. Split on the fence body and compare the two lines.
+    const lines = text.split("\n").filter((l) => l.includes("system"));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).not.toBe(lines[1]);
+  });
+
   it("defangs purely-textual injection markers, not just angle-bracket ones (F-032)", () => {
     // escapeAngles is a no-op on markers without `<`/`>`, so `### Instruction:` /
     // `Human:` / `Reviewgate:` previously reached the reviewer verbatim. They must

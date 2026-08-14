@@ -1,5 +1,31 @@
 // src/diff/sanitizer.ts
-const INJECTION_MARKERS: ReadonlyArray<RegExp> = [
+
+// ORDER IS LOAD-BEARING — these run BEFORE the raw markers below.
+//
+// Neutralising `<system>` produces `&lt;system&gt;`, which is byte-identical to a
+// literal `&lt;system&gt;` that was already in the source. That made the mapping
+// NON-INJECTIVE: a prompt-security test asserting the correct pair
+//     expect(out).not.toContain("<system>");   // raw must be gone
+//     expect(out).toContain("&lt;system&gt;");  // escaped must remain
+// reached reviewers as two identical literals and read as a self-contradiction.
+// It was reported as a CRITICAL "contradictory-test-assertions" three times across
+// two gate iterations by four personas at confidence up to 0.99 — twice scored as
+// "confirmed by" consensus, because every reviewer read the SAME corrupted input.
+//
+// Escaping the pre-existing entity form to `&amp;lt;system&amp;gt;` restores
+// injectivity. Running these FIRST is what keeps it: were the raw patterns to run
+// first, their fresh `&lt;system&gt;` output would be re-matched here and the two
+// forms would collapse together again.
+const ESCAPED_ANGLE_MARKERS: ReadonlyArray<RegExp> = [
+  /&lt;system&gt;/gi,
+  /&lt;\/system&gt;/gi,
+  /&lt;system_prompt&gt;/gi,
+  /&lt;\/system_prompt&gt;/gi,
+  /&lt;\|im_start\|&gt;/gi,
+  /&lt;\|im_end\|&gt;/gi,
+];
+
+const RAW_MARKERS: ReadonlyArray<RegExp> = [
   /<system>/gi,
   /<\/system>/gi,
   /<system_prompt>/gi,
@@ -14,8 +40,12 @@ const INJECTION_MARKERS: ReadonlyArray<RegExp> = [
   /\bReviewgate:/gi,
 ];
 
+const INJECTION_MARKERS: ReadonlyArray<RegExp> = [...ESCAPED_ANGLE_MARKERS, ...RAW_MARKERS];
+
+// `&` MUST be escaped first, otherwise the entity prefix of an already-escaped
+// marker is not itself escaped and the two forms stay indistinguishable.
 function escapeAngles(s: string): string {
-  return s.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 // Strip C0 control bytes (and DEL) that are never meaningful in a text diff —
@@ -56,7 +86,11 @@ export function neutralizeInjectionMarkers(text: string): string {
   let body = stripControlBytes(text).normalize("NFKC");
   for (const re of INJECTION_MARKERS) {
     body = body.replace(re, (m) => {
-      if (m.includes("<") || m.includes(">")) return escapeAngles(m);
+      // `&` routes the ALREADY-ESCAPED forms (`&lt;system&gt;`) into escapeAngles as
+      // well — they carry no literal `<`/`>` and would otherwise take the zero-width
+      // branch, which does not restore injectivity. No purely-textual marker
+      // (`[INST]`, `Human:`, `### Instruction:`, `Reviewgate:`) contains `&`.
+      if (m.includes("<") || m.includes(">") || m.includes("&")) return escapeAngles(m);
       return m.length > 1 ? `${m[0]}${ZERO_WIDTH_SPACE}${m.slice(1)}` : m;
     });
   }
@@ -159,7 +193,8 @@ export function sanitizeDiff(input: SanitizeInput): SanitizeResult {
       // cannot touch — are defanged with a zero-width space after the first char so
       // the live token never reaches the reviewer verbatim. Mirrors
       // neutralizeInjectionMarkers so the diff path and docs path defend identically (F-032).
-      if (m.includes("<") || m.includes(">")) return escapeAngles(m);
+      // `&` additionally routes the already-escaped forms here (see ESCAPED_ANGLE_MARKERS).
+      if (m.includes("<") || m.includes(">") || m.includes("&")) return escapeAngles(m);
       return m.length > 1 ? `${m[0]}${ZERO_WIDTH_SPACE}${m.slice(1)}` : m;
     });
   }
