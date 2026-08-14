@@ -25,6 +25,7 @@ import { POLICY_PASSES, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_LANES,
+  POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
 } from "../../src/core/policy/measurement-contract.ts";
 import { PolicyMeasurementPreregistrationSchema } from "../../src/schemas/policy-measurement-preregistration.ts";
 import {
@@ -180,7 +181,52 @@ function policyPreregistration(out: string) {
   });
 }
 
-function emptyEvidence(pass: (typeof POLICY_PASSES)[number], ref: string) {
+type FixtureSource = {
+  kind: "preregistration" | "bench" | "rig" | "dogfood";
+  ref: string;
+  sha256: string;
+};
+
+function laneRefs(sources: readonly FixtureSource[]) {
+  const binding = (kind: FixtureSource["kind"]): string => {
+    const source = sources.find((row) => row.kind === kind);
+    if (source === undefined) throw new Error(`fixture source missing for ${kind}`);
+    return source.ref;
+  };
+  return {
+    "stateless-bench": binding("bench"),
+    "stateful-rig": binding("rig"),
+    dogfood: binding("dogfood"),
+  };
+}
+
+function emptyEvidence(pass: (typeof POLICY_PASSES)[number], refs: ReturnType<typeof laneRefs>) {
+  const opportunities = { cases: 0, signatures: 0, turns: 0, runs: 0 };
+  const truthEffects = {
+    baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+    ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+    error_reduction: 0,
+  };
+  const traceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
+  const statistics = {
+    raw_effects: [],
+    interval: { lo: 0, hi: 0 },
+    p_value: 1,
+    adjusted_p_value: 1,
+  };
+  const summary = (lane: "stateless-bench" | "stateful-rig" | "dogfood", primary: boolean) => ({
+    lane,
+    primary,
+    descriptive: !primary,
+    eligible: true,
+    authoritative: true,
+    opportunities,
+    exclusions: [],
+    truth_effects: truthEffects,
+    trace_totals: traceTotals,
+    statistics,
+    raw_evidence_refs: [refs[lane]],
+  });
   return {
     pass_id: pass.id,
     lane: POLICY_MEASUREMENT_LANES[pass.id],
@@ -192,61 +238,113 @@ function emptyEvidence(pass: (typeof POLICY_PASSES)[number], ref: string) {
     },
     eligibility: { stateless: false, stateful: false, dogfood: false },
     authority: { stateless: false, stateful: false, dogfood: false },
-    opportunities: { cases: 0, signatures: 0, turns: 0, runs: 0 },
+    opportunities,
     exclusions: [],
-    truth_effects: {
-      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-      error_reduction: 0,
-    },
-    trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
-    statistics: { raw_effects: [], interval: { lo: 0, hi: 0 }, p_value: 1, adjusted_p_value: 1 },
+    truth_effects: truthEffects,
+    trace_totals: traceTotals,
+    statistics,
     unique_contributions: [],
-    raw_evidence_refs: [ref],
+    raw_evidence_refs: Object.values(refs).sort(),
+    lane_summaries:
+      POLICY_MEASUREMENT_LANES[pass.id] === "stateful-rig"
+        ? [
+            summary("stateless-bench", false),
+            summary("stateful-rig", true),
+            summary("dogfood", false),
+          ]
+        : [summary("stateless-bench", true), summary("dogfood", false)],
   };
 }
 
-function publishableMeasurement(sources: readonly { ref: string; sha256: string }[]) {
-  const binding = sources.find((source) => source.ref.includes("preregistrations/"));
-  if (binding === undefined)
+function publishableMeasurement(sources: readonly FixtureSource[]) {
+  const preregistrationSource = sources.find((source) => source.ref.includes("preregistrations/"));
+  if (preregistrationSource === undefined)
     throw new Error("publication fixture needs one preregistration binding");
-  const ref = binding.ref;
-  return PolicyMeasurementSchema.parse({
-    schema: "reviewgate.policy-measurement.v1",
-    preregistration: binding,
-    catalog_version: "reviewgate.policy-catalog.v1",
-    passes: POLICY_PASSES.map((pass) => ({
-      pass_id: pass.id,
-      classification: "inconclusive",
-      reasons: ["insufficient-opportunities"],
-      vetoes: [],
-      harm_observed: false,
-      evidence_refs: [ref],
-      evidence: emptyEvidence(pass, ref),
-    })),
-    interactions: POLICY_MEASUREMENT_INTERACTIONS.map((passIds) => ({
+  const binding = {
+    ref: preregistrationSource.ref,
+    sha256: preregistrationSource.sha256,
+  };
+  const refs = laneRefs(sources);
+  const passes = POLICY_PASSES.map((pass) => ({
+    pass_id: pass.id,
+    classification: "inconclusive" as const,
+    reasons: ["insufficient-opportunities" as const],
+    vetoes: [],
+    harm_observed: false,
+    evidence_refs: [] as string[],
+    evidence: emptyEvidence(pass, refs),
+  }));
+  const interactions = POLICY_MEASUREMENT_INTERACTIONS.map((passIds) => {
+    const stateful = passIds.every((passId) =>
+      POLICY_MEASUREMENT_STATEFUL_PASS_IDS.includes(passId as never),
+    );
+    const primaryLane = stateful ? ("stateful-rig" as const) : ("stateless-bench" as const);
+    const opportunities = { cases: 0, signatures: 0, turns: 0, runs: 0 };
+    const truthEffects = {
+      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      error_reduction: 0,
+    };
+    const statistics = {
+      raw_effects: [],
+      interval: { lo: 0, hi: 0 },
+      p_value: 1,
+      adjusted_p_value: 1,
+    };
+    const summary = (lane: "stateless-bench" | "stateful-rig", primary: boolean) => ({
+      lane,
+      primary,
+      descriptive: !primary,
+      eligible: true,
+      authoritative: true,
+      opportunities,
+      exclusions: [],
+      truth_effects: truthEffects,
+      trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+      statistics,
+      raw_evidence_refs: [refs[lane]],
+    });
+    return {
       pass_ids: [...passIds],
       artifact: binding,
+      primary_lane: primaryLane,
       evidence: {
         authoritative: false,
         eligibility: { stateless: false, stateful: false, dogfood: false },
         authority: { stateless: false, stateful: false, dogfood: false },
-        opportunities: { cases: 0, signatures: 0, turns: 0, runs: 0 },
+        opportunities,
         exclusions: [],
-        truth_effects: {
-          baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-          ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-          error_reduction: 0,
-        },
-        statistics: {
-          raw_effects: [],
-          interval: { lo: 0, hi: 0 },
-          p_value: 1,
-          adjusted_p_value: 1,
-        },
-        raw_evidence_refs: [ref],
+        truth_effects: truthEffects,
+        statistics,
+        raw_evidence_refs: [refs[primaryLane]],
       },
-    })),
+      lane_summaries: stateful
+        ? [summary("stateless-bench", false), summary("stateful-rig", true)]
+        : [summary("stateless-bench", true)],
+    };
+  });
+  for (const pass of passes) {
+    const passRefs = new Set(
+      pass.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+    );
+    for (const interaction of interactions) {
+      if (!interaction.pass_ids.includes(pass.pass_id as never)) continue;
+      passRefs.add(interaction.artifact.ref);
+      for (const ref of interaction.evidence.raw_evidence_refs) passRefs.add(ref);
+      for (const summary of interaction.lane_summaries) {
+        for (const ref of summary.raw_evidence_refs) passRefs.add(ref);
+      }
+    }
+    const closedRefs = [...passRefs].sort();
+    pass.evidence.raw_evidence_refs = closedRefs;
+    pass.evidence_refs = closedRefs;
+  }
+  return PolicyMeasurementSchema.parse({
+    schema: "reviewgate.policy-measurement.v1",
+    preregistration: binding,
+    catalog_version: "reviewgate.policy-catalog.v1",
+    passes,
+    interactions,
     identity_evidence: POLICY_PASS_IDS.map((pass_id) => ({
       pass_id,
       ground_truth_harms: [],
@@ -255,10 +353,10 @@ function publishableMeasurement(sources: readonly { ref: string; sha256: string 
     })),
     artifacts: {
       authoritative: true,
-      sources,
+      sources: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
       exclusions: [],
-      evidence: sources,
-      inventory: sources,
+      evidence: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
+      inventory: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
     },
   });
 }
@@ -268,6 +366,10 @@ function policyRuntime(root: string, out: string) {
   const bytes = canonicalJson(policyPreregistration(out));
   const benchRef = `${out}/bench.json`;
   const benchBytes = canonicalJson({ schema: "fixture.bench.v1" });
+  const rigRef = "rig/source.json";
+  const rigBytes = canonicalJson({ schema: "fixture.rig-source.v1" });
+  const dogfoodRef = "dogfood/source.json";
+  const dogfoodBytes = canonicalJson({ schema: "fixture.dogfood-source.v1" });
   const path = join(root, ref);
   mkdirSync(join(root, "bench", "preregistrations"), { recursive: true });
   writeFileSync(path, bytes, { mode: 0o644 });
@@ -275,7 +377,16 @@ function policyRuntime(root: string, out: string) {
   mkdirSync(join(root, out), { recursive: true, mode: 0o700 });
   writeFileSync(join(root, benchRef), benchBytes, { mode: 0o600 });
   const benchSource = { kind: "bench" as const, ref: benchRef, sha256: digest(benchBytes) };
-  const sources = [source, benchSource].sort((left, right) =>
+  for (const [inputRef, inputBytes] of [
+    [rigRef, rigBytes],
+    [dogfoodRef, dogfoodBytes],
+  ] as const) {
+    mkdirSync(dirname(join(root, inputRef)), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, inputRef), inputBytes, { mode: 0o600 });
+  }
+  const rigSource = { kind: "rig" as const, ref: rigRef, sha256: digest(rigBytes) };
+  const dogfoodSource = { kind: "dogfood" as const, ref: dogfoodRef, sha256: digest(dogfoodBytes) };
+  const sources = [source, benchSource, rigSource, dogfoodSource].sort((left, right) =>
     left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0,
   );
   return {
@@ -285,7 +396,7 @@ function policyRuntime(root: string, out: string) {
     runtime: {
       async assemble() {
         return {
-          result: publishableMeasurement(sources.map(({ ref, sha256 }) => ({ ref, sha256 }))),
+          result: publishableMeasurement(sources),
           sources,
           publication: {
             rig_bundle: validPolicyRigEvidence(),
@@ -312,13 +423,16 @@ function policyRuntime(root: string, out: string) {
 function capturedLifecycleRuntime(root: string, out: string) {
   const preregRef = "bench/preregistrations/policy.json";
   const benchRef = `${out}/bench.json`;
+  const rigRef = "rig/source.json";
   const auditRef = ".reviewgate/audit/closed.jsonl";
   const preregistration = canonicalJson(policyPreregistration(out));
   const bench = canonicalJson({ schema: "fixture.bench.v1" });
+  const rig = canonicalJson({ schema: "fixture.rig-source.v1" });
   const audit = `${JSON.stringify({ schema: "reviewgate.audit.v1", event: "run.complete" })}\n`;
   for (const [ref, bytes, mode] of [
     [preregRef, preregistration, 0o644],
     [benchRef, bench, 0o600],
+    [rigRef, rig, 0o600],
     [auditRef, audit, 0o600],
   ] as const) {
     mkdirSync(dirname(join(root, ref)), { recursive: true, mode: 0o700 });
@@ -327,15 +441,15 @@ function capturedLifecycleRuntime(root: string, out: string) {
   const sources = [
     { kind: "preregistration" as const, ref: preregRef, sha256: digest(preregistration) },
     { kind: "bench" as const, ref: benchRef, sha256: digest(bench) },
+    { kind: "rig" as const, ref: rigRef, sha256: digest(rig) },
     { kind: "dogfood" as const, ref: auditRef, sha256: digest(audit) },
   ].sort((left, right) => (left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0));
   return {
     sources,
     runtime: {
       async assemble() {
-        const measurementSources = sources.map(({ ref, sha256 }) => ({ ref, sha256 }));
         return {
-          result: publishableMeasurement(measurementSources),
+          result: publishableMeasurement(sources),
           sources,
           publication: {
             rig_bundle: validPolicyRigEvidence(),
@@ -481,7 +595,7 @@ it("publishes one complete immutable policy bundle only after successful assembl
   const published = join(root, out);
   expect(result.stderr).toBe("");
   expect(result.exitCode).toBe(0);
-  expect(readdirSync(join(published, "artifacts", "policy-measurement-sources"))).toHaveLength(2);
+  expect(readdirSync(join(published, "artifacts", "policy-measurement-sources"))).toHaveLength(4);
   expect(lstatSync(join(published, "result.json")).mode & 0o7777).toBe(0o600);
   expect(lstatSync(join(published, "report.md")).mode & 0o7777).toBe(0o600);
   expect(lstatSync(join(published, "complete.json")).mode & 0o7777).toBe(0o600);
@@ -497,7 +611,7 @@ it("publishes one complete immutable policy bundle only after successful assembl
   expect(
     PolicyMeasurementSchema.parse(JSON.parse(readFileSync(join(published, "result.json"), "utf8")))
       .artifacts.inventory,
-  ).toHaveLength(2);
+  ).toHaveLength(4);
   expect(lstatSync(path).ino).toBe(sourceBefore.ino);
   expect(readFileSync(path, "utf8")).toBe(canonicalJson(policyPreregistration(out)));
   expect(

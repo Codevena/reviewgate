@@ -4,6 +4,7 @@ import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASSES, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
+  POLICY_MEASUREMENT_LANES,
   POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
   type PolicyClassification,
   type PolicyMeasurementLane,
@@ -21,6 +22,7 @@ const PolicyMeasurementLaneSchema = z.enum([
   "stateless-bench",
   "stateful-rig",
 ] as const satisfies readonly PolicyMeasurementLane[]);
+const PolicyEvidenceLaneSchema = z.enum(["stateless-bench", "stateful-rig", "dogfood"]);
 const PolicyClassificationValueSchema = z.enum([
   "retain",
   "delete-candidate",
@@ -83,6 +85,14 @@ const TruthCountsSchema = z
 const TruthEffectsSchema = z
   .object({ baseline: TruthCountsSchema, ablated: TruthCountsSchema, error_reduction: z.number() })
   .strict();
+const TraceTotalsSchema = z
+  .object({
+    applied: z.number().int().nonnegative(),
+    would_apply: z.number().int().nonnegative(),
+    protected: z.number().int().nonnegative(),
+    no_opportunity: z.number().int().nonnegative(),
+  })
+  .strict();
 const StatisticsSchema = z
   .object({
     raw_effects: z.array(z.number()),
@@ -108,6 +118,9 @@ function isCodeUnitSortedUnique(values: readonly string[]): boolean {
 }
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function codeUnitSortedUnion(values: readonly string[]): string[] {
+  return [...new Set(values)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
 }
 function requireEligibleLaneAuthority(
   eligibility: z.infer<typeof LaneEligibilitySchema>,
@@ -137,6 +150,78 @@ const CodeUnitSortedUniqueStrings = z.array(z.string().min(1)).superRefine((valu
     }
   }
 });
+
+const PolicyLaneSummarySchema = z
+  .object({
+    lane: PolicyEvidenceLaneSchema,
+    primary: z.boolean(),
+    descriptive: z.boolean(),
+    eligible: z.literal(true),
+    authoritative: z.literal(true),
+    opportunities: OpportunitySchema,
+    exclusions: z.array(ExclusionSchema),
+    truth_effects: TruthEffectsSchema,
+    trace_totals: TraceTotalsSchema,
+    statistics: StatisticsSchema,
+    raw_evidence_refs: CodeUnitSortedUniqueStrings,
+  })
+  .strict();
+
+type PolicyLaneSummary = z.infer<typeof PolicyLaneSummarySchema>;
+
+function expectedPassSummaryLanes(primaryLane: z.infer<typeof PolicyMeasurementLaneSchema>) {
+  return primaryLane === "stateful-rig"
+    ? (["stateless-bench", "stateful-rig", "dogfood"] as const)
+    : (["stateless-bench", "dogfood"] as const);
+}
+
+function expectedInteractionPrimaryLane(
+  passIds: readonly z.infer<typeof PolicyPassIdSchema>[],
+): z.infer<typeof PolicyMeasurementLaneSchema> | undefined {
+  const registered = POLICY_MEASUREMENT_INTERACTIONS.find((group) =>
+    sameStringList(group, passIds),
+  );
+  if (registered === undefined) return undefined;
+  return registered.every((passId) => POLICY_MEASUREMENT_LANES[passId] === "stateful-rig")
+    ? "stateful-rig"
+    : "stateless-bench";
+}
+
+function expectedInteractionSummaryLanes(primaryLane: z.infer<typeof PolicyMeasurementLaneSchema>) {
+  return primaryLane === "stateful-rig"
+    ? (["stateless-bench", "stateful-rig"] as const)
+    : (["stateless-bench"] as const);
+}
+
+function requireLaneSummaries(input: {
+  summaries: readonly PolicyLaneSummary[];
+  primaryLane: z.infer<typeof PolicyMeasurementLaneSchema>;
+  expectedLanes: readonly z.infer<typeof PolicyEvidenceLaneSchema>[];
+  ctx: z.RefinementCtx;
+  path: readonly (string | number)[];
+}): void {
+  if (
+    input.summaries.length !== input.expectedLanes.length ||
+    input.summaries.some((summary, index) => summary.lane !== input.expectedLanes[index])
+  ) {
+    input.ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [...input.path],
+      message: "lane summaries must be complete, unique, and in canonical lane order",
+    });
+    return;
+  }
+  for (const [index, summary] of input.summaries.entries()) {
+    const primary = summary.lane === input.primaryLane;
+    if (summary.primary !== primary || summary.descriptive === primary) {
+      input.ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...input.path, index],
+        message: "exactly the declared primary lane may be non-descriptive",
+      });
+    }
+  }
+}
 
 export const PolicyDogfoodAdjudicationSchema = z
   .object({
@@ -873,14 +958,7 @@ export const PolicyPassEvidenceSchema = z
     opportunities: OpportunitySchema,
     exclusions: z.array(ExclusionSchema),
     truth_effects: TruthEffectsSchema,
-    trace_totals: z
-      .object({
-        applied: z.number().int().nonnegative(),
-        would_apply: z.number().int().nonnegative(),
-        protected: z.number().int().nonnegative(),
-        no_opportunity: z.number().int().nonnegative(),
-      })
-      .strict(),
+    trace_totals: TraceTotalsSchema,
     statistics: StatisticsSchema,
     unique_contributions: z.array(
       z
@@ -891,6 +969,7 @@ export const PolicyPassEvidenceSchema = z
         .strict(),
     ),
     raw_evidence_refs: CodeUnitSortedUniqueStrings,
+    lane_summaries: z.array(PolicyLaneSummarySchema),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -910,6 +989,24 @@ export const PolicyPassEvidenceSchema = z
       });
     }
     requireEligibleLaneAuthority(value.eligibility, value.authority, ctx, ["authority"]);
+    const expectedPrimaryLane = POLICY_MEASUREMENT_LANES[value.pass_id];
+    if (value.lane !== expectedPrimaryLane) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["lane"],
+        message: "pass primary lane must equal the catalog-derived measurement lane",
+      });
+    }
+    requireLaneSummaries({
+      summaries: value.lane_summaries,
+      primaryLane: expectedPrimaryLane,
+      expectedLanes: expectedPassSummaryLanes(expectedPrimaryLane),
+      ctx,
+      path: ["lane_summaries"],
+    });
+    requirePrimaryPassSummaryParity(value, expectedPrimaryLane, ctx);
+    requireDogfoodSupplementaryOwnership(value, ctx);
+    requirePassLaneRawRefDisjointness(value, ctx);
   });
 
 const PolicyInteractionEvidenceSchema = z
@@ -927,6 +1024,118 @@ const PolicyInteractionEvidenceSchema = z
   .superRefine((value, ctx) => {
     requireEligibleLaneAuthority(value.eligibility, value.authority, ctx, ["authority"]);
   });
+
+function requirePrimaryPassSummaryParity(
+  value: z.infer<typeof PolicyPassEvidenceSchema>,
+  expectedPrimaryLane: z.infer<typeof PolicyMeasurementLaneSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const summary = value.lane_summaries.find((row) => row.lane === expectedPrimaryLane);
+  if (summary === undefined) return;
+  const directionsMatch =
+    summary.primary === true &&
+    summary.descriptive === false &&
+    summary.lane === expectedPrimaryLane;
+  // Dogfood runs and exclusions are deliberately supplementary to the selected Bench/Rig
+  // classification evidence. Every other shared opportunity field is an exact projection.
+  const opportunitiesMatch =
+    summary.opportunities.cases === value.opportunities.cases &&
+    summary.opportunities.signatures === value.opportunities.signatures &&
+    summary.opportunities.turns === value.opportunities.turns;
+  const measurementsMatch =
+    canonicalJson(summary.truth_effects) === canonicalJson(value.truth_effects) &&
+    canonicalJson(summary.trace_totals) === canonicalJson(value.trace_totals) &&
+    canonicalJson(summary.statistics) === canonicalJson(value.statistics);
+  if (!directionsMatch || !opportunitiesMatch || !measurementsMatch) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lane_summaries"],
+      message: "the catalog-selected primary summary must exactly project primary evidence",
+    });
+  }
+}
+
+function requireDogfoodSupplementaryOwnership(
+  value: z.infer<typeof PolicyPassEvidenceSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const dogfood = value.lane_summaries.find((summary) => summary.lane === "dogfood");
+  if (dogfood === undefined) return;
+  for (const [index, summary] of value.lane_summaries.entries()) {
+    if (
+      summary.lane !== "dogfood" &&
+      (summary.opportunities.runs !== 0 || summary.exclusions.length !== 0)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["lane_summaries", index],
+        message: "only the Dogfood lane may carry supplementary runs or exclusions",
+      });
+    }
+  }
+  if (
+    value.exclusions.some((exclusion) => exclusion.lane !== "dogfood") ||
+    dogfood.opportunities.runs !== value.opportunities.runs ||
+    canonicalJson(dogfood.exclusions) !== canonicalJson(value.exclusions)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lane_summaries"],
+      message: "the Dogfood lane must exactly own supplementary runs and exclusions",
+    });
+  }
+}
+
+function requirePassLaneRawRefDisjointness(
+  value: z.infer<typeof PolicyPassEvidenceSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  // Bench, Rig, and Dogfood summaries originate from distinct closed artifact authorities. There
+  // is intentionally no persisted shared-lane reference exception; interaction refs are aggregated
+  // only in the enclosing top-level pass reference list.
+  const owners = new Map<string, number>();
+  for (const [summaryIndex, summary] of value.lane_summaries.entries()) {
+    for (const ref of summary.raw_evidence_refs) {
+      const owner = owners.get(ref);
+      if (owner !== undefined && owner !== summaryIndex) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["lane_summaries", summaryIndex, "raw_evidence_refs"],
+          message: "pass lane summaries must not share raw evidence references",
+        });
+        continue;
+      }
+      owners.set(ref, summaryIndex);
+    }
+  }
+}
+
+function requirePrimaryInteractionSummaryParity(input: {
+  evidence: z.infer<typeof PolicyInteractionEvidenceSchema>;
+  summaries: readonly PolicyLaneSummary[];
+  expectedPrimaryLane: z.infer<typeof PolicyMeasurementLaneSchema>;
+  ctx: z.RefinementCtx;
+}): void {
+  const summary = input.summaries.find((row) => row.lane === input.expectedPrimaryLane);
+  if (summary === undefined) return;
+  const directionsMatch =
+    summary.primary === true &&
+    summary.descriptive === false &&
+    summary.lane === input.expectedPrimaryLane;
+  const opportunitiesMatch =
+    canonicalJson(summary.opportunities) === canonicalJson(input.evidence.opportunities);
+  const measurementsMatch =
+    canonicalJson(summary.truth_effects) === canonicalJson(input.evidence.truth_effects) &&
+    canonicalJson(summary.statistics) === canonicalJson(input.evidence.statistics) &&
+    sameStringList(summary.raw_evidence_refs, input.evidence.raw_evidence_refs);
+  if (!directionsMatch || !opportunitiesMatch || !measurementsMatch) {
+    input.ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["lane_summaries"],
+      message: "the registered primary interaction summary must exactly project its authority",
+    });
+  }
+}
 
 export const PolicyPassClassificationSchema = z
   .object({
@@ -983,9 +1192,42 @@ export const PolicyMeasurementSchema = z
         .object({
           pass_ids: z.array(PolicyPassIdSchema),
           artifact: ArtifactBindingSchema,
+          primary_lane: PolicyMeasurementLaneSchema,
           evidence: PolicyInteractionEvidenceSchema,
+          lane_summaries: z.array(PolicyLaneSummarySchema),
         })
-        .strict(),
+        .strict()
+        .superRefine((value, ctx) => {
+          const expectedPrimaryLane = expectedInteractionPrimaryLane(value.pass_ids);
+          if (expectedPrimaryLane === undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["pass_ids"],
+              message: "interaction evidence must bind one registered interaction authority",
+            });
+            return;
+          }
+          if (value.primary_lane !== expectedPrimaryLane) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["primary_lane"],
+              message: "interaction primary lane must equal its registered authority",
+            });
+          }
+          requireLaneSummaries({
+            summaries: value.lane_summaries,
+            primaryLane: expectedPrimaryLane,
+            expectedLanes: expectedInteractionSummaryLanes(expectedPrimaryLane),
+            ctx,
+            path: ["lane_summaries"],
+          });
+          requirePrimaryInteractionSummaryParity({
+            evidence: value.evidence,
+            summaries: value.lane_summaries,
+            expectedPrimaryLane,
+            ctx,
+          });
+        }),
     ),
     identity_evidence: z.array(
       z
@@ -1121,9 +1363,35 @@ export const PolicyMeasurementSchema = z
         });
       }
     }
+    for (const [passIndex, pass] of result.passes.entries()) {
+      const expectedRefs = codeUnitSortedUnion([
+        ...pass.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+        ...result.interactions
+          .filter((interaction) => interaction.pass_ids.includes(pass.pass_id))
+          .flatMap((interaction) => [
+            interaction.artifact.ref,
+            ...interaction.evidence.raw_evidence_refs,
+            ...interaction.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+          ]),
+      ]);
+      if (!sameStringList(pass.evidence.raw_evidence_refs, expectedRefs)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["passes", passIndex, "evidence", "raw_evidence_refs"],
+          message:
+            "top-level pass references must equal the exact union of lane and applicable interaction references",
+        });
+      }
+    }
     const rawEvidenceRefs = [
       ...result.passes.flatMap((pass) => pass.evidence.raw_evidence_refs),
+      ...result.passes.flatMap((pass) =>
+        pass.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+      ),
       ...result.interactions.flatMap((interaction) => interaction.evidence.raw_evidence_refs),
+      ...result.interactions.flatMap((interaction) =>
+        interaction.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+      ),
     ];
     for (const [index, ref] of rawEvidenceRefs.entries()) {
       if (!inventory.has(ref)) {

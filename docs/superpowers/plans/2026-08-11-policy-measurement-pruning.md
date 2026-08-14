@@ -1769,3 +1769,14 @@ is the next authorized implementation step.
 
 The next review is limited to this C1 correction, its marker/no-replace/cleanup side effects, and
 the mapped focused/static evidence. It must not reopen the previously passed plan-gate rounds.
+
+### Final contract review C2/C3 — threshold/all-lanes corrections and R3 persisted raw-ref ownership ready for exact mapping confirmation
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C2 one-ground-truth-plus-one-confirmed-dogfood-TP threshold was incorrectly coupled to broad 5/3 corroboration | Classification now treats one bound suppressed TP as a deletion-vetoing counterexample and combines it with one bound ground-truth harm for `harmful-candidate`; literal 1/1, lone-TP, unbound, and historical/missing-source guards are mutation-proven without changing the broad 5/3 corroboration rule. | Task 12 review-bound C2 delta |
+| C3 valid secondary Bench/Rig/Dogfood lanes were dropped or could blur primary authority | Strict canonical per-lane summaries now preserve every applicable in-memory verified Bench/Rig/Dogfood source, identify exactly one primary lane, render all rows, retain descriptive no-opportunity rows, and require source-inventory-bound raw refs. Classification still consumes only legacy primary evidence; a secondary-Bench deletion mutant is RED. R2 additionally binds each persisted primary pass lane to the catalog and each closed interaction to its registered Bench/Rig authority. R3 limits supplementary runs/exclusions to Dogfood, preserves lane-specific refs, closes the top-level code-unit-sorted union without projecting it into the selected row, and forbids a raw ref from appearing in more than one pass lane summary. There is no shared-lane exception: interaction refs aggregate only at the top level. The final aggregate regression corrected stale test producers that reused a ref across lanes; it added no production exception. | Task 12 review-bound C3 delta |
+
+The next review is limited to the C2/C3 corrections, especially the R3 Dogfood-ownership,
+lane-specific-reference, and persisted lane-disjointness closure with its schema/assembler/fixture side effects, plus the recorded focused/static
+evidence. It must not reopen already-passed contract areas.

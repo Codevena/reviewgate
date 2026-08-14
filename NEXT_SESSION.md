@@ -4,11 +4,53 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A implementation is complete; final verification remains pending in Task 12. No policy
-pass changed and no paid measurement ran.**
+**Slice 2A implementation is complete; Task 12's review-bound C2/C3 R3 raw-reference ownership
+correction is ready for exact delta mapping confirmation, unstaged and uncommitted. No policy pass
+changed and no paid measurement ran.**
 
-Immediate next checkpoint: complete Task 12 final verification, static/build checks, compiled CLI
-smokes, and final contract/security review. Only after Task 12 passes: author and dry-validate the
+## Current Task 12 delta
+
+- C2 separates the one bound suppressed dogfood TP counterexample from broad 5/3 corroboration;
+  C3 adds strict additive per-lane Bench/Rig/Dogfood summaries while retaining legacy primary-only
+  classification authority. R2 closes the persisted form: catalog-derived pass primary lanes,
+  registered interaction authority (history Rig, remaining groups Bench), catalog-derived summary
+  inventory, and exact selected-summary projections. R3 makes Dogfood the sole owner of
+  supplementary runs/exclusions, keeps manifest/attestation refs lane-specific, and requires each
+  top-level pass ref list to be the exact code-unit-sorted union of its lane and interaction refs.
+- Four primary-tree R3 schema REDs were **0 pass / 4 fail / 18 filtered / 4 expects**; their GREEN
+  is **4 pass / 0 fail / 18 filtered / 4 expects**. The real all-lanes/render fixture is **1 pass /
+  0 fail / 18 filtered / 499 expects**.
+- The four final-current-source R2 mutants (catalog lane, history promotion, pass parity,
+  interaction parity) were killed at **0 pass / 1 fail / 17 filtered / 1 expect** each and
+  restored to `policy-measurement.ts` SHA
+  `c674523bc9b15509fadd7efa4754369fa6b036e4dd17379d6ce40169bc1389c9` in
+  `/private/tmp/reviewgate-c3r2-mutants.v3nuol/repo`.
+- The three R3 mutants (Dogfood ownership, selected-summary top-ref overwrite, aggregate-union
+  closure) were **0/3**, **0/1**, and **0/1** respectively, each restored in
+  `/private/tmp/reviewgate-c3r3-mutants.5F1DLG/repo` to
+  `policy-measurement.ts=08eb2083f24069f9a5f907bd591875971a615e5f1273031d5b616c21e1450f63`
+  and `assemble.ts=ba33482b07944c76bc2a3982af6124ab4244a90188fce81bc2d75db47a8825f9`.
+- R3 convergence now closes persisted lane raw-ref ownership: there is no shared-lane exception
+  (Bench profile, Rig replay, and Dogfood frozen-authority refs are distinct; interaction refs
+  exist only in the top-level union). Schema/render RED was **0 pass / 3 fail / 22 filtered /
+  3 expects**; GREEN is **3 pass / 0 fail / 22 filtered / 3 expects**. Removing the disjointness
+  call in `/private/tmp/reviewgate-c3r3-r4-mutants.79wMgM/repo` was **0/3/22/3** and restored the
+  current schema SHA `4bf9464b1d303376bfcbbfb9daa2df0322423db5a8d018ef4e0c86d70269063d`.
+- Current residual focus is schema **25 pass / 0 fail / 73 expects** plus pipeline **18 pass /
+  0 fail**; the prior broader C2/C3 focus remains **100 pass / 0 fail**.
+  `bunx tsc --noEmit`, `bun run lint` (Biome 694/no fixes), and both diff checks exit 0. Full
+  mutation detail is in `docs/dev/2026-08-11-policy-measurement-mutation-evidence.md` and ignored
+  `final-report.md`.
+- Next: controller-led C2/C3 R3 exact delta mapping confirmation only. Do not stage, commit, push, merge, run a full
+  suite, build, provider, Gate, real Rig, credits, or measurement before direction.
+
+Immediate next checkpoint: controller-led Task 12 C2/C3 R3 delta mapping confirmation. The final
+controller aggregate regression was fixture-only: stale Stats/publication/classification producers
+reused one raw reference across Bench/Rig/Dogfood lane summaries, which the persisted no-sharing
+contract correctly rejected. They now assign distinct inventory-bound lane refs and close only the
+top-level lane-plus-interaction union; no production/schema exception was added. The exact
+eight-file controller command is **105 pass / 0 fail**, with fresh TypeScript, Biome (694 files),
+working-tree and cached diff checks clean. Only after Task 12 passes: author and dry-validate the
 15 real stateful scenarios (three independent two-opportunity
 sequences for each of five stateful passes); accrue explicit dogfood decisions with complete traces;
 freeze the audit/trace inventory; obtain the TTY human attestation; then choose and cost the concrete

@@ -42,6 +42,7 @@ import {
   PolicyDogfoodInputManifestSchema,
   type PolicyDogfoodSnapshot,
   type PolicyMeasurementInvalidityCode,
+  PolicyMeasurementSchema,
   type PolicyRigEvidence,
   type PolicyRigScenarioManifest,
 } from "../../src/schemas/policy-measurement.ts";
@@ -1557,6 +1558,185 @@ describe("authoritative policy measurement pipeline", () => {
     ]);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.result_json))).toBe(false);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.report_md))).toBe(false);
+  }, 30_000);
+
+  test("reports every applicable Bench Rig and Dogfood lane without promoting secondary authority", async () => {
+    const assembled = await assemble();
+    for (const pass of assembled.result.passes) {
+      const stateful = POLICY_MEASUREMENT_STATEFUL_PASS_IDS.includes(pass.pass_id as never);
+      expect(pass.evidence.lane_summaries.map((summary) => summary.lane)).toEqual(
+        stateful ? ["stateless-bench", "stateful-rig", "dogfood"] : ["stateless-bench", "dogfood"],
+      );
+      for (const summary of pass.evidence.lane_summaries) {
+        expect(summary.primary).toBe(summary.lane === pass.evidence.lane);
+        expect(summary.descriptive).toBe(summary.lane !== pass.evidence.lane);
+        expect(summary.eligible).toBe(true);
+        expect(summary.authoritative).toBe(true);
+        expect(Object.keys(summary.opportunities).sort()).toEqual([
+          "cases",
+          "runs",
+          "signatures",
+          "turns",
+        ]);
+        expect(Object.keys(summary.truth_effects).sort()).toEqual([
+          "ablated",
+          "baseline",
+          "error_reduction",
+        ]);
+        expect(Object.keys(summary.trace_totals).sort()).toEqual([
+          "applied",
+          "no_opportunity",
+          "protected",
+          "would_apply",
+        ]);
+        expect(Object.keys(summary.statistics).sort()).toEqual([
+          "adjusted_p_value",
+          "interval",
+          "p_value",
+          "raw_effects",
+        ]);
+        expect(Array.isArray(summary.exclusions)).toBe(true);
+        expect(Array.isArray(summary.raw_evidence_refs)).toBe(true);
+      }
+    }
+    for (const interaction of assembled.result.interactions) {
+      const stateful = interaction.pass_ids.every((passId) =>
+        POLICY_MEASUREMENT_STATEFUL_PASS_IDS.includes(passId as never),
+      );
+      expect(interaction.primary_lane).toBe(stateful ? "stateful-rig" : "stateless-bench");
+      expect(interaction.lane_summaries.map((summary) => summary.lane)).toEqual(
+        stateful ? ["stateless-bench", "stateful-rig"] : ["stateless-bench"],
+      );
+      for (const summary of interaction.lane_summaries) {
+        expect(summary.primary).toBe(summary.lane === interaction.primary_lane);
+        expect(summary.descriptive).toBe(summary.lane !== interaction.primary_lane);
+        expect(summary.eligible).toBe(true);
+        expect(summary.authoritative).toBe(true);
+        expect(Object.keys(summary.opportunities).sort()).toEqual([
+          "cases",
+          "runs",
+          "signatures",
+          "turns",
+        ]);
+        expect(Object.keys(summary.truth_effects).sort()).toEqual([
+          "ablated",
+          "baseline",
+          "error_reduction",
+        ]);
+        expect(Object.keys(summary.trace_totals).sort()).toEqual([
+          "applied",
+          "no_opportunity",
+          "protected",
+          "would_apply",
+        ]);
+        expect(Object.keys(summary.statistics).sort()).toEqual([
+          "adjusted_p_value",
+          "interval",
+          "p_value",
+          "raw_effects",
+        ]);
+        expect(Array.isArray(summary.exclusions)).toBe(true);
+        expect(Array.isArray(summary.raw_evidence_refs)).toBe(true);
+      }
+    }
+    const stateful = assembled.result.passes.find((row) => row.pass_id === "history.fp-signature");
+    if (stateful === undefined) throw new Error("missing stateful fixture pass");
+    expect(stateful.evidence.lane).toBe("stateful-rig");
+    const summaries = stateful.evidence.lane_summaries;
+    expect(summaries.map((summary) => summary.lane)).toEqual([
+      "stateless-bench",
+      "stateful-rig",
+      "dogfood",
+    ]);
+    const bench = summaries.find((summary) => summary.lane === "stateless-bench");
+    expect(bench).toMatchObject({
+      primary: false,
+      descriptive: true,
+      eligible: true,
+      authoritative: true,
+    });
+    expect(bench?.opportunities.cases).toBeGreaterThan(0);
+    expect(bench?.trace_totals.protected).toBeGreaterThan(0);
+    expect(summaries.find((summary) => summary.lane === "stateful-rig")).toMatchObject({
+      primary: true,
+      descriptive: false,
+      eligible: true,
+      authoritative: true,
+    });
+    expect(summaries.find((summary) => summary.lane === "dogfood")).toMatchObject({
+      primary: false,
+      descriptive: true,
+      authoritative: true,
+    });
+
+    const historyInteraction = assembled.result.interactions[2];
+    if (historyInteraction === undefined) throw new Error("missing history interaction");
+    expect(historyInteraction).toMatchObject({ primary_lane: "stateful-rig" });
+    const interactionSummaries = historyInteraction.lane_summaries;
+    expect(interactionSummaries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ lane: "stateless-bench", primary: false, descriptive: true }),
+        expect.objectContaining({ lane: "stateful-rig", primary: true, descriptive: false }),
+      ]),
+    );
+
+    const noOpportunityDogfood = assembled.result.passes.find(
+      (row) => row.pass_id === "judgment.hypothetical",
+    );
+    if (noOpportunityDogfood === undefined) throw new Error("missing no-opportunity pass");
+    const dogfood = noOpportunityDogfood.evidence.lane_summaries;
+    const dogfoodSummary = dogfood.find((summary) => summary.lane === "dogfood");
+    expect(dogfoodSummary).toMatchObject({ descriptive: true, opportunities: { runs: 0 } });
+
+    const missingDescriptiveLane = structuredClone(assembled.result);
+    missingDescriptiveLane.passes[0]?.evidence.lane_summaries.pop();
+    expect(PolicyMeasurementSchema.safeParse(missingDescriptiveLane).success).toBe(false);
+    const markdown = renderPolicyMeasurement(assembled.result);
+    expect(markdown).toContain(
+      "Lane stateless-bench: primary=false; descriptive=true; eligible=true; authoritative=true",
+    );
+    const dogfoodRefs = [
+      fixture.prereg.dogfood.input_manifest_ref,
+      fixture.prereg.dogfood.attestation_ref,
+    ];
+    const laneLeaks: string[] = [];
+    const renderedLeaks: string[] = [];
+    for (const pass of assembled.result.passes) {
+      const passSummaries = pass.evidence.lane_summaries;
+      const passDogfood = passSummaries.find((summary) => summary.lane === "dogfood");
+      const primary = passSummaries.find((summary) => summary.primary);
+      if (passDogfood === undefined || primary === undefined) {
+        throw new Error(`missing primary or Dogfood summary for ${pass.pass_id}`);
+      }
+      for (const ref of dogfoodRefs) {
+        if (!passDogfood.raw_evidence_refs.includes(ref)) {
+          laneLeaks.push(`Dogfood missing ${pass.pass_id}:${ref}`);
+        }
+        for (const summary of passSummaries) {
+          if (summary.lane !== "dogfood" && summary.raw_evidence_refs.includes(ref)) {
+            laneLeaks.push(`${summary.lane} owns ${pass.pass_id}:${ref}`);
+          }
+        }
+      }
+      const heading = `### \`${pass.pass_id}\``;
+      const start = markdown.indexOf(heading);
+      const end = markdown.indexOf("\n### ", start + heading.length);
+      const dossier = markdown.slice(start, end === -1 ? undefined : end);
+      const laneDossier = dossier.split("- Lane summaries: ")[1];
+      const renderedPrimary = laneDossier
+        ?.split(" | ")
+        .find((line) => line.includes(`Lane ${primary.lane}: primary=true;`));
+      if (renderedPrimary === undefined) {
+        renderedLeaks.push(`missing rendered primary ${pass.pass_id}`);
+        continue;
+      }
+      for (const ref of dogfoodRefs) {
+        if (renderedPrimary.includes(`\`${ref}\``)) {
+          renderedLeaks.push(`${primary.lane} renders ${pass.pass_id}:${ref}`);
+        }
+      }
+    }
+    expect({ laneLeaks, renderedLeaks }).toEqual({ laneLeaks: [], renderedLeaks: [] });
   }, 30_000);
 
   test("rejects the complete 16-case authority matrix and never publishes", async () => {

@@ -17,6 +17,7 @@ import { POLICY_PASSES, POLICY_PASS_IDS } from "../../src/core/policy/catalog.ts
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_LANES,
+  POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
 } from "../../src/core/policy/measurement-contract.ts";
 import { PolicyMeasurementPreregistrationSchema } from "../../src/schemas/policy-measurement-preregistration.ts";
 import { PolicyMeasurementSchema } from "../../src/schemas/policy-measurement.ts";
@@ -144,9 +145,28 @@ function preregistration(nested = false) {
   });
 }
 
-function measurement(sources: readonly { ref: string; sha256: string }[]) {
-  const prereg = sources.find((source) => source.ref === "bench/preregistrations/policy.json");
-  if (prereg === undefined) throw new Error("missing preregistration binding");
+type FixtureSource = {
+  kind: "preregistration" | "bench" | "rig" | "dogfood";
+  ref: string;
+  sha256: string;
+};
+
+function measurement(sources: readonly FixtureSource[]) {
+  const preregistrationSource = sources.find(
+    (source) => source.ref === "bench/preregistrations/policy.json",
+  );
+  if (preregistrationSource === undefined) throw new Error("missing preregistration binding");
+  const prereg = { ref: preregistrationSource.ref, sha256: preregistrationSource.sha256 };
+  const binding = (kind: FixtureSource["kind"]): string => {
+    const source = sources.find((row) => row.kind === kind);
+    if (source === undefined) throw new Error(`missing ${kind} fixture source`);
+    return source.ref;
+  };
+  const refs = {
+    "stateless-bench": binding("bench"),
+    "stateful-rig": binding("rig"),
+    dogfood: binding("dogfood"),
+  };
   const emptyEvidence = (pass: (typeof POLICY_PASSES)[number]) => ({
     pass_id: pass.id,
     lane: POLICY_MEASUREMENT_LANES[pass.id],
@@ -168,44 +188,138 @@ function measurement(sources: readonly { ref: string; sha256: string }[]) {
     trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
     statistics: { raw_effects: [], interval: { lo: 0, hi: 0 }, p_value: 1, adjusted_p_value: 1 },
     unique_contributions: [],
-    raw_evidence_refs: sources.map((source) => source.ref),
+    raw_evidence_refs: Object.values(refs).sort(),
+    lane_summaries:
+      POLICY_MEASUREMENT_LANES[pass.id] === "stateful-rig"
+        ? [
+            ...(["stateless-bench", "stateful-rig", "dogfood"] as const).map((lane) => ({
+              lane,
+              primary: lane === "stateful-rig",
+              descriptive: lane !== "stateful-rig",
+              eligible: true,
+              authoritative: true,
+              opportunities: { cases: 0, signatures: 0, turns: 0, runs: 0 },
+              exclusions: [],
+              truth_effects: {
+                baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+                ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+                error_reduction: 0,
+              },
+              trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+              statistics: {
+                raw_effects: [],
+                interval: { lo: 0, hi: 0 },
+                p_value: 1,
+                adjusted_p_value: 1,
+              },
+              raw_evidence_refs: [refs[lane]],
+            })),
+          ]
+        : [
+            ...(["stateless-bench", "dogfood"] as const).map((lane) => ({
+              lane,
+              primary: lane === "stateless-bench",
+              descriptive: lane !== "stateless-bench",
+              eligible: true,
+              authoritative: true,
+              opportunities: { cases: 0, signatures: 0, turns: 0, runs: 0 },
+              exclusions: [],
+              truth_effects: {
+                baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+                ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+                error_reduction: 0,
+              },
+              trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+              statistics: {
+                raw_effects: [],
+                interval: { lo: 0, hi: 0 },
+                p_value: 1,
+                adjusted_p_value: 1,
+              },
+              raw_evidence_refs: [refs[lane]],
+            })),
+          ],
   });
-  return PolicyMeasurementSchema.parse({
-    schema: "reviewgate.policy-measurement.v1",
-    preregistration: prereg,
-    catalog_version: "reviewgate.policy-catalog.v1",
-    passes: POLICY_PASSES.map((pass) => ({
-      pass_id: pass.id,
-      classification: "inconclusive",
-      reasons: ["insufficient-opportunities"],
-      vetoes: [],
-      harm_observed: false,
-      evidence_refs: sources.map((source) => source.ref),
-      evidence: emptyEvidence(pass),
-    })),
-    interactions: POLICY_MEASUREMENT_INTERACTIONS.map((pass_ids) => ({
+  const passes = POLICY_PASSES.map((pass) => ({
+    pass_id: pass.id,
+    classification: "inconclusive" as const,
+    reasons: ["insufficient-opportunities" as const],
+    vetoes: [],
+    harm_observed: false,
+    evidence_refs: [] as string[],
+    evidence: emptyEvidence(pass),
+  }));
+  const interactions = POLICY_MEASUREMENT_INTERACTIONS.map((pass_ids) => {
+    const stateful = pass_ids.every((passId) =>
+      POLICY_MEASUREMENT_STATEFUL_PASS_IDS.includes(passId as never),
+    );
+    const primaryLane = stateful ? ("stateful-rig" as const) : ("stateless-bench" as const);
+    const opportunities = { cases: 0, signatures: 0, turns: 0, runs: 0 };
+    const truthEffects = {
+      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      error_reduction: 0,
+    };
+    const statistics = {
+      raw_effects: [],
+      interval: { lo: 0, hi: 0 },
+      p_value: 1,
+      adjusted_p_value: 1,
+    };
+    const summary = (lane: "stateless-bench" | "stateful-rig", primary: boolean) => ({
+      lane,
+      primary,
+      descriptive: !primary,
+      eligible: true,
+      authoritative: true,
+      opportunities,
+      exclusions: [],
+      truth_effects: truthEffects,
+      trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+      statistics,
+      raw_evidence_refs: [refs[lane]],
+    });
+    return {
       pass_ids: [...pass_ids],
       artifact: prereg,
+      primary_lane: primaryLane,
       evidence: {
         authoritative: false,
         eligibility: { stateless: false, stateful: false, dogfood: false },
         authority: { stateless: false, stateful: false, dogfood: false },
-        opportunities: { cases: 0, signatures: 0, turns: 0, runs: 0 },
+        opportunities,
         exclusions: [],
-        truth_effects: {
-          baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-          ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-          error_reduction: 0,
-        },
-        statistics: {
-          raw_effects: [],
-          interval: { lo: 0, hi: 0 },
-          p_value: 1,
-          adjusted_p_value: 1,
-        },
-        raw_evidence_refs: sources.map((source) => source.ref),
+        truth_effects: truthEffects,
+        statistics,
+        raw_evidence_refs: [refs[primaryLane]],
       },
-    })),
+      lane_summaries: stateful
+        ? [summary("stateless-bench", false), summary("stateful-rig", true)]
+        : [summary("stateless-bench", true)],
+    };
+  });
+  for (const pass of passes) {
+    const passRefs = new Set(
+      pass.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+    );
+    for (const interaction of interactions) {
+      if (!interaction.pass_ids.includes(pass.pass_id as never)) continue;
+      passRefs.add(interaction.artifact.ref);
+      for (const ref of interaction.evidence.raw_evidence_refs) passRefs.add(ref);
+      for (const summary of interaction.lane_summaries) {
+        for (const ref of summary.raw_evidence_refs) passRefs.add(ref);
+      }
+    }
+    const closedRefs = [...passRefs].sort();
+    pass.evidence.raw_evidence_refs = closedRefs;
+    pass.evidence_refs = closedRefs;
+  }
+  return PolicyMeasurementSchema.parse({
+    schema: "reviewgate.policy-measurement.v1",
+    preregistration: prereg,
+    catalog_version: "reviewgate.policy-catalog.v1",
+    passes,
+    interactions,
     identity_evidence: POLICY_PASS_IDS.map((pass_id) => ({
       pass_id,
       ground_truth_harms: [],
@@ -214,10 +328,10 @@ function measurement(sources: readonly { ref: string; sha256: string }[]) {
     })),
     artifacts: {
       authoritative: true,
-      sources,
+      sources: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
       exclusions: [],
-      evidence: sources,
-      inventory: sources,
+      evidence: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
+      inventory: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
     },
   });
 }
@@ -270,11 +384,10 @@ function fixture(nested = false) {
     })),
     { kind: "dogfood" as const, ref: auditRef, sha256: sha256(audit) },
   ].sort((left, right) => left.ref.localeCompare(right.ref));
-  const bindings = sources.map(({ ref, sha256 }) => ({ ref, sha256 }));
   const runtime = {
     async assemble() {
       return {
-        result: measurement(bindings),
+        result: measurement(sources),
         sources,
         publication: {
           rig_bundle: validPolicyRigEvidence(),

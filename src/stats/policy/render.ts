@@ -24,6 +24,30 @@ function classification(value: string, reasons: readonly string[]): string {
   return `${value.toUpperCase()} — ${reasons.join(", ")}`;
 }
 
+function laneSummaryLine(input: {
+  lane: string;
+  primary: boolean;
+  descriptive: boolean;
+  eligible: boolean;
+  authoritative: boolean;
+  opportunities: { cases: number; signatures: number; turns: number; runs: number };
+  truth_effects: {
+    baseline: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+    ablated: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+    error_reduction: number;
+  };
+  trace_totals: {
+    applied: number;
+    would_apply: number;
+    protected: number;
+    no_opportunity: number;
+  };
+  statistics: { raw_effects: number[]; p_value: number; adjusted_p_value: number };
+  raw_evidence_refs: string[];
+}): string {
+  return `Lane ${input.lane}: primary=${input.primary}; descriptive=${input.descriptive}; eligible=${input.eligible}; authoritative=${input.authoritative}; opportunities=${opportunities(input.opportunities)}; truth baseline FP/FN/TP=${input.truth_effects.baseline.blocking_fp}/${input.truth_effects.baseline.blocking_fn}/${input.truth_effects.baseline.blocking_tp}; ablated FP/FN/TP=${input.truth_effects.ablated.blocking_fp}/${input.truth_effects.ablated.blocking_fn}/${input.truth_effects.ablated.blocking_tp}; error reduction=${input.truth_effects.error_reduction}; trace applied/would-apply/protected/no-opportunity=${input.trace_totals.applied}/${input.trace_totals.would_apply}/${input.trace_totals.protected}/${input.trace_totals.no_opportunity}; raw effects=${input.statistics.raw_effects.join(",") || "none"}; p=${input.statistics.p_value}; adjusted p=${input.statistics.adjusted_p_value}; evidence=${input.raw_evidence_refs.map((ref) => `\`${cell(ref)}\``).join(", ")}`;
+}
+
 /** Render the parsed evidence result without adding conclusions beyond its JSON fields. */
 export function renderPolicyMeasurement(result: PolicyMeasurement): string {
   const parsed = PolicyMeasurementSchema.parse(result);
@@ -46,11 +70,11 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
     "",
     "## Interactions",
     "",
-    "| Passes | Opportunities | Raw p-value | Adjusted p-value | 95% interval |",
-    "| --- | --- | --- | --- |",
+    "| Passes | Primary lane | Opportunities | Raw p-value | Adjusted p-value | 95% interval |",
+    "| --- | --- | --- | --- | --- |",
     ...parsed.interactions.map(
       (interaction) =>
-        `| ${interaction.pass_ids.map((passId) => `\`${passId}\``).join(", ")} | ${opportunities(interaction.evidence.opportunities)} | ${interaction.evidence.statistics.p_value} | ${interaction.evidence.statistics.adjusted_p_value} | [${interaction.evidence.statistics.interval.lo}, ${interaction.evidence.statistics.interval.hi}] |`,
+        `| ${interaction.pass_ids.map((passId) => `\`${passId}\``).join(", ")} | ${interaction.primary_lane} | ${opportunities(interaction.evidence.opportunities)} | ${interaction.evidence.statistics.p_value} | ${interaction.evidence.statistics.adjusted_p_value} | [${interaction.evidence.statistics.interval.lo}, ${interaction.evidence.statistics.interval.hi}] |`,
     ),
     "",
     "## Evidence and veto dossiers",
@@ -69,6 +93,7 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
       `- Authority: stateless=${pass.evidence.authority.stateless}; stateful=${pass.evidence.authority.stateful}; dogfood=${pass.evidence.authority.dogfood}`,
       `- Exclusions: ${pass.evidence.exclusions.length === 0 ? "none" : pass.evidence.exclusions.map((row) => `${row.lane}:${row.code}=${row.count}`).join(", ")}`,
       `- Raw evidence: ${pass.evidence.raw_evidence_refs.map((ref) => `\`${cell(ref)}\``).join(", ")}`,
+      `- Lane summaries: ${pass.evidence.lane_summaries.map(laneSummaryLine).join(" | ")}`,
       `- Unique contributions: ${pass.evidence.unique_contributions.length === 0 ? "none" : pass.evidence.unique_contributions.map((row) => `${row.kind} via ${binding(row.evidence.ref, row.evidence.sha256)}`).join("; ")}`,
       `- Identity evidence: ${(() => {
         const identity = parsed.identity_evidence.find((row) => row.pass_id === pass.pass_id);
@@ -87,6 +112,14 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
         );
         return [...harms, ...dogfood, ...benefits].join("; ") || "none";
       })()}`,
+      "",
+    ]),
+    "## Interaction lane summaries",
+    "",
+    ...parsed.interactions.flatMap((interaction) => [
+      `### ${interaction.pass_ids.map((passId) => `\`${passId}\``).join(", ")}`,
+      "",
+      ...interaction.lane_summaries.map((summary) => `- ${laneSummaryLine(summary)}`),
       "",
     ]),
     "## Artifact inventory",

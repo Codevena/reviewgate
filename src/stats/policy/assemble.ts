@@ -121,12 +121,42 @@ interface RegisteredCorpusCase {
 interface ProfileAnalysis {
   evidence: PolicyPassEvidence;
   facts: PolicyPassClassificationFacts;
+  laneSummary: PolicyLaneSummary;
 }
 
 interface DogfoodPassEvidence {
   readonly dispositions: PolicyPassClassificationFacts["dogfood_dispositions"];
   readonly refs: readonly Binding[];
   readonly runs: number;
+  readonly labels: readonly PolicyDogfoodSnapshot["labels"][number][];
+}
+
+type PolicyLaneSummary = PolicyPassEvidence["lane_summaries"][number];
+type TraceTotals = PolicyPassEvidence["trace_totals"];
+
+function laneSummary(input: {
+  lane: PolicyLaneSummary["lane"];
+  primary: boolean;
+  opportunities: PolicyPassEvidence["opportunities"];
+  exclusions: PolicyPassEvidence["exclusions"];
+  truthEffects: PolicyPassEvidence["truth_effects"];
+  traceTotals: TraceTotals;
+  statistics: PolicyPassEvidence["statistics"];
+  rawEvidenceRefs: readonly string[];
+}): PolicyLaneSummary {
+  return {
+    lane: input.lane,
+    primary: input.primary,
+    descriptive: !input.primary,
+    eligible: true,
+    authoritative: true,
+    opportunities: input.opportunities,
+    exclusions: input.exclusions,
+    truth_effects: input.truthEffects,
+    trace_totals: input.traceTotals,
+    statistics: input.statistics,
+    raw_evidence_refs: [...new Set(input.rawEvidenceRefs)].sort(compareCodeUnits),
+  };
 }
 
 function dogfoodExclusions(snapshot: PolicyDogfoodSnapshot): PolicyPassEvidence["exclusions"] {
@@ -686,7 +716,46 @@ function dogfoodForPass(input: {
     dispositions,
     refs: [...refs.values()].sort((left, right) => compareCodeUnits(left.ref, right.ref)),
     runs: new Set(dispositions.map((row) => `${row.run_id}\u0000${row.iter}`)).size,
+    labels: input.snapshot.labels.filter((label) => label.pass_id === input.passId),
   };
+}
+
+function dogfoodLaneSummary(input: {
+  dogfood: DogfoodPassEvidence;
+  snapshot: PolicyDogfoodSnapshot;
+  seed: number;
+}): PolicyLaneSummary {
+  const totals: TraceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
+  const signatures = new Set<string>();
+  for (const label of input.dogfood.labels) {
+    for (const signature of label.source_signatures) signatures.add(signature);
+    if (label.evaluation_result === "applied") totals.applied += 1;
+    else if (label.evaluation_result === "would-apply") totals.would_apply += 1;
+    else if (label.evaluation_result === "protected") totals.protected += 1;
+    else totals.no_opportunity += 1;
+  }
+  const effects = input.dogfood.dispositions.map((disposition) =>
+    disposition.effect === "suppressed" ? -1 : disposition.effect === "preserved" ? 1 : 0,
+  );
+  return laneSummary({
+    lane: "dogfood",
+    primary: false,
+    opportunities: {
+      cases: input.dogfood.dispositions.length,
+      signatures: signatures.size,
+      turns: 0,
+      runs: input.dogfood.runs,
+    },
+    exclusions: dogfoodExclusions(input.snapshot),
+    truthEffects: {
+      baseline: zeroTruth(),
+      ablated: zeroTruth(),
+      error_reduction: 0,
+    },
+    traceTotals: totals,
+    statistics: independentSequenceStats(effects, input.seed),
+    rawEvidenceRefs: input.dogfood.refs.map((binding) => binding.ref),
+  });
 }
 
 function analyzeBenchProfile(input: {
@@ -797,7 +866,27 @@ function analyzeBenchProfile(input: {
       statistics: computed.statistics,
       unique_contributions: [],
       raw_evidence_refs: [...new Set(rawRefs)],
+      lane_summaries: [],
     },
+    laneSummary: laneSummary({
+      lane: "stateless-bench",
+      primary: POLICY_MEASUREMENT_LANES[input.passId] === "stateless-bench",
+      opportunities: {
+        cases: opportunityCases.size,
+        signatures: opportunitySignatures.size,
+        turns: 0,
+        runs: 0,
+      },
+      exclusions: [],
+      truthEffects: {
+        baseline: baselineTruth,
+        ablated: ablatedTruth,
+        error_reduction: error(ablatedTruth) - error(baselineTruth),
+      },
+      traceTotals: totals,
+      statistics: computed.statistics,
+      rawEvidenceRefs: input.profileBindings.map((binding) => binding.ref),
+    }),
     facts: {
       pass_id: input.passId,
       ground_truth_harms: harms,
@@ -885,7 +974,36 @@ function analyzeRigPass(input: {
       statistics: computed,
       unique_contributions: [],
       raw_evidence_refs: [...new Set(rawRefs)],
+      lane_summaries: [],
     },
+    laneSummary: laneSummary({
+      lane: "stateful-rig",
+      primary: true,
+      opportunities: {
+        cases: sequences.length,
+        signatures: 0,
+        turns: sequences.reduce((total, sequence) => total + sequence.opportunity_turns, 0),
+        runs: 0,
+      },
+      exclusions: [],
+      truthEffects: {
+        baseline,
+        ablated,
+        error_reduction: error(ablated) - error(baseline),
+      },
+      traceTotals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+      statistics: computed,
+      rawEvidenceRefs: [
+        input.scenarioBinding.ref,
+        ...input.rigBindings.map((binding) => binding.ref),
+        ...sequences.flatMap((sequence) => [
+          sequence.manifest.ref,
+          sequence.result.ref,
+          sequence.script.ref,
+          sequence.initial_state.ref,
+        ]),
+      ],
+    }),
     facts: {
       pass_id: input.passId,
       ground_truth_harms: [...identityDirections.entries()]
@@ -914,16 +1032,23 @@ function evidenceForInteraction(input: {
   const opportunityCases = new Set<string>();
   const opportunitySignatures = new Set<string>();
   const effects: Array<{ caseId: string; repeat: 1 | 2 | 3; errorReduction: number }> = [];
+  const totals: TraceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
   for (const row of input.ablated) {
     const repeat = (row.repeat ?? 1) as 1 | 2 | 3;
     const base = baselineByKey.get(`${row.id}\u0000${repeat}`);
     if (base === undefined) authority("bench-profile-mismatch", `unpaired group case ${row.id}`);
     const trace = base.policy_trace?.trace;
     if (trace === undefined) authority("trace-mismatch", `missing group trace ${row.id}`);
-    const carriers = trace.evaluations.filter(
-      (evaluation) =>
-        input.passIds.includes(evaluation.pass_id) && evaluation.result !== "no-opportunity",
+    const evaluations = trace.evaluations.filter((evaluation) =>
+      input.passIds.includes(evaluation.pass_id),
     );
+    for (const evaluation of evaluations) {
+      if (evaluation.result === "applied") totals.applied += 1;
+      else if (evaluation.result === "would-apply") totals.would_apply += 1;
+      else if (evaluation.result === "protected") totals.protected += 1;
+      else totals.no_opportunity += 1;
+    }
+    const carriers = evaluations.filter((evaluation) => evaluation.result !== "no-opportunity");
     if (carriers.length === 0) {
       if (!sameObservedBenchOutcome(base, row)) {
         authority(
@@ -951,23 +1076,26 @@ function evidenceForInteraction(input: {
   }
   const computed = stats(effects, input.seed);
   return {
-    authoritative: true,
-    eligibility: { stateless: true, stateful: false, dogfood: false },
-    authority: { stateless: true, stateful: false, dogfood: false },
-    opportunities: {
-      cases: opportunityCases.size,
-      signatures: opportunitySignatures.size,
-      turns: 0,
-      runs: 0,
+    evidence: {
+      authoritative: true,
+      eligibility: { stateless: true, stateful: false, dogfood: false },
+      authority: { stateless: true, stateful: false, dogfood: false },
+      opportunities: {
+        cases: opportunityCases.size,
+        signatures: opportunitySignatures.size,
+        turns: 0,
+        runs: 0,
+      },
+      exclusions: [],
+      truth_effects: {
+        baseline,
+        ablated,
+        error_reduction: error(ablated) - error(baseline),
+      },
+      statistics: computed.statistics,
+      raw_evidence_refs: input.bindings.map((row) => row.ref).sort(compareCodeUnits),
     },
-    exclusions: [],
-    truth_effects: {
-      baseline,
-      ablated,
-      error_reduction: error(ablated) - error(baseline),
-    },
-    statistics: computed.statistics,
-    raw_evidence_refs: input.bindings.map((row) => row.ref).sort(compareCodeUnits),
+    traceTotals: totals,
   };
 }
 
@@ -993,26 +1121,29 @@ function evidenceForRigInteraction(input: {
   const computed = independentSequenceStats(effects, input.seed);
   const refs = [input.binding.ref, ...input.rigBindings.map((binding) => binding.ref)];
   return {
-    authoritative: true,
-    eligibility: { stateless: false, stateful: true, dogfood: false },
-    authority: { stateless: false, stateful: true, dogfood: false },
-    opportunities: {
-      cases: sequences.length,
-      signatures: 0,
-      turns: sequences.reduce(
-        (total, sequence) => total + (sequence.history_interaction?.opportunity_turns ?? 0),
-        0,
-      ),
-      runs: 0,
+    evidence: {
+      authoritative: true,
+      eligibility: { stateless: false, stateful: true, dogfood: false },
+      authority: { stateless: false, stateful: true, dogfood: false },
+      opportunities: {
+        cases: sequences.length,
+        signatures: 0,
+        turns: sequences.reduce(
+          (total, sequence) => total + (sequence.history_interaction?.opportunity_turns ?? 0),
+          0,
+        ),
+        runs: 0,
+      },
+      exclusions: [],
+      truth_effects: {
+        baseline,
+        ablated,
+        error_reduction: error(ablated) - error(baseline),
+      },
+      statistics: computed,
+      raw_evidence_refs: [...new Set(refs)].sort(compareCodeUnits),
     },
-    exclusions: [],
-    truth_effects: {
-      baseline,
-      ablated,
-      error_reduction: error(ablated) - error(baseline),
-    },
-    statistics: computed,
-    raw_evidence_refs: [...new Set(refs)].sort(compareCodeUnits),
+    traceTotals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
   };
 }
 
@@ -1299,30 +1430,56 @@ export async function assemblePolicyMeasurement(input: {
   const interactions = POLICY_MEASUREMENT_INTERACTIONS.map((passIds, index) => {
     const profile = profiles[POLICY_PASS_IDS.length + 1 + index];
     if (profile === undefined) authority("partial-inventory", `interaction ${index + 1} absent`);
-    if (index === 2) {
-      const artifact = { ref: rigNamed.ref, sha256: rigNamed.sha256 };
-      return {
-        pass_ids: [...passIds],
-        artifact,
-        evidence: evidenceForRigInteraction({
-          binding: artifact,
-          rig,
-          rigBindings: rig.artifacts,
-          seed: prereg.analysis.seed + index,
-        }),
-      };
-    }
+    const bench = evidenceForInteraction({
+      binding: profile.artifact,
+      bindings: profile.rawBindings,
+      passIds,
+      baseline: baselineCases,
+      ablated: profile.cases,
+      seed: prereg.analysis.seed + index,
+    });
+    const rigArtifact = { ref: rigNamed.ref, sha256: rigNamed.sha256 };
+    const rigInteraction =
+      index === 2
+        ? evidenceForRigInteraction({
+            binding: rigArtifact,
+            rig,
+            rigBindings: rig.artifacts,
+            seed: prereg.analysis.seed + index,
+          })
+        : undefined;
     return {
       pass_ids: [...passIds],
-      artifact: profile.artifact,
-      evidence: evidenceForInteraction({
-        binding: profile.artifact,
-        bindings: profile.rawBindings,
-        passIds,
-        baseline: baselineCases,
-        ablated: profile.cases,
-        seed: prereg.analysis.seed + index,
-      }),
+      artifact: rigInteraction === undefined ? profile.artifact : rigArtifact,
+      primary_lane:
+        rigInteraction === undefined ? ("stateless-bench" as const) : ("stateful-rig" as const),
+      evidence: rigInteraction?.evidence ?? bench.evidence,
+      lane_summaries: [
+        laneSummary({
+          lane: "stateless-bench",
+          primary: rigInteraction === undefined,
+          opportunities: bench.evidence.opportunities,
+          exclusions: bench.evidence.exclusions,
+          truthEffects: bench.evidence.truth_effects,
+          traceTotals: bench.traceTotals,
+          statistics: bench.evidence.statistics,
+          rawEvidenceRefs: bench.evidence.raw_evidence_refs,
+        }),
+        ...(rigInteraction === undefined
+          ? []
+          : [
+              laneSummary({
+                lane: "stateful-rig",
+                primary: true,
+                opportunities: rigInteraction.evidence.opportunities,
+                exclusions: rigInteraction.evidence.exclusions,
+                truthEffects: rigInteraction.evidence.truth_effects,
+                traceTotals: rigInteraction.traceTotals,
+                statistics: rigInteraction.evidence.statistics,
+                rawEvidenceRefs: rigInteraction.evidence.raw_evidence_refs,
+              }),
+            ]),
+      ],
     };
   });
 
@@ -1336,27 +1493,19 @@ export async function assemblePolicyMeasurement(input: {
     });
     const interactionRefs = interactions
       .filter((row) => row.pass_ids.some((candidate) => candidate === passId))
-      .flatMap((row) => [row.artifact.ref, ...row.evidence.raw_evidence_refs]);
+      .flatMap((row) => [
+        row.artifact.ref,
+        ...row.evidence.raw_evidence_refs,
+        ...row.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+      ]);
     const interactionBindings = [...new Set(interactionRefs)].map((ref) => {
       const bound = inventory.get(ref);
       if (bound === undefined) authority("partial-inventory", `interaction ref is absent: ${ref}`);
       return bound;
     });
-    if (POLICY_MEASUREMENT_LANES[passId] === "stateful-rig") {
-      return analyzeRigPass({
-        passId,
-        rig,
-        scenarioBinding: { ref: rigNamed.ref, sha256: rigNamed.sha256 },
-        rigBindings: rig.artifacts,
-        interactionBindings,
-        dogfood: dogfoodEvidence,
-        dogfoodSnapshot: dogfood,
-        seed: prereg.analysis.seed + index,
-      });
-    }
     const profile = profiles[index + 1];
     if (profile === undefined) authority("partial-inventory", `singleton ${passId} absent`);
-    return analyzeBenchProfile({
+    const bench = analyzeBenchProfile({
       passId,
       baseline: baselineCases,
       ablated: profile.cases,
@@ -1367,6 +1516,36 @@ export async function assemblePolicyMeasurement(input: {
       dogfoodSnapshot: dogfood,
       seed: prereg.analysis.seed + index,
     });
+    const rigAnalysis =
+      POLICY_MEASUREMENT_LANES[passId] === "stateful-rig"
+        ? analyzeRigPass({
+            passId,
+            rig,
+            scenarioBinding: { ref: rigNamed.ref, sha256: rigNamed.sha256 },
+            rigBindings: rig.artifacts,
+            interactionBindings,
+            dogfood: dogfoodEvidence,
+            dogfoodSnapshot: dogfood,
+            seed: prereg.analysis.seed + index,
+          })
+        : undefined;
+    const primary = rigAnalysis ?? bench;
+    primary.evidence.lane_summaries = [
+      bench.laneSummary,
+      ...(rigAnalysis === undefined ? [] : [rigAnalysis.laneSummary]),
+      dogfoodLaneSummary({
+        dogfood: dogfoodEvidence,
+        snapshot: dogfood,
+        seed: prereg.analysis.seed + index,
+      }),
+    ];
+    primary.evidence.raw_evidence_refs = [
+      ...new Set([
+        ...primary.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+        ...interactionRefs,
+      ]),
+    ].sort(compareCodeUnits);
+    return primary;
   });
   const adjusted = holmAdjustPolicyFamilies({
     singleton: analyses.map((row) => row.evidence.statistics.p_value),
@@ -1431,8 +1610,20 @@ export async function assemblePolicyMeasurement(input: {
     { passFacts: analyses.map((row) => row.facts), interactions },
   );
 
-  for (const row of [...passes, ...interactions.map((row) => ({ evidence: row.evidence }))]) {
-    for (const ref of row.evidence.raw_evidence_refs) {
+  for (const row of [
+    ...passes.map((pass) => ({
+      evidence: pass.evidence,
+      laneSummaries: pass.evidence.lane_summaries,
+    })),
+    ...interactions.map((interaction) => ({
+      evidence: interaction.evidence,
+      laneSummaries: interaction.lane_summaries,
+    })),
+  ]) {
+    for (const ref of [
+      ...row.evidence.raw_evidence_refs,
+      ...row.laneSummaries.flatMap((summary) => summary.raw_evidence_refs),
+    ]) {
       if (!inventory.has(ref)) authority("partial-inventory", `raw evidence ref is absent: ${ref}`);
     }
   }

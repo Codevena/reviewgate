@@ -33,13 +33,48 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
   );
   if (fixturePass === undefined) throw new Error("fixture pass missing from catalog");
   const ref = options.rawEvidenceRefs?.[0] ?? "artifacts/policy/evidence.json";
+  const lane =
+    fixturePass.id.startsWith("history.") || fixturePass.id === "judgment.reputation"
+      ? "stateful-rig"
+      : "stateless-bench";
+  const opportunities = {
+    cases: options.opportunityCases ?? 8,
+    signatures: options.signatures ?? 15,
+    turns: 0,
+    runs: 3,
+  };
+  const truthEffects = {
+    baseline: { blocking_fp: 2, blocking_fn: 2, blocking_tp: 4 },
+    ablated: { blocking_fp: 2, blocking_fn: 2, blocking_tp: 4 },
+    error_reduction: 0,
+  };
+  const traceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
+  const statistics = {
+    raw_effects: options.rawEffects ?? [0, 0, 0],
+    interval: { lo: 0, hi: 0 },
+    p_value: 1,
+    adjusted_p_value: 1,
+  };
+  const summary = (
+    summaryLane: "stateless-bench" | "stateful-rig" | "dogfood",
+    primary: boolean,
+  ) => ({
+    lane: summaryLane,
+    primary,
+    descriptive: !primary,
+    eligible: true as const,
+    authoritative: true as const,
+    opportunities: { ...opportunities, runs: summaryLane === "dogfood" ? opportunities.runs : 0 },
+    exclusions: [],
+    truth_effects: truthEffects,
+    trace_totals: traceTotals,
+    statistics,
+    raw_evidence_refs: [`artifacts/policy/${summaryLane}-${fixturePass.id}.json`],
+  });
   return [
     {
       pass_id: fixturePass.id,
-      lane:
-        fixturePass.id.startsWith("history.") || fixturePass.id === "judgment.reputation"
-          ? "stateful-rig"
-          : "stateless-bench",
+      lane,
       catalog_snapshot: {
         order: fixturePass.order,
         class: fixturePass.class,
@@ -48,29 +83,23 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
       },
       eligibility: { stateless: true, stateful: false, dogfood: true },
       authority: { stateless: options.authoritative ?? true, stateful: false, dogfood: true },
-      opportunities: {
-        cases: options.opportunityCases ?? 8,
-        signatures: options.signatures ?? 15,
-        turns: 0,
-        runs: 3,
-      },
+      opportunities,
       exclusions: [],
-      truth_effects: {
-        baseline: { blocking_fp: 2, blocking_fn: 2, blocking_tp: 4 },
-        ablated: { blocking_fp: 2, blocking_fn: 2, blocking_tp: 4 },
-        error_reduction: 0,
-      },
-      trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
-      statistics: {
-        raw_effects: options.rawEffects ?? [0, 0, 0],
-        interval: { lo: 0, hi: 0 },
-        p_value: 1,
-        adjusted_p_value: 1,
-      },
+      truth_effects: truthEffects,
+      trace_totals: traceTotals,
+      statistics,
       unique_contributions: options.uniqueContribution
         ? [{ kind: options.uniqueContribution, evidence: { ref, sha256: "a".repeat(64) } }]
         : [],
       raw_evidence_refs: options.rawEvidenceRefs ?? [ref],
+      lane_summaries:
+        lane === "stateful-rig"
+          ? [
+              summary("stateless-bench", false),
+              summary("stateful-rig", true),
+              summary("dogfood", false),
+            ]
+          : [summary("stateless-bench", true), summary("dogfood", false)],
     },
   ];
 }
@@ -157,36 +186,6 @@ describe("policy pass classification", () => {
     ).toMatchObject({ classification: "harmful-candidate", harm_observed: true });
   });
 
-  test("labels one ground-truth harm plus sufficient dogfood suppressed TP harmful", () => {
-    const evidence = onePass();
-    onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
-    const dogfood = [
-      ["a", "run-1", 1, "tp", "suppressed"],
-      ["b", "run-2", 1, "fp", "none"],
-      ["c", "run-3", 1, "fp", "none"],
-      ["d", "run-1", 2, "fp", "none"],
-      ["e", "run-2", 2, "fp", "none"],
-    ].map(([identity, run_id, iter, disposition, effect]) => ({
-      identity: identity as string,
-      run_id: run_id as string,
-      iter: iter as number,
-      disposition: disposition as "tp" | "fp",
-      effect: effect as "suppressed" | "none",
-      evidence_ref: "artifacts/policy/evidence.json",
-    }));
-    expect(
-      classify(
-        evidence,
-        facts({
-          ground_truth_harms: [
-            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
-          ],
-          dogfood_dispositions: dogfood,
-        }),
-      )[0]?.classification,
-    ).toBe("harmful-candidate");
-  });
-
   test("does not manufacture dogfood TP harm from missing or historical unsigned decisions", () => {
     const evidence = onePass();
     onlyPass(evidence).exclusions = [
@@ -234,6 +233,62 @@ describe("policy pass classification", () => {
     expect(result?.harm_observed).toBe(false);
   });
 
+  test("a lone bound confirmed suppressed TP observes harm and vetoes deletion", () => {
+    const evidence = onePass();
+    const result = classify(
+      evidence,
+      facts({
+        dogfood_dispositions: [
+          {
+            identity: "suppressed",
+            run_id: "run-1",
+            iter: 1,
+            disposition: "tp",
+            effect: "suppressed",
+            evidence_ref: "artifacts/policy/evidence.json",
+          },
+        ],
+      }),
+    )[0];
+    expect(result).toMatchObject({ classification: "inconclusive", harm_observed: true });
+    expect(result?.reasons).toContain("dogfood-only");
+  });
+
+  test("does not accept unbound or non-suppressed dogfood rows as a counterexample", () => {
+    const evidence = onePass();
+    const row = {
+      identity: "not-bound",
+      run_id: "run-1",
+      iter: 1,
+      disposition: "tp" as const,
+      effect: "suppressed" as const,
+      evidence_ref: "missing/evidence.json",
+    };
+    onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
+    const groundTruth = [{ identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" }];
+    expect(
+      classify(
+        evidence,
+        facts({ ground_truth_harms: groundTruth, dogfood_dispositions: [row] }),
+      )[0],
+    ).toMatchObject({
+      classification: "inconclusive",
+      harm_observed: true,
+      reasons: ["incomplete-authority", "dogfood-only"],
+    });
+    expect(
+      classify(
+        evidence,
+        facts({
+          ground_truth_harms: groundTruth,
+          dogfood_dispositions: [
+            { ...row, evidence_ref: "artifacts/policy/evidence.json", effect: "preserved" },
+          ],
+        }),
+      )[0],
+    ).toMatchObject({ classification: "inconclusive", harm_observed: true });
+  });
+
   test("returns delete-candidate for sufficient zero effect without benefits", () => {
     const result = classify()[0];
     expect(result).toMatchObject({
@@ -256,7 +311,21 @@ describe("policy pass classification", () => {
     expect(classify(base, statefulFacts)[0]?.classification).toBe("inconclusive");
   });
 
-  test("requires five dogfood dispositions from three runs before one harm corroborates", () => {
+  test("does not let a descriptive secondary Bench summary establish stateful deletion sufficiency", () => {
+    const evidence = onePass({ passId: "history.fp-signature" });
+    const primary = onlyPass(evidence);
+    primary.opportunities = { cases: 2, signatures: 0, turns: 4, runs: 0 };
+    const bench = primary.lane_summaries.find((summary) => summary.lane === "stateless-bench");
+    if (bench === undefined) throw new Error("stateful fixture needs a Bench summary");
+    bench.opportunities = { cases: 30, signatures: 30, turns: 0, runs: 0 };
+    bench.statistics.raw_effects = [0, 0, 0];
+    expect(classify(evidence, facts({ pass_id: "history.fp-signature" }))[0]).toMatchObject({
+      classification: "inconclusive",
+      reasons: ["insufficient-opportunities"],
+    });
+  });
+
+  test("labels exactly one bound ground-truth harm plus one confirmed TP harmful below 5 dispositions across 3 runs", () => {
     const evidence = onePass();
     onlyPass(evidence).truth_effects.baseline.blocking_fn = 3;
     const disposition = (identity: string, run_id: string, iter: number) => ({
@@ -267,12 +336,9 @@ describe("policy pass classification", () => {
       effect: "suppressed" as const,
       evidence_ref: "artifacts/policy/evidence.json",
     });
-    const fourAcrossThree = [
-      disposition("a", "run-1", 1),
-      disposition("b", "run-2", 1),
-      disposition("c", "run-3", 1),
-      disposition("d", "run-1", 2),
-    ];
+    const oneAcrossOne = [disposition("a", "run-1", 1)];
+    expect(oneAcrossOne).toHaveLength(1);
+    expect(new Set(oneAcrossOne.map((row) => `${row.run_id}\u0000${row.iter}`)).size).toBe(1);
     expect(
       classify(
         evidence,
@@ -280,29 +346,14 @@ describe("policy pass classification", () => {
           ground_truth_harms: [
             { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
           ],
-          dogfood_dispositions: fourAcrossThree,
+          dogfood_dispositions: oneAcrossOne,
         }),
-      )[0]?.classification,
-    ).toBe("inconclusive");
-
-    const fiveAcrossTwo = [
-      disposition("a", "run-1", 1),
-      disposition("b", "run-2", 1),
-      disposition("c", "run-1", 1),
-      disposition("d", "run-2", 1),
-      disposition("e", "run-1", 1),
-    ];
-    expect(
-      classify(
-        evidence,
-        facts({
-          ground_truth_harms: [
-            { identity: "case-a", evidence_ref: "artifacts/policy/evidence.json" },
-          ],
-          dogfood_dispositions: fiveAcrossTwo,
-        }),
-      )[0]?.classification,
-    ).toBe("inconclusive");
+      )[0],
+    ).toMatchObject({
+      classification: "harmful-candidate",
+      harm_observed: true,
+      reasons: ["dogfood-only", "ground-truth-plus-dogfood-harm"],
+    });
   });
 
   test("allows only a retained overlapping pass to cover an observed benefit", () => {
@@ -350,6 +401,7 @@ describe("policy pass classification", () => {
     const interaction = {
       pass_ids: [defaultPass().id],
       artifact: { ref: "interactions/0.json", sha256: "b".repeat(64) },
+      primary_lane: "stateless-bench",
       evidence: {
         authoritative: true,
         eligibility: { stateless: true, stateful: false, dogfood: false },
@@ -369,6 +421,30 @@ describe("policy pass classification", () => {
         },
         raw_evidence_refs: ["interactions/0.json"],
       },
+      lane_summaries: [
+        {
+          lane: "stateless-bench",
+          primary: true,
+          descriptive: false,
+          eligible: true,
+          authoritative: true,
+          opportunities: { cases: 8, signatures: 15, turns: 0, runs: 0 },
+          exclusions: [],
+          truth_effects: {
+            baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+            ablated: { blocking_fp: 1, blocking_fn: 0, blocking_tp: 1 },
+            error_reduction: 1,
+          },
+          trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+          statistics: {
+            raw_effects: [-1, -1, -1],
+            interval: { lo: -1, hi: -1 },
+            p_value: 1,
+            adjusted_p_value: 1,
+          },
+          raw_evidence_refs: ["interactions/0.json"],
+        },
+      ],
     } as PolicyInteractionEvidenceInput;
     const result = classifyPolicyPasses(evidence, { interactions: [interaction] })[0];
     expect(result).toMatchObject({ classification: "inconclusive", vetoes: [] });
@@ -382,6 +458,7 @@ describe("policy pass classification", () => {
     const interaction = {
       pass_ids: [defaultPass().id],
       artifact: { ref: "interactions/0.json", sha256: "b".repeat(64) },
+      primary_lane: "stateless-bench",
       evidence: {
         authoritative: true,
         eligibility: { stateless: true, stateful: false, dogfood: false },
@@ -401,6 +478,30 @@ describe("policy pass classification", () => {
         },
         raw_evidence_refs: ["interactions/0.json"],
       },
+      lane_summaries: [
+        {
+          lane: "stateless-bench",
+          primary: true,
+          descriptive: false,
+          eligible: true,
+          authoritative: true,
+          opportunities: { cases: 8, signatures: 15, turns: 0, runs: 0 },
+          exclusions: [],
+          truth_effects: {
+            baseline: { blocking_fp: 1, blocking_fn: 0, blocking_tp: 1 },
+            ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+            error_reduction: -1,
+          },
+          trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+          statistics: {
+            raw_effects: [-1, -1, -1],
+            interval: { lo: -1, hi: -1 },
+            p_value: 1,
+            adjusted_p_value: 1,
+          },
+          raw_evidence_refs: ["interactions/0.json"],
+        },
+      ],
     } as PolicyInteractionEvidenceInput;
     expect(classifyPolicyPasses(evidence, { interactions: [interaction] })[0]?.classification).toBe(
       "delete-candidate",

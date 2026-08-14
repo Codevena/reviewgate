@@ -257,7 +257,9 @@ export function classifyPolicyPasses(
     const suppressedTp = facts.dogfood_dispositions.some(
       (fact) => fact.disposition === "tp" && fact.effect === "suppressed",
     );
-    const harmObserved = harms > 0 || (dogfoodSufficient && suppressedTp);
+    // Broad dogfood sufficiency remains a corroboration threshold; one verified suppressed TP is
+    // nevertheless a counterexample and must veto deletion on its own.
+    const harmObserved = harms > 0 || (factsBound && suppressedTp);
 
     if (
       !factsBound ||
@@ -278,7 +280,7 @@ export function classifyPolicyPasses(
     if (row.eligibility.dogfood && !dogfoodSufficient && facts.dogfood_dispositions.length > 0) {
       addReason(reasons, "dogfood-only");
     }
-    if (harms === 1 && !(dogfoodSufficient && suppressedTp)) {
+    if (harms === 1 && !suppressedTp) {
       // One identity-level ground-truth harm alone is neither a deletion warrant nor enough for harm.
       addReason(reasons, "incomplete-authority");
     }
@@ -296,7 +298,7 @@ export function classifyPolicyPasses(
       };
     }
 
-    if (factsBound && (harms >= 2 || (harms === 1 && dogfoodSufficient && suppressedTp))) {
+    if (factsBound && (harms >= 2 || (harms === 1 && suppressedTp))) {
       addReason(reasons, harms >= 2 ? "two-ground-truth-harms" : "ground-truth-plus-dogfood-harm");
       return {
         pass_id: row.pass_id,

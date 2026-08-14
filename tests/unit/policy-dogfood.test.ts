@@ -891,7 +891,7 @@ describe("policy dogfood harvesting", () => {
     ]);
   });
 
-  test("excludes agent-authored legacy labels and an attestation without a decision", async () => {
+  test("excludes agent-authored historical labels and missing decisions from the eligible snapshot", async () => {
     const fixture = await frozenFixture("tp", {
       legacyAgentDecision: true,
       extraDecisionSignature: "sig-unattested",
@@ -909,6 +909,13 @@ describe("policy dogfood harvesting", () => {
       const snapshot = harvestPolicyDogfood(
         boundInput(fixture.manifest, rows, { artifactRoot: fixture.root }),
       );
+      expect(snapshot.labels).toEqual([
+        expect.objectContaining({
+          finding_signature: "sig-a",
+          disposition: "tp",
+          effect: "suppressed",
+        }),
+      ]);
       expect(snapshot.exclusions["agent-only-decision"]).toBe(1);
       expect(snapshot.exclusions["missing-decision"]).toBe(1);
       expect(snapshot.exclusions["missing-attestation"]).toBe(1);

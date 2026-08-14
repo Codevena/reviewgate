@@ -99,3 +99,180 @@ SHA-256 values bind the restored production sources on the final-verification tr
 | `src/stats/policy/assemble.ts` | `1e7cf2d9bdec6a9bf7f90983e86d65fcbcbde13821c4868f404ffb710c3f463f` |
 | `src/stats/policy/render.ts` | `6366279fe993d4c9ace6aae323f25c2fa2573cd9008ff7d965d28ba51913ce02` |
 | `src/cli/commands/stats.ts` | `d92cb1c9eaf0316db89f810e0e9a579f54e27069ed8d3babcea894deefda719b` |
+
+## Contract review C2 delta — one ground-truth harm plus confirmed dogfood TP
+
+The inherited uncommitted C2 implementation separates the broad 5-disposition/3-run dogfood
+corroboration threshold from one raw-reference-bound suppressed true-positive counterexample.
+The final-contract review's pre-fix RED is retained in `.review/final-contract-findings.md`:
+the literal 1-ground-truth-plus-1-TP probe returned `inconclusive`. The additional literal
+positive/negative tests below were added after that inherited implementation and are therefore
+mutation-proven rather than misrepresented as a second primary-tree RED.
+
+| Guard / restored production SHA-256 | Disposable mutation and exact command | Literal RED / restore |
+| --- | --- | --- |
+| One ground-truth harm plus one TP is independent of broad 5/3 corroboration; `src/stats/policy/classify.ts` `7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c` | Re-coupled both `harm_observed` and the harmful branch to `dogfoodSufficient`; `bun test tests/unit/policy-classify.test.ts -t 'labels exactly one bound ground-truth harm plus one confirmed TP harmful below 5 dispositions across 3 runs'` | **0 pass / 1 fail / 15 filtered / 3 expects**: expected `harmful-candidate`, received `inconclusive`. Restored SHA `7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c`. |
+| Lone bound TP vetoes deletion; `src/stats/policy/classify.ts` `7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c` | Removed the bound suppressed-TP term from `harmObserved`; `bun test tests/unit/policy-classify.test.ts -t 'a lone bound confirmed suppressed TP observes harm and vetoes deletion'` | **0 pass / 1 fail / 15 filtered / 1 expect**: expected `harm_observed: true`, received `false`. Restored SHA exact. |
+| Unbound TP cannot supply the 1+1 counterexample; `src/stats/policy/classify.ts` `7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c` | Allowed a suppressed TP to bypass `factsBound` in the harmful branch; `bun test tests/unit/policy-classify.test.ts -t 'does not accept unbound or non-suppressed dogfood rows as a counterexample'` | **0 pass / 1 fail / 15 filtered / 1 expect**: expected `inconclusive`, received `harmful-candidate`. Restored SHA exact. |
+| Historical agent-only and missing-decision rows are not eligible dogfood facts; `src/stats/policy/dogfood.ts` `d51de703cdbd8b979cf9afcd5ca8cdf2b42d24c92c6ec1e7a6ff15008cca8162` | Injected an otherwise schema-shaped, unvalidated `sig-no-decision` historical/missing label into the final snapshot; `bun test tests/unit/policy-dogfood.test.ts -t 'excludes agent-authored historical labels and missing decisions from the eligible snapshot'` | **0 pass / 1 fail / 19 filtered / 1 expect**: expected the sole attested `sig-a` label, received `sig-a` plus `sig-no-decision`. Restored SHA exact. |
+
+Final C2 focused GREEN in the restored disposable copy:
+`bun test tests/unit/policy-classify.test.ts tests/unit/policy-dogfood.test.ts` -> **36 pass / 0 fail /
+82 expect() calls**. No primary production file was edited during mutation testing.
+
+## Contract review C3 delta — complete descriptive Bench/Rig/Dogfood lanes
+
+The final-contract C3 finding was verified against the real authoritative pipeline fixture: before
+this delta, the stateful-primary pass had a verified Bench carrier but no secondary Bench summary
+(`bun test tests/integration/policy-measurement-pipeline.test.ts -t 'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority'` -> **0 pass / 1 fail / 18 filtered / 2 expects**, missing `lane_summaries`). The correction is additive: every singleton has its verified Bench
+summary, stateful singletons additionally have their Rig summary, and every singleton has its
+verified dogfood summary. Every registered interaction has Bench; the all-history interaction also
+has Rig. Dogfood has no preregistered group-ablation source, so it is not invented as an interaction
+lane. Existing `PolicyPassEvidence` remains the explicitly selected primary classification input;
+the summaries are descriptive and cannot establish deletion sufficiency.
+
+| Guard / restored production SHA-256 | Disposable mutation and exact command | Literal RED / restore |
+| --- | --- | --- |
+| Stateful summary must retain the valid secondary Bench lane rather than select Bench *or* Rig; `src/stats/policy/assemble.ts` `204887cf9a8cb63001d30e2cbd8a2ae2af12adff5272da48f6d2b03372e6dbb5` | Restored the old either/or behavior by omitting `bench.laneSummary` whenever Rig was present; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority'` | **0 pass / 1 fail / 18 filtered**: final authority schema rejected `passes.10.evidence.lane_summaries` as incomplete. Restored SHA exact. |
+| Stateless secondary summaries are authoritative and eligible even for stateful-primary passes; `src/stats/policy/assemble.ts` `204887cf9a8cb63001d30e2cbd8a2ae2af12adff5272da48f6d2b03372e6dbb5` | Reintroduced a `stateless-bench`-dependent `eligible: false`; same pipeline command | **0 pass / 1 fail / 18 filtered**: schema rejected `passes.0.evidence.lane_summaries.0.eligible` (expected literal `true`). Restored SHA exact. |
+| History interaction cannot substitute Rig for its verified Bench lane; `src/stats/policy/assemble.ts` `204887cf9a8cb63001d30e2cbd8a2ae2af12adff5272da48f6d2b03372e6dbb5` | Omitted the Bench interaction summary whenever the Rig interaction was selected as primary; same pipeline command | **0 pass / 1 fail / 18 filtered**: schema rejected `interactions.2.lane_summaries` as incomplete. Restored SHA exact. |
+| Every pass retains its descriptive dogfood lane, including no-opportunity rows; `src/stats/policy/assemble.ts` `204887cf9a8cb63001d30e2cbd8a2ae2af12adff5272da48f6d2b03372e6dbb5` | Omitted the dogfood summary for every stateful-primary pass; same pipeline command | **0 pass / 1 fail / 18 filtered**: schema rejected `passes.10.evidence.lane_summaries` as incomplete. Restored SHA exact. |
+| A descriptive secondary Bench lane cannot grant stateful deletion sufficiency; `src/stats/policy/classify.ts` `7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c` | Made the stateful primary-sufficiency predicate consume the descriptive Bench opportunities/statistics; `bun test tests/unit/policy-classify.test.ts -t 'does not let a descriptive secondary Bench summary establish stateful deletion sufficiency'` | **0 pass / 1 fail / 16 filtered / 1 expect**: expected `inconclusive`, received `delete-candidate`. Restored SHA exact. |
+
+All five mutations ran in `/private/tmp/reviewgate-task12-c2.b3mjvS/repo`, which carries a
+read-only `node_modules` link and is not a Git worktree. Final bytes after the last restore were
+`assemble.ts=204887cf9a8cb63001d30e2cbd8a2ae2af12adff5272da48f6d2b03372e6dbb5`,
+`classify.ts=7baa8a38ac8389be6a78af5211ddcf8f1b0ace2df4928ec1f4e47f8f3957d57c`, and
+`policy-measurement.ts=9a3d20f9068bfe9a78c8b7bfd34ef2ab95994dd050660cca7ed26b1a8c86dcbe`.
+The final named all-lanes guard is **1 pass / 0 fail / 18 filtered / 498 expects**. Its seven-file
+focused command is **74 pass / 0 fail**; fresh `bunx tsc --noEmit`, `bun run lint` (Biome 694 files,
+no fixes), `git diff --check`, and `git diff --cached --check` all exit 0.
+
+## Contract review C3 R2 — persisted primary-authority closure
+
+The R2 reviewer correctly found that the initial all-lanes result schema still accepted a
+self-declared primary lane and derived its required inventory from that value. Four independent
+schema witnesses were added first: the pre-fix command
+`bun test tests/unit/policy-measurement-schema.test.ts -t 'catalog-stateful pass|promotion of the registered history interaction|primary pass summary|primary interaction summary'`
+returned **0 pass / 4 fail / 14 filtered / 4 expect() calls**. The failures were the intended
+`true` acceptance of a stateful-to-Bench pass promotion, a history Rig-to-Bench promotion, and a
+drifted selected pass or interaction statistic.
+
+The persisted contract now derives each pass primary lane from
+`POLICY_MEASUREMENT_LANES[pass_id]`, derives each interaction authority from the exact closed
+registered group (only all-history is Rig), and derives canonical summary inventory from those
+authorities rather than serialized fields. The selected summary exactly projects shared primary
+opportunities, truth effects, trace totals when the primary evidence has them, statistics, raw
+references, and primary/descriptive direction. The explicit exception is the supplementary dogfood
+`runs` and exclusions on singleton top-level evidence. The compatibility RED showed the real
+assembler was still giving its selected summary fewer references than the classification consumed;
+the minimal fix projects the top-level selected raw-reference set into that one primary summary.
+The four witness command is now **4 pass / 0 fail / 14 filtered / 4 expect() calls**, and the real
+all-lanes pipeline fixture is **1 pass / 0 fail / 18 filtered / 498 expect() calls**.
+
+| Guard / final restored production SHA-256 | Disposable mutation and exact command | Literal RED / restore |
+| --- | --- | --- |
+| Catalog-stateful pass cannot self-promote to Bench; `src/schemas/policy-measurement.ts` `c674523bc9b15509fadd7efa4754369fa6b036e4dd17379d6ce40169bc1389c9` | Replaced the catalog-derived pass lane with serialized `value.lane`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'catalog-stateful pass promoted to stateless'` | **0 pass / 1 fail / 17 filtered / 1 expect**: expected rejection, received accepted `true`. Restored SHA exact. |
+| Closed history interaction cannot promote Rig authority to Bench; same schema SHA | Restored the prior serialized-primary interaction path while retaining the group-derived lane inventory; `bun test tests/unit/policy-measurement-schema.test.ts -t 'promotion of the registered history interaction from Rig to Bench'` | **0 pass / 1 fail / 17 filtered / 1 expect**: expected rejection, received accepted `true`. Restored SHA exact. |
+| Selected pass summary cannot drift from its primary evidence; same schema SHA | Omitted `requirePrimaryPassSummaryParity`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'primary pass summary whose statistics drift'` | **0 pass / 1 fail / 17 filtered / 1 expect**: expected rejection, received accepted `true`. Restored SHA exact. |
+| Selected interaction summary cannot drift from its primary authority; same schema SHA | Omitted `requirePrimaryInteractionSummaryParity`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'primary interaction summary whose statistics drift'` | **0 pass / 1 fail / 17 filtered / 1 expect**: expected rejection, received accepted `true`. Restored SHA exact. |
+
+All R2 mutants ran only in `/private/tmp/reviewgate-c3r2-mutants.v3nuol/repo`, an 84 MiB
+non-Git disposable copy with a read-only `node_modules` link. Its schema SHA was rechecked after
+every restore against the primary tree. Final C2/C3 focus:
+`bun test tests/unit/policy-measurement-schema.test.ts tests/unit/policy-classify.test.ts tests/unit/policy-assemble.test.ts tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts tests/unit/policy-dogfood.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/integration/policy-measurement-publication.test.ts`
+-> **98 pass / 0 fail / 1,191 expect() calls**, 33.85s. Fresh `bunx tsc --noEmit`, `bun run lint`
+(Biome 694 files/no fixes), `git diff --check`, and `git diff --cached --check` all exit 0.
+
+## Contract review C3 R3 — Dogfood ownership and lane-specific raw-reference closure
+
+The R3 reviewer identified two authority leaks: selected Bench/Rig rows could carry Dogfood's
+supplementary run/exclusion facts, and the R2 producer projected the aggregate top-level raw refs
+back into the selected lane summary. The latter made the Dogfood input-manifest and attestation
+look like Bench/Rig evidence. The final contract therefore keeps lane refs lane-specific and uses
+the top-level pass list only as the exact code-unit-sorted union of every applicable lane ref and
+closed interaction ref.
+
+Four new schema witnesses were observed before their boundary guard existed:
+`bun test tests/unit/policy-measurement-schema.test.ts -t 'selected Bench|selected Rig|Dogfood summary to own|top-level pass references'`
+returned **0 pass / 4 fail / 18 filtered / 4 expect() calls**. The deliberate invalidities were a
+selected Bench row with Dogfood runs/exclusions, the corresponding selected Rig row, a Dogfood row
+whose facts differed from top-level supplementary facts, and a partial top-level ref list. The
+minimal schema guard makes non-Dogfood summaries require `runs: 0` and empty exclusions, makes the
+Dogfood row exactly match top-level supplementary runs/exclusions, and closes the aggregate union.
+The same command is now **4 pass / 0 fail / 18 filtered / 4 expect() calls**.
+
+The real assembler/render witness was also RED first:
+`bun test tests/integration/policy-measurement-pipeline.test.ts -t 'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority'`
+returned **0 pass / 1 fail / 18 filtered / 499 expect() calls** with 38 structured lane leaks and
+38 rendered leaks: every Dogfood input-manifest/attestation ref appeared in a selected Bench or
+Rig row. The producer now assigns lane-specific refs without an overwrite, then constructs only
+the top-level union. The restored same command is **1 pass / 0 fail / 18 filtered / 499 expect()
+calls**.
+
+| Guard / final restored production SHA-256 | Disposable mutation and exact command | Literal RED / restore |
+| --- | --- | --- |
+| Dogfood exclusively owns supplementary runs and exclusions; `src/schemas/policy-measurement.ts` `08eb2083f24069f9a5f907bd591875971a615e5f1273031d5b616c21e1450f63` | Removed `requireDogfoodSupplementaryOwnership`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'selected Bench|selected Rig|Dogfood summary to own'` | **0 pass / 3 fail / 19 filtered / 3 expects**: all three invalid forms became accepted. Restored schema SHA exact. |
+| Selected Bench/Rig summary must not receive top-level aggregate refs; `src/stats/policy/assemble.ts` `ba33482b07944c76bc2a3982af6124ab4244a90188fce81bc2d75db47a8825f9` | Reintroduced a primary-summary assignment from `primary.evidence.raw_evidence_refs`; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority'` | **0 pass / 1 fail / 18 filtered / 499 expects**: the real lane and Markdown checks report the manifest/attestation leaks. Restored assembler SHA exact. |
+| Top-level pass refs must equal the lane-plus-interaction union; same schema SHA | Removed the per-pass aggregate-union refinement; `bun test tests/unit/policy-measurement-schema.test.ts -t 'top-level pass references'` | **0 pass / 1 fail / 21 filtered / 1 expect**: the partial top-level list became accepted. Restored schema SHA exact. |
+
+All R3 mutants ran only in `/private/tmp/reviewgate-c3r3-mutants.5F1DLG/repo`, an 84 MiB non-Git
+copy with a read-only `node_modules` link. Both production hashes were rechecked after every
+restore. A first combined focus exposed an invalid `policy-classify` test helper that copied
+Dogfood's `runs: 3` into Bench/Rig summaries; the helper was corrected to mirror the persisted
+contract, then the full proportional current-source focus was rerun:
+`bun test tests/unit/policy-measurement-schema.test.ts tests/unit/policy-classify.test.ts tests/unit/policy-assemble.test.ts tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts tests/unit/policy-dogfood.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/integration/policy-measurement-publication.test.ts`
+-> **100 pass / 0 fail**. Fresh `bunx tsc --noEmit`, `bun run lint` (Biome checked 694 files/no
+fixes), `git diff --check`, and `git diff --cached --check` all exit 0. No stage, commit, full
+suite/build, provider, Gate, real Rig, real measurement, credits, push, or merge occurred.
+
+## Contract review C3 R3 convergence — persisted lane raw-reference ownership
+
+The final R3 residual showed that producer lane-specificity alone was insufficient: a persisted
+result could add an otherwise inventory-bound Dogfood ref to a selected Bench or Rig summary while
+keeping the top-level union self-consistent. The closed contract grants no shared lane-summary-ref
+exception. Bench rows derive from the verified profile/result/trace family, Rig rows from the
+scenario/cassette/trace/state family, and Dogfood rows from frozen audit/trace plus its manifest and
+attestation; interaction refs are aggregated only in the enclosing top-level pass refs.
+
+The primary-tree schema/render RED was created before the guard:
+`bun test tests/unit/policy-measurement-schema.test.ts -t 'raw reference'` -> **0 pass / 3 fail /
+22 filtered / 3 expect() calls**. Two distinct `dogfood/only.json` witnesses were added to the
+closed inventory, Dogfood, and the selected Bench or Rig summary; each was accepted and its
+selected Markdown lane rendered the Dogfood ref. A third witness showed the same unauthorized
+sharing between a descriptive Bench and selected Rig lane.
+
+The minimal persisted boundary rejects any raw ref owned by more than one pass lane summary. Its
+same named GREEN is **3 pass / 0 fail / 22 filtered / 3 expect() calls**. The synthetic schema
+fixture's former shared `evidence/a.json` placeholder was replaced with separate, inventory-bound
+`stateless-bench/…`, `stateful-rig/…`, and `dogfood/…` refs; this is a fixture correction to match
+the explicit no-sharing contract, not an allowed production exception.
+
+| Guard / final restored production SHA-256 | Disposable mutation and exact command | Literal RED / restore |
+| --- | --- | --- |
+| No raw evidence ref may belong to more than one persisted pass lane; `src/schemas/policy-measurement.ts` `4bf9464b1d303376bfcbbfb9daa2df0322423db5a8d018ef4e0c86d70269063d` | Removed `requirePassLaneRawRefDisjointness`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'raw reference'` | **0 pass / 3 fail / 22 filtered / 3 expects**: both Dogfood-to-selected-lane cases became accepted/rendered and Bench/Rig sharing became accepted. Restored schema SHA exact. |
+
+The disposable mutation copy is `/private/tmp/reviewgate-c3r3-r4-mutants.79wMgM/repo`; its source
+hash was compared to primary after restoration. Current residual focus is `policy-measurement-schema`
+**25 pass / 0 fail / 73 expects** and `policy-measurement-pipeline` **18 pass / 0 fail**. Fresh
+`bunx tsc --noEmit`, `bun run lint` (Biome 694/no fixes), `git diff --check`, and
+`git diff --cached --check` all exit 0. No stage, commit, full suite/build, provider, Gate, real
+Rig, real measurement, credits, push, or merge occurred.
+
+## Controller aggregate regression — stale fixture canonicalization
+
+The final eight-file controller command first exposed **92 pass / 13 fail / 1,122 expects**. Twelve
+Stats/publication failures were the intended strict-schema rejection, `pass lane summaries must not
+share raw evidence references`; the apparent Classify failure had already returned
+`delete-candidate` and then failed only while parsing the same stale fixture. The source was test
+factories that projected one inventory list into every Bench/Rig/Dogfood lane, not a production C2
+semantic change. The existing bound-suppressed-TP veto guard remains green.
+
+Only fixture producers were corrected: they now provide distinct physical, inventory-bound Bench,
+Rig, and Dogfood refs to each lane summary, use an exact lane-plus-applicable-interaction top-level
+union, and strip fixture-only source `kind` metadata before strict persisted bindings. No schema or
+production guard changed, so no new mutation family was required; the existing raw-reference
+disjointness mutant remains the authority witness above. The exact controller command is now
+**105 pass / 0 fail**. Fresh `bunx tsc --noEmit`, `bun run lint` (Biome 694 files/no fixes),
+`git diff --check`, and `git diff --cached --check` exit 0. No stage, commit, full suite/build,
+provider, Gate, real Rig, measurement, credits, push, or merge occurred.
