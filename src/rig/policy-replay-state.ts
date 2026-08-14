@@ -274,7 +274,9 @@ function collectStateEntries(stateRoot: string, requireMode0600 = false): StateE
   return entries.sort((a, b) => compareCodeUnits(a.path, b.path));
 }
 
-function stateDigest(entries: StateEntry[]): string {
+export function policyStateTreeDigest(
+  entries: readonly { path: string; size: number; sha256: string }[],
+): string {
   return sha256(
     canonicalJson(
       entries.map(({ path, size, sha256: contentSha256 }) => ({
@@ -287,7 +289,7 @@ function stateDigest(entries: StateEntry[]): string {
 }
 
 export function digestPolicyState(stateRoot: string): string {
-  return stateDigest(collectStateEntries(stateRoot));
+  return policyStateTreeDigest(collectStateEntries(stateRoot));
 }
 
 function exactDirectory(path: string): string {
@@ -516,7 +518,7 @@ export function createPolicyStateSnapshot(input: {
   }
   const sourceState = join(repoReal, ".reviewgate");
   const entries = collectStateEntries(sourceState);
-  const stateSha256 = stateDigest(entries);
+  const stateSha256 = policyStateTreeDigest(entries);
   const stateRef = `policy-state/${stateSha256}/.reviewgate`;
   if (!STATE_TREE_REF.test(stateRef)) throw new Error("invalid policy state reference");
   const stateDestination = resolve(outputReal, stateRef);
@@ -532,7 +534,7 @@ export function createPolicyStateSnapshot(input: {
     copyEntries(entries, createdStateRoot);
   }
   const persistedState = readPersistedPolicyStateTree(outputReal, stateSha256);
-  if (stateDigest(persistedState.entries) !== stateSha256) {
+  if (policyStateTreeDigest(persistedState.entries) !== stateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
 
@@ -614,7 +616,7 @@ export function verifyPolicyStateSnapshot(input: {
   }
   const persistedState = readPersistedPolicyStateTree(outputReal, manifest.state_sha256);
   const entries = persistedState.entries;
-  if (stateDigest(entries) !== manifest.state_sha256)
+  if (policyStateTreeDigest(entries) !== manifest.state_sha256)
     throw new Error("policy state tree digest mismatch");
   const actualFiles = entries.map(({ path, size, sha256: contentSha256 }) => ({
     path,
@@ -846,7 +848,7 @@ export function validateRigPolicyReplayArtifacts(input: {
       try {
         const persistedState = readPersistedPolicyStateTree(outputRoot, envelope.state_sha256);
         stateRoot = persistedState.stateRoot;
-        if (stateDigest(persistedState.entries) !== envelope.state_sha256) {
+        if (policyStateTreeDigest(persistedState.entries) !== envelope.state_sha256) {
           return authority(
             "state-digest-mismatch",
             `turn ${turn.index} trace ${trace.ref} state does not match`,
@@ -929,7 +931,7 @@ function assertNoAliasedFiles(
 ): void {
   const left = collectStateEntries(leftRoot);
   const right = collectStateEntries(rightRoot);
-  if (requireEqualDigest && stateDigest(left) !== stateDigest(right)) {
+  if (requireEqualDigest && policyStateTreeDigest(left) !== policyStateTreeDigest(right)) {
     throw new Error("policy state digest mismatch");
   }
   const rightPaths = new Set(right.map((entry) => entry.path));
@@ -966,7 +968,7 @@ function prepareBranch(input: {
   if (existsSync(stateDestination)) rmSync(stateDestination, { recursive: true, force: true });
   ensureDirectoryChain(exactDirectory(input.destination), [".reviewgate"]);
   const entries = collectStateEntries(input.stateSnapshotRoot, true);
-  if (stateDigest(entries) !== input.expectedStateSha256) {
+  if (policyStateTreeDigest(entries) !== input.expectedStateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
   copyEntries(entries, stateDestination);
@@ -1014,7 +1016,7 @@ export function createReplayBranches(input: {
     },
   ).trim();
   if (resolvedCommit !== input.sourceCommit) throw new Error("source commit identity mismatch");
-  if (stateDigest(collectStateEntries(stateReal, true)) !== input.expectedStateSha256) {
+  if (policyStateTreeDigest(collectStateEntries(stateReal, true)) !== input.expectedStateSha256) {
     throw new Error("policy state snapshot digest mismatch");
   }
 
@@ -1074,13 +1076,14 @@ export function advanceReplayBranches(input: {
     }
   }
   if (
-    stateDigest(collectStateEntries(input.previousStateSnapshotRoot, true)) !==
+    policyStateTreeDigest(collectStateEntries(input.previousStateSnapshotRoot, true)) !==
     input.previousStateSha256
   ) {
     throw new Error("previous policy state snapshot digest mismatch");
   }
   if (
-    stateDigest(collectStateEntries(input.nextStateSnapshotRoot, true)) !== input.nextStateSha256
+    policyStateTreeDigest(collectStateEntries(input.nextStateSnapshotRoot, true)) !==
+    input.nextStateSha256
   ) {
     throw new Error("next policy state snapshot digest mismatch");
   }

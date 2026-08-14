@@ -845,6 +845,7 @@ interface RealBenchFixture {
 interface RealBenchFixtureOptions {
   requestIdentity?: "derived" | "self-declared";
   responseClosure?: "closed" | "shared" | "reordered" | "reused" | "partial" | "missing-digest";
+  nestedBenchBundle?: boolean;
 }
 
 function realFixtureRawResponse(repeat: 1 | 2 | 3, caseId: string): string {
@@ -870,6 +871,15 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
   const requestIdentity = options.requestIdentity ?? "derived";
   const responseClosure = options.responseClosure ?? "closed";
   const fixture = createFixture();
+  if (options.nestedBenchBundle) {
+    const benchRef = "bench/results/policy-measurement/attempt/capture/bench.json";
+    rmSync(join(fixture.root, fixture.benchRef));
+    fixture.benchRef = benchRef;
+    fixture.prereg = PolicyMeasurementPreregistrationSchema.parse({
+      ...fixture.prereg,
+      outputs: { ...fixture.prereg.outputs, bench_bundle: benchRef },
+    });
+  }
   const dogfoodManifest = PolicyDogfoodInputManifestSchema.parse({
     schema: "reviewgate.policy-dogfood-input-manifest.v1",
     since: fixture.prereg.dogfood.since,
@@ -919,7 +929,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
   const sourceHead = git(fixture.root, ["rev-parse", "HEAD"]);
   const configurationHashes = realFixtureConfigurationHashes(prereg);
   const configuration = realFixtureConfiguration(prereg);
-  const attemptRoot = dirname(join(fixture.root, fixture.benchRef));
+  const attemptRoot = join(fixture.root, prereg.outputs.attempt_dir);
   const caseIds = Object.keys(prereg.corpus.content_sha256)
     .map((ref) => ref.slice("cases/".length, -".json".length))
     .sort();
@@ -1976,6 +1986,14 @@ describe("authoritative policy measurement pipeline", () => {
     const escaped = runRealAssembler(real, { benchRef: "../bench.json" });
     expect(escaped.exitCode).toBe(4);
     expect(escaped.stderr).toContain("artifact-ref-invalid");
+  }, 120_000);
+
+  test("assembles a real nested registered Bench stack from the attempt root", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const result = runRealAssembler(real);
+
+    expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, passes: 18 });
   }, 120_000);
 
   test("rejects every trace-set identity that differs from the verified case result", () => {

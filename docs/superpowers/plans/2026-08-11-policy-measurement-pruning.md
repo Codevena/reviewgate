@@ -1519,13 +1519,13 @@ git commit -m "docs: document policy measurement workflow"
 - Consumes the complete Slice 2A branch.
 - Produces final executable evidence and the reviewed handoff; no measurement artifacts.
 
-- [ ] **Step 1: Consolidate the mutation dossier**
+- [x] **Step 1: Consolidate the mutation dossier**
 
 For every mutation family from Tasks 1–10, record production file SHA before mutation, exact test
 command, named failing test, observed RED summary, restore SHA, and final GREEN command. Verify every
 production SHA is restored and `git diff -- src tests` contains only intended implementation changes.
 
-- [ ] **Step 2: Run the complete focused suite serially**
+- [x] **Step 2: Run the complete focused suite serially**
 
 Run:
 
@@ -1548,7 +1548,7 @@ bun test \
 
 Expected: zero failures.
 
-- [ ] **Step 3: Run static gates**
+- [x] **Step 3: Run static gates**
 
 ```bash
 bunx tsc --noEmit
@@ -1558,7 +1558,7 @@ git diff --check
 
 Expected: all exit 0.
 
-- [ ] **Step 4: Run exactly one full suite**
+- [x] **Step 4: Run exactly one full suite**
 
 Confirm no other Bun/test/build process and viable host load, then run:
 
@@ -1569,7 +1569,7 @@ bun test > /tmp/reviewgate-policy-slice2-full.txt 2>&1
 Read the terminal summary from the file and record pass/skip/fail counts and exit code. Do not pipe
 through `tail`, change timeouts, or start a second run while the first process exists.
 
-- [ ] **Step 5: Build and smoke the compiled CLI**
+- [x] **Step 5: Build and smoke the compiled CLI**
 
 After confirming no foreign gate/build process and understanding that the repo build refreshes the
 machine-wide symlink, run:
@@ -1760,3 +1760,12 @@ OpenRouter routing contract and C7's witnesses are literal and recomputable, inc
 `4 → 5`, Holm `[0.03,0.06,0.06] → [0.03,0.04,0.06]`, response consumption `12/12 → 11/12`,
 atomic publication `1 → 2`, and required CLI flags `10/10 → 9/10`. The plan gate is closed; Task 1
 is the next authorized implementation step.
+
+### Final contract review R1-C — C1 delta R3 pending
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C1 preregistered capture/final lifecycle was internally inconsistent | Bench preflights before exclusively reserving the registered `attempt_dir`; assembly and publication derive the same root even when `bench_bundle` is nested, preserve raw bytes and explicit state-tree closures, emit all five registered outputs, and bind/re-verify inventory, deterministic copied-source mappings, and `complete.json`. The real nested Bench stack, no-provider publication fixture, real 217-artifact Rig copier, and isolated mutants cover the C1 boundary. | Task 12 review-bound C1 delta |
+
+The next review is limited to this C1 correction, its marker/no-replace/cleanup side effects, and
+the mapped focused/static evidence. It must not reopen the previously passed plan-gate rounds.

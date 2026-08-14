@@ -113,6 +113,28 @@ const KNOWN_PROVIDERS: ReadonlySet<string> = new Set([
   "ollama",
 ]);
 
+function contained(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (!rel.startsWith("../") && rel !== ".." && !isAbsolute(rel));
+}
+
+function removeEmptyOwnedAttempt(root: string, identity: { dev: number; ino: number }): void {
+  try {
+    const stat = lstatSync(root);
+    if (
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      stat.dev === identity.dev &&
+      stat.ino === identity.ino &&
+      readdirSync(root).length === 0
+    ) {
+      rmSync(root);
+    }
+  } catch {
+    // Never remove a replacement or a partially produced capture.
+  }
+}
+
 /** Parse `--provider-model opencode=alibaba-token-plan/qwen3.8-max,ollama=glm-5.2:cloud`.
  * Splits on the FIRST `=` only — model ids legitimately contain slashes, colons
  * and occasionally `=`. Validated against KNOWN_PROVIDERS rather than a second
@@ -3177,7 +3199,12 @@ export function validatePolicyEffectiveConfiguration(
 
 /** Execute the exact committed 30×3×23 Slice-2A stateless policy schedule. */
 export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunOutput> {
-  const outPath = resolve(input.repoRoot, input.out);
+  const repoRoot = resolve(input.repoRoot);
+  const outPath = resolve(repoRoot, input.out);
+  const outRel = relative(repoRoot, outPath).split("\\").join("/");
+  if (outRel === ".." || outRel.startsWith("../") || isAbsolute(outRel)) {
+    return policyInvalid(["policy attempt root escapes repository"]);
+  }
   if (existsSync(outPath)) {
     return {
       exitCode: 2,
@@ -3206,8 +3233,7 @@ export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunO
   if (preregistration.release !== RG_VERSION && preregistration.release !== `v${RG_VERSION}`) {
     reasons.push("release version differs");
   }
-  const preregRel = relative(resolve(input.repoRoot), preregPath).split("\\").join("/");
-  const outRel = relative(resolve(input.repoRoot), outPath).split("\\").join("/");
+  const preregRel = relative(repoRoot, preregPath).split("\\").join("/");
   if (outRel !== preregistration.outputs.bench_bundle) reasons.push("Bench output path differs");
   const expectedCommand = [
     preregistration.source.runner,
@@ -3278,12 +3304,49 @@ export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunO
   }
   if (reasons.length > 0 || built === null) return policyInvalid(reasons);
 
+  // Reservation begins only after the closed, no-provider preregistration and
+  // source/configuration preflight has established the exact registered root.
+  const artifactRoot = resolve(repoRoot, preregistration.outputs.attempt_dir);
+  if (
+    !contained(repoRoot, artifactRoot) ||
+    resolve(repoRoot, preregistration.outputs.bench_bundle) !== outPath
+  ) {
+    return policyInvalid(["registered policy attempt root or Bench output is unsafe"]);
+  }
+  if (!ensureDirectoryWithoutSymlinks(dirname(artifactRoot))) {
+    return policyInvalid(["policy attempt parent path is unsafe"]);
+  }
+  try {
+    mkdirSync(artifactRoot, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return {
+        exitCode: 2,
+        stdout: "",
+        stderr: `bench policy: attempt root already exists (immutable): ${artifactRoot}\n`,
+      };
+    }
+    return policyInvalid(["cannot exclusively reserve policy attempt root"]);
+  }
+  const reservation = lstatSync(artifactRoot);
+  if (
+    !reservation.isDirectory() ||
+    reservation.isSymbolicLink() ||
+    (reservation.mode & 0o7777) !== 0o700
+  ) {
+    return policyInvalid(["policy attempt root reservation is unsafe"]);
+  }
+  if (!ensureDirectoryWithoutSymlinks(dirname(outPath))) {
+    removeEmptyOwnedAttempt(artifactRoot, reservation);
+    return policyInvalid(["registered Bench output parent is unsafe"]);
+  }
+
   const adapterFactory = input.adapterFactory ?? buildAdapters;
   const underlying = adapterFactory(built.config, input.adapters);
   const budget = createCallBudget(preregistration.hard_gates.maximum_provider_calls);
   const work = mkdtempSync(join(tmpdir(), "rg-bench-policy-"));
   const stagingArtifactRoot = join(work, "artifact-root");
-  const artifactRoot = dirname(outPath);
+  let captureProduced = false;
   try {
     if (!ensureDirectoryWithoutSymlinks(join(stagingArtifactRoot, "artifacts"))) {
       return policyInvalid(["trace staging path is unsafe"]);
@@ -3308,6 +3371,16 @@ export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunO
       stagingArtifactRoot,
     );
     if (!captured.ok) return captured.output;
+    const currentReservation = lstatSync(artifactRoot);
+    if (
+      !currentReservation.isDirectory() ||
+      currentReservation.isSymbolicLink() ||
+      currentReservation.dev !== reservation.dev ||
+      currentReservation.ino !== reservation.ino
+    ) {
+      return policyInvalid(["policy attempt root changed before capture publication"]);
+    }
+    captureProduced = true;
     const publishedTraces = publishResultTraces(
       stagingArtifactRoot,
       artifactRoot,
@@ -3474,6 +3547,7 @@ export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunO
       `execution artifact mismatch: ${error instanceof Error ? error.message : String(error)}`,
     ]);
   } finally {
+    if (!captureProduced) removeEmptyOwnedAttempt(artifactRoot, reservation);
     rmSync(work, { recursive: true, force: true });
   }
 }

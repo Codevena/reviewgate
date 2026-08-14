@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
 // src/cli/commands/stats.ts
-import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
   verifyCanonicalJsonArtifact,
+  verifyNamedBytes,
   verifyNamedCanonicalJsonBytes,
   verifyNamedTextBytes,
   verifyUnboundNamedCanonicalJsonBytes,
@@ -13,6 +22,7 @@ import {
 import { canonicalJson } from "../../audit/canonical.ts";
 import { BrainStore } from "../../core/brain/store.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
+import { policyStateTreeDigest } from "../../rig/policy-replay-state.ts";
 import {
   type PolicyMeasurementPreregistration,
   PolicyMeasurementPreregistrationSchema,
@@ -21,7 +31,9 @@ import {
   PolicyDogfoodAdjudicationSchema,
   PolicyDogfoodAttestationSchema,
   PolicyDogfoodInputManifestSchema,
+  PolicyDogfoodSnapshotSchema,
   PolicyMeasurementSchema,
+  PolicyRigEvidenceSchema,
 } from "../../schemas/policy-measurement.ts";
 import { aggregate } from "../../stats/aggregate.ts";
 import { loadAuditWindow } from "../../stats/load.ts";
@@ -38,18 +50,30 @@ import { renderStats } from "../../stats/render.ts";
 import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 
 const MAX_POLICY_SOURCE_BYTES = 128 * 1024 * 1024;
+const CompleteBindingSchema = z
+  .object({ ref: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+  .strict();
 const PolicyMeasurementCompleteSchema = z
   .object({
     schema: z.literal("reviewgate.policy-measurement-complete.v1"),
-    result: z
-      .object({ ref: z.literal("result.json"), sha256: z.string().regex(/^[0-9a-f]{64}$/) })
-      .strict(),
-    report: z
-      .object({ ref: z.literal("report.md"), sha256: z.string().regex(/^[0-9a-f]{64}$/) })
+    result: CompleteBindingSchema,
+    report: CompleteBindingSchema,
+    outputs: z
+      .object({
+        bench_bundle: CompleteBindingSchema,
+        rig_bundle: CompleteBindingSchema,
+        dogfood_snapshot: CompleteBindingSchema,
+        result_json: CompleteBindingSchema,
+        report_md: CompleteBindingSchema,
+      })
       .strict(),
     sources: z
       .array(
-        z.object({ ref: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
+        CompleteBindingSchema.extend({
+          material: z.enum(["file", "state-tree"]),
+          copy_ref: z.string().min(1).optional(),
+          members: z.array(CompleteBindingSchema).optional(),
+        }).strict(),
       )
       .min(1),
   })
@@ -85,6 +109,93 @@ interface PolicyStatsRuntime {
   beforeComplete?: (output: string) => void;
 }
 
+type PublishedSource =
+  | { ref: string; sha256: string; material: "file"; copy_ref: string }
+  | {
+      ref: string;
+      sha256: string;
+      material: "state-tree";
+      members: Array<{ ref: string; sha256: string }>;
+    };
+
+function sourceCopyRef(source: PolicyAssembly["sources"][number]): string {
+  return `artifacts/policy-measurement-sources/${source.sha256}-${sha256(source.ref).slice(0, 16)}.bin`;
+}
+
+function verifySourceForPublication(source: PolicyAssembly["sources"][number], root: string) {
+  if (source.material === "state-tree") return undefined;
+  return verifyNamedBytes({
+    root,
+    ref: source.ref,
+    sha256: source.sha256,
+    maxBytes: MAX_POLICY_SOURCE_BYTES,
+    privateMode: source.kind !== "preregistration",
+  });
+}
+
+/** Copy the closed source inventory without inferring a format from its path. */
+function copyPolicySourcesToStage(
+  root: string,
+  stage: string,
+  sources: readonly PolicyAssembly["sources"][number][],
+): PublishedSource[] {
+  const copiedSources: PublishedSource[] = [];
+  const verifiedFiles = new Map<string, Buffer>();
+  for (const source of sources) {
+    const verified = verifySourceForPublication(source, root);
+    if (verified === undefined) continue;
+    if (!verified.ok)
+      policyAuthority(
+        "artifact-ref-invalid",
+        `cannot reverify source ${source.ref}: ${verified.reason}`,
+      );
+    const copy_ref = sourceCopyRef(source);
+    const copyPath = join(stage, copy_ref);
+    ensurePrivateDirectory(stage, dirname(copyPath));
+    if (
+      !writeFileIfAbsent(copyPath, verified.bytes, { mode: 0o600 }) ||
+      !verifyNamedBytes({
+        root: stage,
+        ref: copy_ref,
+        sha256: source.sha256,
+        maxBytes: MAX_POLICY_SOURCE_BYTES,
+        privateMode: true,
+      }).ok
+    ) {
+      policyAuthority("artifact-ref-invalid", `cannot publish source ${source.ref}`);
+    }
+    verifiedFiles.set(source.ref, verified.bytes);
+    copiedSources.push({ ref: source.ref, sha256: source.sha256, material: "file", copy_ref });
+  }
+  for (const source of sources.filter((candidate) => candidate.material === "state-tree")) {
+    const members = sources
+      .filter(
+        (candidate) => candidate.material === "file" && candidate.ref.startsWith(`${source.ref}/`),
+      )
+      .map((candidate) => ({ ref: candidate.ref, sha256: candidate.sha256 }));
+    const entries = members.map((member) => {
+      const bytes = verifiedFiles.get(member.ref);
+      if (bytes === undefined)
+        policyAuthority("artifact-ref-invalid", `state-tree member is absent: ${member.ref}`);
+      return {
+        path: member.ref.slice(source.ref.length + 1),
+        size: bytes.length,
+        sha256: member.sha256,
+      };
+    });
+    if (members.length === 0 || policyStateTreeDigest(entries) !== source.sha256) {
+      policyAuthority("artifact-ref-invalid", `state-tree closure is invalid: ${source.ref}`);
+    }
+    copiedSources.push({ ref: source.ref, sha256: source.sha256, material: "state-tree", members });
+  }
+  copiedSources.sort(
+    (left, right) =>
+      sources.findIndex((source) => source.ref === left.ref) -
+      sources.findIndex((source) => source.ref === right.ref),
+  );
+  return copiedSources;
+}
+
 function policyAuthority(
   code: ConstructorParameters<typeof PolicyMeasurementAuthorityError>[0],
   message: string,
@@ -97,12 +208,44 @@ function contained(root: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
 
-function ensurePrivateDirectory(root: string, target: string): void {
+type RegisteredOutputKey = Exclude<
+  keyof PolicyMeasurementPreregistration["outputs"],
+  "attempt_dir"
+>;
+type RegisteredOutputRefs = Record<RegisteredOutputKey, string>;
+
+function registeredOutputRefs(
+  preregistration: PolicyMeasurementPreregistration,
+  repoRoot: string,
+  output: string,
+): RegisteredOutputRefs {
+  const refs = {} as RegisteredOutputRefs;
+  const seen = new Set<string>();
+  for (const key of [
+    "bench_bundle",
+    "rig_bundle",
+    "dogfood_snapshot",
+    "result_json",
+    "report_md",
+  ] as const) {
+    const path = resolve(repoRoot, preregistration.outputs[key]);
+    const ref = relative(output, path).split("\\").join("/");
+    if (!contained(output, path) || ref.length === 0 || seen.has(ref)) {
+      policyAuthority("preregistration-mismatch", "registered policy output paths are unsafe");
+    }
+    seen.add(ref);
+    refs[key] = ref;
+  }
+  return refs;
+}
+
+function ensurePrivateDirectory(root: string, target: string): OwnedDirectory[] {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
   if (!contained(resolvedRoot, resolvedTarget)) {
     policyAuthority("artifact-ref-invalid", "policy output escapes the repository root");
   }
+  const created: OwnedDirectory[] = [];
   let cursor = resolvedRoot;
   try {
     const rootStat = lstatSync(cursor);
@@ -110,13 +253,16 @@ function ensurePrivateDirectory(root: string, target: string): void {
     const suffix = relative(resolvedRoot, resolvedTarget).split(sep).filter(Boolean);
     for (const component of suffix) {
       cursor = join(cursor, component);
-      if (!existsSync(cursor)) mkdirSync(cursor, { mode: 0o700 });
+      const missing = !existsSync(cursor);
+      if (missing) mkdirSync(cursor, { mode: 0o700 });
       const stat = lstatSync(cursor);
       if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("unsafe directory");
+      if (missing) created.push({ path: cursor, dev: stat.dev, ino: stat.ino });
     }
   } catch {
     policyAuthority("artifact-ref-invalid", "policy output directory is unsafe");
   }
+  return created;
 }
 
 function safeRemoveStage(
@@ -151,6 +297,56 @@ function safeRemoveStage(
 interface ReservedOutput {
   dev: number;
   ino: number;
+}
+
+interface OwnedFile extends ReservedOutput {
+  path: string;
+}
+
+interface OwnedDirectory extends ReservedOutput {
+  path: string;
+}
+
+function sameDirectoryIdentity(path: string, identity: ReservedOutput): boolean {
+  try {
+    const stat = lstatSync(path);
+    return (
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      stat.dev === identity.dev &&
+      stat.ino === identity.ino
+    );
+  } catch {
+    return false;
+  }
+}
+
+function removeOwnedFile(file: OwnedFile): void {
+  try {
+    const stat = lstatSync(file.path);
+    if (stat.isFile() && !stat.isSymbolicLink() && stat.dev === file.dev && stat.ino === file.ino) {
+      rmSync(file.path, { force: true });
+    }
+  } catch {
+    // Never remove a replacement created by another actor.
+  }
+}
+
+function removeOwnedDirectory(directory: OwnedDirectory): void {
+  try {
+    const stat = lstatSync(directory.path);
+    if (
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      stat.dev === directory.dev &&
+      stat.ino === directory.ino &&
+      readdirSync(directory.path).length === 0
+    ) {
+      rmSync(directory.path, { recursive: true, force: true });
+    }
+  } catch {
+    // Never remove a replacement or a directory containing another actor's data.
+  }
 }
 
 function reserveOutput(output: string, parent: string): ReservedOutput | undefined {
@@ -219,6 +415,26 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     privateMode: true,
   });
   if (!result.ok) return false;
+  const preregSource = marker.value.sources.find(
+    (source) =>
+      source.ref === result.value.preregistration.ref &&
+      source.sha256 === result.value.preregistration.sha256,
+  );
+  if (
+    preregSource === undefined ||
+    preregSource.material !== "file" ||
+    preregSource.copy_ref === undefined
+  )
+    return false;
+  const preregistration = verifyNamedCanonicalJsonBytes({
+    root: output,
+    ref: preregSource.copy_ref,
+    sha256: preregSource.sha256,
+    schema: PolicyMeasurementPreregistrationSchema,
+    maxBytes: MAX_POLICY_SOURCE_BYTES,
+    privateMode: true,
+  });
+  if (!preregistration.ok) return false;
   const report = verifyNamedTextBytes({
     root: output,
     ref: marker.value.report.ref,
@@ -226,34 +442,117 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     maxBytes: MAX_POLICY_SOURCE_BYTES,
     privateMode: true,
   });
-  if (!report.ok || marker.value.sources.length !== result.value.artifacts.inventory.length)
+  const outputs = marker.value.outputs;
+  const registeredRef = (
+    key: Exclude<keyof PolicyMeasurementPreregistration["outputs"], "attempt_dir">,
+  ): string | undefined => {
+    const attempt = preregistration.value.outputs.attempt_dir;
+    const path = preregistration.value.outputs[key];
+    return path.startsWith(`${attempt}/`) ? path.slice(attempt.length + 1) : undefined;
+  };
+  if (
+    outputs.result_json.ref !== marker.value.result.ref ||
+    outputs.result_json.sha256 !== marker.value.result.sha256 ||
+    outputs.report_md.ref !== marker.value.report.ref ||
+    outputs.report_md.sha256 !== marker.value.report.sha256 ||
+    outputs.bench_bundle.ref !== registeredRef("bench_bundle") ||
+    outputs.rig_bundle.ref !== registeredRef("rig_bundle") ||
+    outputs.dogfood_snapshot.ref !== registeredRef("dogfood_snapshot") ||
+    outputs.result_json.ref !== registeredRef("result_json") ||
+    outputs.report_md.ref !== registeredRef("report_md") ||
+    !verifyNamedCanonicalJsonBytes({
+      root: output,
+      ref: outputs.bench_bundle.ref,
+      sha256: outputs.bench_bundle.sha256,
+      schema: z.unknown(),
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    }).ok ||
+    !verifyNamedCanonicalJsonBytes({
+      root: output,
+      ref: outputs.rig_bundle.ref,
+      sha256: outputs.rig_bundle.sha256,
+      schema: PolicyRigEvidenceSchema,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    }).ok ||
+    !verifyNamedCanonicalJsonBytes({
+      root: output,
+      ref: outputs.dogfood_snapshot.ref,
+      sha256: outputs.dogfood_snapshot.sha256,
+      schema: PolicyDogfoodSnapshotSchema,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    }).ok ||
+    !report.ok ||
+    marker.value.sources.length !== result.value.artifacts.inventory.length
+  )
     return false;
+  const sourceByRef = new Map(marker.value.sources.map((source) => [source.ref, source]));
+  const benchInventory = result.value.artifacts.inventory.find(
+    (source) => source.ref === preregistration.value.outputs.bench_bundle,
+  );
+  if (benchInventory?.sha256 !== outputs.bench_bundle.sha256) return false;
   return marker.value.sources.every((source, index) => {
     const inventory = result.value.artifacts.inventory[index];
-    return (
-      source.ref === inventory?.ref &&
-      source.sha256 === inventory.sha256 &&
-      verifyCanonicalJsonArtifact({
+    if (source.ref !== inventory?.ref || source.sha256 !== inventory.sha256) return false;
+    if (source.material === "file") {
+      const expectedCopy = sourceCopyRef({ ...source, kind: "bench", material: "file" });
+      return (
+        source.copy_ref === expectedCopy &&
+        verifyNamedBytes({
+          root: output,
+          ref: source.copy_ref,
+          sha256: source.sha256,
+          maxBytes: MAX_POLICY_SOURCE_BYTES,
+          privateMode: true,
+        }).ok
+      );
+    }
+    if (source.copy_ref !== undefined || source.members === undefined) return false;
+    const entries = source.members.map((member) => {
+      const child = sourceByRef.get(member.ref);
+      if (
+        child?.material !== "file" ||
+        child.sha256 !== member.sha256 ||
+        !member.ref.startsWith(`${source.ref}/`) ||
+        child.copy_ref === undefined
+      ) {
+        return undefined;
+      }
+      const verified = verifyNamedBytes({
         root: output,
-        directory: "policy-measurement-sources",
-        schema: z.unknown(),
-        ref: `artifacts/policy-measurement-sources/${source.sha256}.json`,
-        sha256: source.sha256,
+        ref: child.copy_ref,
+        sha256: child.sha256,
         maxBytes: MAX_POLICY_SOURCE_BYTES,
-      }).ok
+        privateMode: true,
+      });
+      return verified.ok
+        ? {
+            path: member.ref.slice(source.ref.length + 1),
+            size: verified.bytes.length,
+            sha256: member.sha256,
+          }
+        : undefined;
+    });
+    return (
+      entries.every((entry) => entry !== undefined) &&
+      policyStateTreeDigest(entries as never) === source.sha256
     );
   });
 }
 
 function verifyPublishedPolicyBundleWithoutMarker(
   output: string,
+  resultRef: string,
   resultSha256: string,
+  reportRef: string,
   reportSha256: string,
-  sources: readonly { ref: string; sha256: string }[],
+  sources: readonly PublishedSource[],
 ): boolean {
   const result = verifyNamedCanonicalJsonBytes({
     root: output,
-    ref: "result.json",
+    ref: resultRef,
     sha256: resultSha256,
     schema: PolicyMeasurementSchema,
     maxBytes: MAX_POLICY_SOURCE_BYTES,
@@ -261,7 +560,7 @@ function verifyPublishedPolicyBundleWithoutMarker(
   });
   const report = verifyNamedTextBytes({
     root: output,
-    ref: "report.md",
+    ref: reportRef,
     sha256: reportSha256,
     maxBytes: MAX_POLICY_SOURCE_BYTES,
     privateMode: true,
@@ -269,24 +568,32 @@ function verifyPublishedPolicyBundleWithoutMarker(
   if (!result.ok || !report.ok) return false;
   return sources.every(
     (source) =>
-      verifyCanonicalJsonArtifact({
+      source.material === "state-tree" ||
+      verifyNamedBytes({
         root: output,
-        directory: "policy-measurement-sources",
-        schema: z.unknown(),
-        ref: `artifacts/policy-measurement-sources/${source.sha256}.json`,
+        ref: source.copy_ref,
         sha256: source.sha256,
         maxBytes: MAX_POLICY_SOURCE_BYTES,
+        privateMode: true,
       }).ok,
   );
 }
 
-/** Assemble first, then copy the already-authoritative sources into one immutable output bundle. */
+/** Complete the Bench-reserved capture root without treating an unmarked directory as authoritative. */
 async function runPolicyStatsWithRuntime(
   input: RunPolicyStatsInput,
   runtime: PolicyStatsRuntime,
 ): Promise<RunPolicyStatsOutput> {
   const repoRoot = resolve(input.repoRoot);
   const output = resolve(repoRoot, input.out);
+  const parent = dirname(output);
+  const prefix = `.${basename(output)}.staging-`;
+  let stage: string | undefined;
+  let stageIdentity: ReservedOutput | undefined;
+  let publicationLock: ReservedOutput | undefined;
+  let captureIdentity: ReservedOutput | undefined;
+  const ownedFinal: OwnedFile[] = [];
+  const ownedDirectories: OwnedDirectory[] = [];
   if (!contained(repoRoot, output)) {
     return {
       exitCode: 4,
@@ -295,18 +602,6 @@ async function runPolicyStatsWithRuntime(
         "policy measurement: artifact-ref-invalid — policy output escapes the repository root\n",
     };
   }
-  if (existsSync(output)) {
-    return {
-      exitCode: 2,
-      stdout: "",
-      stderr: `stats policy: output already exists (immutable): ${output}\n`,
-    };
-  }
-  const parent = dirname(output);
-  const prefix = `.${basename(output)}.staging-`;
-  let stage: string | undefined;
-  let stageIdentity: ReservedOutput | undefined;
-  let reservation: ReservedOutput | undefined;
   try {
     const assembled = await runtime.assemble({
       repoRoot,
@@ -335,23 +630,51 @@ async function runPolicyStatsWithRuntime(
           );
         return verified.value;
       })();
+    const outputRefs = prereg.outputs;
     if (
-      resolve(repoRoot, prereg.outputs.attempt_dir) !== output ||
-      resolve(repoRoot, prereg.outputs.result_json) !== join(output, "result.json") ||
-      resolve(repoRoot, prereg.outputs.report_md) !== join(output, "report.md")
-    ) {
+      resolve(repoRoot, outputRefs.attempt_dir) !== output ||
+      input.bench !== outputRefs.bench_bundle
+    )
       policyAuthority(
         "preregistration-mismatch",
         "policy output paths differ from preregistration",
       );
+    const registered = registeredOutputRefs(prereg, repoRoot, output);
+    const capture = lstatSync(output);
+    if (!capture.isDirectory() || capture.isSymbolicLink() || (capture.mode & 0o7777) !== 0o700) {
+      policyAuthority("artifact-ref-invalid", "Bench capture root is absent or unsafe");
+    }
+    captureIdentity = { dev: capture.dev, ino: capture.ino };
+    publicationLock = reserveOutput(join(output, ".policy-stats-publish"), output);
+    if (publicationLock === undefined)
+      return {
+        exitCode: 2,
+        stdout: "",
+        stderr: `stats policy: output already exists (immutable): ${output}\n`,
+      };
+    for (const ref of [
+      "complete.json",
+      registered.rig_bundle,
+      registered.dogfood_snapshot,
+      registered.result_json,
+      registered.report_md,
+    ]) {
+      if (existsSync(join(output, ref))) {
+        safeRemoveReservedOutput(join(output, ".policy-stats-publish"), output, publicationLock);
+        publicationLock = undefined;
+        return {
+          exitCode: 2,
+          stdout: "",
+          stderr: `stats policy: output already exists (immutable): ${output}\n`,
+        };
+      }
     }
     ensurePrivateDirectory(repoRoot, parent);
     stage = join(parent, `${prefix}${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
     mkdirSync(stage, { mode: 0o700 });
     const stageStat = lstatSync(stage);
-    if (!stageStat.isDirectory() || stageStat.isSymbolicLink()) {
+    if (!stageStat.isDirectory() || stageStat.isSymbolicLink())
       policyAuthority("artifact-ref-invalid", "policy staging directory is unsafe");
-    }
     stageIdentity = { dev: stageStat.dev, ino: stageStat.ino };
     const result = PolicyMeasurementSchema.parse(assembled.result);
     if (
@@ -367,119 +690,157 @@ async function runPolicyStatsWithRuntime(
         "publication sources differ from the closed result inventory",
       );
     }
-    for (const source of assembled.sources) {
-      // This is a publication-only reread. Classification has already completed above.
-      const verified = verifyNamedCanonicalJsonBytes({
-        root: repoRoot,
-        ref: source.ref,
-        sha256: source.sha256,
-        schema: z.unknown(),
-        maxBytes: MAX_POLICY_SOURCE_BYTES,
-        privateMode: source.kind !== "preregistration",
-      });
-      if (!verified.ok)
-        policyAuthority(
-          "artifact-ref-invalid",
-          `cannot reverify source ${source.ref}: ${verified.reason}`,
-        );
-      const copied = writeCanonicalJsonArtifact({
-        root: stage,
-        directory: "policy-measurement-sources",
-        schema: z.unknown(),
-        value: verified.value,
-        maxBytes: MAX_POLICY_SOURCE_BYTES,
-      });
-      if (!copied.ok || copied.sha256 !== source.sha256) {
-        policyAuthority("artifact-ref-invalid", `cannot publish source ${source.ref}`);
-      }
-      const checked = verifyCanonicalJsonArtifact({
-        root: stage,
-        directory: "policy-measurement-sources",
-        schema: z.unknown(),
-        ref: copied.ref,
-        sha256: copied.sha256,
-        maxBytes: MAX_POLICY_SOURCE_BYTES,
-      });
-      if (!checked.ok)
-        policyAuthority("artifact-ref-invalid", `cannot reverify staged source ${source.ref}`);
-    }
+    const copiedSources = copyPolicySourcesToStage(repoRoot, stage, assembled.sources);
     const resultText = canonicalJson(result);
     const reportText = renderPolicyMeasurement(result);
-    const resultPath = join(stage, "result.json");
-    const reportPath = join(stage, "report.md");
-    if (
-      !writeFileIfAbsent(resultPath, resultText, { mode: 0o600 }) ||
-      !verifyNamedCanonicalJsonBytes({
-        root: stage,
-        ref: "result.json",
-        sha256: sha256(resultText),
-        schema: PolicyMeasurementSchema,
-        maxBytes: MAX_POLICY_SOURCE_BYTES,
-        privateMode: true,
-      }).ok
-    ) {
-      policyAuthority("artifact-ref-invalid", "cannot publish result.json");
-    }
-    if (
-      !writeFileIfAbsent(reportPath, reportText, { mode: 0o600 }) ||
-      !verifyNamedTextBytes({
-        root: stage,
-        ref: "report.md",
-        sha256: sha256(reportText),
-        maxBytes: MAX_POLICY_SOURCE_BYTES,
-        privateMode: true,
-      }).ok
-    ) {
-      policyAuthority("artifact-ref-invalid", "cannot publish report.md");
+    const rigText = canonicalJson(assembled.publication.rig_bundle);
+    const dogfoodText = canonicalJson(assembled.publication.dogfood_snapshot);
+    const staged = [
+      {
+        ref: registered.result_json,
+        text: resultText,
+        schema: PolicyMeasurementSchema as z.ZodType<unknown>,
+      },
+      { ref: registered.report_md, text: reportText, schema: undefined },
+      {
+        ref: registered.rig_bundle,
+        text: rigText,
+        schema: z.unknown(),
+      },
+      {
+        ref: registered.dogfood_snapshot,
+        text: dogfoodText,
+        schema: z.unknown(),
+      },
+    ] as const;
+    for (const artifact of staged) {
+      const path = join(stage, artifact.ref);
+      ensurePrivateDirectory(stage, dirname(path));
+      const ok =
+        writeFileIfAbsent(path, artifact.text, { mode: 0o600 }) &&
+        (artifact.schema === undefined
+          ? verifyNamedTextBytes({
+              root: stage,
+              ref: artifact.ref,
+              sha256: sha256(artifact.text),
+              maxBytes: MAX_POLICY_SOURCE_BYTES,
+              privateMode: true,
+            }).ok
+          : verifyNamedCanonicalJsonBytes({
+              root: stage,
+              ref: artifact.ref,
+              sha256: sha256(artifact.text),
+              schema: artifact.schema,
+              maxBytes: MAX_POLICY_SOURCE_BYTES,
+              privateMode: true,
+            }).ok);
+      if (!ok) policyAuthority("artifact-ref-invalid", `cannot publish ${artifact.ref}`);
     }
     runtime.beforeRename?.(stage, output);
-    reservation = reserveOutput(output, parent);
-    if (reservation === undefined) {
-      safeRemoveStage(stage, parent, prefix, stageIdentity);
-      stage = undefined;
-      return {
-        exitCode: 2,
-        stdout: "",
-        stderr: `stats policy: output already exists (immutable): ${output}\n`,
-      };
+    if (
+      !verifyNamedCanonicalJsonBytes({
+        root: output,
+        ref: registered.bench_bundle,
+        sha256: assembled.sources.find((source) => source.ref === input.bench)?.sha256 ?? "",
+        schema: z.unknown(),
+        maxBytes: MAX_POLICY_SOURCE_BYTES,
+        privateMode: true,
+      }).ok
+    ) {
+      policyAuthority("artifact-ref-invalid", "Bench capture changed before publication");
     }
-    renameSync(join(stage, "artifacts"), join(output, "artifacts"));
-    renameSync(resultPath, join(output, "result.json"));
-    renameSync(reportPath, join(output, "report.md"));
+    if (!sameDirectoryIdentity(output, captureIdentity)) {
+      policyAuthority("artifact-ref-invalid", "Bench capture root changed before publication");
+    }
+    const install = (ref: string, expectedSha256: string): void => {
+      const verified = verifyNamedBytes({
+        root: stage as string,
+        ref,
+        sha256: expectedSha256,
+        maxBytes: MAX_POLICY_SOURCE_BYTES,
+        privateMode: true,
+      });
+      if (!verified.ok) policyAuthority("artifact-ref-invalid", `staged output is invalid: ${ref}`);
+      if (!sameDirectoryIdentity(output, captureIdentity as ReservedOutput)) {
+        policyAuthority("artifact-ref-invalid", "Bench capture root changed during publication");
+      }
+      const destination = join(output, ref);
+      ownedDirectories.push(...ensurePrivateDirectory(output, dirname(destination)));
+      if (!writeFileIfAbsent(destination, verified.bytes, { mode: 0o600 })) {
+        policyAuthority("artifact-ref-invalid", `policy output already exists: ${ref}`);
+      }
+      const installed = verifyNamedBytes({
+        root: output,
+        ref,
+        sha256: expectedSha256,
+        maxBytes: MAX_POLICY_SOURCE_BYTES,
+        privateMode: true,
+      });
+      if (!installed.ok)
+        policyAuthority("artifact-ref-invalid", `installed output is invalid: ${ref}`);
+      const stat = lstatSync(destination);
+      ownedFinal.push({ path: destination, dev: stat.dev, ino: stat.ino });
+    };
+    for (const source of copiedSources) {
+      if (source.material === "file") install(source.copy_ref, source.sha256);
+    }
+    for (const artifact of staged) install(artifact.ref, sha256(artifact.text));
     safeRemoveStage(stage, parent, prefix, stageIdentity);
     stage = undefined;
+    const outputs = {
+      bench_bundle: {
+        ref: relative(output, resolve(repoRoot, outputRefs.bench_bundle)),
+        sha256:
+          assembled.sources.find((source) => source.ref === input.bench)?.sha256 ??
+          policyAuthority("partial-inventory", "Bench bundle is absent from source inventory"),
+      },
+      rig_bundle: { ref: staged[2].ref, sha256: sha256(rigText) },
+      dogfood_snapshot: { ref: staged[3].ref, sha256: sha256(dogfoodText) },
+      result_json: { ref: registered.result_json, sha256: sha256(resultText) },
+      report_md: { ref: registered.report_md, sha256: sha256(reportText) },
+    };
     if (
       !verifyPublishedPolicyBundleWithoutMarker(
         output,
-        sha256(resultText),
-        sha256(reportText),
-        result.artifacts.inventory,
+        outputs.result_json.ref,
+        outputs.result_json.sha256,
+        outputs.report_md.ref,
+        outputs.report_md.sha256,
+        copiedSources,
       )
-    ) {
+    )
       policyAuthority("artifact-ref-invalid", "published policy bundle failed final verification");
-    }
     runtime.beforeComplete?.(output);
+    if (!sameDirectoryIdentity(output, captureIdentity)) {
+      policyAuthority("artifact-ref-invalid", "Bench capture root changed before completion");
+    }
     const completeText = canonicalJson({
       schema: "reviewgate.policy-measurement-complete.v1",
-      result: { ref: "result.json", sha256: sha256(resultText) },
-      report: { ref: "report.md", sha256: sha256(reportText) },
-      sources: result.artifacts.inventory,
+      result: outputs.result_json,
+      report: outputs.report_md,
+      outputs,
+      sources: copiedSources,
     });
-    if (!writeFileIfAbsent(join(output, "complete.json"), completeText, { mode: 0o600 })) {
+    const markerPath = join(output, "complete.json");
+    if (!writeFileIfAbsent(markerPath, completeText, { mode: 0o600 })) {
       policyAuthority("artifact-ref-invalid", "policy completion marker already exists");
     }
-    if (!verifyPublishedPolicyBundle(output)) {
+    const markerStat = lstatSync(markerPath);
+    ownedFinal.push({ path: markerPath, dev: markerStat.dev, ino: markerStat.ino });
+    if (!verifyPublishedPolicyBundle(output))
       policyAuthority("artifact-ref-invalid", "policy completion marker is invalid");
-    }
-    reservation = undefined;
+    safeRemoveReservedOutput(join(output, ".policy-stats-publish"), output, publicationLock);
+    publicationLock = undefined;
     return { exitCode: 0, stdout: `${reportText}`, stderr: "" };
   } catch (error) {
     if (stage !== undefined && stageIdentity !== undefined)
       safeRemoveStage(stage, parent, prefix, stageIdentity);
-    if (reservation !== undefined) safeRemoveReservedOutput(output, parent, reservation);
-    if (error instanceof PolicyMeasurementAuthorityError) {
+    for (const file of [...ownedFinal].reverse()) removeOwnedFile(file);
+    for (const directory of [...ownedDirectories].reverse()) removeOwnedDirectory(directory);
+    if (publicationLock !== undefined)
+      safeRemoveReservedOutput(join(output, ".policy-stats-publish"), output, publicationLock);
+    if (error instanceof PolicyMeasurementAuthorityError)
       return { exitCode: 4, stdout: "", stderr: `${error.message}\n` };
-    }
     throw error;
   }
 }
@@ -491,6 +852,7 @@ export async function runPolicyStats(input: RunPolicyStatsInput): Promise<RunPol
 export const __policyStatsTest = {
   run: runPolicyStatsWithRuntime,
   verifyPublishedPolicyBundle,
+  copyPolicySourcesToStage,
 };
 
 export interface RunPolicyDogfoodAttestationInput {

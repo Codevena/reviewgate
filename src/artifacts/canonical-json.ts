@@ -156,7 +156,8 @@ function ensureContainedArtifactParent(root: string, ref: string): boolean {
   }
 }
 
-function verifyNamedBytes(input: {
+/** Verify a named file through the stable no-follow FD boundary without imposing a file format. */
+export function verifyNamedBytes(input: {
   root: string;
   ref: string;
   sha256?: string;

@@ -79,6 +79,18 @@ export interface CanonicalSourceArtifact {
   kind: "preregistration" | "bench" | "rig" | "dogfood" | "trace" | "state" | "cassette";
   ref: string;
   sha256: string;
+  /** File bytes and virtual state-tree bindings have different publication contracts. */
+  material: "file" | "state-tree";
+}
+
+export interface PolicyMeasurementAssembly {
+  result: PolicyMeasurement;
+  sources: CanonicalSourceArtifact[];
+  /** Canonical derived artifacts that must be published with the final measurement bundle. */
+  publication: {
+    rig_bundle: PolicyRigEvidence;
+    dogfood_snapshot: PolicyDogfoodSnapshot;
+  };
 }
 
 interface Binding {
@@ -1099,7 +1111,7 @@ export async function assemblePolicyMeasurement(input: {
   preregistrationPath: string;
   benchBundlePath: string;
   rigManifestPath: string;
-}): Promise<{ result: PolicyMeasurement; sources: CanonicalSourceArtifact[] }> {
+}): Promise<PolicyMeasurementAssembly> {
   const repoRoot = resolve(input.repoRoot);
   inputRef(repoRoot, input.preregistrationPath);
   inputRef(repoRoot, input.benchBundlePath);
@@ -1133,7 +1145,7 @@ export async function assemblePolicyMeasurement(input: {
   ) {
     authority("preregistration-mismatch", "Bench bundle binds another preregistration");
   }
-  const artifactRoot = dirname(resolve(repoRoot, input.benchBundlePath));
+  const artifactRoot = resolve(repoRoot, prereg.outputs.attempt_dir);
   const verifiedBundle = verifyPolicyBenchBundleArtifacts(artifactRoot, benchArtifact.value);
   if (!verifiedBundle.ok) {
     authority(
@@ -1462,8 +1474,8 @@ export async function assemblePolicyMeasurement(input: {
       entry.kind === "trace" ? ("trace" as const) : ("dogfood" as const),
     ]),
   );
-  const sources: CanonicalSourceArtifact[] = inventoryRows.map((row) => ({
-    kind:
+  const sources: CanonicalSourceArtifact[] = inventoryRows.map((row) => {
+    const kind =
       row.ref === preregArtifact.ref
         ? "preregistration"
         : rigKinds.has(row.ref)
@@ -1473,8 +1485,32 @@ export async function assemblePolicyMeasurement(input: {
               ? "dogfood"
               : row.ref.includes("policy-traces/")
                 ? "trace"
-                : "bench")),
-    ...row,
-  }));
-  return { result, sources };
+                : "bench"));
+    // Authoritative production paths have already been verified above. The test
+    // assembly harness intentionally virtualizes some files, so only a real
+    // directory changes the publication representation here.
+    let material: CanonicalSourceArtifact["material"] = "file";
+    try {
+      const stat = lstatSync(resolve(repoRoot, ...row.ref.split("/")));
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory())) {
+        authority(
+          "artifact-ref-invalid",
+          `publication source is not a regular file/tree: ${row.ref}`,
+        );
+      }
+      if (stat.isDirectory()) {
+        if (kind !== "state") {
+          authority(
+            "artifact-ref-invalid",
+            `non-state publication source is a directory: ${row.ref}`,
+          );
+        }
+        material = "state-tree";
+      }
+    } catch (error) {
+      if (error instanceof PolicyMeasurementAuthorityError) throw error;
+    }
+    return { kind, ...row, material };
+  });
+  return { result, sources, publication: { rig_bundle: rig, dogfood_snapshot: dogfood } };
 }

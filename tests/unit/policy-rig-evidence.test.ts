@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
 import { makeMetric, summarizeSpread } from "../../src/bench/metrics.ts";
+import { __policyStatsTest } from "../../src/cli/commands/stats.ts";
 import { aggregate } from "../../src/core/aggregator.ts";
 import { validateFindingFacts } from "../../src/core/fact-check.ts";
 import { computeFpClusters } from "../../src/core/fp-ledger/clusters.ts";
@@ -783,6 +784,51 @@ describe("policy Rig evidence", () => {
       } else {
         expect(sequences.every((sequence) => sequence.history_interaction === null)).toBe(true);
       }
+    }
+  }, 120_000);
+
+  test("publishes the complete 217-artifact Rig closure with lossless files and explicit trees", async () => {
+    const input = await getFixture();
+    const evidence = await collectPolicyRigEvidence({
+      preregistration: input.preregistration,
+      manifest: input.manifest,
+      sourceRepoRoot: input.root,
+    });
+    const sources = evidence.artifacts.map((artifact) => ({
+      ...artifact,
+      material: lstatSync(join(input.root, artifact.ref)).isDirectory()
+        ? ("state-tree" as const)
+        : ("file" as const),
+    }));
+    const stage = mkdtempSync(join(tmpdir(), "rg-policy-rig-publication-"));
+    const copied = __policyStatsTest.copyPolicySourcesToStage(input.root, stage, sources as never);
+
+    expect(sources).toHaveLength(217);
+    expect(copied).toHaveLength(sources.length);
+    expect(copied.filter((source) => source.material === "state-tree").length).toBeGreaterThan(0);
+    expect(copied.filter((source) => source.material === "file").length).toBeGreaterThan(0);
+    const duplicateSha = [...new Set(sources.map((source) => source.sha256))].find(
+      (sha) => sources.filter((source) => source.sha256 === sha).length > 1,
+    );
+    if (duplicateSha === undefined)
+      throw new Error("real Rig fixture must exercise duplicate bytes");
+    const duplicateCopies = copied.filter(
+      (source): source is Extract<(typeof copied)[number], { material: "file" }> =>
+        source.material === "file" && source.sha256 === duplicateSha,
+    );
+    expect(duplicateCopies.length).toBeGreaterThan(1);
+    expect(new Set(duplicateCopies.map((source) => source.copy_ref)).size).toBe(
+      duplicateCopies.length,
+    );
+    for (const source of copied) {
+      if (source.material !== "file") continue;
+      const bytes = readFileSync(join(stage, source.copy_ref));
+      expect(sha256(bytes)).toBe(source.sha256);
+      expect(lstatSync(join(stage, source.copy_ref)).mode & 0o7777).toBe(0o600);
+    }
+    for (const tree of copied.filter((source) => source.material === "state-tree")) {
+      expect(tree.members.length).toBeGreaterThan(0);
+      expect(tree.members.every((member) => member.ref.startsWith(`${tree.ref}/`))).toBe(true);
     }
   }, 120_000);
 

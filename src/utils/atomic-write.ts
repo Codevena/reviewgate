@@ -54,7 +54,11 @@ export function writeFileAtomic(path: string, data: string, opts?: { mode?: numb
  * (un-serialized) PostToolUse trigger landed in the check→write window, letting
  * a later clean-pass tree hash record that unreviewed edit as reviewed.
  */
-export function writeFileIfAbsent(path: string, data: string, opts?: { mode?: number }): boolean {
+export function writeFileIfAbsent(
+  path: string,
+  data: string | Buffer,
+  opts?: { mode?: number },
+): boolean {
   const unique = `${process.pid}.${tmpCounter++}.${Math.random().toString(36).slice(2, 10)}`;
   const tmp = `${path}.${unique}.tmp`;
   try {

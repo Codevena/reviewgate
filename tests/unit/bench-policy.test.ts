@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
 import { buildBenchConfig } from "../../src/bench/runner.ts";
 import {
@@ -227,6 +227,66 @@ describe("runBenchPolicy", () => {
     expect(result.stderr).toContain("output already exists");
     expect(factories).toBe(0);
     expect(readFileSync(join(root, out), "utf8")).toBe("sentinel");
+  });
+
+  test("does not let an existing attempt path poison missing-preregistration preflight", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-policy-attempt-root-"));
+    const out = "bench/results/policy-measurement/attempt/bench.json";
+    const attemptRoot = dirname(join(root, out));
+    mkdirSync(attemptRoot, { recursive: true, mode: 0o700 });
+    writeFileSync(join(attemptRoot, "creator-sentinel"), "preserve me", { mode: 0o600 });
+    let factories = 0;
+    const result = await runBenchPolicy({
+      repoRoot: root,
+      preregistration: "missing.json",
+      out,
+      adapterFactory() {
+        factories += 1;
+        return {};
+      },
+    });
+    expect(result.exitCode).toBe(4);
+    expect(result.stderr).toContain("invalid preregistration");
+    expect(factories).toBe(0);
+    expect(readFileSync(join(attemptRoot, "creator-sentinel"), "utf8")).toBe("preserve me");
+  });
+
+  test("does not reserve an unregistered attempt before preregistration preflight", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-policy-attempt-preflight-"));
+    const out = "bench/results/policy-measurement/attempt/capture/bench.json";
+    const attemptRoot = join(root, "bench/results/policy-measurement/attempt");
+    let factories = 0;
+    const input = {
+      repoRoot: root,
+      preregistration: "missing.json",
+      out,
+      adapterFactory() {
+        factories += 1;
+        return {};
+      },
+    };
+
+    const first = await runBenchPolicy(input);
+    const second = await runBenchPolicy(input);
+
+    expect(first.exitCode).toBe(4);
+    expect(second.exitCode).toBe(4);
+    expect(existsSync(attemptRoot)).toBe(false);
+    expect(factories).toBe(0);
+  });
+
+  test("rejects an attempt root that escapes the repository before it can be reserved", async () => {
+    const root = mkdtempSync(join(tmpdir(), "rg-policy-attempt-escape-"));
+    const escapedName = `${basename(root)}-outside`;
+    const result = await runBenchPolicy({
+      repoRoot: root,
+      preregistration: "missing.json",
+      out: `../${escapedName}/bench.json`,
+      adapterFactory: () => ({}),
+    });
+    expect(result.exitCode).toBe(4);
+    expect(result.stderr).toContain("escapes repository");
+    expect(existsSync(join(dirname(root), escapedName))).toBe(false);
   });
 
   test("fails when a replay leaves one response unconsumed or changes request order/identity", async () => {
@@ -598,6 +658,7 @@ describe("runBenchPolicy", () => {
       const changed = structuredClone(preregistration) as unknown as MutablePolicyPreregistration;
       mutate(changed);
       writeFileSync(preregPath, canonicalJson(changed));
+      rmSync(join(root, attemptRoot), { recursive: true, force: true });
       let factories = 0;
       const result = await runBenchPolicy({
         repoRoot: root,
