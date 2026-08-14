@@ -47,6 +47,7 @@ import {
 } from "../../src/schemas/policy-measurement.ts";
 import { type PolicyTrace, PolicyTraceSchema } from "../../src/schemas/policy-trace.ts";
 import { policyDogfoodAttestationPreflight } from "../../src/stats/policy/dogfood-attestation.ts";
+import { renderPolicyMeasurement } from "../../src/stats/policy/render.ts";
 
 const sha256 = (value: string | Buffer): string => createHash("sha256").update(value).digest("hex");
 const fixtureConfigurationHashes = {
@@ -1400,6 +1401,51 @@ describe("authoritative policy measurement pipeline", () => {
     expect(assembled.result.passes.map((row) => row.pass_id)).toEqual([...POLICY_PASS_IDS]);
     expect(assembled.result.interactions).toHaveLength(4);
     expect(assembled.result.artifacts.authoritative).toBe(true);
+    const markdown = renderPolicyMeasurement(assembled.result);
+    expect(markdown).toContain("| Pass | Lane | Opportunities | Classification |");
+    expect(markdown).toContain("`judgment.confidence`");
+    expect(markdown).toContain("INCONCLUSIVE — insufficient-opportunities");
+    expect(markdown).toContain("Raw p-value");
+    expect(markdown).toContain("Adjusted p-value");
+    expect(markdown).toContain("Artifact authority");
+    expect(markdown).toContain("Vetoes: unique-prevented-fp");
+    expect(markdown).toContain("dogfood:post-registered-at=2");
+    expect(markdown).toContain("95% interval");
+    expect(markdown).not.toContain("statistically significant");
+    const identityFacts = assembled.result.identity_evidence.flatMap((row) => [
+      ...row.ground_truth_harms,
+      ...row.dogfood_dispositions,
+      ...row.beneficial_effects,
+    ]);
+    const benefits = assembled.result.identity_evidence.flatMap((row) => row.beneficial_effects);
+    expect(identityFacts.length).toBeGreaterThan(0);
+    expect(benefits.some((benefit) => benefit.reproduced_by_pass_ids.length === 0)).toBe(true);
+    expect(benefits.some((benefit) => benefit.reproduced_by_pass_ids.length > 0)).toBe(true);
+    for (const identity of assembled.result.identity_evidence) {
+      for (const fact of identity.ground_truth_harms) {
+        expect(markdown).toContain(`identity=${fact.identity}`);
+        expect(markdown).toContain(`evidence=${fact.evidence_ref}`);
+      }
+      for (const fact of identity.dogfood_dispositions) {
+        expect(markdown).toContain(`identity=${fact.identity}`);
+        expect(markdown).toContain(`run=${fact.run_id}`);
+        expect(markdown).toContain(`effect=${fact.effect}`);
+        expect(markdown).toContain(`evidence=${fact.evidence_ref}`);
+      }
+      for (const fact of identity.beneficial_effects) {
+        expect(markdown).toContain(`identity=${fact.identity}`);
+        expect(markdown).toContain(`evidence=${fact.evidence_ref}`);
+        const expected = `benefit identity=${fact.identity} evidence=${fact.evidence_ref} reproduced_by=${fact.reproduced_by_pass_ids.map((passId) => `\`${passId}\``).join(",") || "none"}`;
+        const lines = markdown.split("\n");
+        const start = lines.indexOf(`### \`${identity.pass_id}\``);
+        const dossierLine = lines
+          .slice(start + 1, lines.indexOf("## Artifact inventory"))
+          .find((line) =>
+            line.includes(`benefit identity=${fact.identity} evidence=${fact.evidence_ref}`),
+          );
+        expect(dossierLine).toContain(expected);
+      }
+    }
     expect(new Set(assembled.result.passes.map((row) => row.classification))).toEqual(
       new Set(["retain", "harmful-candidate", "delete-candidate", "inconclusive"]),
     );

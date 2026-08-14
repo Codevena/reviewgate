@@ -481,6 +481,43 @@ async function frozenMultiFixture(singleChain = true) {
 }
 
 describe("policy dogfood harvesting", () => {
+  test("renders the complete frozen audit and trace manifest inventory before the challenge", () => {
+    const hash = "a".repeat(64);
+    const manifest = PolicyDogfoodInputManifestSchema.parse({
+      schema: "reviewgate.policy-dogfood-input-manifest.v1",
+      since: "2026-01-01T00:00:00.000Z",
+      until: "2026-01-02T00:00:00.000Z",
+      entries: [
+        {
+          kind: "audit",
+          ref: "audit.jsonl",
+          sha256: hash,
+          bytes: 12,
+          runs: [{ run_id: "run-a", iter: 1, trace_ref: "trace.json", trace_sha256: hash }],
+        },
+        {
+          kind: "trace",
+          ref: "trace.json",
+          audit_ref: "audit.jsonl",
+          trace_ref: "trace.json",
+          sha256: hash,
+          bytes: 8,
+          run_id: "run-a",
+          iter: 1,
+        },
+      ],
+    });
+    const preflight = policyDogfoodAttestationPreflight({
+      manifest,
+      actor: "Markus\u001b[31m",
+      rows: [{ run_id: "run-a", iter: 1, finding_signature: "finding-a", disposition: "tp" }],
+    });
+    expect(preflight.rendered).toContain('audit ref="audit.jsonl"');
+    expect(preflight.rendered).toContain('trace_ref="trace.json"');
+    expect(preflight.rendered).toContain(`sha256=${hash}`);
+    expect(preflight.rendered).toContain("\\u001b");
+    expect(preflight.challenge).toMatch(/^ATTEST /);
+  });
   test("keeps the dogfood exclusion inventory closed at ten authority failures", () => {
     expect(POLICY_DOGFOOD_EXCLUSION_CODES).toEqual([
       "agent-only-decision",

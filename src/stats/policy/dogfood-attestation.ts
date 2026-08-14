@@ -48,6 +48,20 @@ export function policyDogfoodAttestationPreflight(input: {
     "Policy dogfood attestation",
     `actor: ${defang(input.actor)}`,
     `input manifest sha256: ${candidate.manifestSha256}`,
+    "frozen manifest inventory:",
+    ...input.manifest.entries.flatMap((entry) =>
+      entry.kind === "audit"
+        ? [
+            `- audit ref=${defang(entry.ref)} sha256=${entry.sha256} bytes=${entry.bytes}`,
+            ...entry.runs.map(
+              (run) =>
+                `  - run=${defang(run.run_id)} iter=${run.iter} trace_ref=${defang(run.trace_ref)} trace_sha256=${run.trace_sha256}`,
+            ),
+          ]
+        : [
+            `- trace ref=${defang(entry.ref)} sha256=${entry.sha256} bytes=${entry.bytes} audit_ref=${defang(entry.audit_ref)} trace_ref=${defang(entry.trace_ref)} run=${defang(entry.run_id)} iter=${entry.iter}`,
+          ],
+    ),
     "dispositions:",
     ...rows.map(
       (row) =>

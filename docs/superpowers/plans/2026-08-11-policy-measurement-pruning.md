@@ -1331,7 +1331,7 @@ git commit -m "feat(stats): assemble authoritative policy evidence"
   attestation; non-TTY/EOF/mismatch writes nothing and exits nonzero.
 - Preserves `runStats(...)` and default `reviewgate stats` bytes.
 
-- [ ] **Step 1: Write RED for report parity**
+- [x] **Step 1: Write RED for report parity**
 
 ```ts
 const markdown = renderPolicyMeasurement(PolicyMeasurementSchema.parse(fixture));
@@ -1346,7 +1346,7 @@ expect(extractClassifications(markdown)).toEqual(
 Assert exclusions, interaction rows, raw/adjusted p-values, intervals, vetoes, and artifact authority
 are rendered; forbid claims absent from JSON.
 
-- [ ] **Step 2: Write CLI RED tests**
+- [x] **Step 2: Write CLI RED tests**
 
 Assert:
 
@@ -1364,7 +1364,7 @@ authority boundary. Add TTY controls proving that the full candidate dossier is 
 challenge, matching confirmation writes one content-addressed `0600` attestation, and non-TTY,
 EOF, mismatch, or a manifest swap writes zero artifacts.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run:
 
@@ -1374,7 +1374,7 @@ bun test tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts tests
 
 Expected: missing renderer/commands and current flat Stats command has no `policy` child.
 
-- [ ] **Step 4: Implement pure rendering**
+- [x] **Step 4: Implement pure rendering**
 
 ```ts
 export function renderPolicyMeasurement(result: PolicyMeasurement): string {
@@ -1384,7 +1384,7 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
 }
 ```
 
-- [ ] **Step 5: Implement atomic bundle publication**
+- [x] **Step 5: Implement atomic bundle publication**
 
 ```ts
 export async function runPolicyStats(input: {
@@ -1396,12 +1396,17 @@ export async function runPolicyStats(input: {
 }): Promise<{ exitCode: 0 | 2 | 4; stdout: string; stderr: string }>;
 ```
 
-Require final output absent. Assemble completely in memory, create a private sibling staging
-directory, write/reverify content-addressed sources plus `result.json` and `report.md` at mode 0600,
-then rename the directory once on the same filesystem. On any error remove only the validated staging
-directory; never touch source artifacts. Catch only `PolicyMeasurementAuthorityError` as exit 4.
+Require final output absent. Assemble completely in memory and a private sibling staging directory,
+then exclusively reserve `out` with `mkdir(0700)` (never tolerate `EEXIST`). Publish staged contents
+into that reservation, reverify final content-addressed sources plus `result.json` and `report.md` at
+mode 0600, then create/reverify canonical `complete.json` (0600) last. A directory without that
+marker is non-authoritative; its marker binds result/report hashes and the complete source inventory.
+On any pre-marker error remove only the exact dev/inode-identified reservation and validated stage;
+never touch source artifacts. Catch only `PolicyMeasurementAuthorityError` as exit 4. This replaces
+the non-portable one-directory-rename wording after macOS/Bun proved that rename can replace an empty
+destination directory.
 
-- [ ] **Step 6: Wire commands without changing default Stats**
+- [x] **Step 6: Wire commands without changing default Stats**
 
 Add `bench policy` with required `--preregistration` and `--out`. Add `stats policy` with required
 `--preregistration`, `--bench`, `--rig`, and `--out`, plus `stats policy attest-dogfood` with
@@ -1410,7 +1415,7 @@ real TTY/readline boundary in production and the Task 6 preflight/attestation AP
 human actor from a DecisionEntry. Keep the existing Stats args/run as the default path and add the
 child command using Citty's supported `subCommands` field.
 
-- [ ] **Step 7: Run GREEN and compiled-help preparation**
+- [x] **Step 7: Run GREEN and compiled-help preparation**
 
 ```bash
 bun test tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts tests/unit/cli-required-args.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/unit/bench-policy.test.ts
@@ -1418,7 +1423,7 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 8: Kill publication/CLI mutants**
+- [x] **Step 8: Kill publication/CLI mutants**
 
 Write the report before validation, publish files separately, accept an existing output directory,
 map authority errors to exit 1, omit a required CLI flag, route bare `stats` into policy mode,

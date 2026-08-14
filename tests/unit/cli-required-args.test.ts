@@ -9,7 +9,15 @@
 // exited 2, so the citty message + exit-1 distinguishes fixed from unfixed.
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -57,6 +65,12 @@ describe("CLI required-arg declarations (F-079)", () => {
     { name: "brain revoke --id", argv: ["brain", "revoke"], flag: "id" },
     { name: "fp show --id", argv: ["fp", "show"], flag: "id" },
     { name: "fp unpin --id", argv: ["fp", "unpin"], flag: "id" },
+    { name: "bench policy --preregistration", argv: ["bench", "policy"], flag: "preregistration" },
+    {
+      name: "stats policy attest-dogfood --input-manifest",
+      argv: ["stats", "policy", "attest-dogfood"],
+      flag: "input-manifest",
+    },
   ];
 
   for (const c of cases) {
@@ -118,6 +132,56 @@ describe("Rig authority exit code", () => {
 });
 
 describe("policy replay CLI help contracts", () => {
+  it("keeps bare stats on its existing report path rather than routing it into policy analysis", () => {
+    const bare = runSync(["stats", "--json"]);
+    expect(bare.code).toBe(0);
+    expect(bare.stdout).toContain('"window"');
+    expect(`${bare.stdout}${bare.stderr}`).not.toContain("policy measurement:");
+  });
+
+  it("requires the four direct policy-analysis inputs without imposing them on attestation", async () => {
+    const direct = await run(["stats", "policy"]);
+    expect(direct.code).toBe(2);
+    expect(direct.stderr).toContain("Missing required argument: --preregistration");
+
+    const attestationRoot = join(mkdtempSync(join(tmpdir(), "rg-policy-attest-nontty-")), "out");
+    const child = await run([
+      "stats",
+      "policy",
+      "attest-dogfood",
+      "--input-manifest",
+      "artifacts/policy-dogfood-input/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+      "--adjudication",
+      "draft.json",
+      "--actor",
+      "human",
+      "--out",
+      attestationRoot,
+    ]);
+    expect(child.code).toBe(1);
+    expect(child.stderr).toContain("requires a real interactive terminal");
+    expect(child.stderr).not.toContain("--preregistration");
+    expect(existsSync(attestationRoot)).toBe(false);
+  });
+
+  it("exposes no-provider policy capture and analysis commands", () => {
+    for (const argv of [
+      ["bench", "policy", "--help"],
+      ["stats", "policy", "--help"],
+      ["stats", "policy", "attest-dogfood", "--help"],
+    ]) {
+      const { code, stdout, stderr } = runSync(argv);
+      expect(code).toBe(0);
+      expect(`${stdout}${stderr}`).toContain("policy");
+    }
+    const { stdout, stderr } = runSync(["stats", "policy", "--help"]);
+    const help = `${stdout}${stderr}`;
+    for (const flag of ["preregistration", "bench", "rig", "out"]) {
+      expect(help).toContain(`--${flag}`);
+      expect(help).toContain("required for direct policy analysis");
+    }
+  });
+
   it("describes Bench Matrix as exact internal closed-catalog ablation", () => {
     const { code, stdout, stderr } = runSync(["bench", "matrix", "--help"]);
     const help = `${stdout}${stderr}`;

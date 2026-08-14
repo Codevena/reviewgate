@@ -33,6 +33,16 @@ export type CanonicalArtifactVerification<T> =
   | { ok: true; value: T }
   | { ok: false; reason: CanonicalArtifactReason };
 
+/** A named canonical source whose content hash is bound by a separate manifest. */
+export type NamedCanonicalJsonBytesVerification<T> =
+  | { ok: true; value: T; bytes: Buffer }
+  | { ok: false; reason: CanonicalArtifactReason };
+
+/** A named private UTF-8 text file verified through the same FD boundary as JSON artifacts. */
+export type NamedTextBytesVerification =
+  | { ok: true; text: string; bytes: Buffer }
+  | { ok: false; reason: CanonicalArtifactReason };
+
 export type CanonicalArtifactWriteResult =
   | { ok: true; ref: string; sha256: string }
   | { ok: false; reason: CanonicalArtifactReason };
@@ -146,23 +156,19 @@ function ensureContainedArtifactParent(root: string, ref: string): boolean {
   }
 }
 
-export function verifyCanonicalJsonArtifact<T>(input: {
+function verifyNamedBytes(input: {
   root: string;
-  directory: string;
-  schema: z.ZodType<T>;
   ref: string;
-  sha256: string;
+  sha256?: string;
   maxBytes: number;
-}): CanonicalArtifactVerification<T> {
+  /** Generated artifacts require 0600; a tracked source can retain its checked-in mode. */
+  privateMode: boolean;
+}): { ok: true; bytes: Buffer } | { ok: false; reason: CanonicalArtifactReason } {
   if (
-    !isSafeDirectoryName(input.directory) ||
-    !FULL_SHA256.test(input.sha256) ||
+    (input.sha256 !== undefined && !FULL_SHA256.test(input.sha256)) ||
     !isValidReference(input.ref)
   ) {
     return { ok: false, reason: "invalid-reference" };
-  }
-  if (input.ref !== artifactRefFor(input.directory, input.sha256)) {
-    return { ok: false, reason: "identity-mismatch" };
   }
   if (!validMaxBytes(input.maxBytes)) return { ok: false, reason: "too-large" };
 
@@ -195,7 +201,7 @@ export function verifyCanonicalJsonArtifact<T>(input: {
       before.isSymbolicLink() ||
       !before.isFile() ||
       before.nlink !== 1 ||
-      (before.mode & 0o7777) !== 0o600
+      (input.privateMode && (before.mode & 0o7777) !== 0o600)
     ) {
       return { ok: false, reason: "not-a-file" };
     }
@@ -209,7 +215,7 @@ export function verifyCanonicalJsonArtifact<T>(input: {
     if (
       !opened.isFile() ||
       opened.nlink !== 1 ||
-      (opened.mode & 0o7777) !== 0o600 ||
+      (input.privateMode && (opened.mode & 0o7777) !== 0o600) ||
       opened.dev !== before.dev ||
       opened.ino !== before.ino
     ) {
@@ -233,36 +239,118 @@ export function verifyCanonicalJsonArtifact<T>(input: {
       pathAfter.isSymbolicLink() ||
       !pathAfter.isFile() ||
       pathAfter.nlink !== 1 ||
-      (after.mode & 0o7777) !== 0o600 ||
-      (pathAfter.mode & 0o7777) !== 0o600 ||
+      (input.privateMode && (after.mode & 0o7777) !== 0o600) ||
+      (input.privateMode && (pathAfter.mode & 0o7777) !== 0o600) ||
       pathAfter.dev !== after.dev ||
       pathAfter.ino !== after.ino
     ) {
       return { ok: false, reason: "read-error" };
     }
     __test.beforeHashVerification?.();
-    if (sha256(bytes) !== input.sha256) return { ok: false, reason: "hash-mismatch" };
-    let text: string;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    } catch {
-      return { ok: false, reason: "invalid-encoding" };
-    }
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(text);
-    } catch {
-      return { ok: false, reason: "invalid-json" };
-    }
-    const parsed = input.schema.safeParse(decoded);
-    if (!parsed.success) return { ok: false, reason: "invalid-schema" };
-    if (canonicalJson(parsed.data) !== text) return { ok: false, reason: "non-canonical" };
-    return { ok: true, value: parsed.data };
+    if (input.sha256 !== undefined && sha256(bytes) !== input.sha256)
+      return { ok: false, reason: "hash-mismatch" };
+    return { ok: true, bytes: Buffer.from(bytes) };
   } catch {
     return { ok: false, reason: "read-error" };
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+}
+
+export function verifyNamedTextBytes(input: {
+  root: string;
+  ref: string;
+  sha256: string;
+  maxBytes: number;
+  privateMode: boolean;
+}): NamedTextBytesVerification {
+  const verified = verifyNamedBytes(input);
+  if (!verified.ok) return verified;
+  try {
+    return {
+      ok: true,
+      text: new TextDecoder("utf-8", { fatal: true }).decode(verified.bytes),
+      bytes: verified.bytes,
+    };
+  } catch {
+    return { ok: false, reason: "invalid-encoding" };
+  }
+}
+
+export function verifyNamedCanonicalJsonBytes<T>(input: {
+  root: string;
+  ref: string;
+  sha256: string;
+  schema: z.ZodType<T>;
+  maxBytes: number;
+  /** Generated artifacts require 0600; a tracked source can retain its checked-in mode. */
+  privateMode: boolean;
+}): NamedCanonicalJsonBytesVerification<T> {
+  const verified = verifyNamedTextBytes(input);
+  if (!verified.ok) return verified;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(verified.text);
+  } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  const parsed = input.schema.safeParse(decoded);
+  if (!parsed.success) return { ok: false, reason: "invalid-schema" };
+  if (canonicalJson(parsed.data) !== verified.text) return { ok: false, reason: "non-canonical" };
+  return { ok: true, value: parsed.data, bytes: verified.bytes };
+}
+
+/** For an authority marker whose canonical bytes bind other independently hashed files. */
+export function verifyUnboundNamedCanonicalJsonBytes<T>(input: {
+  root: string;
+  ref: string;
+  schema: z.ZodType<T>;
+  maxBytes: number;
+  privateMode: boolean;
+}): NamedCanonicalJsonBytesVerification<T> {
+  const verified = verifyNamedBytes(input);
+  if (!verified.ok) return verified;
+  let text: string;
+  let decoded: unknown;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(verified.bytes);
+    decoded = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  const parsed = input.schema.safeParse(decoded);
+  if (!parsed.success) return { ok: false, reason: "invalid-schema" };
+  if (canonicalJson(parsed.data) !== text) return { ok: false, reason: "non-canonical" };
+  return { ok: true, value: parsed.data, bytes: verified.bytes };
+}
+
+export function verifyCanonicalJsonArtifact<T>(input: {
+  root: string;
+  directory: string;
+  schema: z.ZodType<T>;
+  ref: string;
+  sha256: string;
+  maxBytes: number;
+}): CanonicalArtifactVerification<T> {
+  if (
+    !isSafeDirectoryName(input.directory) ||
+    !FULL_SHA256.test(input.sha256) ||
+    !isValidReference(input.ref)
+  ) {
+    return { ok: false, reason: "invalid-reference" };
+  }
+  if (input.ref !== artifactRefFor(input.directory, input.sha256)) {
+    return { ok: false, reason: "identity-mismatch" };
+  }
+  const verified = verifyNamedCanonicalJsonBytes({
+    root: input.root,
+    ref: input.ref,
+    sha256: input.sha256,
+    schema: input.schema,
+    maxBytes: input.maxBytes,
+    privateMode: true,
+  });
+  return verified.ok ? { ok: true, value: verified.value } : verified;
 }
 
 export function writeCanonicalJsonArtifact<T>(input: {

@@ -392,10 +392,13 @@ Before any classification or report write, the analyzer validates:
 - complete expected variant and interaction inventory.
 
 Any mismatch exits `4`, publishes no named result or Markdown report, and prints one typed reason.
-Inputs and reports are built in a private staging directory; after complete validation, the final
-bundle directory is published by one same-filesystem rename. Invalid attempt inputs are preserved
-for diagnosis. Too few opportunities is not invalid: it produces a valid report whose affected
-passes are `inconclusive`.
+Inputs and reports are built in a private staging directory. Because portable Node/Bun rename can
+replace an existing empty directory, publication exclusively reserves the final output directory
+with `mkdir(0700)`, moves staged contents into it, re-verifies final bytes, and creates canonical
+`complete.json` (0600) last. A named directory without that marker is explicitly non-authoritative;
+the marker binds the result/report hashes and full source inventory. Invalid attempt inputs are
+preserved for diagnosis. Too few opportunities is not invalid: it produces a valid report whose
+affected passes are `inconclusive`.
 
 ## Commands and compatibility
 

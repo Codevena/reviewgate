@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   symlinkSync,
   unlinkSync,
@@ -18,6 +19,8 @@ import { z } from "zod";
 import {
   __test,
   verifyCanonicalJsonArtifact,
+  verifyNamedCanonicalJsonBytes,
+  verifyNamedTextBytes,
   writeCanonicalJsonArtifact,
 } from "../../src/artifacts/canonical-json.ts";
 import { canonicalJson } from "../../src/audit/canonical.ts";
@@ -65,6 +68,95 @@ function verify(rootDir: string, ref: string, contentSha256: string, maxBytes = 
 }
 
 describe("canonical JSON artifacts", () => {
+  it("FD-verifies private staged report text and rejects mode or final-component swaps", () => {
+    const rootDir = root();
+    const ref = "report.md";
+    const path = join(rootDir, ref);
+    const text = "# Report\n";
+    writeFileSync(path, text, { mode: 0o600 });
+    expect(
+      verifyNamedTextBytes({
+        root: rootDir,
+        ref,
+        sha256: sha256(text),
+        maxBytes: MAX_BYTES,
+        privateMode: true,
+      }),
+    ).toEqual({ ok: true, text, bytes: Buffer.from(text) });
+    chmodSync(path, 0o644);
+    expect(
+      verifyNamedTextBytes({
+        root: rootDir,
+        ref,
+        sha256: sha256(text),
+        maxBytes: MAX_BYTES,
+        privateMode: true,
+      }),
+    ).toEqual({ ok: false, reason: "not-a-file" });
+    chmodSync(path, 0o600);
+    __test.beforePathRecheck = () => {
+      const replacement = join(rootDir, "replacement.md");
+      writeFileSync(replacement, text, { mode: 0o600 });
+      renameSync(replacement, path);
+    };
+    try {
+      expect(
+        verifyNamedTextBytes({
+          root: rootDir,
+          ref,
+          sha256: sha256(text),
+          maxBytes: MAX_BYTES,
+          privateMode: true,
+        }),
+      ).toEqual({ ok: false, reason: "read-error" });
+    } finally {
+      __test.beforePathRecheck = undefined;
+    }
+  });
+
+  it("returns bounded, FD-verified bytes for a named canonical source while allowing tracked mode", () => {
+    const rootDir = root();
+    const bytes = canonicalJson({ schema: "example.v1", value: 7 });
+    const ref = "bench/preregistrations/policy.json";
+    const path = join(rootDir, ref);
+    mkdirSync(join(rootDir, "bench", "preregistrations"), { recursive: true });
+    writeFileSync(path, bytes, { mode: 0o644 });
+
+    expect(
+      verifyNamedCanonicalJsonBytes({
+        root: rootDir,
+        ref,
+        sha256: sha256(bytes),
+        schema: ExampleSchema,
+        maxBytes: MAX_BYTES,
+        privateMode: false,
+      }),
+    ).toEqual({ ok: true, value: { schema: "example.v1", value: 7 }, bytes: Buffer.from(bytes) });
+  });
+
+  it("keeps generated named sources private and rejects a hash or canonicality mismatch", () => {
+    const rootDir = root();
+    const ref = "generated/source.json";
+    const path = join(rootDir, ref);
+    mkdirSync(join(rootDir, "generated"), { recursive: true });
+    const canonical = canonicalJson({ schema: "example.v1", value: 7 });
+    writeFileSync(path, canonical, { mode: 0o644 });
+    const verifyNamed = (sha256: string) =>
+      verifyNamedCanonicalJsonBytes({
+        root: rootDir,
+        ref,
+        sha256,
+        schema: ExampleSchema,
+        maxBytes: MAX_BYTES,
+        privateMode: true,
+      });
+    expect(verifyNamed(sha256(canonical))).toEqual({ ok: false, reason: "not-a-file" });
+    chmodSync(path, 0o600);
+    expect(verifyNamed("a".repeat(64))).toEqual({ ok: false, reason: "hash-mismatch" });
+    writeFileSync(path, '{"value":7,"schema":"example.v1"}', { mode: 0o600 });
+    expect(verifyNamed(sha256(readFileSync(path)))).toEqual({ ok: false, reason: "non-canonical" });
+  });
+
   it("writes canonical mode-0600 content addressed JSON and verifies the same inode", () => {
     const rootDir = root();
     const stored = writeCanonicalJsonArtifact({
