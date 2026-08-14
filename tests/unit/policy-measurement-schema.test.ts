@@ -42,11 +42,45 @@ function contentBinding(directory: string, seed: string): { ref: string; sha256:
   return { ref: `artifacts/${directory}/${sha256}.json`, sha256 };
 }
 
+function fixtureStatistics(rawEffects: number[] = []): Record<string, unknown> {
+  const mean =
+    rawEffects.length === 0
+      ? 0
+      : rawEffects.reduce((total, effect) => total + effect, 0) / rawEffects.length;
+  const ordered = [...rawEffects].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  const median =
+    ordered.length === 0
+      ? 0
+      : ordered.length % 2 === 1
+        ? (ordered[middle] ?? 0)
+        : ((ordered[middle - 1] ?? 0) + (ordered[middle] ?? 0)) / 2;
+  const zero = { baseline: 0, ablated: 0, delta: 0 };
+  const unavailable = { baseline: null, ablated: null, delta: null };
+  return {
+    case_effects: [],
+    raw_effects: rawEffects,
+    mean_error_reduction: mean,
+    median_error_reduction: median,
+    repeat_directions: [],
+    error_components: { blocking_fp: zero, blocking_fn: zero },
+    precision_delta: unavailable,
+    recall_delta: unavailable,
+    blocking_count_delta: unavailable,
+    severity_deltas: { critical: unavailable, warn: unavailable, info: unavailable },
+    verdict_deltas: { pass: unavailable, soft_pass: unavailable, fail: unavailable },
+    interval: { lo: 0, hi: 0 },
+    p_value: 1,
+    adjusted_p_value: 1,
+  };
+}
+
 function dogfoodSnapshotLabel(overrides: Record<string, unknown> = {}) {
   return {
     schema: "reviewgate.policy-dogfood-snapshot.v1",
     input_manifest: binding("dogfood/input.json"),
     attestation: binding("dogfood/attestation.json"),
+    declined: 0,
     labels: [
       {
         pass_id: "judgment.confidence",
@@ -314,12 +348,7 @@ function passEvidence(
     error_reduction: 1,
   };
   const traceTotals = { applied: 1, would_apply: 1, protected: 0, no_opportunity: 0 };
-  const statistics = {
-    raw_effects: [1],
-    interval: { lo: 1, hi: 1 },
-    p_value: 1,
-    adjusted_p_value: 1,
-  };
+  const statistics = fixtureStatistics([1]);
   const summary = (
     summaryLane: "stateless-bench" | "stateful-rig" | "dogfood",
     primary: boolean,
@@ -334,6 +363,7 @@ function passEvidence(
     truth_effects: truthEffects,
     trace_totals: traceTotals,
     statistics,
+    limitations: ["fixture-synthetic"],
     raw_evidence_refs: [`${summaryLane}/${passId}.json`],
   });
   return {
@@ -391,12 +421,7 @@ function measurement(): Record<string, unknown> {
       ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
       error_reduction: 0,
     };
-    const statistics = {
-      raw_effects: [0],
-      interval: { lo: 0, hi: 0 },
-      p_value: 1,
-      adjusted_p_value: 1,
-    };
+    const statistics = fixtureStatistics([0]);
     const summary = (lane: "stateless-bench" | "stateful-rig", primary: boolean) => ({
       lane,
       primary,
@@ -408,6 +433,7 @@ function measurement(): Record<string, unknown> {
       truth_effects: truthEffects,
       trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
       statistics,
+      limitations: ["fixture-synthetic"],
       raw_evidence_refs: rawEvidenceRefs,
     });
     return {
@@ -1026,7 +1052,7 @@ describe("policy measurement result contracts", () => {
     expect(() => PolicyDogfoodInputManifestSchema.parse(manifest)).toThrow(/same run_id and iter/i);
   });
 
-  test("requires a content-bound human TP/FP attestation", () => {
+  test("accepts a content-bound human declined attestation without relabelling it as missing", () => {
     const attestation = {
       schema: "reviewgate.policy-dogfood-attestation.v1",
       actor: "Markus",
@@ -1040,6 +1066,12 @@ describe("policy measurement result contracts", () => {
       PolicyDogfoodAttestationSchema.parse({
         ...attestation,
         rows: [{ ...attestation.rows[0], disposition: "declined" }],
+      }),
+    ).not.toThrow();
+    expect(() =>
+      PolicyDogfoodAttestationSchema.parse({
+        ...attestation,
+        rows: [{ ...attestation.rows[0], disposition: "unreviewed" }],
       }),
     ).toThrow();
   });
@@ -1135,6 +1167,71 @@ describe("policy measurement result contracts", () => {
       raw_effects: [-1],
     };
     expect(PolicyMeasurementSchema.safeParse(value).success).toBe(false);
+  });
+
+  test("closes every persisted Bench case effect, repeat direction, and linked trace dossier", () => {
+    const valid = measurement();
+    const evidence = firstPassEvidence(valid);
+    const summary = laneSummary(evidence, "stateless-bench");
+    const trace = binding("stateless-bench/evidence.fact-location.json");
+    const statistics = {
+      ...fixtureStatistics([1, 1, 1]),
+      case_effects: ([1, 2, 3] as const).map((repeat) => ({
+        case_id: "case-a",
+        repeat,
+        error_reduction: 1,
+        baseline_dossier: trace,
+        ablated_dossier: trace,
+      })),
+      repeat_directions: ([1, 2, 3] as const).map((repeat) => ({
+        repeat,
+        mean_error_reduction: 1,
+        direction: "positive" as const,
+      })),
+    };
+    evidence.statistics = statistics;
+    summary.statistics = structuredClone(statistics);
+    refreshFixtureClassifications(valid);
+    const parsed = PolicyMeasurementSchema.safeParse(valid);
+    expect(
+      parsed.success,
+      parsed.success ? undefined : JSON.stringify(parsed.error.issues, null, 2),
+    ).toBe(true);
+
+    const rawProjectionDrift = structuredClone(valid);
+    const rawStatistics = firstPassEvidence(rawProjectionDrift).statistics as Record<
+      string,
+      unknown
+    >;
+    rawStatistics.raw_effects = [1, 1];
+    laneSummary(firstPassEvidence(rawProjectionDrift), "stateless-bench").statistics =
+      structuredClone(rawStatistics);
+    expect(PolicyMeasurementSchema.safeParse(rawProjectionDrift).success).toBe(false);
+
+    const directionDrift = structuredClone(valid);
+    const directionStatistics = firstPassEvidence(directionDrift).statistics as Record<
+      string,
+      unknown
+    >;
+    directionStatistics.repeat_directions = [
+      { repeat: 1, mean_error_reduction: 1, direction: "positive" },
+      { repeat: 2, mean_error_reduction: 1, direction: "zero" },
+      { repeat: 3, mean_error_reduction: 1, direction: "positive" },
+    ];
+    laneSummary(firstPassEvidence(directionDrift), "stateless-bench").statistics =
+      structuredClone(directionStatistics);
+    expect(PolicyMeasurementSchema.safeParse(directionDrift).success).toBe(false);
+
+    const dossierDrift = structuredClone(valid);
+    const dossierStatistics = firstPassEvidence(dossierDrift).statistics as {
+      case_effects: Array<{ baseline_dossier: { ref: string; sha256: string } }>;
+    };
+    const firstCaseEffect = dossierStatistics.case_effects[0];
+    if (firstCaseEffect === undefined) throw new Error("missing case-effect fixture");
+    firstCaseEffect.baseline_dossier = binding("unbound/trace.json");
+    laneSummary(firstPassEvidence(dossierDrift), "stateless-bench").statistics =
+      structuredClone(dossierStatistics);
+    expect(PolicyMeasurementSchema.safeParse(dossierDrift).success).toBe(false);
   });
 
   test("rejects dogfood supplementary runs and exclusions in a selected Bench summary", () => {

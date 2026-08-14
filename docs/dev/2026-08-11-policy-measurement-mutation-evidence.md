@@ -402,3 +402,52 @@ result. The individual final current-source group guard above and the earlier si
 `git diff --cached --check` exited 0. HEAD remains `1aef80a0983d8d33ef1cdc62d85ae35b08f3eadd`;
 staging is empty. No commit, full suite, build, provider, Gate, real Rig, measurement, credits,
 push, or merge occurred.
+
+## Contract review C5 R1 — source-derived statistics and byte-exact report closure
+
+The C5 delta review correctly rejected four authority/report gaps. The final bundle verifier now
+recomputes the Bench and Rig lane statistics, case dossiers, and Holm projection from the already
+byte-verified copied inputs; it derives Dogfood from the same caller-owned frozen manifest,
+attestation, audit, and trace bytes. The live harvester delegates to that pure derivation, so the
+final verifier adds no reread or competing authority path. It also requires `report.md` to be the
+byte-exact `renderPolicyMeasurement(result)` projection. Every pass and interaction lane now renders
+its interval and sorted exclusion inventory.
+
+The initial pure Dogfood helper accidentally reread a trace while validating its audit. A direct
+one-buffer guard exposed that integration defect: the intended bounded read count is two, but the
+unmemoized helper made three reads. The final helper memoizes each manifest entry by
+`kind/ref/sha256` before parsing; it therefore uses the same verified bytes for audit-chain and
+trace validation without accepting a changed source.
+
+| Guard / final current source SHA-256 | Exact disposable mutation and named command | WITH / WITHOUT / restore |
+| --- | --- | --- |
+| Byte-verified Bench C5 statistic and dossier closure; `src/cli/commands/stats.ts` `74f2f5b7a9cf74bcee70c7333ba3ecf9c0b5f911f8e7fad3aafaccf847af2ce9` | Bypassed the exact published-statistic comparison; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a self-consistent published Bench C5 statistic substitution'` | WITH is in the final 8-guard pipeline GREEN below; WITHOUT was **0 pass / 1 fail / 38 filtered / 3 expects**, because the marker-rebound value was accepted. The mutation-time source SHA was restored exactly before later mechanical Biome formatting. |
+| Byte-verified Rig C5 statistic closure; same current `stats.ts` SHA | Replaced the exact Rig statistic comparison with a truthy bypass; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a self-consistent published Rig C5 statistic substitution'` | WITHOUT **0/1/38/3**; exact mutation-time bytes restored, then only Biome formatting produced the current SHA. |
+| Holm adjustment closure; same current `stats.ts` SHA | Omitted `adjusted_p_value` from `samePublishedC5Statistics`; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a marker-rebound Holm adjustment detached from verified Bench effects'` | WITHOUT **0/1/38/4**; exact mutation-time bytes restored. |
+| Dogfood snapshot/declined copied-source closure; same current `stats.ts` SHA and `src/stats/policy/dogfood-snapshot.ts` `43cafeb586f0481761d753152c55cb3f3d11ad8614ee1dcacd3627f271f54837` | Bypassed the final Dogfood source comparison; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a self-consistent published Dogfood declined substitution'` | WITHOUT **0/1/38/3**; the false declined snapshot was accepted. Exact mutation-time bytes restored. |
+| Marker-bound Markdown projection; same current `stats.ts` SHA | Changed the report-equality failure branch to return success; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a marker-rebound Markdown drift from the verified JSON projection'` | WITHOUT **0/1/38/3**; exact mutation-time bytes restored. |
+| Interval and exclusions Markdown parity; `src/stats/policy/render.ts` `e6433cb120262316c74141349fb53bb322338283f2359f7d650ece80fd817441` | Removed the interval, then replaced nonempty exclusions with `none`; `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority'` | WITHOUT **0/1/38/545** and **0/1/38/551** respectively; renderer bytes restored exactly. |
+| Signed Dogfood `declined` derivation; `src/stats/policy/dogfood.ts` `7166d8d8ccece66e95c2ec247c52ed033738f18cb2c73a6f2463efa93fbf3b52` | Deleted the two `declined` increments; `bun test tests/unit/policy-dogfood.test.ts -t 'derives a declined snapshot from only the caller-owned frozen byte inventory'` | WITHOUT **0/1/21/2**; mutation-time bytes restored before later mechanical formatting. |
+| One frozen Buffer per Dogfood manifest entry; `src/stats/policy/dogfood-snapshot.ts` `43cafeb586f0481761d753152c55cb3f3d11ad8614ee1dcacd3627f271f54837` | Removed the memoized-entry early return; `bun test tests/unit/policy-dogfood.test.ts -t 'uses one bounded read buffer and rejects a same-inode source grow'` | WITH **1/0/21/1**; WITHOUT **0/1/21/1**, expected two reads but received three. The sole copy `/private/tmp/reviewgate-c1-r3-mut-soo5X1/repo` was restored to this exact SHA. |
+
+Current-source GREEN commands:
+
+```bash
+bun test tests/unit/policy-measurement-schema.test.ts tests/unit/policy-classify.test.ts \
+  tests/unit/policy-dogfood.test.ts tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts
+# 93 pass / 0 fail / 270 expects
+
+bun test tests/integration/policy-measurement-pipeline.test.ts -t \
+  'reports every applicable Bench Rig and Dogfood lane without promoting secondary authority|publishes all 30 paired case effects and their complete statistical Markdown dossier|publishes finite precision and recall deltas from non-zero paired case denominators|rejects a marker-rebound Markdown drift from the verified JSON projection|rejects a self-consistent published Bench C5 statistic substitution|rejects a marker-rebound Holm adjustment detached from verified Bench effects|rejects a self-consistent published Rig C5 statistic substitution|rejects a self-consistent published Dogfood declined substitution'
+# 8 pass / 0 fail / 31 filtered / 687 expects
+
+bun test tests/integration/policy-measurement-publication.test.ts
+# 6 pass / 0 fail / 30 expects
+```
+
+The C1--C4 proportional sample is **6 pass / 0 fail / 20 expects** and the current Rig-anchor
+guard is **1 pass / 0 fail / 29 filtered / 4 expects**. Fresh `bunx tsc --noEmit` exited 0; fresh
+`bun run lint` checked **696 files** with no fixes. The known C4 eight-file composite timing
+limitation remains disclosed above and was not rerun or retuned. This checkpoint is
+**review-pending**, unstaged, and uncommitted; no full suite, build, provider, Gate, real Rig,
+measurement, credit use, push, or merge occurred.

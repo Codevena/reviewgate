@@ -1817,3 +1817,19 @@ The limited convergence review reproduced both self-consistent Rig substitution 
 anchor-bypass mutants, verified byte-exact restore, and found zero CRITICAL/WARN. The exact
 15-path C4 checkpoint is **`68b2b0e`** (`fix(policy): bind causal identity attribution`). C4 is
 closed; Task 12 proceeds to C5 output/statistics/report completeness without reopening C1--C4.
+
+### Final contract review C5 R1 — remediation ready for delta review
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| Persisted C5 statistics and Dogfood `declined` were self-consistent but not source-derived | The final verifier recomputes every Bench/Rig lane statistic and case dossier from already byte-verified copied sources and derives the Dogfood snapshot from the caller-owned frozen manifest/attestation/audit/trace bytes; live harvest delegates to the same pure function. | Task 12 review-bound C5 delta |
+| Marker-bound Markdown could drift from verified JSON | Final publication requires `report.md` byte-for-byte equal to `renderPolicyMeasurement(result)` before authority is accepted. | Task 12 review-bound C5 delta |
+| Pass/interaction lane Markdown omitted interval and exclusions | Every rendered lane emits its exact statistics interval and sorted exclusion inventory, including descriptive and nonempty interaction lanes. | Task 12 review-bound C5 delta |
+| C5 mutation evidence existed only in ignored notes | The tracked mutation dossier now records source SHAs, literal RED/WITHOUT results, byte restores, and current GREEN commands for all C5/R1 guards. | Task 12 review-bound C5 delta |
+
+The four review probes were first RED, then the source/report/lane fixes were guarded by the
+current **8/0/687** C5 pipeline run, **93/0/270** five-file unit focus, **6/0/30** publication
+focus, a **6/0/20** C1--C4 side-effect sample, fresh TypeScript, and Biome over 696 files. The
+one-buffer Dogfood cache mutant is **0/1/21/1** and restored exactly. This is ready for an
+independent C5 delta review only; Task 12 Steps 6--8 remain unchecked, no commit is authorized,
+and the documented C4 composite timing limitation remains unchanged.

@@ -28,6 +28,8 @@ export type VerifyAuditBytesResult =
 export function verifyAuditBytes(input: {
   bytes: Buffer;
   auditDir: string;
+  /** Lets a closed copied-source verifier resolve the exact trace bytes without a live path read. */
+  verifyPolicyTraceReference?: (input: { ref: string; sha256: string }) => boolean;
 }): VerifyAuditBytesResult {
   const raw = input.bytes.toString("utf8");
   const lines = raw.split("\n").filter((l) => l.length > 0);
@@ -69,11 +71,17 @@ export function verifyAuditBytes(input: {
         if (
           typeof summary.policy_trace_ref !== "string" ||
           typeof summary.policy_trace_sha256 !== "string" ||
-          !verifyPolicyTraceReference({
-            auditDir: input.auditDir,
-            ref: summary.policy_trace_ref,
-            sha256: summary.policy_trace_sha256,
-          }).ok
+          !(
+            input.verifyPolicyTraceReference?.({
+              ref: summary.policy_trace_ref,
+              sha256: summary.policy_trace_sha256,
+            }) ??
+            verifyPolicyTraceReference({
+              auditDir: input.auditDir,
+              ref: summary.policy_trace_ref,
+              sha256: summary.policy_trace_sha256,
+            }).ok
+          )
         ) {
           return { ok: false, brokenAtLine: i + 1, totalLines: lines.length };
         }

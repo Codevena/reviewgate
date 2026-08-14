@@ -4,10 +4,41 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A implementation is complete through the review-clean C4 identity-attribution checkpoint
-`68b2b0e` (`fix(policy): bind causal identity attribution`). Task 12 continues with C5 report and
-statistics completeness, followed by the remaining durable mutation dossier and final reviews. No
-policy pass changed and no paid measurement ran.**
+**Slice 2A is complete through the review-clean C4 identity-attribution checkpoint `68b2b0e`
+(`fix(policy): bind causal identity attribution`). Task 12 C5 output/statistics completeness is
+implemented and proportionally verified, but remains pending independent delta review; the durable
+mutation dossier and final reviews still follow. No policy pass changed and no paid measurement ran.**
+
+## Current Task 12 C5 checkpoint — review-pending
+
+- Authoritative Bench lane statistics now persist all 90 case/repeat observations and exact source
+  dossiers, their raw projection, case-level mean/median, three preregistered repeat directions,
+  FP/FN, precision/recall, final-trace blocking/severity/verdict deltas, and explicit limitations.
+  Dogfood `declined` is a separate signed disposition, never a missing attestation. Markdown renders
+  each persisted statistic and dossier from the same result JSON.
+- The canonical real 30-case fixture intentionally lacks TP/FP/FN denominators and renders explicit
+  unavailable triples plus limitations. A distinct non-vacuous 30-case fixture has baseline
+  `TP/FP/FN=2/0/1` and singleton `1/1/2`; its current-source guard proves precision
+  `1 -> 1/2` (`-1/2`) and recall `2/3 -> 1/3` (`-1/3`) in JSON and Markdown: **1/0/33/4** in
+  46.35s. The complete 90-effect/complete-dossier parity guard is **1/0/33/115** in 49.88s.
+- An exact two-file integration run was **39/1/40** (468.54s). The sole failure was a real C5
+  behavior regression: empty no-opportunity repeat directions selected `direction-conflict` before
+  `insufficient-opportunities`. Test-first RED **0/1/19/1**, minimal threshold-precedence GREEN
+  **1/0/19/2**, and current real output GREEN **1/0/33/2** restore the baseline semantics. Removing
+  the prerequisite in the sole copy is **0/1/19/1** and restores `classify.ts` byte-exactly to
+  `1cf41c723c5e00bf2f8c863a88e1b06c894972a860aef10d4dc392232f96cf68`.
+- C5 calculation/omission mutations for finite precision, finite recall, and rendered rate details
+  are killed/restored at **0/1/33/2**, **0/1/33/3**, and **0/1/33/4**. C5 R1 closes the later
+  external-authority review: copied-source Bench/Rig statistics and case dossiers, Dogfood snapshot
+  and `declined`, Holm adjustment, and exact Markdown projection are recomputed before publication.
+  The pure Dogfood core shares its verified entry buffer with audit/trace validation; removing its
+  cache is **0/1/21/1** (three reads instead of two) and is SHA-restored in the sole copy.
+- Current final C5 evidence is five-file units **93/0/270**, eight named pipeline guards
+  **8/0/687**, publication **6/0/30**, C1--C4 sample **6/0/20**, fresh `tsc` exit 0, and Biome
+  **696 files/no fixes**; working and cached diff checks are both clean. The first TypeScript RED
+  found only nullable-delta narrowing plus missing typed fixture limitations; all are minimally
+  fixed. C5 is **review-pending**, unstaged, and uncommitted: do not mark Task 12 complete or
+  commit before the independent C5 R1 delta review.
 
 ## Completed Task 12 C4 R3 checkpoint
 

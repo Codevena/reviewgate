@@ -221,6 +221,7 @@ export function validPolicyDogfoodSnapshot(): unknown {
     schema: "reviewgate.policy-dogfood-snapshot.v1",
     input_manifest: binding("dogfood/input.json"),
     attestation: binding("dogfood/attestation.json"),
+    declined: 0,
     labels: [],
     exclusions: {},
   };

@@ -114,10 +114,13 @@ function allEligibleLanesAuthoritative(evidence: PolicyPassEvidence): boolean {
 }
 
 function stableStatelessDirection(evidence: PolicyPassEvidence): boolean {
-  const effects = evidence.statistics.raw_effects;
-  if (effects.length !== 3) return false;
-  const positive = effects.filter((effect) => effect > 0).length;
-  const negative = effects.filter((effect) => effect < 0).length;
+  // `raw_effects` deliberately contains every case/repeat observation. The preregistered
+  // stability decision remains over the three repeat means, now persisted explicitly so adding
+  // complete raw case evidence cannot change a classification by accident.
+  const directions = evidence.statistics.repeat_directions;
+  if (directions.length !== 3) return false;
+  const positive = directions.filter((direction) => direction.direction === "positive").length;
+  const negative = directions.filter((direction) => direction.direction === "negative").length;
   return (
     (positive >= 2 && negative === 0) ||
     (negative >= 2 && positive === 0) ||
@@ -125,14 +128,17 @@ function stableStatelessDirection(evidence: PolicyPassEvidence): boolean {
   );
 }
 
+function hasStatelessOpportunityThreshold(evidence: PolicyPassEvidence): boolean {
+  return (
+    evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statelessCases &&
+    evidence.opportunities.signatures >= POLICY_MEASUREMENT_THRESHOLDS.statelessSignatures
+  );
+}
+
 function hasSufficientPrimaryEvidence(evidence: PolicyPassEvidence): boolean {
   if (!allEligibleLanesAuthoritative(evidence)) return false;
   if (evidence.lane === "stateless-bench") {
-    return (
-      evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statelessCases &&
-      evidence.opportunities.signatures >= POLICY_MEASUREMENT_THRESHOLDS.statelessSignatures &&
-      stableStatelessDirection(evidence)
-    );
+    return hasStatelessOpportunityThreshold(evidence) && stableStatelessDirection(evidence);
   }
   return (
     evidence.opportunities.cases >= POLICY_MEASUREMENT_THRESHOLDS.statefulSequences &&
@@ -348,7 +354,11 @@ export function classifyPolicyPasses(
     }
     if (!allEligibleLanesAuthoritative(row)) addReason(reasons, "incomplete-authority");
     if (!hasSufficientPrimaryEvidence(row)) {
-      if (row.lane === "stateless-bench" && !stableStatelessDirection(row)) {
+      if (
+        row.lane === "stateless-bench" &&
+        hasStatelessOpportunityThreshold(row) &&
+        !stableStatelessDirection(row)
+      ) {
         addReason(reasons, "direction-conflict");
       } else {
         addReason(reasons, "insufficient-opportunities");

@@ -20,6 +20,7 @@ import {
   attestPolicyDogfood,
   policyDogfoodAttestationPreflight,
 } from "../../src/stats/policy/dogfood-attestation.ts";
+import { harvestPolicyDogfoodFromVerifiedSources } from "../../src/stats/policy/dogfood-snapshot.ts";
 import {
   POLICY_DOGFOOD_EXCLUSION_CODES,
   createPolicyDogfoodInputManifest,
@@ -286,7 +287,7 @@ function boundInput(
 }
 
 function frozenFixture(
-  disposition: "tp" | "fp",
+  disposition: "tp" | "fp" | "declined",
   opts: {
     legacyAgentDecision?: boolean;
     extraDecisionSignature?: string;
@@ -365,7 +366,7 @@ function frozenFixture(
       decision_outcome: {
         finding_id: "F-001",
         severity: "WARN",
-        bucket: disposition,
+        bucket: disposition === "declined" ? "tp" : disposition,
         providers: ["codex"],
       },
     });
@@ -518,10 +519,11 @@ describe("policy dogfood harvesting", () => {
     expect(preflight.rendered).toContain("\\u001b");
     expect(preflight.challenge).toMatch(/^ATTEST /);
   });
-  test("keeps the dogfood exclusion inventory closed at ten authority failures", () => {
+  test("keeps the dogfood exclusion inventory closed at eleven authority outcomes", () => {
     expect(POLICY_DOGFOOD_EXCLUSION_CODES).toEqual([
       "agent-only-decision",
       "missing-attestation",
+      "declined",
       "attestation-input-manifest-mismatch",
       "missing-decision",
       "incomplete-trace",
@@ -780,6 +782,7 @@ describe("policy dogfood harvesting", () => {
       expect(snapshot.exclusions).toEqual({
         "agent-only-decision": 0,
         "missing-attestation": 0,
+        declined: 0,
         "attestation-input-manifest-mismatch": 0,
         "missing-decision": 0,
         "incomplete-trace": 0,
@@ -804,6 +807,47 @@ describe("policy dogfood harvesting", () => {
         },
       ]);
       expect(Object.values(snapshot.exclusions).every((count) => count === 0)).toBe(true);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("records an explicit declined attestation separately from missing attestation", async () => {
+    const fixture = await frozenFixture("declined");
+    try {
+      const snapshot = harvestPolicyDogfood({
+        preregistration: fixture.preregistration,
+        inputManifest: fixture.manifest,
+        attestation: fixture.attestation,
+        artifactRoot: fixture.artifactRoot,
+      });
+      expect(snapshot.labels).toEqual([]);
+      expect(snapshot.declined).toBe(1);
+      expect(snapshot.exclusions.declined).toBe(1);
+      expect(snapshot.exclusions["missing-attestation"]).toBe(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("derives a declined snapshot from only the caller-owned frozen byte inventory", async () => {
+    const fixture = await frozenFixture("declined");
+    try {
+      const bytesByRef = new Map(
+        fixture.manifest.entries.map((entry) => [
+          entry.ref,
+          readFileSync(join(process.cwd(), entry.ref)),
+        ]),
+      );
+      const snapshot = harvestPolicyDogfoodFromVerifiedSources({
+        preregistration: fixture.preregistration,
+        inputManifest: fixture.manifest,
+        attestation: fixture.attestation,
+        readFrozenSource: (entry) => bytesByRef.get(entry.ref),
+      });
+      expect(snapshot.labels).toEqual([]);
+      expect(snapshot.declined).toBe(1);
+      expect(snapshot.exclusions).toMatchObject({ declined: 1, "missing-attestation": 0 });
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }

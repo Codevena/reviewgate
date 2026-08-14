@@ -222,6 +222,7 @@ const ExclusionSchema = z
       "ambiguous-run-iter",
       "signature-absent-lineage",
       "historical-unsigned-decision",
+      "declined",
       "post-registered-at",
       "not-run",
       "artifact-mismatch",
@@ -247,12 +248,87 @@ const TraceTotalsSchema = z
     no_opportunity: z.number().int().nonnegative(),
   })
   .strict();
+const PairedDeltaSchema = z
+  .object({
+    baseline: z.number().finite().nullable(),
+    ablated: z.number().finite().nullable(),
+    delta: z.number().finite().nullable(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const complete = value.baseline !== null && value.ablated !== null && value.delta !== null;
+    const unavailable = value.baseline === null && value.ablated === null && value.delta === null;
+    if (!complete && !unavailable) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "paired deltas must be complete or explicitly unavailable",
+      });
+      return;
+    }
+    if (
+      value.baseline !== null &&
+      value.ablated !== null &&
+      value.delta !== null &&
+      value.delta !== value.ablated - value.baseline
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["delta"],
+        message: "paired delta must equal ablated minus baseline",
+      });
+    }
+  });
+const PolicyCaseEffectSchema = z
+  .object({
+    case_id: z.string().min(1),
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    error_reduction: z.number().finite(),
+    baseline_dossier: ArtifactBindingSchema,
+    ablated_dossier: ArtifactBindingSchema,
+  })
+  .strict();
+const PolicyRepeatDirectionSchema = z
+  .object({
+    repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    mean_error_reduction: z.number().finite(),
+    direction: z.enum(["positive", "negative", "zero"]),
+  })
+  .strict();
+function median(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] ?? 0;
+  return ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
+}
+function directionFor(value: number): "positive" | "negative" | "zero" {
+  return value > 0 ? "positive" : value < 0 ? "negative" : "zero";
+}
 const StatisticsSchema = z
   .object({
-    raw_effects: z.array(z.number()),
-    interval: z.object({ lo: z.number(), hi: z.number() }).strict(),
-    p_value: z.number().min(0).max(1),
-    adjusted_p_value: z.number().min(0).max(1),
+    /** Every opportunity-bearing Bench case/repeat effect; descriptive lanes leave this empty. */
+    case_effects: z.array(PolicyCaseEffectSchema),
+    /** Raw case, sequence, or run effects. Bench rows exactly project `case_effects`. */
+    raw_effects: z.array(z.number().finite()),
+    mean_error_reduction: z.number().finite(),
+    median_error_reduction: z.number().finite(),
+    /** The three preregistered Bench repeat directions; empty outside the Bench lane. */
+    repeat_directions: z.array(PolicyRepeatDirectionSchema),
+    error_components: z
+      .object({ blocking_fp: PairedDeltaSchema, blocking_fn: PairedDeltaSchema })
+      .strict(),
+    precision_delta: PairedDeltaSchema,
+    recall_delta: PairedDeltaSchema,
+    blocking_count_delta: PairedDeltaSchema,
+    severity_deltas: z
+      .object({ critical: PairedDeltaSchema, warn: PairedDeltaSchema, info: PairedDeltaSchema })
+      .strict(),
+    verdict_deltas: z
+      .object({ pass: PairedDeltaSchema, soft_pass: PairedDeltaSchema, fail: PairedDeltaSchema })
+      .strict(),
+    interval: z.object({ lo: z.number().finite(), hi: z.number().finite() }).strict(),
+    p_value: z.number().min(0).max(1).finite(),
+    adjusted_p_value: z.number().min(0).max(1).finite(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -262,6 +338,90 @@ const StatisticsSchema = z
         path: ["adjusted_p_value"],
         message: "adjusted p-value cannot be below raw p-value",
       });
+    }
+    let previousCaseEffect = "";
+    for (const [index, effect] of value.case_effects.entries()) {
+      const key = `${effect.case_id}\u0000${effect.repeat}`;
+      if (key <= previousCaseEffect) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["case_effects", index],
+          message: "case effects must be code-unit sorted and unique by case and repeat",
+        });
+      }
+      previousCaseEffect = key;
+    }
+    if (value.case_effects.length > 0) {
+      const expectedRawEffects = value.case_effects.map((effect) => effect.error_reduction);
+      if (canonicalJson(value.raw_effects) !== canonicalJson(expectedRawEffects)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["raw_effects"],
+          message: "raw effects must exactly project every persisted case effect",
+        });
+      }
+      const byCase = new Map<string, number[]>();
+      for (const effect of value.case_effects) {
+        const effects = byCase.get(effect.case_id) ?? [];
+        effects.push(effect.error_reduction);
+        byCase.set(effect.case_id, effects);
+      }
+      const collapsed = [...byCase.values()].map((effects) => {
+        if (effects.length !== 3) return Number.NaN;
+        return effects.reduce((total, effect) => total + effect, 0) / 3;
+      });
+      if (collapsed.some((effect) => !Number.isFinite(effect))) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["case_effects"],
+          message: "every persisted case effect requires exactly three repeats",
+        });
+      }
+      const expectedMean =
+        collapsed.length === 0
+          ? 0
+          : collapsed.reduce((total, effect) => total + effect, 0) / collapsed.length;
+      if (
+        value.mean_error_reduction !== expectedMean ||
+        value.median_error_reduction !== median(collapsed)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["mean_error_reduction"],
+          message: "case-effect mean and median must derive from three-repeat case means",
+        });
+      }
+      const expectedDirections = ([1, 2, 3] as const).map((repeat) => {
+        const effects = value.case_effects
+          .filter((effect) => effect.repeat === repeat)
+          .map((effect) => effect.error_reduction);
+        const mean = effects.reduce((total, effect) => total + effect, 0) / effects.length;
+        return { repeat, mean_error_reduction: mean, direction: directionFor(mean) };
+      });
+      if (canonicalJson(value.repeat_directions) !== canonicalJson(expectedDirections)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["repeat_directions"],
+          message: "repeat directions must exactly derive from every persisted case effect",
+        });
+      }
+    } else {
+      const mean =
+        value.raw_effects.length === 0
+          ? 0
+          : value.raw_effects.reduce((total, effect) => total + effect, 0) /
+            value.raw_effects.length;
+      if (
+        value.mean_error_reduction !== mean ||
+        value.median_error_reduction !== median(value.raw_effects) ||
+        value.repeat_directions.length !== 0
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["mean_error_reduction"],
+          message: "descriptive statistics must derive mean and median from their raw effects",
+        });
+      }
     }
   });
 function isCodeUnitSortedUnique(values: readonly string[]): boolean {
@@ -330,6 +490,7 @@ const PolicyLaneSummarySchema = z
     truth_effects: TruthEffectsSchema,
     trace_totals: TraceTotalsSchema,
     statistics: StatisticsSchema,
+    limitations: CodeUnitSortedUniqueStrings,
     raw_evidence_refs: CodeUnitSortedUniqueStrings,
   })
   .strict();
@@ -395,7 +556,7 @@ export const PolicyDogfoodAdjudicationSchema = z
     run_id: z.string().min(1),
     iter: z.number().int().positive(),
     finding_signature: z.string().min(1),
-    disposition: z.enum(["tp", "fp"]),
+    disposition: z.enum(["tp", "fp", "declined"]),
   })
   .strict();
 
@@ -586,6 +747,8 @@ export const PolicyDogfoodSnapshotSchema = z
     schema: z.literal("reviewgate.policy-dogfood-snapshot.v1"),
     input_manifest: ArtifactBindingSchema,
     attestation: ArtifactBindingSchema,
+    /** Explicit human non-dispositions; never silently reclassified as missing attestation. */
+    declined: z.number().int().nonnegative(),
     labels: z.array(
       z
         .object({
@@ -651,7 +814,16 @@ export const PolicyDogfoodSnapshotSchema = z
     ),
     exclusions: z.record(z.number().int().nonnegative()),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.declined !== (value.exclusions.declined ?? 0)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["declined"],
+        message: "declined count must equal the explicit declined exclusion inventory",
+      });
+    }
+  });
 
 export const PolicyRigScenarioManifestSchema = z
   .object({
@@ -1724,6 +1896,35 @@ export const PolicyMeasurementSchema = z
           path: ["artifacts", "inventory"],
           message: `raw evidence ref is absent from the global artifact inventory: ${ref}`,
         });
+      }
+    }
+    const summaries = [
+      ...result.passes.flatMap((pass) => pass.evidence.lane_summaries),
+      ...result.interactions.flatMap((interaction) => interaction.lane_summaries),
+    ];
+    for (const [summaryIndex, summary] of summaries.entries()) {
+      const refs = new Set(summary.raw_evidence_refs);
+      for (const [effectIndex, effect] of summary.statistics.case_effects.entries()) {
+        for (const [dossierName, dossier] of [
+          ["baseline_dossier", effect.baseline_dossier],
+          ["ablated_dossier", effect.ablated_dossier],
+        ] as const) {
+          if (!refs.has(dossier.ref) || !exactInventoryBinding(dossier)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [
+                "lane_summaries",
+                summaryIndex,
+                "statistics",
+                "case_effects",
+                effectIndex,
+                dossierName,
+              ],
+              message:
+                "every persisted case dossier must bind an exact closed lane evidence artifact",
+            });
+          }
+        }
       }
     }
     const comparisonBindings = (interaction: (typeof result.interactions)[number]) => {

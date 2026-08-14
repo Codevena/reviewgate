@@ -29,6 +29,72 @@ type FixtureOptions = {
 
 const GROUP_REF = "artifacts/policy/group-comparison.json";
 
+function fixtureStatistics(rawEffects: number[]): PolicyPassEvidence["statistics"] {
+  const caseEffects =
+    rawEffects.length > 0 && rawEffects.length % 3 === 0
+      ? rawEffects.map((error_reduction, index) => ({
+          case_id: `fixture-case-${String(Math.floor(index / 3) + 1).padStart(2, "0")}`,
+          repeat: ((index % 3) + 1) as 1 | 2 | 3,
+          error_reduction,
+          baseline_dossier: { ref: "artifacts/policy/evidence.json", sha256: "a".repeat(64) },
+          ablated_dossier: { ref: "artifacts/policy/evidence.json", sha256: "a".repeat(64) },
+        }))
+      : [];
+  const caseMeans = Array.from(
+    { length: caseEffects.length / 3 },
+    (_, index) =>
+      caseEffects
+        .slice(index * 3, (index + 1) * 3)
+        .reduce((total, effect) => total + effect.error_reduction, 0) / 3,
+  );
+  const mean =
+    caseMeans.length === 0
+      ? 0
+      : caseMeans.reduce((total, effect) => total + effect, 0) / caseMeans.length;
+  const ordered = [...caseMeans].sort((left, right) => left - right);
+  const middle = Math.floor(ordered.length / 2);
+  const median =
+    ordered.length === 0
+      ? 0
+      : ordered.length % 2 === 1
+        ? (ordered[middle] ?? 0)
+        : ((ordered[middle - 1] ?? 0) + (ordered[middle] ?? 0)) / 2;
+  const direction = (value: number): "positive" | "negative" | "zero" =>
+    value > 0 ? "positive" : value < 0 ? "negative" : "zero";
+  const zero = { baseline: 0, ablated: 0, delta: 0 };
+  const unavailable = { baseline: null, ablated: null, delta: null };
+  return {
+    case_effects: caseEffects,
+    raw_effects: rawEffects,
+    mean_error_reduction: mean,
+    median_error_reduction: median,
+    repeat_directions:
+      caseEffects.length > 0
+        ? ([1, 2, 3] as const).map((repeat) => {
+            const effects = caseEffects
+              .filter((effect) => effect.repeat === repeat)
+              .map((effect) => effect.error_reduction);
+            const mean_error_reduction =
+              effects.reduce((total, effect) => total + effect, 0) / effects.length;
+            return {
+              repeat,
+              mean_error_reduction,
+              direction: direction(mean_error_reduction),
+            };
+          })
+        : [],
+    error_components: { blocking_fp: zero, blocking_fn: zero },
+    precision_delta: unavailable,
+    recall_delta: unavailable,
+    blocking_count_delta: unavailable,
+    severity_deltas: { critical: unavailable, warn: unavailable, info: unavailable },
+    verdict_deltas: { pass: unavailable, soft_pass: unavailable, fail: unavailable },
+    interval: { lo: 0, hi: 0 },
+    p_value: 1,
+    adjusted_p_value: 1,
+  };
+}
+
 function groupComparison() {
   return {
     pass_ids: ["evidence.fact-location", "evidence.self-refutation"] as PolicyPassId[],
@@ -60,12 +126,7 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
     error_reduction: 0,
   };
   const traceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
-  const statistics = {
-    raw_effects: options.rawEffects ?? [0, 0, 0],
-    interval: { lo: 0, hi: 0 },
-    p_value: 1,
-    adjusted_p_value: 1,
-  };
+  const statistics = fixtureStatistics(options.rawEffects ?? [0, 0, 0]);
   const summary = (
     summaryLane: "stateless-bench" | "stateful-rig" | "dogfood",
     primary: boolean,
@@ -80,6 +141,7 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
     truth_effects: truthEffects,
     trace_totals: traceTotals,
     statistics,
+    limitations: ["fixture-synthetic"],
     raw_evidence_refs: [`artifacts/policy/${summaryLane}-${fixturePass.id}.json`],
   });
   return [
@@ -188,6 +250,15 @@ describe("policy pass classification", () => {
     expect(classify(onePass({ rawEffects: [1, 0, 0] }))[0]?.reasons).toContain(
       "direction-conflict",
     );
+  });
+
+  test("reports insufficient opportunities before repeat direction for a no-opportunity Bench lane", () => {
+    const result = classify(onePass({ opportunityCases: 0, signatures: 0, rawEffects: [] }))[0];
+    expect(result).toMatchObject({
+      classification: "inconclusive",
+      reasons: ["insufficient-opportunities"],
+    });
+    expect(result?.reasons).not.toContain("direction-conflict");
   });
 
   test("retains a direct unique contribution before considering two distinct harms", () => {
@@ -338,6 +409,18 @@ describe("policy pass classification", () => {
     expect(() => PolicyPassClassificationSchema.parse(result)).not.toThrow();
   });
 
+  test("keeps the preregistered three-repeat eligibility rule when raw effects contain all case observations", () => {
+    const evidence = onePass({ rawEffects: Array.from({ length: 90 }, () => 0) });
+    const pass = onlyPass(evidence);
+    // C5 persists 30 cases × 3 repeats, while eligibility remains on the separately persisted
+    // preregistered repeat directions rather than the raw observation count.
+    expect(pass.statistics.case_effects).toHaveLength(90);
+    expect(classify(evidence)[0]).toMatchObject({
+      classification: "delete-candidate",
+      reasons: ["sufficient-covered-zero-unique-benefit"],
+    });
+  });
+
   test("requires three stateful sequences with two opportunity turns each", () => {
     const base = onePass({ passId: "history.fp-signature" });
     onlyPass(base).opportunities = { cases: 3, signatures: 0, turns: 6, runs: 3 };
@@ -479,12 +562,7 @@ describe("policy pass classification", () => {
           ablated: { blocking_fp: 2, blocking_fn: 0, blocking_tp: 1 },
           error_reduction: 2,
         },
-        statistics: {
-          raw_effects: [-1, -1, -1],
-          interval: { lo: -1, hi: -1 },
-          p_value: 1,
-          adjusted_p_value: 1,
-        },
+        statistics: fixtureStatistics([-1, -1, -1]),
         raw_evidence_refs: [GROUP_REF],
       },
       identity_inventory: {
@@ -510,12 +588,8 @@ describe("policy pass classification", () => {
             error_reduction: 2,
           },
           trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
-          statistics: {
-            raw_effects: [-1, -1, -1],
-            interval: { lo: -1, hi: -1 },
-            p_value: 1,
-            adjusted_p_value: 1,
-          },
+          statistics: fixtureStatistics([-1, -1, -1]),
+          limitations: ["fixture-synthetic"],
           raw_evidence_refs: [GROUP_REF],
         },
       ],
@@ -581,12 +655,7 @@ describe("policy pass classification", () => {
           ablated: { blocking_fp: 1, blocking_fn: 0, blocking_tp: 1 },
           error_reduction: 1,
         },
-        statistics: {
-          raw_effects: [-1, -1, -1],
-          interval: { lo: -1, hi: -1 },
-          p_value: 1,
-          adjusted_p_value: 1,
-        },
+        statistics: fixtureStatistics([-1, -1, -1]),
         raw_evidence_refs: ["interactions/0.json"],
       },
       identity_inventory: {
@@ -609,12 +678,8 @@ describe("policy pass classification", () => {
             error_reduction: 1,
           },
           trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
-          statistics: {
-            raw_effects: [-1, -1, -1],
-            interval: { lo: -1, hi: -1 },
-            p_value: 1,
-            adjusted_p_value: 1,
-          },
+          statistics: fixtureStatistics([-1, -1, -1]),
+          limitations: ["fixture-synthetic"],
           raw_evidence_refs: ["interactions/0.json"],
         },
       ],
@@ -643,12 +708,7 @@ describe("policy pass classification", () => {
           ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
           error_reduction: -1,
         },
-        statistics: {
-          raw_effects: [-1, -1, -1],
-          interval: { lo: -1, hi: -1 },
-          p_value: 1,
-          adjusted_p_value: 1,
-        },
+        statistics: fixtureStatistics([-1, -1, -1]),
         raw_evidence_refs: ["interactions/0.json"],
       },
       identity_inventory: {
@@ -671,12 +731,8 @@ describe("policy pass classification", () => {
             error_reduction: -1,
           },
           trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
-          statistics: {
-            raw_effects: [-1, -1, -1],
-            interval: { lo: -1, hi: -1 },
-            p_value: 1,
-            adjusted_p_value: 1,
-          },
+          statistics: fixtureStatistics([-1, -1, -1]),
+          limitations: ["fixture-synthetic"],
           raw_evidence_refs: ["interactions/0.json"],
         },
       ],

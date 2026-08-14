@@ -65,7 +65,14 @@ import {
   attestPolicyDogfood,
   policyDogfoodAttestationPreflight,
 } from "../../stats/policy/dogfood-attestation.ts";
+import { harvestPolicyDogfoodFromVerifiedSources } from "../../stats/policy/dogfood-snapshot.ts";
 import { renderPolicyMeasurement } from "../../stats/policy/render.ts";
+import {
+  type PolicyBenchCaseEffect,
+  holmAdjustPolicyFamilies,
+  policyBenchStatistics,
+  policyIndependentSequenceStatistics,
+} from "../../stats/policy/statistics.ts";
 import { renderStats } from "../../stats/render.ts";
 import { writeFileIfAbsent } from "../../utils/atomic-write.ts";
 
@@ -98,6 +105,8 @@ const PolicyMeasurementCompleteSchema = z
       .min(1),
   })
   .strict();
+
+type PublishedPolicySource = z.infer<typeof PolicyMeasurementCompleteSchema>["sources"][number];
 
 export interface RunPolicyStatsInput {
   repoRoot: string;
@@ -876,6 +885,418 @@ function verifyPublishedIdentityEventClosure(input: {
   return true;
 }
 
+/**
+ * Recompute the C5 Bench case-effect projection from the copied, byte-verified source records.
+ * This remains outside the persisted schema: matching raw/mean/median fields alone is not source
+ * authority, and the final verifier must reject a marker-rebound self-consistent substitution.
+ */
+function samePublishedC5Statistics(
+  persisted: PolicyMeasurement["passes"][number]["evidence"]["statistics"],
+  expected: PolicyMeasurement["passes"][number]["evidence"]["statistics"],
+): boolean {
+  return canonicalJson(persisted) === canonicalJson(expected);
+}
+
+function expectedC5AdjustedPValues(result: PolicyMeasurement): {
+  singleton: readonly number[];
+  interaction: readonly number[];
+} {
+  return holmAdjustPolicyFamilies({
+    singleton: result.passes.map((pass) => pass.evidence.statistics.p_value),
+    interaction: result.interactions.map((interaction) => interaction.evidence.statistics.p_value),
+  });
+}
+
+function verifyPublishedBenchC5StatisticsClosure(input: {
+  root: string;
+  attemptDir: string;
+  preregistration: PolicyMeasurementPreregistration;
+  result: PolicyMeasurement;
+  benchBundle: unknown;
+  sources: readonly PublishedPolicySource[];
+}): boolean {
+  const bundle = PolicyBenchBundleSchema.safeParse(input.benchBundle);
+  const sourceByRef = new Map(input.sources.map((source) => [source.ref, source]));
+  const normalizeBenchBinding = (binding: { ref: string; sha256: string }):
+    | { ref: string; sha256: string }
+    | undefined => {
+    const parts = binding.ref.split("/");
+    if (
+      binding.ref.length === 0 ||
+      isAbsolute(binding.ref) ||
+      parts.some((part) => part.length === 0 || part === "." || part === "..")
+    ) {
+      return undefined;
+    }
+    return binding.ref.startsWith(`${input.attemptDir}/`)
+      ? binding
+      : { ...binding, ref: `${input.attemptDir}/${binding.ref}` };
+  };
+  const copiedBinding = (binding: { ref: string; sha256: string }):
+    | { ref: string; sha256: string }
+    | undefined => {
+    const normalized = normalizeBenchBinding(binding);
+    const source = normalized === undefined ? undefined : sourceByRef.get(normalized.ref);
+    return source?.material === "file" &&
+      source.sha256 === normalized?.sha256 &&
+      source.copy_ref !== undefined
+      ? normalized
+      : undefined;
+  };
+  const readRepeat = (binding: { ref: string; sha256: string }):
+    | BenchPolicyRepeatResult
+    | undefined => {
+    const normalized = copiedBinding(binding);
+    const source = normalized === undefined ? undefined : sourceByRef.get(normalized.ref);
+    if (normalized === undefined || source?.material !== "file" || source.copy_ref === undefined) {
+      return undefined;
+    }
+    const parsed = verifyNamedCanonicalJsonBytes({
+      root: input.root,
+      ref: source.copy_ref,
+      sha256: normalized.sha256,
+      schema: BenchPolicyRepeatResultSchema,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    });
+    return parsed.ok ? parsed.value : undefined;
+  };
+  const dossier = (row: CaseResult): { ref: string; sha256: string } | undefined => {
+    const trace = row.policy_trace;
+    if (trace?.trace_ref === undefined || trace.trace_sha256 === undefined) return undefined;
+    return copiedBinding({ ref: trace.trace_ref, sha256: trace.trace_sha256 });
+  };
+  const empty = (seed: number) => policyBenchStatistics([], seed).statistics;
+  if (!bundle.success) {
+    return [
+      ...input.result.passes.map((pass, index) => ({
+        persisted: pass.evidence.lane_summaries.find(
+          (summary) => summary.lane === "stateless-bench",
+        )?.statistics,
+        expected: empty(input.preregistration.analysis.seed + index),
+      })),
+      ...input.result.interactions.map((interaction, index) => ({
+        persisted: interaction.lane_summaries.find((summary) => summary.lane === "stateless-bench")
+          ?.statistics,
+        expected: empty(input.preregistration.analysis.seed + index),
+      })),
+    ].every(
+      (row) =>
+        row.persisted !== undefined && samePublishedC5Statistics(row.persisted, row.expected),
+    );
+  }
+  const profileById = new Map(bundle.data.profiles.map((profile) => [profile.id, profile]));
+  const baselineProfile = profileById.get("baseline");
+  if (baselineProfile === undefined || copiedBinding(baselineProfile.artifact) === undefined)
+    return false;
+  const derive = (inputProfileId: string, passIds: readonly PolicyPassId[], seed: number) => {
+    const profile = profileById.get(inputProfileId);
+    if (profile === undefined || copiedBinding(profile.artifact) === undefined) return undefined;
+    const effects: PolicyBenchCaseEffect[] = [];
+    for (const repeat of profile.data.repeats) {
+      const baselineRepeat = baselineProfile.data.repeats.find(
+        (candidate) => candidate.repeat === repeat.repeat,
+      );
+      if (baselineRepeat === undefined) return undefined;
+      const baseline = readRepeat(baselineRepeat.result);
+      const ablated = readRepeat(repeat.result);
+      if (baseline === undefined || ablated === undefined || baseline.repeat !== ablated.repeat) {
+        return undefined;
+      }
+      const baselineByCase = new Map(baseline.cases.map((row) => [row.id, row]));
+      for (const row of ablated.cases) {
+        const base = baselineByCase.get(row.id);
+        const baselineTrace = base?.policy_trace?.trace;
+        if (base === undefined || baselineTrace === undefined) return undefined;
+        const carriers = baselineTrace.evaluations.filter(
+          (evaluation) =>
+            passIds.includes(evaluation.pass_id) && evaluation.result !== "no-opportunity",
+        );
+        if (carriers.length === 0) continue;
+        const baselineDossier = dossier(base);
+        const ablatedDossier = dossier(row);
+        if (baselineDossier === undefined || ablatedDossier === undefined) return undefined;
+        const baselineTruth = base.policy_truth;
+        const ablatedTruth = row.policy_truth;
+        if (baselineTruth === undefined || ablatedTruth === undefined) return undefined;
+        const baselineError =
+          baselineTruth.findings.filter(
+            (finding) => finding.outcome === "FP" && finding.severity !== "INFO",
+          ).length + baselineTruth.fn_label_indexes.length;
+        const ablatedError =
+          ablatedTruth.findings.filter(
+            (finding) => finding.outcome === "FP" && finding.severity !== "INFO",
+          ).length + ablatedTruth.fn_label_indexes.length;
+        effects.push({
+          caseId: row.id,
+          repeat: repeat.repeat,
+          errorReduction: ablatedError - baselineError,
+          baseline: base,
+          ablated: row,
+          baselineDossier,
+          ablatedDossier,
+        });
+      }
+    }
+    try {
+      return policyBenchStatistics(effects, seed).statistics;
+    } catch {
+      return undefined;
+    }
+  };
+  for (const [index, pass] of input.result.passes.entries()) {
+    const persisted = pass.evidence.lane_summaries.find(
+      (summary) => summary.lane === "stateless-bench",
+    )?.statistics;
+    const expected = derive(
+      `single:${pass.pass_id}`,
+      [pass.pass_id],
+      input.preregistration.analysis.seed + index,
+    );
+    if (expected !== undefined && pass.evidence.lane === "stateless-bench") {
+      expected.adjusted_p_value = expectedC5AdjustedPValues(input.result).singleton[index] ?? 1;
+    }
+    if (
+      persisted === undefined ||
+      expected === undefined ||
+      !samePublishedC5Statistics(persisted, expected)
+    ) {
+      return false;
+    }
+  }
+  for (const [index, interaction] of input.result.interactions.entries()) {
+    const persisted = interaction.lane_summaries.find(
+      (summary) => summary.lane === "stateless-bench",
+    )?.statistics;
+    const expected = derive(
+      `interaction:${index + 1}`,
+      interaction.pass_ids,
+      input.preregistration.analysis.seed + index,
+    );
+    if (expected !== undefined && interaction.primary_lane === "stateless-bench") {
+      expected.adjusted_p_value = expectedC5AdjustedPValues(input.result).interaction[index] ?? 1;
+    }
+    if (
+      persisted === undefined ||
+      expected === undefined ||
+      !samePublishedC5Statistics(persisted, expected)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Recompute every stateful Rig C5 lane from the already verified Rig evidence. */
+function verifyPublishedRigC5StatisticsClosure(input: {
+  preregistration: PolicyMeasurementPreregistration;
+  result: PolicyMeasurement;
+  rig: z.infer<typeof PolicyRigEvidenceSchema>;
+}): boolean {
+  const addTruth = (
+    total: { blocking_fp: number; blocking_fn: number; blocking_tp: number },
+    next: { blocking_fp: number; blocking_fn: number; blocking_tp: number },
+  ) => ({
+    blocking_fp: total.blocking_fp + next.blocking_fp,
+    blocking_fn: total.blocking_fn + next.blocking_fn,
+    blocking_tp: total.blocking_tp + next.blocking_tp,
+  });
+  const derive = (
+    values: readonly number[],
+    rows: readonly {
+      truth_effects: {
+        baseline: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+        ablated: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+      };
+    }[],
+    seed: number,
+  ) => {
+    const truth = rows.reduce(
+      (total, row) => ({
+        baseline: addTruth(total.baseline, row.truth_effects.baseline),
+        ablated: addTruth(total.ablated, row.truth_effects.ablated),
+      }),
+      {
+        baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+        ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      },
+    );
+    return policyIndependentSequenceStatistics(values, seed, truth);
+  };
+  for (const [index, pass] of input.result.passes.entries()) {
+    if (POLICY_MEASUREMENT_LANES[pass.pass_id] !== "stateful-rig") continue;
+    const sequences = input.rig.sequences.filter((sequence) => sequence.pass_id === pass.pass_id);
+    const persisted = pass.evidence.lane_summaries.find(
+      (summary) => summary.lane === "stateful-rig",
+    )?.statistics;
+    const expected = derive(
+      sequences.map((sequence) => sequence.truth_effects.error_reduction),
+      sequences,
+      input.preregistration.analysis.seed + index,
+    );
+    if (pass.evidence.lane === "stateful-rig") {
+      expected.adjusted_p_value = expectedC5AdjustedPValues(input.result).singleton[index] ?? 1;
+    }
+    if (
+      sequences.length !== 3 ||
+      persisted === undefined ||
+      !samePublishedC5Statistics(persisted, expected)
+    ) {
+      return false;
+    }
+  }
+  for (const [index, interaction] of input.result.interactions.entries()) {
+    if (interaction.primary_lane !== "stateful-rig") continue;
+    const groups = input.rig.sequences.flatMap((sequence) =>
+      sequence.history_interaction === null ? [] : [sequence.history_interaction],
+    );
+    const persisted = interaction.lane_summaries.find(
+      (summary) => summary.lane === "stateful-rig",
+    )?.statistics;
+    const expected = derive(
+      groups.map((group) => group.truth_effects.error_reduction),
+      groups,
+      input.preregistration.analysis.seed + index,
+    );
+    expected.adjusted_p_value = expectedC5AdjustedPValues(input.result).interaction[index] ?? 1;
+    if (
+      groups.length !== 12 ||
+      persisted === undefined ||
+      !samePublishedC5Statistics(persisted, expected)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Recompute the frozen Dogfood disposition snapshot only from copied manifest, attestation, audit, and trace bytes. */
+function verifyPublishedDogfoodC5Closure(input: {
+  root: string;
+  preregistration: PolicyMeasurementPreregistration;
+  result: PolicyMeasurement;
+  snapshot: z.infer<typeof PolicyDogfoodSnapshotSchema>;
+  sources: readonly PublishedPolicySource[];
+}): boolean {
+  const sourceByRef = new Map(input.sources.map((source) => [source.ref, source]));
+  const readCopiedBytes = (binding: { ref: string; sha256: string }): Buffer | undefined => {
+    const source = sourceByRef.get(binding.ref);
+    if (
+      source?.material !== "file" ||
+      source.sha256 !== binding.sha256 ||
+      source.copy_ref === undefined
+    ) {
+      return undefined;
+    }
+    const verified = verifyNamedBytes({
+      root: input.root,
+      ref: source.copy_ref,
+      sha256: source.sha256,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    });
+    return verified.ok ? verified.bytes : undefined;
+  };
+  const readCopiedCanonical = <T>(inputBinding: {
+    ref: string;
+    sha256: string;
+    schema: z.ZodType<T>;
+  }): T | undefined => {
+    const source = sourceByRef.get(inputBinding.ref);
+    if (
+      source?.material !== "file" ||
+      source.sha256 !== inputBinding.sha256 ||
+      source.copy_ref === undefined
+    ) {
+      return undefined;
+    }
+    const parsed = verifyNamedCanonicalJsonBytes({
+      root: input.root,
+      ref: source.copy_ref,
+      sha256: source.sha256,
+      schema: inputBinding.schema,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    });
+    return parsed.ok ? parsed.value : undefined;
+  };
+  const manifest = readCopiedCanonical({
+    ref: input.preregistration.dogfood.input_manifest_ref,
+    sha256: input.preregistration.dogfood.input_manifest_sha256,
+    schema: PolicyDogfoodInputManifestSchema,
+  });
+  const attestation = readCopiedCanonical({
+    ref: input.preregistration.dogfood.attestation_ref,
+    sha256: input.preregistration.dogfood.attestation_sha256,
+    schema: PolicyDogfoodAttestationSchema,
+  });
+  if (manifest === undefined || attestation === undefined) {
+    return false;
+  }
+  let expected: z.infer<typeof PolicyDogfoodSnapshotSchema>;
+  try {
+    expected = harvestPolicyDogfoodFromVerifiedSources({
+      preregistration: input.preregistration,
+      inputManifest: manifest,
+      attestation,
+      readFrozenSource: (entry) => readCopiedBytes(entry),
+    });
+  } catch {
+    return false;
+  }
+  if (canonicalJson(input.snapshot) !== canonicalJson(expected)) {
+    return false;
+  }
+  const exclusions = (() => {
+    const rows: Array<{ lane: "dogfood"; code: string; count: number }> = [];
+    const add = (code: string, count: number): void => {
+      if (count > 0) rows.push({ lane: "dogfood", code, count });
+    };
+    add("missing-decision", expected.exclusions["missing-decision"] ?? 0);
+    add("incomplete-trace", expected.exclusions["incomplete-trace"] ?? 0);
+    add("ambiguous-run-iter", expected.exclusions["ambiguous-run-iter"] ?? 0);
+    add("signature-absent-lineage", expected.exclusions["signature-absent-lineage"] ?? 0);
+    add("declined", expected.declined);
+    add("post-registered-at", expected.exclusions["post-registered-at"] ?? 0);
+    add(
+      "historical-unsigned-decision",
+      (expected.exclusions["agent-only-decision"] ?? 0) +
+        (expected.exclusions["missing-attestation"] ?? 0),
+    );
+    return rows;
+  })();
+  for (const [index, pass] of input.result.passes.entries()) {
+    const labels = expected.labels.filter((label) => label.pass_id === pass.pass_id);
+    const grouped = new Map<string, typeof labels>();
+    for (const label of labels) {
+      const key = `${label.run_id}\u0000${label.iter}\u0000${label.finding_signature}`;
+      const rows = grouped.get(key) ?? [];
+      rows.push(label);
+      grouped.set(key, rows);
+    }
+    const effects = [...grouped.values()].map((rows) =>
+      rows.some((row) => row.effect === "suppressed")
+        ? -1
+        : rows.some((row) => row.effect === "preserved")
+          ? 1
+          : 0,
+    );
+    const summary = pass.evidence.lane_summaries.find((row) => row.lane === "dogfood");
+    if (
+      summary === undefined ||
+      canonicalJson(pass.evidence.exclusions) !== canonicalJson(exclusions) ||
+      canonicalJson(summary.exclusions) !== canonicalJson(exclusions) ||
+      !samePublishedC5Statistics(
+        summary.statistics,
+        policyIndependentSequenceStatistics(effects, input.preregistration.analysis.seed + index),
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function verifyPublishedPolicyBundle(output: string): boolean {
   const marker = verifyUnboundNamedCanonicalJsonBytes({
     root: output,
@@ -921,6 +1342,7 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     maxBytes: MAX_POLICY_SOURCE_BYTES,
     privateMode: true,
   });
+  if (!report.ok || report.text !== renderPolicyMeasurement(result.value)) return false;
   const outputs = marker.value.outputs;
   const benchBundle = verifyNamedCanonicalJsonBytes({
     root: output,
@@ -935,6 +1357,14 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     ref: outputs.rig_bundle.ref,
     sha256: outputs.rig_bundle.sha256,
     schema: PolicyRigEvidenceSchema,
+    maxBytes: MAX_POLICY_SOURCE_BYTES,
+    privateMode: true,
+  });
+  const dogfoodSnapshot = verifyNamedCanonicalJsonBytes({
+    root: output,
+    ref: outputs.dogfood_snapshot.ref,
+    sha256: outputs.dogfood_snapshot.sha256,
+    schema: PolicyDogfoodSnapshotSchema,
     maxBytes: MAX_POLICY_SOURCE_BYTES,
     privateMode: true,
   });
@@ -957,15 +1387,7 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     outputs.report_md.ref !== registeredRef("report_md") ||
     !benchBundle.ok ||
     !rigBundle.ok ||
-    !verifyNamedCanonicalJsonBytes({
-      root: output,
-      ref: outputs.dogfood_snapshot.ref,
-      sha256: outputs.dogfood_snapshot.sha256,
-      schema: PolicyDogfoodSnapshotSchema,
-      maxBytes: MAX_POLICY_SOURCE_BYTES,
-      privateMode: true,
-    }).ok ||
-    !report.ok ||
+    !dogfoodSnapshot.ok ||
     marker.value.sources.length !== result.value.artifacts.inventory.length
   )
     return false;
@@ -1034,6 +1456,26 @@ function verifyPublishedPolicyBundle(output: string): boolean {
       benchBundle: benchBundle.value,
       rig: rigBundle.value,
       sources: marker.value.sources,
+    }) &&
+    verifyPublishedBenchC5StatisticsClosure({
+      root: output,
+      attemptDir: preregistration.value.outputs.attempt_dir,
+      preregistration: preregistration.value,
+      result: result.value,
+      benchBundle: benchBundle.value,
+      sources: marker.value.sources,
+    }) &&
+    verifyPublishedRigC5StatisticsClosure({
+      preregistration: preregistration.value,
+      result: result.value,
+      rig: rigBundle.value,
+    }) &&
+    verifyPublishedDogfoodC5Closure({
+      root: output,
+      preregistration: preregistration.value,
+      result: result.value,
+      snapshot: dogfoodSnapshot.value,
+      sources: marker.value.sources,
     })
   );
 }
@@ -1061,7 +1503,8 @@ function verifyPublishedPolicyBundleWithoutMarker(
     maxBytes: MAX_POLICY_SOURCE_BYTES,
     privateMode: true,
   });
-  if (!result.ok || !report.ok) return false;
+  if (!result.ok || !report.ok || report.text !== renderPolicyMeasurement(result.value))
+    return false;
   return sources.every(
     (source) =>
       source.material === "state-tree" ||

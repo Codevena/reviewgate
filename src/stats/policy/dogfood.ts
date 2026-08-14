@@ -11,7 +11,6 @@ import {
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { verifyCanonicalJsonArtifact } from "../../artifacts/canonical-json.ts";
-import { canonicalJson } from "../../audit/canonical.ts";
 import { verifyAuditBytes } from "../../audit/verifier.ts";
 import type { PolicyMeasurementPreregistration } from "../../schemas/policy-measurement-preregistration.ts";
 import {
@@ -21,26 +20,17 @@ import {
   PolicyDogfoodInputManifestSchema,
   type PolicyDogfoodSnapshot,
   PolicyDogfoodSnapshotSchema,
-  policyDogfoodEvaluationEffect,
 } from "../../schemas/policy-measurement.ts";
-import { type PolicyTrace, PolicyTraceSchema } from "../../schemas/policy-trace.ts";
-import { policyDogfoodAttestationPreflight } from "./dogfood-attestation.ts";
+import { PolicyTraceSchema } from "../../schemas/policy-trace.ts";
+import {
+  POLICY_DOGFOOD_EXCLUSION_CODES,
+  harvestPolicyDogfoodFromVerifiedSources,
+} from "./dogfood-snapshot.ts";
+
+export { POLICY_DOGFOOD_EXCLUSION_CODES } from "./dogfood-snapshot.ts";
 
 export const POLICY_DOGFOOD_SOURCE_MAX_BYTES = 1_048_576;
-export const POLICY_DOGFOOD_EXCLUSION_CODES = [
-  "agent-only-decision",
-  "missing-attestation",
-  "attestation-input-manifest-mismatch",
-  "missing-decision",
-  "incomplete-trace",
-  "ambiguous-run-iter",
-  "signature-absent-lineage",
-  "malformed-chain",
-  "changed-source-file",
-  "post-registered-at",
-] as const;
 
-type DogfoodExclusionCode = (typeof POLICY_DOGFOOD_EXCLUSION_CODES)[number];
 type ManifestEntry = PolicyDogfoodInputManifest["entries"][number];
 
 export const __test: {
@@ -233,8 +223,9 @@ export function createPolicyDogfoodInputManifest(input: {
   const entries: ManifestEntry[] = [];
   for (const auditRootInput of input.auditRoots) {
     const auditRoot = resolve(repoRoot, auditRootInput);
-    if (!contained(resolve(repoRoot), auditRoot))
+    if (!contained(resolve(repoRoot), auditRoot)) {
       throw new Error("dogfood audit root escapes repository");
+    }
     for (const auditPath of walkAuditJsonl(auditRoot)) {
       const auditRef = rootRelative(repoRoot, auditPath);
       const auditBytes = stableRead(repoRoot, auditRef);
@@ -242,8 +233,9 @@ export function createPolicyDogfoodInputManifest(input: {
         bytes: auditBytes,
         auditDir: resolve(auditPath, "..", "..", "..", ".."),
       });
-      if (!verified.ok)
+      if (!verified.ok) {
         throw new Error(`dogfood audit chain is malformed at line ${verified.brokenAtLine}`);
+      }
       const complete = completeRunEvents(verified.events).filter((event) =>
         timestampInWindow(event.ts, since, until),
       );
@@ -253,8 +245,9 @@ export function createPolicyDogfoodInputManifest(input: {
         const tracePath = resolve(auditRoot, ...row.ref.split("/"));
         const traceRef = rootRelative(repoRoot, tracePath);
         const traceBytes = stableRead(repoRoot, traceRef);
-        if (sha256(traceBytes) !== row.sha256)
+        if (sha256(traceBytes) !== row.sha256) {
           throw new Error("dogfood trace hash differs from audit reference");
+        }
         const trace = PolicyTraceSchema.parse(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(traceBytes)),
         );
@@ -284,7 +277,10 @@ export function createPolicyDogfoodInputManifest(input: {
         sha256: sha256(auditBytes),
         bytes: auditBytes.length,
         runs: runs.sort((left, right) =>
-          compareCodeUnits(pairKey(left.run_id, left.iter), pairKey(right.run_id, right.iter)),
+          compareCodeUnits(
+            `${left.run_id}\u0000${left.iter}`,
+            `${right.run_id}\u0000${right.iter}`,
+          ),
         ),
       });
     }
@@ -297,47 +293,15 @@ export function createPolicyDogfoodInputManifest(input: {
   });
 }
 
-function exclusions(): Record<DogfoodExclusionCode, number> {
-  return Object.fromEntries(POLICY_DOGFOOD_EXCLUSION_CODES.map((code) => [code, 0])) as Record<
-    DogfoodExclusionCode,
-    number
-  >;
-}
-
-function increment(target: Record<DogfoodExclusionCode, number>, code: DogfoodExclusionCode): void {
-  target[code] += 1;
-}
-
-function pairKey(runId: string, iter: number): string {
-  return `${runId}\u0000${iter}`;
-}
-
-function manifestSha256(value: PolicyDogfoodInputManifest): string {
-  return sha256(canonicalJson(PolicyDogfoodInputManifestSchema.parse(value)));
-}
-
-function attestationSha256(value: PolicyDogfoodAttestation): string {
-  return sha256(canonicalJson(PolicyDogfoodAttestationSchema.parse(value)));
-}
-
-function traceLineage(trace: PolicyTrace): Set<string> {
-  return new Set([
-    ...trace.final.finding_signatures,
-    ...trace.evaluations.flatMap((row) => [
-      ...row.source_signatures,
-      ...(row.final_signature ? [row.final_signature] : []),
-    ]),
-    ...trace.stages.flatMap((row) => [
-      ...row.input_signatures,
-      ...(row.output_signature ? [row.output_signature] : []),
-    ]),
-  ]);
-}
-
-function emptySnapshot(input: {
+function artifactFailureSnapshot(input: {
   preregistration: PolicyMeasurementPreregistration;
-  exclusions: Record<DogfoodExclusionCode, number>;
 }): PolicyDogfoodSnapshot {
+  const exclusions = Object.fromEntries(
+    POLICY_DOGFOOD_EXCLUSION_CODES.map((code) => [
+      code,
+      code === "attestation-input-manifest-mismatch" ? 1 : 0,
+    ]),
+  );
   return PolicyDogfoodSnapshotSchema.parse({
     schema: "reviewgate.policy-dogfood-snapshot.v1",
     input_manifest: {
@@ -349,22 +313,23 @@ function emptySnapshot(input: {
       sha256: input.preregistration.dogfood.attestation_sha256,
     },
     labels: [],
-    exclusions: input.exclusions,
+    declined: 0,
+    exclusions,
   });
 }
 
+/**
+ * Live harvesting authenticates the two registered artifacts, then delegates all semantic
+ * derivation to the same pure byte-owned snapshot core used by publication verification.
+ */
 export function harvestPolicyDogfood(input: {
   preregistration: PolicyMeasurementPreregistration;
   inputManifest: PolicyDogfoodInputManifest;
   attestation: PolicyDogfoodAttestation;
   artifactRoot: string;
-  /** Repository root that contains the frozen audit/trace refs. Defaults to the caller cwd. */
   sourceRoot?: string;
-  /** Observability-only hook; callers cannot change the frozen source set. */
   onFrozenSourceRead?: (entry: ManifestEntry) => void;
 }): PolicyDogfoodSnapshot {
-  const sourceRoot = input.sourceRoot ?? process.cwd();
-  const exclusionsByCode = exclusions();
   const pre = input.preregistration.dogfood;
   const manifestArtifact = verifyCanonicalJsonArtifact({
     root: input.artifactRoot,
@@ -383,203 +348,19 @@ export function harvestPolicyDogfood(input: {
     maxBytes: POLICY_DOGFOOD_SOURCE_MAX_BYTES,
   });
   if (!manifestArtifact.ok || !attestationArtifact.ok) {
-    increment(exclusionsByCode, "attestation-input-manifest-mismatch");
-    return emptySnapshot({ preregistration: input.preregistration, exclusions: exclusionsByCode });
+    return artifactFailureSnapshot({ preregistration: input.preregistration });
   }
-  const manifest = manifestArtifact.value;
-  const attestation = attestationArtifact.value;
-  const since = parseTimestamp(pre.since);
-  const until = parseTimestamp(pre.until);
-  if (since === null || until === null || since >= until) {
-    increment(exclusionsByCode, "attestation-input-manifest-mismatch");
-    return emptySnapshot({ preregistration: input.preregistration, exclusions: exclusionsByCode });
-  }
-  const sourceManifestSha = manifestSha256(manifest);
-  const sourceAttestationSha = attestationSha256(attestation);
-  const expectedPreflight = policyDogfoodAttestationPreflight({
-    manifest,
-    actor: attestation.actor,
-    rows: attestation.rows,
-  });
-  if (
-    pre.since !== manifest.since ||
-    pre.until !== manifest.until ||
-    pre.input_manifest_sha256 !== sourceManifestSha ||
-    pre.attestation_sha256 !== sourceAttestationSha ||
-    attestation.input_manifest_sha256 !== sourceManifestSha ||
-    attestation.challenge_sha256 !== expectedPreflight.candidateSha256
-  ) {
-    increment(exclusionsByCode, "attestation-input-manifest-mismatch");
-    return emptySnapshot({ preregistration: input.preregistration, exclusions: exclusionsByCode });
-  }
-  if (!validRef(pre.input_manifest_ref) || !validRef(pre.attestation_ref)) {
-    throw new Error("dogfood preregistration artifact reference is invalid");
-  }
-
-  const auditEvents = new Map<string, Record<string, unknown>[]>();
-  const auditRunBindings = new Map<
-    string,
-    { auditRef: string; traceRef: string; sha256: string }
-  >();
-  const traces = new Map<string, PolicyTrace>();
-  for (const entry of manifest.entries) {
-    let bytes: Buffer;
-    try {
-      bytes = stableRead(sourceRoot, entry.ref, () => input.onFrozenSourceRead?.(entry));
-    } catch {
-      increment(exclusionsByCode, "changed-source-file");
-      continue;
-    }
-    if (bytes.length !== entry.bytes || sha256(bytes) !== entry.sha256) {
-      increment(exclusionsByCode, "changed-source-file");
-      continue;
-    }
-    if (entry.kind === "audit") {
-      const result = verifyAuditBytes({
-        bytes,
-        auditDir: resolve(sourceRoot, entry.ref, "..", "..", "..", ".."),
-      });
-      if (!result.ok) {
-        increment(exclusionsByCode, "malformed-chain");
-        continue;
-      }
-      for (const run of entry.runs) {
-        const key = pairKey(run.run_id, run.iter);
-        auditEvents.set(key, result.events);
-        auditRunBindings.set(key, {
-          auditRef: entry.ref,
-          traceRef: run.trace_ref,
-          sha256: run.trace_sha256,
-        });
-      }
-    } else {
+  const sourceRoot = input.sourceRoot ?? process.cwd();
+  return harvestPolicyDogfoodFromVerifiedSources({
+    preregistration: input.preregistration,
+    inputManifest: manifestArtifact.value,
+    attestation: attestationArtifact.value,
+    readFrozenSource: (entry) => {
       try {
-        const trace = PolicyTraceSchema.parse(
-          JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
-        );
-        if (trace.run_id !== entry.run_id || trace.iter !== entry.iter) throw new Error("identity");
-        traces.set(`${entry.audit_ref}\u0000${entry.trace_ref}`, trace);
+        return stableRead(sourceRoot, entry.ref, () => input.onFrozenSourceRead?.(entry));
       } catch {
-        increment(exclusionsByCode, "incomplete-trace");
+        return undefined;
       }
-    }
-  }
-
-  const labels: PolicyDogfoodSnapshot["labels"] = [];
-  for (const row of attestation.rows) {
-    const key = pairKey(row.run_id, row.iter);
-    const events = auditEvents.get(key);
-    const binding = auditRunBindings.get(key);
-    const trace =
-      binding === undefined
-        ? undefined
-        : traces.get(`${binding.auditRef}\u0000${binding.traceRef}`);
-    if (events === undefined || trace === undefined) {
-      increment(exclusionsByCode, "incomplete-trace");
-      continue;
-    }
-    const completions = completeRunEvents(events).filter(
-      (event) => event.runId === row.run_id && event.iter === row.iter,
-    );
-    if (completions.length !== 1) {
-      increment(
-        exclusionsByCode,
-        completions.length === 0 ? "incomplete-trace" : "ambiguous-run-iter",
-      );
-      continue;
-    }
-    const decisions = events.filter(
-      (event) =>
-        event.event === "decision.applied" &&
-        event.run_id === row.run_id &&
-        event.iter === row.iter &&
-        Array.isArray(event.finding_signatures) &&
-        event.finding_signatures.includes(row.finding_signature),
-    );
-    if (decisions.length !== 1) {
-      increment(
-        exclusionsByCode,
-        decisions.length === 0 ? "missing-decision" : "ambiguous-run-iter",
-      );
-      continue;
-    }
-    const decision = decisions[0];
-    const completion = completions[0];
-    if (
-      decision === undefined ||
-      completion === undefined ||
-      binding === undefined ||
-      binding.traceRef !== completion.ref ||
-      binding.sha256 !== completion.sha256 ||
-      !timestampInWindow(decision.ts, since, until) ||
-      !timestampInWindow(completion.ts, since, until)
-    ) {
-      increment(exclusionsByCode, "post-registered-at");
-      continue;
-    }
-    if (!traceLineage(trace).has(row.finding_signature)) {
-      increment(exclusionsByCode, "signature-absent-lineage");
-      continue;
-    }
-    for (const evaluation of trace.evaluations) {
-      if (
-        evaluation.result === "no-opportunity" ||
-        !evaluation.source_signatures.includes(row.finding_signature)
-      )
-        continue;
-      labels.push({
-        pass_id: evaluation.pass_id,
-        run_id: row.run_id,
-        iter: row.iter,
-        finding_signature: row.finding_signature,
-        disposition: row.disposition,
-        evaluation_result: evaluation.result,
-        before: evaluation.before,
-        after: evaluation.after,
-        ...(evaluation.protected_by === undefined ? {} : { protected_by: evaluation.protected_by }),
-        effect: policyDogfoodEvaluationEffect({
-          result: evaluation.result,
-          before: evaluation.before,
-          after: evaluation.after,
-        }),
-        source_signatures: evaluation.source_signatures,
-      });
-    }
-  }
-
-  for (const [key, events] of auditEvents) {
-    const [runId, iterText] = key.split("\u0000");
-    const iter = Number(iterText);
-    for (const decision of events.filter(
-      (event) =>
-        event.event === "decision.applied" && event.run_id === runId && event.iter === iter,
-    )) {
-      const signatures = Array.isArray(decision.finding_signatures)
-        ? decision.finding_signatures.filter((value): value is string => typeof value === "string")
-        : [];
-      if (signatures.length === 0) {
-        increment(exclusionsByCode, "agent-only-decision");
-      } else if (
-        !attestation.rows.some(
-          (row) =>
-            row.run_id === runId && row.iter === iter && signatures.includes(row.finding_signature),
-        )
-      ) {
-        increment(exclusionsByCode, "missing-attestation");
-      }
-    }
-  }
-
-  return PolicyDogfoodSnapshotSchema.parse({
-    schema: "reviewgate.policy-dogfood-snapshot.v1",
-    input_manifest: { ref: pre.input_manifest_ref, sha256: pre.input_manifest_sha256 },
-    attestation: { ref: pre.attestation_ref, sha256: pre.attestation_sha256 },
-    labels: labels.sort((left, right) =>
-      compareCodeUnits(
-        `${left.pass_id}\u0000${left.run_id}\u0000${left.iter}\u0000${left.finding_signature}`,
-        `${right.pass_id}\u0000${right.run_id}\u0000${right.iter}\u0000${right.finding_signature}`,
-      ),
-    ),
-    exclusions: exclusionsByCode,
+    },
   });
 }

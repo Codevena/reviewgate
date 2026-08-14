@@ -741,6 +741,7 @@ function createFixture(): Fixture {
         source_signatures: ["dogfood-suppressed"],
       },
     ],
+    declined: 0,
     exclusions: {},
   };
   return { root, preregRef, benchRef, rigRef, prereg, preregBytes, bench, benchBytes };
@@ -975,6 +976,8 @@ interface RealBenchFixtureOptions {
   responseClosure?: "closed" | "shared" | "reordered" | "reused" | "partial" | "missing-digest";
   nestedBenchBundle?: boolean;
   benchSingletonLoss?: boolean;
+  /** Supply observed TP/FP/FN denominators on both sides of the Bench singleton comparison. */
+  benchFiniteRates?: boolean;
 }
 
 function realFixtureRawResponse(repeat: 1 | 2 | 3, caseId: string): string {
@@ -1126,6 +1129,9 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
           options.benchSingletonLoss === true &&
           (scheduled.id === "single:evidence.fact-location" || scheduled.id === "interaction:4") &&
           caseId.startsWith("clean-");
+        const finiteRateAblation =
+          options.benchFiniteRates === true &&
+          (scheduled.id === "single:evidence.fact-location" || scheduled.id === "interaction:4");
         const rawResponseSha256 =
           responseClosure === "shared"
             ? [sha256(`real-response:${repeat}`)]
@@ -1165,7 +1171,12 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
           kind: caseId.startsWith("clean-") ? ("clean" as const) : ("seeded-bug" as const),
           status: "scored" as const,
           content_hash: prereg.corpus.content_sha256[`cases/${caseId}.json`] ?? "",
-          counts: { tp: 0, fp: benchSingletonLoss ? 1 : 0, fn: 0, neutral: 0 },
+          counts:
+            options.benchFiniteRates === true
+              ? finiteRateAblation
+                ? { tp: 1, fp: 1, fn: 2, neutral: 0 }
+                : { tp: 2, fp: 0, fn: 1, neutral: 0 }
+              : { tp: 0, fp: benchSingletonLoss ? 1 : 0, fn: 0, neutral: 0 },
           panel_ok: 1,
           panel_configured: 1,
           file_context: "full" as const,
@@ -1509,6 +1520,70 @@ function rewritePublishedResult(
   writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
 }
 
+/** Rebind every final projection after a schema-valid publication mutation. */
+function rewritePublishedProjection(
+  output: string,
+  mutate: (value: Record<string, unknown>) => void,
+): void {
+  const markerPath = join(output, "complete.json");
+  const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+    result: { ref: string; sha256: string };
+    report: { ref: string; sha256: string };
+    outputs: {
+      result_json: { ref: string; sha256: string };
+      report_md: { ref: string; sha256: string };
+    };
+  };
+  const resultPath = join(output, marker.result.ref);
+  const result = JSON.parse(readFileSync(resultPath, "utf8")) as Record<string, unknown>;
+  mutate(result);
+  const parsed = PolicyMeasurementSchema.parse(result);
+  const resultText = canonicalJson(parsed);
+  const reportText = renderPolicyMeasurement(parsed);
+  const resultDigest = sha256(resultText);
+  const reportDigest = sha256(reportText);
+  writeFileSync(resultPath, resultText, { mode: 0o600 });
+  writeFileSync(join(output, marker.report.ref), reportText, { mode: 0o600 });
+  marker.result.sha256 = resultDigest;
+  marker.outputs.result_json.sha256 = resultDigest;
+  marker.report.sha256 = reportDigest;
+  marker.outputs.report_md.sha256 = reportDigest;
+  writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
+}
+
+function rewritePublishedDogfoodSnapshot(
+  output: string,
+  mutate: (value: Record<string, unknown>) => void,
+): void {
+  const markerPath = join(output, "complete.json");
+  const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+    outputs: { dogfood_snapshot: { ref: string; sha256: string } };
+  };
+  const snapshotPath = join(output, marker.outputs.dogfood_snapshot.ref);
+  const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as Record<string, unknown>;
+  mutate(snapshot);
+  const text = canonicalJson(snapshot);
+  marker.outputs.dogfood_snapshot.sha256 = sha256(text);
+  writeFileSync(snapshotPath, text, { mode: 0o600 });
+  writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
+}
+
+/** Rebind only the completion marker after a byte-level Markdown mutation. */
+function rewritePublishedReport(output: string, mutate: (markdown: string) => string): void {
+  const markerPath = join(output, "complete.json");
+  const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+    report: { ref: string; sha256: string };
+    outputs: { report_md: { ref: string; sha256: string } };
+  };
+  const reportPath = join(output, marker.report.ref);
+  const markdown = mutate(readFileSync(reportPath, "utf8"));
+  const digest = sha256(markdown);
+  writeFileSync(reportPath, markdown, { mode: 0o600 });
+  marker.report.sha256 = digest;
+  marker.outputs.report_md.sha256 = digest;
+  writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
+}
+
 function runRealBundleVerifier(input: {
   root: string;
   bundle: PolicyBenchBundle;
@@ -1745,6 +1820,38 @@ describe("authoritative policy measurement pipeline", () => {
     ]);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.result_json))).toBe(false);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.report_md))).toBe(false);
+  }, 30_000);
+
+  test("persists every raw paired effect from the assembled 30-case Bench fixture", async () => {
+    const assembled = await assemble();
+    const pass = assembled.result.passes.find((row) => row.pass_id === "evidence.fact-location");
+    const summary = pass?.evidence.lane_summaries.find((row) => row.lane === "stateless-bench");
+    if (summary === undefined) throw new Error("missing 30-case Bench summary");
+    const statistics = summary.statistics as unknown as {
+      raw_effects: number[];
+      case_effects: Array<{ case_id: string; repeat: number; error_reduction: number }>;
+    };
+
+    // This must fail if the producer reduces 90 raw paired case effects to three repeat means.
+    expect(statistics.case_effects).toHaveLength(90);
+    expect(statistics.raw_effects).toHaveLength(90);
+    expect(statistics.case_effects.map((effect) => effect.error_reduction)).toEqual(
+      statistics.raw_effects,
+    );
+  }, 30_000);
+
+  test("does not fabricate repeat directions for a complete no-opportunity Bench lane", async () => {
+    const assembled = await assemble();
+    const pass = assembled.result.passes.find((row) => row.pass_id === "judgment.hypothetical");
+    const summary = pass?.evidence.lane_summaries.find((row) => row.lane === "stateless-bench");
+    if (summary === undefined) throw new Error("missing no-opportunity Bench summary");
+    expect(summary.statistics).toMatchObject({
+      case_effects: [],
+      raw_effects: [],
+      mean_error_reduction: 0,
+      median_error_reduction: 0,
+      repeat_directions: [],
+    });
   }, 30_000);
 
   test("keeps singleton losses unique when a necessary overlapping cofactor has the same group loss", async () => {
@@ -2003,10 +2110,21 @@ describe("authoritative policy measurement pipeline", () => {
         ]);
         expect(Object.keys(summary.statistics).sort()).toEqual([
           "adjusted_p_value",
+          "blocking_count_delta",
+          "case_effects",
+          "error_components",
           "interval",
+          "mean_error_reduction",
+          "median_error_reduction",
           "p_value",
+          "precision_delta",
           "raw_effects",
+          "recall_delta",
+          "repeat_directions",
+          "severity_deltas",
+          "verdict_deltas",
         ]);
+        expect(Array.isArray(summary.limitations)).toBe(true);
         expect(Array.isArray(summary.exclusions)).toBe(true);
         expect(Array.isArray(summary.raw_evidence_refs)).toBe(true);
       }
@@ -2043,10 +2161,21 @@ describe("authoritative policy measurement pipeline", () => {
         ]);
         expect(Object.keys(summary.statistics).sort()).toEqual([
           "adjusted_p_value",
+          "blocking_count_delta",
+          "case_effects",
+          "error_components",
           "interval",
+          "mean_error_reduction",
+          "median_error_reduction",
           "p_value",
+          "precision_delta",
           "raw_effects",
+          "recall_delta",
+          "repeat_directions",
+          "severity_deltas",
+          "verdict_deltas",
         ]);
+        expect(Array.isArray(summary.limitations)).toBe(true);
         expect(Array.isArray(summary.exclusions)).toBe(true);
         expect(Array.isArray(summary.raw_evidence_refs)).toBe(true);
       }
@@ -2107,6 +2236,32 @@ describe("authoritative policy measurement pipeline", () => {
     expect(markdown).toContain(
       "Lane stateless-bench: primary=false; descriptive=true; eligible=true; authoritative=true",
     );
+    for (const summary of stateful.evidence.lane_summaries) {
+      const line = markdown
+        .split("\n")
+        .find((row) =>
+          row.includes(
+            `Lane ${summary.lane}: primary=${summary.primary}; descriptive=${summary.descriptive};`,
+          ),
+        );
+      expect(line).toContain(
+        `interval=[${summary.statistics.interval.lo},${summary.statistics.interval.hi}]`,
+      );
+      expect(line).toContain("exclusions=none");
+    }
+    const interactionWithExclusion = structuredClone(assembled.result);
+    const firstInteraction = interactionWithExclusion.interactions[0];
+    const firstInteractionLane = firstInteraction?.lane_summaries.find(
+      (summary) => summary.lane === "stateless-bench",
+    );
+    if (firstInteractionLane === undefined) {
+      throw new Error("missing stateless interaction lane");
+    }
+    firstInteractionLane.exclusions = [{ lane: "artifact", code: "artifact-mismatch", count: 1 }];
+    const interactionMarkdown = renderPolicyMeasurement(
+      PolicyMeasurementSchema.parse(interactionWithExclusion),
+    );
+    expect(interactionMarkdown).toContain("exclusions=artifact:artifact-mismatch=1");
     const dogfoodRefs = [
       fixture.prereg.dogfood.input_manifest_ref,
       fixture.prereg.dogfood.attestation_ref,
@@ -2595,12 +2750,297 @@ describe("authoritative policy measurement pipeline", () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, passes: 18 });
   }, 120_000);
 
+  test("publishes all 30 paired case effects and their complete statistical Markdown dossier", () => {
+    // This is a closed 30-case canonical Bench stack, not a synthetic statistics object. The
+    // singleton profile has 16 clean cases with loss and 14 seeded cases without loss on every
+    // repeat, so both the 90 raw effects and the collapsed 30-case statistics stay non-vacuous.
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true, benchSingletonLoss: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+
+    const marker = JSON.parse(readFileSync(join(output, "complete.json"), "utf8")) as {
+      result: { ref: string };
+      outputs: { report_md: { ref: string } };
+    };
+    const result = PolicyMeasurementSchema.parse(
+      JSON.parse(readFileSync(join(output, marker.result.ref), "utf8")),
+    );
+    const markdown = readFileSync(join(output, marker.outputs.report_md.ref), "utf8");
+    const pass = result.passes.find((row) => row.pass_id === "evidence.fact-location");
+    const summary = pass?.evidence.lane_summaries.find((row) => row.lane === "stateless-bench");
+    if (summary === undefined) throw new Error("missing real 30-case Bench summary");
+    expect(summary.limitations).toEqual([
+      "case-effects-are-opportunity-conditioned",
+      "precision-denominator-unavailable",
+      "recall-denominator-unavailable",
+    ]);
+    const statistics = summary.statistics as unknown as {
+      raw_effects: number[];
+      case_effects: Array<{
+        case_id: string;
+        repeat: number;
+        error_reduction: number;
+        baseline_dossier: { ref: string; sha256: string };
+        ablated_dossier: { ref: string; sha256: string };
+      }>;
+      mean_error_reduction: number;
+      median_error_reduction: number;
+      repeat_directions: Array<{ repeat: number; mean_error_reduction: number; direction: string }>;
+      error_components: {
+        blocking_fp: { baseline: number; ablated: number; delta: number };
+        blocking_fn: { baseline: number; ablated: number; delta: number };
+      };
+      precision_delta: { baseline: number | null; ablated: number | null; delta: number | null };
+      recall_delta: { baseline: number | null; ablated: number | null; delta: number | null };
+      blocking_count_delta: { baseline: number; ablated: number; delta: number };
+      severity_deltas: Record<string, { baseline: number; ablated: number; delta: number }>;
+      verdict_deltas: Record<string, { baseline: number; ablated: number; delta: number }>;
+      interval: { lo: number; hi: number };
+      p_value: number;
+      adjusted_p_value: number;
+    };
+
+    // Removing case-level persistence, collapsing it to three repeat means, or omitting either
+    // source dossier must make this assertion fail.
+    expect(Array.isArray(statistics.case_effects)).toBe(true);
+    expect(statistics.case_effects).toHaveLength(90);
+    expect(statistics.raw_effects).toEqual([
+      ...Array.from({ length: 48 }, () => 1),
+      ...Array.from({ length: 42 }, () => 0),
+    ]);
+    expect(statistics.mean_error_reduction).toBe(8 / 15);
+    expect(statistics.median_error_reduction).toBe(1);
+    expect(statistics.repeat_directions).toEqual([
+      { repeat: 1, mean_error_reduction: 8 / 15, direction: "positive" },
+      { repeat: 2, mean_error_reduction: 8 / 15, direction: "positive" },
+      { repeat: 3, mean_error_reduction: 8 / 15, direction: "positive" },
+    ]);
+    expect(statistics.error_components).toEqual({
+      blocking_fp: { baseline: 0, ablated: 48, delta: 48 },
+      blocking_fn: { baseline: 42, ablated: 42, delta: 0 },
+    });
+    // The canonical fixture has only truth-effect counts, not per-result TP/FP/FN denominators,
+    // so precision and recall are explicitly unavailable rather than inferred from truth effects.
+    expect(statistics.precision_delta).toEqual({ baseline: null, ablated: null, delta: null });
+    expect(statistics.recall_delta).toEqual({ baseline: null, ablated: null, delta: null });
+    expect(statistics.blocking_count_delta).toEqual({ baseline: 0, ablated: 90, delta: 90 });
+    expect(statistics.severity_deltas).toEqual({
+      critical: { baseline: 0, ablated: 0, delta: 0 },
+      warn: { baseline: 0, ablated: 90, delta: 90 },
+      info: { baseline: 90, ablated: 0, delta: -90 },
+    });
+    expect(statistics.verdict_deltas).toEqual({
+      pass: { baseline: 90, ablated: 0, delta: -90 },
+      soft_pass: { baseline: 0, ablated: 90, delta: 90 },
+      fail: { baseline: 0, ablated: 0, delta: 0 },
+    });
+    for (const effect of statistics.case_effects) {
+      expect(markdown).toContain(
+        `case=${effect.case_id}; repeat=${effect.repeat}; error reduction=${effect.error_reduction}; baseline dossier=\`${effect.baseline_dossier.ref}\` (${effect.baseline_dossier.sha256}); ablated dossier=\`${effect.ablated_dossier.ref}\` (${effect.ablated_dossier.sha256})`,
+      );
+    }
+    expect(markdown).toContain(`Raw effects: ${statistics.raw_effects.join(", ")}`);
+    expect(markdown).toContain(
+      `Raw p-value: ${statistics.p_value}; adjusted p-value: ${statistics.adjusted_p_value}; 95% interval: [${statistics.interval.lo}, ${statistics.interval.hi}]`,
+    );
+    expect(markdown).toContain(
+      "limitations=case-effects-are-opportunity-conditioned,precision-denominator-unavailable,recall-denominator-unavailable",
+    );
+    expect(markdown).toContain("Mean paired error reduction: 0.5333333333333333");
+    expect(markdown).toContain("Median paired error reduction: 1");
+    expect(markdown).toContain(
+      "Repeat directions: repeat 1=positive (mean=0.5333333333333333), repeat 2=positive (mean=0.5333333333333333), repeat 3=positive (mean=0.5333333333333333)",
+    );
+    expect(markdown).toContain(
+      "Error components FP baseline/ablated/delta=0/48/48; FN baseline/ablated/delta=42/42/0",
+    );
+    expect(markdown).toContain(
+      "Precision baseline/ablated/delta=none/none/none; recall baseline/ablated/delta=none/none/none",
+    );
+    expect(markdown).toContain("Blocking count baseline/ablated/delta=0/90/90");
+    expect(markdown).toContain("Severity deltas critical=0/0/0; warn=0/90/90; info=90/0/-90");
+    expect(markdown).toContain("Verdict deltas pass=90/0/-90; soft-pass=0/90/90; fail=0/0/0");
+  }, 120_000);
+
+  test("publishes finite precision and recall deltas from non-zero paired case denominators", () => {
+    // This uses the same nested authoritative 30-case stack, but supplies CaseResult counts with
+    // non-zero TP/FP/FN denominators on both sides of the singleton comparison. A null-only
+    // fixture would not prove either calculation or Markdown parity.
+    const real = materializeRealBenchFixture({
+      nestedBenchBundle: true,
+      benchSingletonLoss: true,
+      benchFiniteRates: true,
+    });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+
+    const marker = JSON.parse(readFileSync(join(output, "complete.json"), "utf8")) as {
+      result: { ref: string };
+      outputs: { report_md: { ref: string } };
+    };
+    const result = PolicyMeasurementSchema.parse(
+      JSON.parse(readFileSync(join(output, marker.result.ref), "utf8")),
+    );
+    const markdown = readFileSync(join(output, marker.outputs.report_md.ref), "utf8");
+    const pass = result.passes.find((row) => row.pass_id === "evidence.fact-location");
+    const summary = pass?.evidence.lane_summaries.find((row) => row.lane === "stateless-bench");
+    if (summary === undefined) throw new Error("missing finite-rate Bench summary");
+
+    expect(summary.statistics.precision_delta).toEqual({
+      baseline: 1,
+      ablated: 1 / 2,
+      delta: -1 / 2,
+    });
+    expect(summary.statistics.recall_delta).toEqual({
+      baseline: 2 / 3,
+      ablated: 1 / 3,
+      delta: -1 / 3,
+    });
+    expect(markdown).toContain(
+      "Precision baseline/ablated/delta=1/0.5/-0.5; recall baseline/ablated/delta=0.6666666666666666/0.3333333333333333/-0.3333333333333333",
+    );
+  }, 120_000);
+
   test("reverifies a nested parseable Bench and Rig publication from copied sources", () => {
     const real = materializeRealBenchFixture({ nestedBenchBundle: true });
     chmodSync(join(real.fixture.root, real.prereg.outputs.attempt_dir), 0o700);
     const result = runRealPolicyStats(real);
 
     expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+  }, 120_000);
+
+  test("rejects a marker-rebound Markdown drift from the verified JSON projection", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedReport(output, (markdown) => `${markdown}unbound report drift\n`);
+
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Bench C5 statistic substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedProjection(output, (result) => {
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "judgment.hypothetical",
+      );
+      const evidence = pass?.evidence as Record<string, unknown> | undefined;
+      const summary = (
+        evidence?.lane_summaries as Array<Record<string, unknown>> | undefined
+      )?.find((row) => row.lane === "stateless-bench");
+      if (pass === undefined || evidence === undefined || summary === undefined) {
+        throw new Error("missing no-opportunity Bench C5 fixture");
+      }
+      const substituted = {
+        ...(summary.statistics as Record<string, unknown>),
+        case_effects: [],
+        raw_effects: [123],
+        mean_error_reduction: 123,
+        median_error_reduction: 123,
+        repeat_directions: [],
+      };
+      summary.statistics = substituted;
+      evidence.statistics = substituted;
+    });
+
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a marker-rebound Holm adjustment detached from verified Bench effects", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true, benchSingletonLoss: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedProjection(output, (result) => {
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "evidence.fact-location",
+      );
+      const evidence = pass?.evidence as Record<string, unknown> | undefined;
+      const summary = (
+        evidence?.lane_summaries as Array<Record<string, unknown>> | undefined
+      )?.find((row) => row.lane === "stateless-bench");
+      const statistics = summary?.statistics as Record<string, unknown> | undefined;
+      if (evidence === undefined || summary === undefined || statistics === undefined) {
+        throw new Error("missing published corrected Bench lane");
+      }
+      expect(statistics.p_value).toBeLessThan(1);
+      statistics.adjusted_p_value = 1;
+      evidence.statistics = statistics;
+    });
+
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Rig C5 statistic substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedProjection(output, (result) => {
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "history.fp-signature",
+      );
+      const evidence = pass?.evidence as Record<string, unknown> | undefined;
+      const summary = (
+        evidence?.lane_summaries as Array<Record<string, unknown>> | undefined
+      )?.find((row) => row.lane === "stateful-rig");
+      if (evidence === undefined || summary === undefined) {
+        throw new Error("missing published Rig C5 lane");
+      }
+      const substituted = {
+        ...(summary.statistics as Record<string, unknown>),
+        raw_effects: [123],
+        mean_error_reduction: 123,
+        median_error_reduction: 123,
+      };
+      summary.statistics = substituted;
+      evidence.statistics = substituted;
+    });
+
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Dogfood declined substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedDogfoodSnapshot(output, (snapshot) => {
+      snapshot.declined = 1;
+      snapshot.exclusions = { declined: 1 };
+    });
+    rewritePublishedProjection(output, (result) => {
+      for (const pass of result.passes as Array<Record<string, unknown>>) {
+        const evidence = pass.evidence as Record<string, unknown> | undefined;
+        const dogfood = (
+          evidence?.lane_summaries as Array<Record<string, unknown>> | undefined
+        )?.find((summary) => summary.lane === "dogfood");
+        if (evidence === undefined || dogfood === undefined) {
+          throw new Error("missing published Dogfood lane fixture");
+        }
+        const exclusions = [{ lane: "dogfood", code: "declined", count: 1 }];
+        evidence.exclusions = exclusions;
+        dogfood.exclusions = exclusions;
+      }
+    });
+
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
   }, 120_000);
 
   test("rejects a self-consistent published singleton source substitution", () => {

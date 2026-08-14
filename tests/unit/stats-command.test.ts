@@ -29,13 +29,21 @@ import {
 } from "../../src/core/policy/measurement-contract.ts";
 import { PolicyMeasurementPreregistrationSchema } from "../../src/schemas/policy-measurement-preregistration.ts";
 import {
+  PolicyDogfoodAttestationSchema,
   PolicyDogfoodInputManifestSchema,
   PolicyMeasurementSchema,
+  PolicyRigEvidenceSchema,
 } from "../../src/schemas/policy-measurement.ts";
 import { classifyPolicyPasses } from "../../src/stats/policy/classify.ts";
+import { policyDogfoodAttestationPreflight } from "../../src/stats/policy/dogfood-attestation.ts";
+import { POLICY_DOGFOOD_EXCLUSION_CODES } from "../../src/stats/policy/dogfood-snapshot.ts";
+import {
+  holmAdjustPolicyFamilies,
+  policyBenchStatistics,
+  policyIndependentSequenceStatistics,
+} from "../../src/stats/policy/statistics.ts";
 import {
   rigFixtureIdentityInventories,
-  validPolicyDogfoodSnapshot,
   validPolicyRigEvidence,
 } from "../fixtures/policy-publication.ts";
 
@@ -78,7 +86,16 @@ function digest(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function policyPreregistration(out: string, statefulManifest: { ref: string; sha256: string }) {
+function policyPreregistration(
+  out: string,
+  statefulManifest: { ref: string; sha256: string },
+  dogfood: {
+    input_manifest_ref: string;
+    input_manifest_sha256: string;
+    attestation_ref: string;
+    attestation_sha256: string;
+  },
+) {
   const sha = "a".repeat(64);
   return PolicyMeasurementPreregistrationSchema.parse({
     schema: "reviewgate.policy-measurement.preregistration.v1",
@@ -137,10 +154,7 @@ function policyPreregistration(out: string, statefulManifest: { ref: string; sha
     dogfood: {
       since: "2026-08-01T00:00:00.000Z",
       until: "2026-08-12T09:00:00.000Z",
-      input_manifest_ref: "bench/inputs/dogfood.json",
-      input_manifest_sha256: sha,
-      attestation_ref: "bench/attestations/dogfood.json",
-      attestation_sha256: sha,
+      ...dogfood,
       min_dispositions: 5,
       min_runs: 3,
     },
@@ -184,13 +198,19 @@ function policyPreregistration(out: string, statefulManifest: { ref: string; sha
 }
 
 type FixtureSource = {
-  kind: "preregistration" | "bench" | "rig" | "dogfood";
+  kind:
+    | "preregistration"
+    | "bench"
+    | "rig"
+    | "dogfood-input"
+    | "dogfood-attestation"
+    | "dogfood-audit";
   ref: string;
   sha256: string;
 };
 
 function laneRefs(sources: readonly FixtureSource[]) {
-  const binding = (kind: FixtureSource["kind"]): string => {
+  const binding = (kind: "bench" | "rig" | "dogfood-input"): string => {
     const source = sources.find((row) => row.kind === kind);
     if (source === undefined) throw new Error(`fixture source missing for ${kind}`);
     return source.ref;
@@ -198,24 +218,92 @@ function laneRefs(sources: readonly FixtureSource[]) {
   return {
     "stateless-bench": binding("bench"),
     "stateful-rig": binding("rig"),
-    dogfood: binding("dogfood"),
+    dogfood: binding("dogfood-input"),
   };
+}
+
+function fixtureDogfoodSources(root: string) {
+  const rows = [
+    {
+      run_id: "fixture-run",
+      iter: 1,
+      finding_signature: "fixture-signature",
+      disposition: "declined" as const,
+    },
+  ];
+  const manifest = PolicyDogfoodInputManifestSchema.parse({
+    schema: "reviewgate.policy-dogfood-input-manifest.v1",
+    since: "2026-08-01T00:00:00.000Z",
+    until: "2026-08-12T09:00:00.000Z",
+    entries: [],
+  });
+  const manifestBytes = canonicalJson(manifest);
+  const input_manifest_ref = "bench/inputs/dogfood.json";
+  const input_manifest_sha256 = digest(manifestBytes);
+  const attestation = PolicyDogfoodAttestationSchema.parse({
+    schema: "reviewgate.policy-dogfood-attestation.v1",
+    actor: "fixture",
+    attested_at: "2026-08-12T08:00:00.000Z",
+    challenge_sha256: policyDogfoodAttestationPreflight({
+      manifest,
+      actor: "fixture",
+      rows,
+    }).candidateSha256,
+    input_manifest_sha256,
+    rows,
+  });
+  const attestationBytes = canonicalJson(attestation);
+  const attestation_ref = "bench/attestations/dogfood.json";
+  const attestation_sha256 = digest(attestationBytes);
+  for (const [ref, bytes] of [
+    [input_manifest_ref, manifestBytes],
+    [attestation_ref, attestationBytes],
+  ] as const) {
+    mkdirSync(dirname(join(root, ref)), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, ref), bytes, { mode: 0o600 });
+  }
+  return {
+    preregistration: {
+      input_manifest_ref,
+      input_manifest_sha256,
+      attestation_ref,
+      attestation_sha256,
+    },
+    snapshot: {
+      schema: "reviewgate.policy-dogfood-snapshot.v1" as const,
+      input_manifest: { ref: input_manifest_ref, sha256: input_manifest_sha256 },
+      attestation: { ref: attestation_ref, sha256: attestation_sha256 },
+      declined: 0,
+      labels: [],
+      exclusions: Object.fromEntries(
+        POLICY_DOGFOOD_EXCLUSION_CODES.map((code) => [code, code === "incomplete-trace" ? 1 : 0]),
+      ),
+    },
+    sources: [
+      { kind: "dogfood-input" as const, ref: input_manifest_ref, sha256: input_manifest_sha256 },
+      {
+        kind: "dogfood-attestation" as const,
+        ref: attestation_ref,
+        sha256: attestation_sha256,
+      },
+    ],
+  };
+}
+
+function fixtureStatistics() {
+  return policyBenchStatistics([], 1).statistics;
 }
 
 function emptyEvidence(pass: (typeof POLICY_PASSES)[number], refs: ReturnType<typeof laneRefs>) {
   const opportunities = { cases: 0, signatures: 0, turns: 0, runs: 0 };
+  const dogfoodExclusions = [{ lane: "dogfood" as const, code: "incomplete-trace", count: 1 }];
   const truthEffects = {
     baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
     ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
     error_reduction: 0,
   };
   const traceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
-  const statistics = {
-    raw_effects: [],
-    interval: { lo: 0, hi: 0 },
-    p_value: 1,
-    adjusted_p_value: 1,
-  };
+  const statistics = fixtureStatistics();
   const summary = (lane: "stateless-bench" | "stateful-rig" | "dogfood", primary: boolean) => ({
     lane,
     primary,
@@ -223,10 +311,11 @@ function emptyEvidence(pass: (typeof POLICY_PASSES)[number], refs: ReturnType<ty
     eligible: true,
     authoritative: true,
     opportunities,
-    exclusions: [],
+    exclusions: lane === "dogfood" ? dogfoodExclusions : [],
     truth_effects: truthEffects,
     trace_totals: traceTotals,
     statistics,
+    limitations: ["fixture-synthetic"],
     raw_evidence_refs: [refs[lane]],
   });
   return {
@@ -241,7 +330,7 @@ function emptyEvidence(pass: (typeof POLICY_PASSES)[number], refs: ReturnType<ty
     eligibility: { stateless: false, stateful: false, dogfood: false },
     authority: { stateless: false, stateful: false, dogfood: false },
     opportunities,
-    exclusions: [],
+    exclusions: dogfoodExclusions,
     truth_effects: truthEffects,
     trace_totals: traceTotals,
     statistics,
@@ -269,6 +358,7 @@ function publishableMeasurement(sources: readonly FixtureSource[], rigBundle: un
   const refs = laneRefs(sources);
   const bindingsByRef = new Map(sources.map(({ ref, sha256 }) => [ref, { ref, sha256 }]));
   const rigInventories = rigFixtureIdentityInventories(rigBundle);
+  const rig = PolicyRigEvidenceSchema.parse(rigBundle);
   const passes = POLICY_PASSES.map((pass) => ({
     pass_id: pass.id,
     classification: "inconclusive" as const,
@@ -296,12 +386,7 @@ function publishableMeasurement(sources: readonly FixtureSource[], rigBundle: un
       ablated: { blocking_fp: 0, blocking_fn: worsened - improved, blocking_tp: 0 },
       error_reduction: improved - worsened,
     };
-    const statistics = {
-      raw_effects: [],
-      interval: { lo: 0, hi: 0 },
-      p_value: 1,
-      adjusted_p_value: 1,
-    };
+    const statistics = fixtureStatistics();
     const summary = (lane: "stateless-bench" | "stateful-rig", primary: boolean) => ({
       lane,
       primary,
@@ -313,6 +398,7 @@ function publishableMeasurement(sources: readonly FixtureSource[], rigBundle: un
       truth_effects: truthEffects,
       trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
       statistics,
+      limitations: ["fixture-synthetic"],
       raw_evidence_refs: [refs[lane]],
     });
     const artifact = stateful ? bindingsByRef.get(refs[primaryLane]) : binding;
@@ -353,6 +439,81 @@ function publishableMeasurement(sources: readonly FixtureSource[], rigBundle: un
       },
     };
   });
+  const aggregateTruth = (
+    rows: readonly {
+      truth_effects: {
+        baseline: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+        ablated: { blocking_fp: number; blocking_fn: number; blocking_tp: number };
+      };
+    }[],
+  ) =>
+    rows.reduce(
+      (total, row) => ({
+        baseline: {
+          blocking_fp: total.baseline.blocking_fp + row.truth_effects.baseline.blocking_fp,
+          blocking_fn: total.baseline.blocking_fn + row.truth_effects.baseline.blocking_fn,
+          blocking_tp: total.baseline.blocking_tp + row.truth_effects.baseline.blocking_tp,
+        },
+        ablated: {
+          blocking_fp: total.ablated.blocking_fp + row.truth_effects.ablated.blocking_fp,
+          blocking_fn: total.ablated.blocking_fn + row.truth_effects.ablated.blocking_fn,
+          blocking_tp: total.ablated.blocking_tp + row.truth_effects.ablated.blocking_tp,
+        },
+      }),
+      {
+        baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+        ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      },
+    );
+  for (const [index, pass] of passes.entries()) {
+    if (POLICY_MEASUREMENT_LANES[pass.pass_id] !== "stateful-rig") continue;
+    const sequences = rig.sequences.filter((sequence) => sequence.pass_id === pass.pass_id);
+    const statistics = policyIndependentSequenceStatistics(
+      sequences.map((sequence) => sequence.truth_effects.error_reduction),
+      1 + index,
+      aggregateTruth(sequences),
+    );
+    pass.evidence.statistics = statistics;
+    const summary = pass.evidence.lane_summaries.find((row) => row.lane === "stateful-rig");
+    if (summary === undefined) throw new Error(`missing Rig lane for ${pass.pass_id}`);
+    summary.statistics = statistics;
+  }
+  const groups = rig.sequences.flatMap((sequence) =>
+    sequence.history_interaction === null ? [] : [sequence.history_interaction],
+  );
+  for (const [index, interaction] of interactions.entries()) {
+    if (interaction.primary_lane !== "stateful-rig") continue;
+    const statistics = policyIndependentSequenceStatistics(
+      groups.map((group) => group.truth_effects.error_reduction),
+      1 + index,
+      aggregateTruth(groups),
+    );
+    interaction.evidence.statistics = statistics;
+    const summary = interaction.lane_summaries.find((row) => row.lane === "stateful-rig");
+    if (summary === undefined) throw new Error("missing Rig interaction lane");
+    summary.statistics = statistics;
+  }
+  for (const [index, pass] of passes.entries()) {
+    const summary = pass.evidence.lane_summaries.find((row) => row.lane === "dogfood");
+    if (summary === undefined) throw new Error(`missing Dogfood lane for ${pass.pass_id}`);
+    summary.statistics = policyIndependentSequenceStatistics([], 1 + index);
+  }
+  const adjusted = holmAdjustPolicyFamilies({
+    singleton: passes.map((pass) => pass.evidence.statistics.p_value),
+    interaction: interactions.map((interaction) => interaction.evidence.statistics.p_value),
+  });
+  for (const [index, pass] of passes.entries()) {
+    pass.evidence.statistics.adjusted_p_value = adjusted.singleton[index] ?? 1;
+    const primary = pass.evidence.lane_summaries.find((summary) => summary.primary);
+    if (primary === undefined) throw new Error(`missing primary lane for ${pass.pass_id}`);
+    primary.statistics.adjusted_p_value = adjusted.singleton[index] ?? 1;
+  }
+  for (const [index, interaction] of interactions.entries()) {
+    interaction.evidence.statistics.adjusted_p_value = adjusted.interaction[index] ?? 1;
+    const primary = interaction.lane_summaries.find((summary) => summary.primary);
+    if (primary === undefined) throw new Error("missing primary interaction lane");
+    primary.statistics.adjusted_p_value = adjusted.interaction[index] ?? 1;
+  }
   for (const pass of passes) {
     const passRefs = new Set(
       pass.evidence.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
@@ -429,13 +590,16 @@ function policyRuntime(root: string, out: string) {
   const benchBytes = canonicalJson({ schema: "fixture.bench.v1" });
   const rigRef = "rig/scenarios.json";
   const rigBytes = canonicalJson({ schema: "fixture.rig-source.v1" });
-  const preregistration = policyPreregistration(out, {
-    ref: rigRef,
-    sha256: digest(rigBytes),
-  });
+  const dogfood = fixtureDogfoodSources(root);
+  const preregistration = policyPreregistration(
+    out,
+    {
+      ref: rigRef,
+      sha256: digest(rigBytes),
+    },
+    dogfood.preregistration,
+  );
   const bytes = canonicalJson(preregistration);
-  const dogfoodRef = "dogfood/source.json";
-  const dogfoodBytes = canonicalJson({ schema: "fixture.dogfood-source.v1" });
   const path = join(root, ref);
   mkdirSync(join(root, "bench", "preregistrations"), { recursive: true });
   writeFileSync(path, bytes, { mode: 0o644 });
@@ -443,16 +607,12 @@ function policyRuntime(root: string, out: string) {
   mkdirSync(join(root, out), { recursive: true, mode: 0o700 });
   writeFileSync(join(root, benchRef), benchBytes, { mode: 0o600 });
   const benchSource = { kind: "bench" as const, ref: benchRef, sha256: digest(benchBytes) };
-  for (const [inputRef, inputBytes] of [
-    [rigRef, rigBytes],
-    [dogfoodRef, dogfoodBytes],
-  ] as const) {
+  for (const [inputRef, inputBytes] of [[rigRef, rigBytes]] as const) {
     mkdirSync(dirname(join(root, inputRef)), { recursive: true, mode: 0o700 });
     writeFileSync(join(root, inputRef), inputBytes, { mode: 0o600 });
   }
   const rigSource = { kind: "rig" as const, ref: rigRef, sha256: digest(rigBytes) };
-  const dogfoodSource = { kind: "dogfood" as const, ref: dogfoodRef, sha256: digest(dogfoodBytes) };
-  const sources = [source, benchSource, rigSource, dogfoodSource].sort((left, right) =>
+  const sources = [source, benchSource, rigSource, ...dogfood.sources].sort((left, right) =>
     left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0,
   );
   const rigBundle = validPolicyRigEvidence({
@@ -471,7 +631,7 @@ function policyRuntime(root: string, out: string) {
           sources,
           publication: {
             rig_bundle: rigBundle,
-            dogfood_snapshot: validPolicyDogfoodSnapshot(),
+            dogfood_snapshot: dogfood.snapshot,
           },
         } as never;
       },
@@ -498,8 +658,9 @@ function capturedLifecycleRuntime(root: string, out: string) {
   const auditRef = ".reviewgate/audit/closed.jsonl";
   const bench = canonicalJson({ schema: "fixture.bench.v1" });
   const rig = canonicalJson({ schema: "fixture.rig-source.v1" });
+  const dogfood = fixtureDogfoodSources(root);
   const preregistration = canonicalJson(
-    policyPreregistration(out, { ref: rigRef, sha256: digest(rig) }),
+    policyPreregistration(out, { ref: rigRef, sha256: digest(rig) }, dogfood.preregistration),
   );
   const audit = `${JSON.stringify({ schema: "reviewgate.audit.v1", event: "run.complete" })}\n`;
   for (const [ref, bytes, mode] of [
@@ -515,7 +676,8 @@ function capturedLifecycleRuntime(root: string, out: string) {
     { kind: "preregistration" as const, ref: preregRef, sha256: digest(preregistration) },
     { kind: "bench" as const, ref: benchRef, sha256: digest(bench) },
     { kind: "rig" as const, ref: rigRef, sha256: digest(rig) },
-    { kind: "dogfood" as const, ref: auditRef, sha256: digest(audit) },
+    { kind: "dogfood-audit" as const, ref: auditRef, sha256: digest(audit) },
+    ...dogfood.sources,
   ].sort((left, right) => (left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0));
   const rigBundle = validPolicyRigEvidence({
     scenarioManifest: { ref: rigRef, sha256: digest(rig) },
@@ -530,7 +692,7 @@ function capturedLifecycleRuntime(root: string, out: string) {
           sources,
           publication: {
             rig_bundle: rigBundle,
-            dogfood_snapshot: validPolicyDogfoodSnapshot(),
+            dogfood_snapshot: dogfood.snapshot,
           },
         } as never;
       },
@@ -672,7 +834,7 @@ it("publishes one complete immutable policy bundle only after successful assembl
   const published = join(root, out);
   expect(result.stderr).toBe("");
   expect(result.exitCode).toBe(0);
-  expect(readdirSync(join(published, "artifacts", "policy-measurement-sources"))).toHaveLength(4);
+  expect(readdirSync(join(published, "artifacts", "policy-measurement-sources"))).toHaveLength(5);
   expect(lstatSync(join(published, "result.json")).mode & 0o7777).toBe(0o600);
   expect(lstatSync(join(published, "report.md")).mode & 0o7777).toBe(0o600);
   expect(lstatSync(join(published, "complete.json")).mode & 0o7777).toBe(0o600);
@@ -688,7 +850,7 @@ it("publishes one complete immutable policy bundle only after successful assembl
   expect(
     PolicyMeasurementSchema.parse(JSON.parse(readFileSync(join(published, "result.json"), "utf8")))
       .artifacts.inventory,
-  ).toHaveLength(4);
+  ).toHaveLength(5);
   expect(lstatSync(path).ino).toBe(sourceBefore.ino);
   expect(readFileSync(path, "utf8")).toBe(canonicalJson(preregistration));
   expect(
