@@ -1430,7 +1430,7 @@ map authority errors to exit 1, omit a required CLI flag, route bare `stats` int
 accept a non-TTY/EOF/mismatched attestation, and skip the preflight rerun after manifest swap. Named
 tests must kill every mutant; restore SHAs.
 
-- [ ] **Step 9: Review and commit**
+- [x] **Step 9: Review and commit**
 
 ```bash
 git commit -m "feat(cli): expose policy measurement commands"
