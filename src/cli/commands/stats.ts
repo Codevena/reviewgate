@@ -1170,7 +1170,119 @@ function verifyPublishedRigC5StatisticsClosure(input: {
   return true;
 }
 
-/** Recompute the frozen Dogfood disposition snapshot only from copied manifest, attestation, audit, and trace bytes. */
+function compareCodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function publishedDogfoodExclusions(input: z.infer<typeof PolicyDogfoodSnapshotSchema>) {
+  const rows: Array<{ lane: "dogfood"; code: string; count: number }> = [];
+  const add = (code: string, count: number): void => {
+    if (count > 0) rows.push({ lane: "dogfood", code, count });
+  };
+  add("missing-decision", input.exclusions["missing-decision"] ?? 0);
+  add("incomplete-trace", input.exclusions["incomplete-trace"] ?? 0);
+  add("ambiguous-run-iter", input.exclusions["ambiguous-run-iter"] ?? 0);
+  add("signature-absent-lineage", input.exclusions["signature-absent-lineage"] ?? 0);
+  add("declined", input.declined);
+  add("post-registered-at", input.exclusions["post-registered-at"] ?? 0);
+  add(
+    "historical-unsigned-decision",
+    (input.exclusions["agent-only-decision"] ?? 0) + (input.exclusions["missing-attestation"] ?? 0),
+  );
+  return rows;
+}
+
+/**
+ * Reconstruct the complete descriptive Dogfood lane from the already reverified snapshot. This
+ * deliberately consumes values, not paths: the snapshot harvest above is the only copied-source
+ * read boundary in final publication verification.
+ */
+function publishedDogfoodLaneProjection(input: {
+  snapshot: z.infer<typeof PolicyDogfoodSnapshotSchema>;
+  manifest: z.infer<typeof PolicyDogfoodInputManifestSchema>;
+  passId: PolicyPassId;
+  seed: number;
+}) {
+  const labels = input.snapshot.labels.filter((label) => label.pass_id === input.passId);
+  const grouped = new Map<string, typeof labels>();
+  const signatures = new Set<string>();
+  const rawEvidenceRefs = new Set<string>([
+    input.snapshot.input_manifest.ref,
+    input.snapshot.attestation.ref,
+  ]);
+  const traceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
+  for (const label of labels) {
+    const key = `${label.run_id}\u0000${label.iter}\u0000${label.finding_signature}`;
+    const rows = grouped.get(key) ?? [];
+    rows.push(label);
+    grouped.set(key, rows);
+    for (const signature of label.source_signatures) signatures.add(signature);
+    if (label.evaluation_result === "applied") traceTotals.applied += 1;
+    else if (label.evaluation_result === "would-apply") traceTotals.would_apply += 1;
+    else if (label.evaluation_result === "protected") traceTotals.protected += 1;
+    else traceTotals.no_opportunity += 1;
+    for (const entry of input.manifest.entries) {
+      const ownsRun =
+        entry.kind === "audit"
+          ? entry.runs.some((run) => run.run_id === label.run_id && run.iter === label.iter)
+          : entry.run_id === label.run_id && entry.iter === label.iter;
+      if (ownsRun) rawEvidenceRefs.add(entry.ref);
+    }
+  }
+  const groupedRows = [...grouped.entries()].sort(([left], [right]) =>
+    compareCodeUnits(left, right),
+  );
+  const effects = groupedRows.map(([, rows]) =>
+    rows.some((row) => row.effect === "suppressed")
+      ? -1
+      : rows.some((row) => row.effect === "preserved")
+        ? 1
+        : 0,
+  );
+  const runs = new Set(
+    groupedRows.map(([, rows]) => {
+      const label = rows[0];
+      return label === undefined ? "" : `${label.run_id}\u0000${label.iter}`;
+    }),
+  );
+  const statistics = policyIndependentSequenceStatistics(effects, input.seed);
+  const opportunities = {
+    cases: groupedRows.length,
+    signatures: signatures.size,
+    turns: 0,
+    runs: runs.size,
+  };
+  return {
+    lane: "dogfood" as const,
+    primary: false,
+    descriptive: true,
+    eligible: true,
+    authoritative: true,
+    opportunities,
+    exclusions: publishedDogfoodExclusions(input.snapshot),
+    truth_effects: {
+      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      error_reduction: 0,
+    },
+    trace_totals: traceTotals,
+    statistics,
+    limitations: [
+      "run-level-effects-are-descriptive",
+      ...(statistics.precision_delta.baseline === null
+        ? ["precision-denominator-unavailable"]
+        : []),
+      ...(statistics.recall_delta.baseline === null ? ["recall-denominator-unavailable"] : []),
+      "secondary-lane-does-not-classify",
+      ...(opportunities.cases === 0 && opportunities.turns === 0 && opportunities.runs === 0
+        ? ["no-opportunities-observed"]
+        : []),
+    ].sort(compareCodeUnits),
+    raw_evidence_refs: [...rawEvidenceRefs].sort(compareCodeUnits),
+  };
+}
+
+/** Recompute the frozen Dogfood snapshot and each complete lane projection from copied source bytes. */
 function verifyPublishedDogfoodC5Closure(input: {
   root: string;
   preregistration: PolicyMeasurementPreregistration;
@@ -1247,49 +1359,18 @@ function verifyPublishedDogfoodC5Closure(input: {
   if (canonicalJson(input.snapshot) !== canonicalJson(expected)) {
     return false;
   }
-  const exclusions = (() => {
-    const rows: Array<{ lane: "dogfood"; code: string; count: number }> = [];
-    const add = (code: string, count: number): void => {
-      if (count > 0) rows.push({ lane: "dogfood", code, count });
-    };
-    add("missing-decision", expected.exclusions["missing-decision"] ?? 0);
-    add("incomplete-trace", expected.exclusions["incomplete-trace"] ?? 0);
-    add("ambiguous-run-iter", expected.exclusions["ambiguous-run-iter"] ?? 0);
-    add("signature-absent-lineage", expected.exclusions["signature-absent-lineage"] ?? 0);
-    add("declined", expected.declined);
-    add("post-registered-at", expected.exclusions["post-registered-at"] ?? 0);
-    add(
-      "historical-unsigned-decision",
-      (expected.exclusions["agent-only-decision"] ?? 0) +
-        (expected.exclusions["missing-attestation"] ?? 0),
-    );
-    return rows;
-  })();
   for (const [index, pass] of input.result.passes.entries()) {
-    const labels = expected.labels.filter((label) => label.pass_id === pass.pass_id);
-    const grouped = new Map<string, typeof labels>();
-    for (const label of labels) {
-      const key = `${label.run_id}\u0000${label.iter}\u0000${label.finding_signature}`;
-      const rows = grouped.get(key) ?? [];
-      rows.push(label);
-      grouped.set(key, rows);
-    }
-    const effects = [...grouped.values()].map((rows) =>
-      rows.some((row) => row.effect === "suppressed")
-        ? -1
-        : rows.some((row) => row.effect === "preserved")
-          ? 1
-          : 0,
-    );
     const summary = pass.evidence.lane_summaries.find((row) => row.lane === "dogfood");
+    const projection = publishedDogfoodLaneProjection({
+      snapshot: expected,
+      manifest,
+      passId: pass.pass_id,
+      seed: input.preregistration.analysis.seed + index,
+    });
     if (
       summary === undefined ||
-      canonicalJson(pass.evidence.exclusions) !== canonicalJson(exclusions) ||
-      canonicalJson(summary.exclusions) !== canonicalJson(exclusions) ||
-      !samePublishedC5Statistics(
-        summary.statistics,
-        policyIndependentSequenceStatistics(effects, input.preregistration.analysis.seed + index),
-      )
+      canonicalJson(pass.evidence.exclusions) !== canonicalJson(projection.exclusions) ||
+      canonicalJson(summary) !== canonicalJson(projection)
     ) {
       return false;
     }

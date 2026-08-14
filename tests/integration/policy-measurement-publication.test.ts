@@ -250,7 +250,7 @@ function measurement(sources: readonly FixtureSource[], rigBundle: unknown) {
   );
   if (preregistrationSource === undefined) throw new Error("missing preregistration binding");
   const prereg = { ref: preregistrationSource.ref, sha256: preregistrationSource.sha256 };
-  const binding = (kind: "bench" | "rig" | "dogfood-input"): string => {
+  const binding = (kind: "bench" | "rig" | "dogfood-input" | "dogfood-attestation"): string => {
     const source = sources.find((row) => row.kind === kind);
     if (source === undefined) throw new Error(`missing ${kind} fixture source`);
     return source.ref;
@@ -259,6 +259,7 @@ function measurement(sources: readonly FixtureSource[], rigBundle: unknown) {
     "stateless-bench": binding("bench"),
     "stateful-rig": binding("rig"),
     dogfood: binding("dogfood-input"),
+    "dogfood-attestation": binding("dogfood-attestation"),
   };
   const fixtureStatistics = () => policyBenchStatistics([], 1).statistics;
   const bindingsByRef = new Map(sources.map(({ ref, sha256 }) => [ref, { ref, sha256 }]));
@@ -307,8 +308,20 @@ function measurement(sources: readonly FixtureSource[], rigBundle: unknown) {
               },
               trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
               statistics: fixtureStatistics(),
-              limitations: ["fixture-synthetic"],
-              raw_evidence_refs: [refs[lane]],
+              limitations:
+                lane === "dogfood"
+                  ? [
+                      "no-opportunities-observed",
+                      "precision-denominator-unavailable",
+                      "recall-denominator-unavailable",
+                      "run-level-effects-are-descriptive",
+                      "secondary-lane-does-not-classify",
+                    ]
+                  : ["fixture-synthetic"],
+              raw_evidence_refs:
+                lane === "dogfood"
+                  ? [refs.dogfood, refs["dogfood-attestation"]].sort()
+                  : [refs[lane]],
             })),
           ]
         : [
@@ -330,8 +343,20 @@ function measurement(sources: readonly FixtureSource[], rigBundle: unknown) {
               },
               trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
               statistics: fixtureStatistics(),
-              limitations: ["fixture-synthetic"],
-              raw_evidence_refs: [refs[lane]],
+              limitations:
+                lane === "dogfood"
+                  ? [
+                      "no-opportunities-observed",
+                      "precision-denominator-unavailable",
+                      "recall-denominator-unavailable",
+                      "run-level-effects-are-descriptive",
+                      "secondary-lane-does-not-classify",
+                    ]
+                  : ["fixture-synthetic"],
+              raw_evidence_refs:
+                lane === "dogfood"
+                  ? [refs.dogfood, refs["dogfood-attestation"]].sort()
+                  : [refs[lane]],
             })),
           ],
   });

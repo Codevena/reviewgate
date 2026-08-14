@@ -11,8 +11,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
+import { AuditLogger } from "../../src/audit/logger.ts";
 import { buildBenchConfig, policyBenchRequestIdentity } from "../../src/bench/runner.ts";
 import { __policyStatsTest } from "../../src/cli/commands/stats.ts";
 import {
@@ -969,6 +970,7 @@ interface RealBenchFixture {
   prereg: ReturnType<typeof PolicyMeasurementPreregistrationSchema.parse>;
   rig: PolicyRigEvidence;
   firstProfilePath: string;
+  dogfoodSourceRefs?: readonly string[];
 }
 
 interface RealBenchFixtureOptions {
@@ -978,6 +980,8 @@ interface RealBenchFixtureOptions {
   benchSingletonLoss?: boolean;
   /** Supply observed TP/FP/FN denominators on both sides of the Bench singleton comparison. */
   benchFiniteRates?: boolean;
+  /** Add one complete frozen Dogfood audit/trace pair owned by exactly one pass. */
+  dogfoodUnrelatedEntry?: boolean;
 }
 
 function realFixtureRawResponse(repeat: 1 | 2 | 3, caseId: string): string {
@@ -998,6 +1002,106 @@ function realFixtureRawResponses(input: {
     : [...raw, sha256(`real-raw-response:${input.repeat}:${input.caseId}:second`)];
 }
 
+function materializeNonemptyDogfoodSource(root: string): {
+  entries: PolicyDogfoodInputManifest["entries"];
+  rows: readonly PolicyDogfoodAttestation["rows"][number][];
+  refs: readonly string[];
+} {
+  const auditDir = join(root, ".reviewgate", "audit");
+  mkdirSync(auditDir, { recursive: true, mode: 0o700 });
+  const log = new AuditLogger(auditDir);
+  const trace = emptyAuthoritativeTrace(
+    0,
+    1,
+    [],
+    "dogfood-owned-run",
+    [sha256("dogfood-owned-response")],
+    ["evidence.fact-location"],
+  );
+  const stored = log.writePolicyTrace(trace);
+  if (stored.status !== "complete") throw new Error("failed to write nonempty Dogfood trace");
+  void log.append({
+    event: "run.complete",
+    run_id: trace.run_id,
+    iter: trace.iter,
+    trigger: "stop-hook",
+    run_summary: {
+      verdict: "PASS",
+      source: "panel",
+      counts: { critical: 0, warn: 0, info: 0 },
+      cost_usd: 0,
+      duration_ms: 1,
+      demoted: 0,
+      signatures: [],
+      providers: [],
+      policy_trace_status: "complete",
+      policy_trace_ref: stored.ref,
+      policy_trace_sha256: stored.sha256,
+    },
+  });
+  void log.append({
+    event: "decision.applied",
+    run_id: trace.run_id,
+    iter: trace.iter,
+    trigger: "stop-hook",
+    finding_signatures: ["fp-0"],
+    decision_outcome: {
+      finding_id: "F-dogfood-owned",
+      severity: "WARN",
+      bucket: "tp",
+      providers: ["codex"],
+    },
+  });
+  const auditPath = log.currentFilePath();
+  const auditRef = relative(root, auditPath).split("\\").join("/");
+  const traceRef = `.reviewgate/audit/${stored.ref}`;
+  const auditBytes = readFileSync(auditPath);
+  const traceBytes = readFileSync(join(auditDir, stored.ref));
+  const entries = [
+    {
+      kind: "audit" as const,
+      ref: auditRef,
+      sha256: sha256(auditBytes),
+      bytes: auditBytes.length,
+      runs: [
+        {
+          run_id: trace.run_id,
+          iter: trace.iter,
+          trace_ref: stored.ref,
+          trace_sha256: stored.sha256,
+        },
+      ],
+    },
+    {
+      kind: "trace" as const,
+      ref: traceRef,
+      audit_ref: auditRef,
+      trace_ref: stored.ref,
+      sha256: stored.sha256,
+      bytes: traceBytes.length,
+      run_id: trace.run_id,
+      iter: trace.iter,
+    },
+  ].sort((left, right) => (left.ref < right.ref ? -1 : left.ref > right.ref ? 1 : 0));
+  return {
+    entries: PolicyDogfoodInputManifestSchema.parse({
+      schema: "reviewgate.policy-dogfood-input-manifest.v1",
+      since: "2000-01-01T00:00:00.000Z",
+      until: "2100-01-01T00:00:00.000Z",
+      entries,
+    }).entries,
+    rows: [
+      {
+        run_id: trace.run_id,
+        iter: trace.iter,
+        finding_signature: "fp-0",
+        disposition: "tp",
+      },
+    ],
+    refs: [auditRef, traceRef].sort(),
+  };
+}
+
 /** Materialize the complete real canonical Bench stack; only the expensive Rig replay is stubbed. */
 function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): RealBenchFixture {
   const requestIdentity = options.requestIdentity ?? "derived";
@@ -1012,20 +1116,24 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
       outputs: { ...fixture.prereg.outputs, bench_bundle: benchRef },
     });
   }
+  const dogfoodSource =
+    options.dogfoodUnrelatedEntry === true
+      ? materializeNonemptyDogfoodSource(fixture.root)
+      : undefined;
   const dogfoodManifest = PolicyDogfoodInputManifestSchema.parse({
     schema: "reviewgate.policy-dogfood-input-manifest.v1",
-    since: fixture.prereg.dogfood.since,
-    until: fixture.prereg.dogfood.until,
-    entries: [],
+    since: dogfoodSource === undefined ? fixture.prereg.dogfood.since : "2000-01-01T00:00:00.000Z",
+    until: dogfoodSource === undefined ? fixture.prereg.dogfood.until : "2100-01-01T00:00:00.000Z",
+    entries: dogfoodSource?.entries ?? [],
   });
   const manifestBinding = writeContentAddressedArtifact(
     fixture.root,
     "policy-dogfood-input",
     dogfoodManifest,
   );
-  const attestationRows = [
+  const attestationRows = dogfoodSource?.rows ?? [
     { run_id: "unavailable-real-stack-run", iter: 1, finding_signature: "sig", disposition: "tp" },
-  ] as const;
+  ];
   const preflight = policyDogfoodAttestationPreflight({
     manifest: dogfoodManifest,
     actor: "fixture",
@@ -1046,8 +1154,11 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
   );
   const prereg = PolicyMeasurementPreregistrationSchema.parse({
     ...fixture.prereg,
+    registered_at: dogfoodManifest.until,
     dogfood: {
       ...fixture.prereg.dogfood,
+      since: dogfoodManifest.since,
+      until: dogfoodManifest.until,
       input_manifest_ref: manifestBinding.ref,
       input_manifest_sha256: manifestBinding.sha256,
       attestation_ref: attestationBinding.ref,
@@ -1409,6 +1520,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
     prereg,
     rig,
     firstProfilePath: join(attemptRoot, firstProfile.artifact.ref),
+    ...(dogfoodSource === undefined ? {} : { dogfoodSourceRefs: dogfoodSource.refs }),
   };
 }
 
@@ -2911,6 +3023,43 @@ describe("authoritative policy measurement pipeline", () => {
     expect(result, result.stderr).toMatchObject({ exitCode: 0 });
   }, 120_000);
 
+  test("publishes a nonempty Dogfood manifest with audit and trace refs owned only by labeled passes", () => {
+    const real = materializeRealBenchFixture({
+      nestedBenchBundle: true,
+      dogfoodUnrelatedEntry: true,
+    });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+
+    const result = runRealPolicyStats(real);
+    expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    const sourceRefs = real.dogfoodSourceRefs;
+    if (sourceRefs === undefined) throw new Error("missing nonempty Dogfood source refs");
+    const parsed = PolicyMeasurementSchema.parse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    const unowned = parsed.passes.find((pass) => pass.pass_id === "judgment.hypothetical");
+    const owned = parsed.passes.find((pass) => pass.pass_id === "evidence.fact-location");
+    const unownedDogfood = unowned?.evidence.lane_summaries.find((row) => row.lane === "dogfood");
+    const ownedDogfood = owned?.evidence.lane_summaries.find((row) => row.lane === "dogfood");
+    if (unownedDogfood === undefined || ownedDogfood === undefined) {
+      throw new Error("missing Dogfood lane summaries");
+    }
+    expect(unownedDogfood.raw_evidence_refs).toEqual(
+      [real.prereg.dogfood.input_manifest_ref, real.prereg.dogfood.attestation_ref].sort(),
+    );
+    expect(ownedDogfood.raw_evidence_refs).toEqual(
+      expect.arrayContaining([
+        real.prereg.dogfood.input_manifest_ref,
+        real.prereg.dogfood.attestation_ref,
+        ...sourceRefs,
+      ]),
+    );
+    for (const ref of sourceRefs) expect(unownedDogfood.raw_evidence_refs).not.toContain(ref);
+  }, 120_000);
+
   test("rejects a marker-rebound Markdown drift from the verified JSON projection", () => {
     const real = materializeRealBenchFixture({ nestedBenchBundle: true });
     const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
@@ -3040,6 +3189,37 @@ describe("authoritative policy measurement pipeline", () => {
       }
     });
 
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a marker-rebound Dogfood trace total detached from the copied snapshot", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedProjection(output, (result) => {
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "judgment.hypothetical",
+      );
+      const evidence = pass?.evidence as Record<string, unknown> | undefined;
+      const dogfood = (
+        evidence?.lane_summaries as Array<Record<string, unknown>> | undefined
+      )?.find((summary) => summary.lane === "dogfood");
+      const traceTotals = dogfood?.trace_totals as Record<string, number> | undefined;
+      if (dogfood === undefined || traceTotals === undefined) {
+        throw new Error("missing published Dogfood trace-total fixture");
+      }
+      traceTotals.applied = (traceTotals.applied ?? 0) + 1;
+    });
+
+    const parsed = PolicyMeasurementSchema.safeParse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    expect(parsed.success, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toBe(
+      true,
+    );
     expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
   }, 120_000);
 

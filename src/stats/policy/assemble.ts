@@ -1097,9 +1097,6 @@ function dogfoodForPass(input: {
   const refs = new Map<string, Binding>([
     [input.manifestBinding.ref, input.manifestBinding],
     [input.attestationBinding.ref, input.attestationBinding],
-    ...input.manifest.entries.map(
-      (entry) => [entry.ref, { ref: entry.ref, sha256: entry.sha256 }] as const,
-    ),
   ]);
   const dispositions: Array<PolicyPassClassificationFacts["dogfood_dispositions"][number]> = [];
   for (const [identity, labels] of [...grouped].sort(([left], [right]) =>
