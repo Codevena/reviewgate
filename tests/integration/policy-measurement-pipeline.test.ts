@@ -14,11 +14,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { canonicalJson } from "../../src/audit/canonical.ts";
 import { buildBenchConfig, policyBenchRequestIdentity } from "../../src/bench/runner.ts";
+import { __policyStatsTest } from "../../src/cli/commands/stats.ts";
 import {
   POLICY_CATALOG_VERSION,
+  POLICY_PASSES,
   POLICY_PASS_IDS,
   type PolicyPassId,
 } from "../../src/core/policy/catalog.ts";
+import {
+  sortIdentityEvents,
+  sortSingletonIdentityEvents,
+} from "../../src/core/policy/identity-events.ts";
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
@@ -207,7 +213,7 @@ function truth(fp: number, expectedLabelCount = 0) {
   };
 }
 
-function trace(caseId: string) {
+function trace(caseId: string, findingSignature: string) {
   const noOpportunityPasses = new Set<PolicyPassId>([
     POLICY_PASS_IDS[2],
     ...POLICY_MEASUREMENT_INTERACTIONS[1],
@@ -221,8 +227,11 @@ function trace(caseId: string) {
     reason_code: noOpportunityPasses.has(passId)
       ? ("ineligible-starting-state" as const)
       : ("required-backstop" as const),
-    source_signatures: [`sig-${caseId}`],
-    final_signature: `sig-${caseId}`,
+    // Bench truth is keyed by final finding signature.  The real trace contract carries that
+    // same lineage through every applicable evaluation; keep the authority fixture faithful so
+    // attribution cannot use an unbound placeholder label.
+    source_signatures: [findingSignature, `sig-${caseId}`],
+    final_signature: findingSignature,
   }));
   return { evaluations };
 }
@@ -246,7 +255,7 @@ function casesFor(
           : profileIndex === 4 && index >= 2 && index < 11
             ? 1
             : baselineFp;
-    const policyTrace = trace(caseId);
+    const policyTrace = trace(caseId, "fp-0");
     const traceSha = sha256(canonicalJson(policyTrace));
     const traceRef = `artifacts/policy-traces/2026/08/12/policy/${sha256(`${profileIndex}:${repeat}:${caseId}`).slice(0, 12)}-i1-${traceSha.slice(0, 12)}.json`;
     controls.artifacts.set(traceRef, policyTrace);
@@ -339,7 +348,9 @@ function rigEvidence(manifest: PolicyRigScenarioManifest, manifestRef: string): 
       const turns = [makeTurn(1), makeTurn(2)];
       const history = POLICY_MEASUREMENT_INTERACTIONS[2].includes(scenario.pass_id as never)
         ? {
-            pass_ids: [...POLICY_MEASUREMENT_INTERACTIONS[2]],
+            pass_ids: [...POLICY_MEASUREMENT_INTERACTIONS[2]].sort(
+              (left, right) => POLICY_PASS_IDS.indexOf(left) - POLICY_PASS_IDS.indexOf(right),
+            ),
             opportunity_turns: 2,
             truth_effects: {
               baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 2 },
@@ -368,6 +379,25 @@ function rigEvidence(manifest: PolicyRigScenarioManifest, manifestRef: string): 
       };
     }),
   };
+}
+
+/** Materialize the byte-bound Rig artifact inventory used by publication verification. */
+function writeRigEvidenceArtifacts(root: string, manifest: PolicyRigScenarioManifest): void {
+  const writeBoundText = (ref: string, text: string): void => {
+    const path = join(root, ref);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    writeFileSync(path, text, { mode: 0o600 });
+  };
+  writeBoundText(binding("rig-cassettes", "closed-cassette").ref, "closed-cassette");
+  for (const scenario of manifest.scenarios) {
+    const [passId, sequence] = scenario.id.split(/-(?=\d+$)/);
+    if (passId === undefined || sequence === undefined)
+      throw new Error(`invalid fixture scenario ${scenario.id}`);
+    writeBoundText(scenario.manifest.ref, `${passId}:${sequence}:manifest`);
+    writeBoundText(scenario.result.ref, `${passId}:${sequence}:result`);
+    writeBoundText(scenario.script.ref, `${passId}:${sequence}:script`);
+    writeBoundText(scenario.initial_state.ref, `${passId}:${sequence}:state`);
+  }
 }
 
 function createFixture(): Fixture {
@@ -747,6 +777,39 @@ function rebindMockSourceHead(root: string): void {
   }
 }
 
+function fixtureProfileCases(
+  fixture: Fixture,
+  profileIndex: number,
+  caseIndexes: readonly number[],
+): Array<{ caseRow: CaseResult; original: CaseResult }> {
+  const profile = fixture.bench.profiles[profileIndex];
+  if (profile === undefined) throw new Error(`missing fixture profile ${profileIndex}`);
+  return profile.data.repeats.flatMap((repeat) => {
+    const result = controls.repeatResults.get(repeat.result.ref) as
+      | { cases: CaseResult[] }
+      | undefined;
+    if (result === undefined)
+      throw new Error(`missing fixture repeat ${profileIndex}:${repeat.repeat}`);
+    return caseIndexes.map((caseIndex) => {
+      const caseRow = result.cases[caseIndex];
+      if (caseRow === undefined)
+        throw new Error(`missing fixture case ${profileIndex}:${caseIndex}`);
+      return { caseRow, original: structuredClone(caseRow) };
+    });
+  });
+}
+
+function setFixtureBlockingFp(rows: readonly { caseRow: CaseResult }[], fp: number): void {
+  for (const { caseRow } of rows) {
+    caseRow.counts = { ...caseRow.counts, fp };
+    caseRow.policy_truth = truth(fp);
+  }
+}
+
+function restoreFixtureCases(rows: readonly { caseRow: CaseResult; original: CaseResult }[]): void {
+  for (const { caseRow, original } of rows) Object.assign(caseRow, original);
+}
+
 function writeContentAddressedArtifact(
   root: string,
   directory: string,
@@ -775,8 +838,11 @@ function emptyAuthoritativeTrace(
   ablatedPassIds: readonly PolicyPassId[],
   caseId: string,
   rawResponseSha256: readonly string[],
+  carrierPassIds: readonly PolicyPassId[] = [],
 ): PolicyTrace {
   const orderedAblations = POLICY_PASS_IDS.filter((passId) => ablatedPassIds.includes(passId));
+  const carrierPassId = carrierPassIds[0];
+  const carrierAblated = carrierPassId !== undefined && orderedAblations.includes(carrierPassId);
   return PolicyTraceSchema.parse({
     schema: "reviewgate.policy-trace.v1",
     catalog_version: POLICY_CATALOG_VERSION,
@@ -784,34 +850,95 @@ function emptyAuthoritativeTrace(
     iter: 1,
     ablated: orderedAblations,
     raw_response_sha256: [...rawResponseSha256],
-    passes: POLICY_PASS_IDS.map((passId) => ({
-      pass_id: passId,
-      status: "ran",
-      considered: 0,
-      opportunities: 0,
-      would_apply: 0,
-      applied: 0,
-      protected: 0,
-      blocking_removed: 0,
-      blocking_preserved: 0,
-      dropped: 0,
-    })),
-    evaluations: [],
-    stages: [
-      {
-        stage_id: "verdict.compute",
-        order: 190,
-        reason_code: "no-blocking-findings",
-        input_signatures: [],
-        verdict: "PASS",
-      },
-    ],
-    final: {
-      verdict: "PASS",
-      counts: { critical: 0, warn: 0, info: 0 },
-      finding_signatures: [],
-      finding_severities: [],
-    },
+    passes: POLICY_PASS_IDS.map((passId) =>
+      passId === carrierPassId
+        ? {
+            pass_id: passId,
+            status: "ran" as const,
+            considered: 1,
+            opportunities: 1,
+            would_apply: 1,
+            applied: carrierAblated ? 0 : 1,
+            protected: 0,
+            blocking_removed: carrierAblated ? 0 : 1,
+            blocking_preserved: carrierAblated ? 1 : 0,
+            dropped: 0,
+          }
+        : {
+            pass_id: passId,
+            status: "ran" as const,
+            considered: 0,
+            opportunities: 0,
+            would_apply: 0,
+            applied: 0,
+            protected: 0,
+            blocking_removed: 0,
+            blocking_preserved: 0,
+            dropped: 0,
+          },
+    ),
+    evaluations:
+      carrierPassId === undefined
+        ? []
+        : [
+            {
+              pass_id: carrierPassId,
+              order: POLICY_PASSES.find((pass) => pass.id === carrierPassId)?.order ?? 0,
+              result: carrierAblated ? ("would-apply" as const) : ("applied" as const),
+              before: "WARN" as const,
+              after: carrierAblated ? ("WARN" as const) : ("INFO" as const),
+              reason_code: "location-out-of-range",
+              source_signatures: ["fp-0"],
+              final_signature: "fp-0",
+            },
+          ],
+    stages:
+      carrierPassId === undefined
+        ? [
+            {
+              stage_id: "verdict.compute",
+              order: 190,
+              reason_code: "no-blocking-findings",
+              input_signatures: [],
+              verdict: "PASS",
+            },
+          ]
+        : [
+            {
+              stage_id: "aggregation.cluster",
+              order: 65,
+              reason_code: "singleton",
+              member_count: 1,
+              input_signatures: ["fp-0"],
+              output_signature: "fp-0",
+            },
+            {
+              stage_id: "verdict.compute",
+              order: 190,
+              reason_code: carrierAblated ? "blocking-present" : "no-blocking-findings",
+              input_signatures: carrierAblated ? ["fp-0"] : [],
+              verdict: carrierAblated ? "SOFT-PASS" : "PASS",
+            },
+          ],
+    final:
+      carrierPassId === undefined
+        ? {
+            verdict: "PASS",
+            counts: { critical: 0, warn: 0, info: 0 },
+            finding_signatures: [],
+            finding_severities: [],
+          }
+        : {
+            verdict: carrierAblated ? "SOFT-PASS" : "PASS",
+            counts: { critical: 0, warn: carrierAblated ? 1 : 0, info: carrierAblated ? 0 : 1 },
+            finding_signatures: ["fp-0"],
+            finding_severities: [
+              {
+                signature: "fp-0",
+                severity: carrierAblated ? ("WARN" as const) : ("INFO" as const),
+              },
+            ],
+          },
   });
 }
 
@@ -847,6 +974,7 @@ interface RealBenchFixtureOptions {
   requestIdentity?: "derived" | "self-declared";
   responseClosure?: "closed" | "shared" | "reordered" | "reused" | "partial" | "missing-digest";
   nestedBenchBundle?: boolean;
+  benchSingletonLoss?: boolean;
 }
 
 function realFixtureRawResponse(repeat: 1 | 2 | 3, caseId: string): string {
@@ -994,6 +1122,10 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
   const records = fixture.bench.profiles.map((scheduled, profileIndex) => {
     const repeatRows = ([1, 2, 3] as const).map((repeat) => {
       const cases = caseIds.map((caseId) => {
+        const benchSingletonLoss =
+          options.benchSingletonLoss === true &&
+          (scheduled.id === "single:evidence.fact-location" || scheduled.id === "interaction:4") &&
+          caseId.startsWith("clean-");
         const rawResponseSha256 =
           responseClosure === "shared"
             ? [sha256(`real-response:${repeat}`)]
@@ -1008,6 +1140,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
           scheduled.ablated_pass_ids,
           caseId,
           traceRawResponseSha256,
+          options.benchSingletonLoss === true ? ["evidence.fact-location"] : [],
         );
         const traceText = canonicalJson(trace);
         const traceSha256 = sha256(traceText);
@@ -1032,7 +1165,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
           kind: caseId.startsWith("clean-") ? ("clean" as const) : ("seeded-bug" as const),
           status: "scored" as const,
           content_hash: prereg.corpus.content_sha256[`cases/${caseId}.json`] ?? "",
-          counts: { tp: 0, fp: 0, fn: 0, neutral: 0 },
+          counts: { tp: 0, fp: benchSingletonLoss ? 1 : 0, fn: 0, neutral: 0 },
           panel_ok: 1,
           panel_configured: 1,
           file_context: "full" as const,
@@ -1055,7 +1188,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
             final_identity_sha256: finalIdentity,
             reason: null,
           },
-          policy_truth: truth(0, caseId.startsWith("seeded-") ? 1 : 0),
+          policy_truth: truth(benchSingletonLoss ? 1 : 0, caseId.startsWith("seeded-") ? 1 : 0),
         };
       });
       return { repeat, cases };
@@ -1207,7 +1340,8 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
           requested_passes: record.scheduled.ablated_pass_ids.map((passId) => ({
             pass_id: passId,
             ran_cases: 30,
-            opportunities: 0,
+            opportunities:
+              options.benchSingletonLoss === true && passId === "evidence.fact-location" ? 30 : 0,
           })),
           cases: recordRepeat.row.cases.map((caseRow) => ({
             case_id: caseRow.id,
@@ -1255,6 +1389,7 @@ function materializeRealBenchFixture(options: RealBenchFixtureOptions = {}): Rea
     JSON.parse(readFileSync(join(fixture.root, fixture.rigRef), "utf8")),
     fixture.rigRef,
   );
+  writeRigEvidenceArtifacts(fixture.root, rig.manifest);
   (rig as { source_commit: string }).source_commit = sourceHead;
   const firstProfile = profiles[0];
   if (firstProfile === undefined) throw new Error("missing real baseline profile");
@@ -1309,6 +1444,69 @@ function runRealAssembler(
     stdout: run.stdout.toString(),
     stderr: run.stderr.toString(),
   };
+}
+
+function runRealPolicyStats(real: RealBenchFixture): {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+} {
+  const scratch = mkdtempSync(join(tmpdir(), "rg-policy-real-stats-"));
+  const payloadPath = join(scratch, "payload.json");
+  const runnerPath = join(scratch, "runner.ts");
+  const rigModule = new URL("../../src/stats/policy/rig.ts", import.meta.url).href;
+  const statsModule = new URL("../../src/cli/commands/stats.ts", import.meta.url).href;
+  writeFileSync(
+    payloadPath,
+    JSON.stringify({
+      rig: real.rig,
+      input: {
+        repoRoot: real.fixture.root,
+        preregistration: real.fixture.preregRef,
+        bench: real.fixture.benchRef,
+        rig: real.fixture.rigRef,
+        out: real.prereg.outputs.attempt_dir,
+      },
+    }),
+  );
+  writeFileSync(
+    runnerPath,
+    [
+      'import { mock } from "bun:test";',
+      "const payload = JSON.parse(await Bun.file(process.argv[2]).text());",
+      `mock.module(${JSON.stringify(rigModule)}, () => ({ collectPolicyRigEvidence: async () => payload.rig }));`,
+      `const { runPolicyStats } = await import(${JSON.stringify(statsModule)});`,
+      "const result = await runPolicyStats(payload.input);",
+      "console.log(JSON.stringify(result));",
+      "process.exit(result.exitCode);",
+    ].join("\n"),
+  );
+  const run = Bun.spawnSync({ cmd: [process.execPath, runnerPath, payloadPath] });
+  return {
+    exitCode: run.exitCode,
+    stdout: run.stdout.toString(),
+    stderr: run.stderr.toString(),
+  };
+}
+
+function rewritePublishedResult(
+  output: string,
+  mutate: (value: Record<string, unknown>) => void,
+): void {
+  const markerPath = join(output, "complete.json");
+  const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+    result: { ref: string; sha256: string };
+    outputs: { result_json: { ref: string; sha256: string } };
+  };
+  const resultPath = join(output, marker.result.ref);
+  const result = JSON.parse(readFileSync(resultPath, "utf8")) as Record<string, unknown>;
+  mutate(result);
+  const text = canonicalJson(result);
+  const digest = sha256(text);
+  writeFileSync(resultPath, text, { mode: 0o600 });
+  marker.result.sha256 = digest;
+  marker.outputs.result_json.sha256 = digest;
+  writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
 }
 
 function runRealBundleVerifier(input: {
@@ -1419,7 +1617,6 @@ describe("authoritative policy measurement pipeline", () => {
     expect(markdown).toContain("Raw p-value");
     expect(markdown).toContain("Adjusted p-value");
     expect(markdown).toContain("Artifact authority");
-    expect(markdown).toContain("Vetoes: unique-prevented-fp");
     expect(markdown).toContain("dogfood:post-registered-at=2");
     expect(markdown).toContain("95% interval");
     expect(markdown).not.toContain("statistically significant");
@@ -1428,10 +1625,7 @@ describe("authoritative policy measurement pipeline", () => {
       ...row.dogfood_dispositions,
       ...row.beneficial_effects,
     ]);
-    const benefits = assembled.result.identity_evidence.flatMap((row) => row.beneficial_effects);
     expect(identityFacts.length).toBeGreaterThan(0);
-    expect(benefits.some((benefit) => benefit.reproduced_by_pass_ids.length === 0)).toBe(true);
-    expect(benefits.some((benefit) => benefit.reproduced_by_pass_ids.length > 0)).toBe(true);
     for (const identity of assembled.result.identity_evidence) {
       for (const fact of identity.ground_truth_harms) {
         expect(markdown).toContain(`identity=${fact.identity}`);
@@ -1446,7 +1640,7 @@ describe("authoritative policy measurement pipeline", () => {
       for (const fact of identity.beneficial_effects) {
         expect(markdown).toContain(`identity=${fact.identity}`);
         expect(markdown).toContain(`evidence=${fact.evidence_ref}`);
-        const expected = `benefit identity=${fact.identity} evidence=${fact.evidence_ref} reproduced_by=${fact.reproduced_by_pass_ids.map((passId) => `\`${passId}\``).join(",") || "none"}`;
+        const expected = `benefit identity=${fact.identity} evidence=${fact.evidence_ref}`;
         const lines = markdown.split("\n");
         const start = lines.indexOf(`### \`${identity.pass_id}\``);
         const dossierLine = lines
@@ -1455,6 +1649,11 @@ describe("authoritative policy measurement pipeline", () => {
             line.includes(`benefit identity=${fact.identity} evidence=${fact.evidence_ref}`),
           );
         expect(dossierLine).toContain(expected);
+        expect(dossierLine).toContain(
+          `reproduced_by=${
+            fact.reproduced_by_pass_ids.map((passId) => `\`${passId}\``).join(",") || "none"
+          }`,
+        );
       }
     }
     expect(new Set(assembled.result.passes.map((row) => row.classification))).toEqual(
@@ -1474,28 +1673,16 @@ describe("authoritative policy measurement pipeline", () => {
       beneficial_effects: [],
     });
     expect(assembled.result.passes[3]).toMatchObject({
-      classification: "delete-candidate",
+      classification: "inconclusive",
       evidence: {
         opportunities: { runs: 3 },
         exclusions: [{ lane: "dogfood", code: "post-registered-at", count: 2 }],
       },
     });
     expect(assembled.result.passes[0]).toMatchObject({
-      classification: "retain",
-      vetoes: ["unique-prevented-fp"],
+      classification: "inconclusive",
+      reasons: ["incomplete-authority"],
     });
-    const factLocationFacts = assembled.result.identity_evidence[0];
-    const groundingFacts = assembled.result.identity_evidence[3];
-    expect(
-      factLocationFacts?.beneficial_effects.filter(
-        (benefit) => benefit.reproduced_by_pass_ids.length === 0,
-      ),
-    ).toHaveLength(1);
-    expect(
-      groundingFacts?.beneficial_effects.every((benefit) =>
-        benefit.reproduced_by_pass_ids.includes("evidence.fact-location"),
-      ),
-    ).toBe(true);
     expect(assembled.result.passes[3]?.evidence.unique_contributions).toHaveLength(0);
     expect(assembled.result.passes[3]?.evidence.raw_evidence_refs).toEqual(
       expect.arrayContaining([
@@ -1558,6 +1745,231 @@ describe("authoritative policy measurement pipeline", () => {
     ]);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.result_json))).toBe(false);
     expect(existsSync(join(fixture.root, fixture.prereg.outputs.report_md))).toBe(false);
+  }, 30_000);
+
+  test("keeps singleton losses unique when a necessary overlapping cofactor has the same group loss", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
+    const groupRows = fixtureProfileCases(
+      fixture,
+      groupProfile,
+      Array.from({ length: 10 }, (_, index) => index + 2),
+    );
+    setFixtureBlockingFp(groupRows, 1);
+    try {
+      const assembled = await assemble();
+      const pass = assembled.result.passes.find((row) => row.pass_id === "evidence.fact-location");
+      const facts = assembled.result.identity_evidence.find(
+        (row) => row.pass_id === "evidence.fact-location",
+      );
+      const identity = "bench:clean-03:blocking-fp:fp-0";
+      const group = assembled.result.interactions[3];
+      if (pass === undefined || facts === undefined || group === undefined) {
+        throw new Error("missing C4 fixture authority row");
+      }
+      expect(facts.beneficial_effects.find((row) => row.identity === identity)).toMatchObject({
+        identity,
+        reproduced_by_pass_ids: [],
+        singleton_evidence: {
+          ref: `${dirname(fixture.benchRef)}/${fixture.bench.profiles[1]?.artifact.ref}`,
+          sha256: fixture.bench.profiles[1]?.artifact.sha256,
+        },
+        group_comparison: {
+          pass_ids: [...POLICY_MEASUREMENT_INTERACTIONS[3]],
+          artifact: group.artifact,
+        },
+      });
+      const benefit = facts.beneficial_effects.find((row) => row.identity === identity);
+      if (benefit === undefined) throw new Error("missing C4 singleton benefit");
+      const markdown = renderPolicyMeasurement(assembled.result);
+      expect(markdown).toContain(
+        `singleton=\`${benefit.singleton_evidence.ref}\` (${benefit.singleton_evidence.sha256})`,
+      );
+      expect(markdown).toContain(`group=\`${group.artifact.ref}\` (${group.artifact.sha256})`);
+      expect(markdown).toContain(
+        `group_raw=${benefit.group_comparison?.raw_evidence
+          .map((entry) => `\`${entry.ref}\` (${entry.sha256})`)
+          .join(",")}`,
+      );
+      expect(pass.evidence.unique_contributions).toContainEqual(
+        expect.objectContaining({
+          identity,
+          kind: "prevented-blocking-fp",
+          group_comparison: expect.objectContaining({ artifact: group.artifact }),
+        }),
+      );
+      const cofactor = assembled.result.passes.find(
+        (row) => row.pass_id === "evidence.grounding-token",
+      );
+      const cofactorFacts = assembled.result.identity_evidence.find(
+        (row) => row.pass_id === "evidence.grounding-token",
+      );
+      if (cofactor === undefined || cofactorFacts === undefined) {
+        throw new Error("missing C4 cofactor fixture authority row");
+      }
+      expect(
+        cofactorFacts.beneficial_effects.find((row) => row.identity === identity),
+      ).toMatchObject({ reproduced_by_pass_ids: [] });
+      expect(cofactor.evidence.unique_contributions).toContainEqual(
+        expect.objectContaining({ identity, kind: "prevented-blocking-fp" }),
+      );
+    } finally {
+      restoreFixtureCases(groupRows);
+    }
+  }, 30_000);
+
+  test("does not invent a group-only benefit without a retained singleton cover", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
+    const caseIndexes = Array.from({ length: 9 }, (_, index) => index + 2);
+    const groupRows = fixtureProfileCases(fixture, groupProfile, caseIndexes);
+    const memberRows = POLICY_MEASUREMENT_INTERACTIONS[3].flatMap((passId) =>
+      fixtureProfileCases(fixture, POLICY_PASS_IDS.indexOf(passId) + 1, caseIndexes),
+    );
+    setFixtureBlockingFp(groupRows, 1);
+    setFixtureBlockingFp(memberRows, 0);
+    try {
+      const assembled = await assemble();
+      const facts = assembled.result.identity_evidence.find(
+        (row) => row.pass_id === "evidence.redaction-placeholder",
+      );
+      if (facts === undefined) throw new Error("missing group-only identity fixture authority row");
+      expect(facts.beneficial_effects).toEqual([]);
+    } finally {
+      restoreFixtureCases(memberRows);
+      restoreFixtureCases(groupRows);
+    }
+  }, 30_000);
+
+  test("leaves a singleton loss inconclusive without the same paired group identity", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
+    const caseIndexes = Array.from({ length: 9 }, (_, index) => index + 2);
+    const singletonRows = fixtureProfileCases(fixture, 1, caseIndexes);
+    const groupRows = fixtureProfileCases(fixture, groupProfile, caseIndexes);
+    setFixtureBlockingFp(singletonRows, 1);
+    setFixtureBlockingFp(groupRows, 0);
+    try {
+      const assembled = await assemble();
+      const pass = assembled.result.passes.find((row) => row.pass_id === "evidence.fact-location");
+      const facts = assembled.result.identity_evidence.find(
+        (row) => row.pass_id === "evidence.fact-location",
+      );
+      const identity = "bench:clean-03:blocking-fp:fp-0";
+      if (pass === undefined || facts === undefined) {
+        throw new Error("missing C4 uncorroborated singleton fixture authority row");
+      }
+      expect(facts.beneficial_effects.find((row) => row.identity === identity)).toBeUndefined();
+      expect(
+        pass.evidence.unique_contributions.find((row) => row.identity === identity),
+      ).toBeUndefined();
+      expect(pass).toMatchObject({
+        classification: "inconclusive",
+        reasons: ["incomplete-authority"],
+      });
+    } finally {
+      restoreFixtureCases(groupRows);
+      restoreFixtureCases(singletonRows);
+    }
+  }, 30_000);
+
+  test("attributes a covered singleton identity to an independently retained overlap", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
+    const caseIndexes = Array.from({ length: 9 }, (_, index) => index + 2);
+    const groupRows = fixtureProfileCases(fixture, groupProfile, caseIndexes);
+    const targetRows = fixtureProfileCases(fixture, 4, caseIndexes);
+    setFixtureBlockingFp(groupRows, 1);
+    setFixtureBlockingFp(targetRows, 0);
+    try {
+      const assembled = await assemble();
+      const target = assembled.result.passes.find(
+        (row) => row.pass_id === "evidence.grounding-token",
+      );
+      const targetFacts = assembled.result.identity_evidence.find(
+        (row) => row.pass_id === "evidence.grounding-token",
+      );
+      const identity = "bench:clean-03:blocking-fp:fp-0";
+      if (target === undefined || targetFacts === undefined) {
+        throw new Error("missing C4 covered fixture authority row");
+      }
+      expect(targetFacts.beneficial_effects.find((row) => row.identity === identity)).toMatchObject(
+        {
+          reproduced_by_pass_ids: ["evidence.fact-location"],
+        },
+      );
+      expect(target.reasons).toEqual(["sufficient-covered-zero-unique-benefit"]);
+      expect(target.classification).toBe("delete-candidate");
+    } finally {
+      restoreFixtureCases(targetRows);
+      restoreFixtureCases(groupRows);
+    }
+  }, 30_000);
+
+  test("emits a catalog-bound required-backstop identity only from its singleton and paired group loss", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
+    const caseIndexes = Array.from({ length: 9 }, (_, index) => index + 2);
+    const groupRows = fixtureProfileCases(fixture, groupProfile, caseIndexes);
+    const singletonRows = fixtureProfileCases(fixture, 6, caseIndexes);
+    const baselineRows = fixtureProfileCases(fixture, 0, caseIndexes);
+    setFixtureBlockingFp(groupRows, 1);
+    setFixtureBlockingFp(singletonRows, 1);
+    for (const { caseRow } of baselineRows) {
+      const evaluations = caseRow.policy_trace?.trace?.evaluations;
+      const evaluation = evaluations?.find(
+        (row) => row.pass_id === "evidence.redaction-placeholder",
+      );
+      if (evaluation === undefined) throw new Error("missing backstop trace evaluation");
+      Object.assign(evaluation, {
+        result: "protected",
+        reason_code: "placeholder-code-hallucination",
+        protected_by: "secret-evidence-backstop",
+      });
+    }
+    try {
+      const assembled = await assemble();
+      const pass = assembled.result.passes.find(
+        (row) => row.pass_id === "evidence.redaction-placeholder",
+      );
+      const identity = "bench:clean-03:blocking-fp:fp-0";
+      if (pass === undefined) throw new Error("missing C4 backstop fixture authority row");
+      expect(pass.evidence.unique_contributions).toContainEqual(
+        expect.objectContaining({ identity, kind: "required-backstop" }),
+      );
+      expect(pass).toMatchObject({
+        classification: "retain",
+        vetoes: ["required-backstop"],
+      });
+    } finally {
+      restoreFixtureCases(baselineRows);
+      restoreFixtureCases(singletonRows);
+      restoreFixtureCases(groupRows);
+    }
+  }, 30_000);
+
+  test("retains one exact paired Rig identity from its singleton and applicable group", async () => {
+    const assembled = await assemble();
+    const pass = assembled.result.passes.find((row) => row.pass_id === "history.fp-signature");
+    const facts = assembled.result.identity_evidence.find(
+      (row) => row.pass_id === "history.fp-signature",
+    );
+    const interaction = assembled.result.interactions[2];
+    const identity = "rig:1:turn-1:blocking-fp:fp-1";
+    if (pass === undefined || facts === undefined || interaction === undefined) {
+      throw new Error("missing paired Rig C4 authority row");
+    }
+    expect(interaction.primary_lane).toBe("stateful-rig");
+    expect(interaction.identity_inventory.outcomes).toContainEqual({
+      identity,
+      // Four members participate in this group, but the target pass's exact scenario/turn
+      // observation is one independently valid Rig unit. The persisted attribution must not
+      // apply the Bench repeat threshold to that target-member direction.
+      worsened: 4,
+      improved: 0,
+    });
+    expect(facts.beneficial_effects).toContainEqual(
+      expect.objectContaining({ identity, reproduced_by_pass_ids: [] }),
+    );
+    expect(pass).toMatchObject({
+      classification: "retain",
+      vetoes: ["unique-prevented-fp"],
+    });
   }, 30_000);
 
   test("reports every applicable Bench Rig and Dogfood lane without promoting secondary authority", async () => {
@@ -2066,6 +2478,7 @@ describe("authoritative policy measurement pipeline", () => {
   });
 
   test("maps a unique blocking-FN benefit to preserved blocking truth", async () => {
+    const groupProfile = POLICY_PASS_IDS.length + 1 + 3;
     const rows = fixture.bench.profiles.flatMap((profile, profileIndex) =>
       profile.data.repeats.map((repeat) => {
         const repeatResult = controls.repeatResults.get(repeat.result.ref) as
@@ -2077,7 +2490,7 @@ describe("authoritative policy measurement pipeline", () => {
       }),
     );
     for (const row of rows) {
-      if (row.profileIndex === 1) continue;
+      if (row.profileIndex === 1 || row.profileIndex === groupProfile) continue;
       row.caseRow.counts = { ...row.caseRow.counts, tp: 1, fn: 0 };
       row.caseRow.policy_truth = {
         expected_label_count: 1,
@@ -2097,7 +2510,13 @@ describe("authoritative policy measurement pipeline", () => {
     const benefit = assembled.result.passes[0]?.evidence.unique_contributions.find(
       (row) => row.kind === "preserved-blocking-tp",
     );
-    expect(benefit).toBeDefined();
+    expect(benefit).toMatchObject({
+      identity: "bench:seeded-01:blocking-fn:label-0",
+      group_comparison: {
+        pass_ids: [...POLICY_MEASUREMENT_INTERACTIONS[3]],
+        artifact: assembled.result.interactions[3]?.artifact,
+      },
+    });
     expect(assembled.result.passes[0]?.vetoes).toContain("unique-preserved-tp");
     for (const row of rows) Object.assign(row.caseRow, row.original);
   });
@@ -2175,6 +2594,242 @@ describe("authoritative policy measurement pipeline", () => {
     expect(result, result.stderr).toMatchObject({ exitCode: 0 });
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, passes: 18 });
   }, 120_000);
+
+  test("reverifies a nested parseable Bench and Rig publication from copied sources", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    chmodSync(join(real.fixture.root, real.prereg.outputs.attempt_dir), 0o700);
+    const result = runRealPolicyStats(real);
+
+    expect(result, result.stderr).toMatchObject({ exitCode: 0 });
+  }, 120_000);
+
+  test("rejects a self-consistent published singleton source substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedResult(output, (result) => {
+      const facts = result.identity_evidence as Array<Record<string, unknown>>;
+      const stateful = facts.find((row) => row.pass_id === "history.fp-signature");
+      if (stateful === undefined) throw new Error("missing stateful singleton identity fixture");
+      const singleton = stateful.singleton_inventory as {
+        raw_evidence: Array<{ ref: string; sha256: string }>;
+        events: Array<{ identity: string; source: { ref: string; sha256: string } }>;
+      };
+      const event = singleton.events[0];
+      const replacement = singleton.raw_evidence.find(
+        (binding) => binding.ref !== event?.source.ref,
+      );
+      if (event === undefined || replacement === undefined)
+        throw new Error("missing singleton source substitution fixture");
+      event.source = replacement;
+      singleton.events = sortSingletonIdentityEvents(singleton.events as never) as never;
+      for (const benefit of stateful.beneficial_effects as Array<Record<string, unknown>>) {
+        if (benefit.identity !== event.identity) continue;
+        benefit.evidence_ref = replacement.ref;
+        benefit.singleton_evidence = replacement;
+      }
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "history.fp-signature",
+      );
+      if (pass === undefined) throw new Error("missing stateful singleton pass fixture");
+      for (const contribution of (pass.evidence as Record<string, unknown>)
+        .unique_contributions as Array<Record<string, unknown>>) {
+        if (contribution.identity === event.identity) contribution.evidence = replacement;
+      }
+    });
+
+    const parsed = PolicyMeasurementSchema.safeParse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    expect(parsed.success, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toBe(
+      true,
+    );
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Rig group source substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    rewritePublishedResult(output, (result) => {
+      const interaction = (result.interactions as Array<Record<string, unknown>>)[2];
+      if (interaction === undefined) throw new Error("missing Rig group interaction fixture");
+      const original = interaction.artifact as { ref: string; sha256: string };
+      const inventory = interaction.identity_inventory as {
+        raw_evidence: Array<{ ref: string; sha256: string }>;
+        events: Array<{ source: { ref: string; sha256: string } }>;
+      };
+      const replacement = inventory.raw_evidence.find((binding) => binding.ref !== original.ref);
+      if (replacement === undefined || inventory.events.length === 0)
+        throw new Error("missing Rig group source substitution fixture");
+      interaction.artifact = replacement;
+      for (const event of inventory.events) event.source = replacement;
+      inventory.events = sortIdentityEvents(inventory.events as never) as never;
+      for (const facts of result.identity_evidence as Array<Record<string, unknown>>) {
+        for (const benefit of facts.beneficial_effects as Array<Record<string, unknown>>) {
+          const comparison = benefit.group_comparison as
+            | { artifact: { ref: string; sha256: string } }
+            | undefined;
+          if (comparison?.artifact.ref === original.ref) comparison.artifact = replacement;
+        }
+      }
+      for (const pass of result.passes as Array<Record<string, unknown>>) {
+        const evidence = pass.evidence as Record<string, unknown>;
+        for (const contribution of evidence.unique_contributions as Array<
+          Record<string, unknown>
+        >) {
+          const comparison = contribution.group_comparison as {
+            artifact: { ref: string; sha256: string };
+          };
+          if (comparison.artifact.ref === original.ref) comparison.artifact = replacement;
+        }
+      }
+    });
+
+    const parsed = PolicyMeasurementSchema.safeParse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    expect(parsed.success, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toBe(
+      true,
+    );
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Rig manifest source substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(true);
+
+    const markerPath = join(output, "complete.json");
+    const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+      outputs: { rig_bundle: { ref: string; sha256: string } };
+    };
+    const rigPath = join(output, marker.outputs.rig_bundle.ref);
+    const rig = JSON.parse(readFileSync(rigPath, "utf8")) as {
+      scenario_manifest: { ref: string; sha256: string };
+      artifacts: Array<{ ref: string; sha256: string; kind: string }>;
+    };
+    const original = rig.scenario_manifest;
+    const replacement = rig.artifacts.find(
+      (binding) => binding.kind === "rig" && binding.ref !== original.ref,
+    );
+    if (replacement === undefined) throw new Error("missing Rig manifest substitution fixture");
+    const replacementBinding = { ref: replacement.ref, sha256: replacement.sha256 };
+    rig.scenario_manifest = replacementBinding;
+    const rigText = canonicalJson(rig);
+    writeFileSync(rigPath, rigText, { mode: 0o600 });
+    marker.outputs.rig_bundle.sha256 = sha256(rigText);
+    writeFileSync(markerPath, canonicalJson(marker), { mode: 0o600 });
+
+    rewritePublishedResult(output, (result) => {
+      for (const facts of result.identity_evidence as Array<Record<string, unknown>>) {
+        const inventory = facts.singleton_inventory as {
+          events: Array<{ source: { ref: string; sha256: string } }>;
+        };
+        for (const event of inventory.events) {
+          if (event.source.ref === original.ref) event.source = replacementBinding;
+        }
+        inventory.events = sortSingletonIdentityEvents(inventory.events as never) as never;
+        for (const harm of facts.ground_truth_harms as Array<Record<string, unknown>>) {
+          if (harm.evidence_ref === original.ref) harm.evidence_ref = replacement.ref;
+        }
+        for (const benefit of facts.beneficial_effects as Array<Record<string, unknown>>) {
+          if (benefit.evidence_ref === original.ref) {
+            benefit.evidence_ref = replacement.ref;
+            benefit.singleton_evidence = replacementBinding;
+          }
+          const comparison = benefit.group_comparison as
+            | { artifact: { ref: string; sha256: string } }
+            | undefined;
+          if (comparison?.artifact.ref === original.ref) comparison.artifact = replacementBinding;
+        }
+      }
+      for (const interaction of result.interactions as Array<Record<string, unknown>>) {
+        if ((interaction.artifact as { ref: string }).ref !== original.ref) continue;
+        interaction.artifact = replacementBinding;
+        const inventory = interaction.identity_inventory as {
+          events: Array<{ source: { ref: string; sha256: string } }>;
+        };
+        for (const event of inventory.events) event.source = replacementBinding;
+        inventory.events = sortIdentityEvents(inventory.events as never) as never;
+      }
+      for (const pass of result.passes as Array<Record<string, unknown>>) {
+        const evidence = pass.evidence as Record<string, unknown>;
+        for (const contribution of evidence.unique_contributions as Array<
+          Record<string, unknown>
+        >) {
+          if ((contribution.evidence as { ref: string }).ref === original.ref)
+            contribution.evidence = replacementBinding;
+          const comparison = contribution.group_comparison as {
+            artifact: { ref: string; sha256: string };
+          };
+          if (comparison.artifact.ref === original.ref) comparison.artifact = replacementBinding;
+        }
+      }
+    });
+
+    const parsed = PolicyMeasurementSchema.safeParse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    expect(parsed.success, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toBe(
+      true,
+    );
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 120_000);
+
+  test("rejects a self-consistent published Bench singleton source substitution", () => {
+    const real = materializeRealBenchFixture({ nestedBenchBundle: true, benchSingletonLoss: true });
+    const output = join(real.fixture.root, real.prereg.outputs.attempt_dir);
+    chmodSync(output, 0o700);
+    expect(runRealPolicyStats(real)).toMatchObject({ exitCode: 0 });
+
+    rewritePublishedResult(output, (result) => {
+      const facts = result.identity_evidence as Array<Record<string, unknown>>;
+      const stateless = facts.find((row) => row.pass_id === "evidence.fact-location");
+      if (stateless === undefined) throw new Error("missing stateless singleton identity fixture");
+      const singleton = stateless.singleton_inventory as {
+        raw_evidence: Array<{ ref: string; sha256: string }>;
+        events: Array<{ identity: string; source: { ref: string; sha256: string } }>;
+      };
+      const event = singleton.events[0];
+      const replacement = singleton.raw_evidence.find(
+        (binding) => binding.ref !== event?.source.ref,
+      );
+      if (event === undefined || replacement === undefined)
+        throw new Error("missing Bench singleton source substitution fixture");
+      event.source = replacement;
+      singleton.events = sortSingletonIdentityEvents(singleton.events as never) as never;
+      for (const benefit of stateless.beneficial_effects as Array<Record<string, unknown>>) {
+        if (benefit.identity !== event.identity) continue;
+        benefit.evidence_ref = replacement.ref;
+        benefit.singleton_evidence = replacement;
+      }
+      const pass = (result.passes as Array<Record<string, unknown>>).find(
+        (row) => row.pass_id === "evidence.fact-location",
+      );
+      if (pass === undefined) throw new Error("missing stateless singleton pass fixture");
+      for (const contribution of (pass.evidence as Record<string, unknown>)
+        .unique_contributions as Array<Record<string, unknown>>) {
+        if (contribution.identity === event.identity) contribution.evidence = replacement;
+      }
+    });
+
+    const parsed = PolicyMeasurementSchema.safeParse(
+      JSON.parse(readFileSync(join(output, "result.json"), "utf8")),
+    );
+    expect(parsed.success, parsed.success ? undefined : JSON.stringify(parsed.error.issues)).toBe(
+      true,
+    );
+    expect(__policyStatsTest.verifyPublishedPolicyBundle(output)).toBe(false);
+  }, 600_000);
 
   test("rejects every trace-set identity that differs from the verified case result", () => {
     const real = materializeRealBenchFixture();

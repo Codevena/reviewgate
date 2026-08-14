@@ -27,9 +27,66 @@ after restoration, and final focused GREEN commands are preserved in the ignored
 - Task 10 additionally records the portable no-replace replacement protocol and review regression
   mutations; Task 11 is documentation-only and has no production mutation family.
 
-Task 12 initially verified the committed branch only. The C1 review-bound delta below is the sole
-subsequent production/test change; its targeted tests and static gates are recorded in the ignored
-final report.
+Task 12 initially verified the committed branch only. The subsequent C1--C4 review-bound deltas
+are individually TDD- and mutation-bound below; their targeted tests and static gates are recorded
+in the ignored final report.
+
+## Contract review C4 delta — paired group-identity causal closure
+
+The final-contract C4 review correctly found that the inherited assembler inferred
+`unique_contributions` and `reproduced_by_pass_ids` from matching singleton labels rather than a
+paired group comparison. The correction consumes only the already verified in-memory singleton and
+group values: it does not reread a source or create a second authority. Every group now persists its
+exact code-unit-sorted identity-level worsened/improved inventory and exact verified raw-reference
+bindings. The schema closes the aggregate signed identity delta against the paired group truth
+delta, so an omitted or added identity cannot remain self-consistent merely by changing the
+inventory.
+
+The primary-tree REDs were observed before their minimal guards:
+
+- The old label heuristic failed `keeps singleton losses unique when a necessary overlapping cofactor
+  has the same group loss` (**0 pass / 1 fail / 1 expect**): it fabricated
+  `reproduced_by_pass_ids` for the cofactor instead of preserving both singleton losses as direct
+  unique evidence.
+- The initial persisted form accepted removal of an unrelated paired-group identity:
+  `requires every paired group identity outcome and exact singleton/group bindings` was **0 pass /
+  1 fail / 4 expects** before signed identity-delta closure.
+- An offsetting improvement hid an uncovered worsened identity before the classifier examined the
+  inventory: `discharges a group-harm veto only when every worsened identity has a retained overlap`
+  was **0 pass / 1 fail / 3 expects**. The mutant result was wrongly `delete-candidate`.
+
+The minimal result is deliberately conservative. A direct unique fact requires a target singleton
+loss corroborated by the same group identity. A reproduced fact requires the target singleton not
+to worsen, a matching group loss, and an independently retained overlapping singleton that worsens
+the same identity. A required-backstop is emitted only from a target singleton loss with the
+catalog-proven protection rule; group-only harm remains an `inconclusive` deletion veto. For every
+interaction, every worsened identity must be closed by a retained overlap before deletion proceeds.
+
+| Guard / restored production SHA-256 at mutation time | WITH named guard | WITHOUT single mutant and literal RED / restore |
+| --- | --- | --- |
+| Same paired-group identity is required for a direct unique contribution; `src/stats/policy/assemble.ts` `7af009964b423d16815311f5dcd1e6cb737417820b9d12be17727f3e4b6ce424` | `leaves a singleton loss inconclusive without the same paired group identity`: **1 pass / 0 fail** | Treat the group identity as stable unconditionally: **0 pass / 1 fail**; SHA restored exact. |
+| Singleton loss remains direct unique for a necessary cofactor; same assembler SHA | `keeps singleton losses unique when a necessary overlapping cofactor has the same group loss`: **1/0** | Invert the direct-unique branch so it emits no contribution: **0/1**; SHA restored exact. |
+| Identity facts bind the exact group raw-reference closure; same assembler SHA | Same cofactor guard: **1/0** | Emit an empty `group_comparison.raw_evidence`: **0/1**; strict schema rejects the unbound fact; SHA restored exact. |
+| Required-backstop originates in singleton plus catalog protection; same assembler SHA | `emits a catalog-bound required-backstop identity only from its singleton and paired group loss`: **1/0** | Never emit the backstop: **0/1**; expected protected backstop is absent; SHA restored exact. |
+| Necessary cofactors are not fabricated as reproduction; same assembler SHA | Same cofactor guard: **1/0** | Force a reproduced relation despite the target singleton loss: **0/1**; strict identity contract rejects it; SHA restored exact. |
+| Every harmful identity, not merely any one, requires a retained cover; `src/stats/policy/classify.ts` `58374d81dec4ead00d8f8ce244f280f161bdef794e53aa0bfd60eb4a19f5e40f` | `discharges a group-harm veto only when every worsened identity has a retained overlap`: **1/0** | Change `every` to `some`: **0/1**; a partially covered group wrongly becomes deletable; SHA restored exact. |
+| Offsetting improvements cannot suppress an uncovered harmful identity; same classifier SHA | Same guard with zero aggregate error delta: **1/0** | Ignore nonempty harmful identity inventory when aggregate harm is zero: **0/1**; result wrongly becomes `delete-candidate`; SHA restored exact. |
+| Persisted group inventory cannot omit or add an outcome; `src/schemas/policy-measurement.ts` `1e1646786af94fba9e61e6b7401f7a76d782ed67f9cc6120de413c201a7d3e35` | `requires every paired group identity outcome and exact singleton/group bindings`: **1/0** | Bypass signed identity-delta closure: **0/1**; omitted inventory accepted; SHA restored exact. |
+
+All eight mutants ran in the non-Git disposable copy
+`/private/tmp/reviewgate-task12-c4-mutants.Rghncn/repo`, with only that copy's production files
+changed. The restored sources were compared after every probe. Current final-source SHA-256 values
+after formatting-only hygiene are `policy-measurement.ts=b8e5e78b4331c524a5934d464228baad869c91acc7ab04576795f11fa9e98b5f`,
+`assemble.ts=e82a2a910a30180bba8adb994a1a78931d484ea4a1b801a5c8e40b2b5b38155b`,
+`classify.ts=58374d81dec4ead00d8f8ce244f280f161bdef794e53aa0bfd60eb4a19f5e40f`, and
+`render.ts=4252d978a389d26eb1d04aa86868df6098c62a4f927c50a287efd68fd97fec35`.
+
+Current-source verification is
+`bun test tests/unit/policy-measurement-schema.test.ts tests/unit/policy-classify.test.ts tests/unit/policy-dogfood.test.ts tests/unit/policy-assemble.test.ts tests/unit/policy-render.test.ts tests/unit/stats-command.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/integration/policy-measurement-publication.test.ts`
+-> **111 pass / 0 fail / 982 expect() calls**, 36.27s. The focused schema/classify pair is **44
+pass / 0 fail / 114 expects**. Fresh `bunx tsc --noEmit`, `bun run lint` (Biome checked 694 files,
+no fixes), `git diff --check`, and `git diff --cached --check` all exit 0. No stage, commit, full
+suite/build, provider, Gate, real Rig, real measurement, credits, push, or merge occurred.
 
 ## Contract review C1 delta — capture/final lifecycle
 
@@ -276,3 +333,72 @@ disjointness mutant remains the authority witness above. The exact controller co
 **105 pass / 0 fail**. Fresh `bunx tsc --noEmit`, `bun run lint` (Biome 694 files/no fixes),
 `git diff --check`, and `git diff --cached --check` exit 0. No stage, commit, full suite/build,
 provider, Gate, real Rig, measurement, credits, push, or merge occurred.
+
+## Contract review C4 R1 — lane-aware unit-event and derived-attribution closure
+
+The R1 review was correct on all three reported authority gaps. The new common in-memory
+`PolicyIdentityEvent` records every source-bound Bench case/repeat or Rig scenario/turn outcome;
+the persisted aggregate outcome list is its exact sorted projection, not an independent scalar
+claim. Bench therefore still requires two worsened repeat units while a Rig identity needs only one
+exact scenario/turn unit. Every benefit/direct contribution now carries target singleton and
+applicable group directions, baseline catalog-protection when applicable, and exact causal
+reproducer facts. The strict result schema derives the contribution kind, validates retained
+reproduction, and checks the persisted classification/reasons/vetoes/harm/ref list against a fresh
+deterministic two-phase result. Publication recomputes interaction events from copied Bench sources
+and verified Rig values; compatibility is limited to a historical unparsable Bench bundle that
+claims no unit-event authority.
+
+| Guard / restored SHA-256 | WITH / WITHOUT numeric witness |
+| --- | --- |
+| Rig one-unit stability; `src/core/policy/identity-events.ts` `60a06f77e5fbc03fbf419f1af9dfdc51c3a4cd7055f10be75dc5ab57e79000a4` | Named real Rig test WITH **1/0/23 filtered/3 expects**; changing Rig `>=1` to `>=2` WITHOUT **0/1/23/3**. |
+| Exact event projection; `src/schemas/policy-measurement.ts` `14d00571c6c2eb7871c8f1643470b8727f5ecf9796e8ea36b19a346c27d720b0` | Same-delta transfer/substitution is rejected WITH; removing projection was WITHOUT **0/1/29/2** (`{A:3}` accepted). |
+| Direct singleton, derived backstop, retained Q, and fresh-decision closure; same schema SHA | Zero singleton and fake backstop mutants were each **0/1/29/1**. The non-retained Q witness was **0/1/29/1** only when both its retained-Q predicate and independent fresh-classification parity were bypassed; either guard rejects alone. |
+| External copied-source closure; `src/cli/commands/stats.ts` `68144c44bcab099144eb0e794b773ca1da57bb0aee622167b17777b3d28227ac` | Named external verifier WITH **1/0/4/2**; bypassing recomputation was WITHOUT **0/1/4/1**, publishing exit 0. |
+
+All six families ran only in `/private/tmp/reviewgate-c4-r1-mutants.zHtAb2/repo`; exact before/after
+SHA comparisons restored every production file. Primary REDs were Rig **0/1/23/3**, count transfer
+**0/1/29/2**, zero-singleton retain, relabelled backstop, non-retained cover, and source-incomparable
+publication **0/1**. Restored GREEN is schema **30/0/84**, five-file C4 focus **94/0/1126**, and
+eight-file C2/C3/C4 regression **117/0/1186**. Fresh tsc, Biome **695/no fixes**, working/cached
+diff exit 0. No stage, commit, full suite/build, provider, Gate, real Rig/measurement, credits,
+push, or merge occurred.
+
+## Contract review C4 R3 — preregistered Rig source anchor
+
+The R2 reviewer correctly found that external verification accepted a self-consistent replacement
+Rig graph because singleton and history-group source expectations came from the mutable published
+bundle/result. Two permanent current-primary tests first demonstrated that authority failure:
+`bun test tests/integration/policy-measurement-pipeline.test.ts -t 'rejects a self-consistent
+published Rig (group|manifest) source substitution'` was **0 pass / 2 fail / 28 filtered / 8
+expects**. The failures expected external rejection and instead received acceptance.
+
+The minimal fix passes only the already byte-verified preregistration
+`stateful.manifest_ref`/`stateful.manifest_sha256` into `verifyPublishedIdentityEventClosure`. It
+requires the copied source, published `rig.scenario_manifest`, and every stateful interaction
+artifact to equal that preregistered binding; expected Rig singleton and history-group events then
+derive from it. The same two-guard command was GREEN at **2 pass / 0 fail / 28 filtered / 8
+expects**. A later final-current-source group guard was **1 pass / 0 fail / 29 filtered / 4
+expects** in **97.23s**.
+
+| Authority guard / mutation copy | WITH / WITHOUT result | Restore evidence |
+| --- | --- | --- |
+| Preregistration anchor cannot be replaced by published manifest | Changing the caller to `rigBundle.value.scenario_manifest` was **0 pass / 1 fail / 29 filtered / 4 expects**. | `src/cli/commands/stats.ts` restored to `d8003164a3f998c604b04832d99faf2eb73b73f76280c263b25f2484c7704d56`. |
+| Stateful group source cannot derive from published interaction artifact | Removing exact artifact equality and sourcing expected groups from `interaction.artifact` was **0 pass / 1 fail / 29 filtered / 4 expects**. | Same exact source SHA restored. |
+
+Both mutations used only `/private/tmp/reviewgate-c1-r3-mut-soo5X1/repo`, the sole authorized
+disposable copy; no primary source was mutated. A test-only `TS2698` return-type assertion and a
+mechanical Biome format pass followed the mutation checkpoint. Final source SHAs include
+`stats.ts=b8e50a74a394c6de7f0b64bf6574d9a1b665b49d7c29b23531fbad8e1ce79fca` and
+`identity-events.ts=711b68da52b47c4108c36d547d7fa4ce4ef2355a0ad2fc033f8ba74c3a5b1bc1`.
+
+The default-parallel exact eight-file C4 focus was **124 pass / 2 timeout failures / 1,206
+expects**; a serial diagnostic was **125 pass / 1 timeout failure / 1,206 expects**. The only
+failures were these individually passing substitution guards exceeding their existing 120s
+per-test budget under composite scheduling. Per controller ruling, neither the composite nor its
+timeout is changed or retried; this is an explicit timing limitation, not a passing composite
+result. The individual final current-source group guard above and the earlier singleton
+**1/0/29/4** result are the proportional closure evidence. Fresh final `bunx tsc --noEmit` exited
+0, `bun run lint` checked **695 files with no fixes**, and both `git diff --check` and
+`git diff --cached --check` exited 0. HEAD remains `1aef80a0983d8d33ef1cdc62d85ae35b08f3eadd`;
+staging is empty. No commit, full suite, build, provider, Gate, real Rig, measurement, credits,
+push, or merge occurred.

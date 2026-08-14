@@ -22,16 +22,36 @@ import {
 import { canonicalJson } from "../../audit/canonical.ts";
 import { BrainStore } from "../../core/brain/store.ts";
 import { FpLedgerStore } from "../../core/fp-ledger/store.ts";
+import { POLICY_PASSES, POLICY_PASS_IDS, type PolicyPassId } from "../../core/policy/catalog.ts";
+import {
+  type PolicyBaselineProtectionEvent,
+  type PolicyIdentityEvent,
+  type PolicySingletonIdentityEvent,
+  baselineProtectionEventKey,
+  identityEventKey,
+  singletonIdentityEventKey,
+  sortBaselineProtectionEvents,
+  sortIdentityEvents,
+  sortSingletonIdentityEvents,
+} from "../../core/policy/identity-events.ts";
+import { POLICY_MEASUREMENT_LANES } from "../../core/policy/measurement-contract.ts";
 import { policyStateTreeDigest } from "../../rig/policy-replay-state.ts";
+import {
+  type BenchPolicyRepeatResult,
+  BenchPolicyRepeatResultSchema,
+  type CaseResult,
+} from "../../schemas/bench-result.ts";
 import {
   type PolicyMeasurementPreregistration,
   PolicyMeasurementPreregistrationSchema,
 } from "../../schemas/policy-measurement-preregistration.ts";
 import {
+  PolicyBenchBundleSchema,
   PolicyDogfoodAdjudicationSchema,
   PolicyDogfoodAttestationSchema,
   PolicyDogfoodInputManifestSchema,
   PolicyDogfoodSnapshotSchema,
+  type PolicyMeasurement,
   PolicyMeasurementSchema,
   PolicyRigEvidenceSchema,
 } from "../../schemas/policy-measurement.ts";
@@ -397,6 +417,465 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function benchErrorIdentities(row: CaseResult): Set<string> | undefined {
+  if (row.policy_truth === undefined) return undefined;
+  return new Set([
+    ...row.policy_truth.findings.flatMap((finding) =>
+      finding.outcome === "FP" && finding.severity !== "INFO"
+        ? [`blocking-fp:${finding.signature}`]
+        : [],
+    ),
+    ...row.policy_truth.fn_label_indexes.map((index) => `blocking-fn:label-${index}`),
+  ]);
+}
+
+/**
+ * Recompute persisted identity events from already byte-verified publication inputs. This is
+ * intentionally outside the result schema: a self-consistent event list is not source authority.
+ */
+function verifyPublishedIdentityEventClosure(input: {
+  root: string;
+  attemptDir: string;
+  rigBinding: { ref: string; sha256: string };
+  result: PolicyMeasurement;
+  benchBundle: unknown;
+  rig: z.infer<typeof PolicyRigEvidenceSchema>;
+  sources: ReadonlyArray<z.infer<typeof PolicyMeasurementCompleteSchema>["sources"][number]>;
+}): boolean {
+  const bundle = PolicyBenchBundleSchema.safeParse(input.benchBundle);
+  const sourceByRef = new Map(input.sources.map((source) => [source.ref, source]));
+  const rigSource = sourceByRef.get(input.rigBinding.ref);
+  if (
+    input.rig.scenario_manifest.ref !== input.rigBinding.ref ||
+    input.rig.scenario_manifest.sha256 !== input.rigBinding.sha256 ||
+    rigSource?.material !== "file" ||
+    rigSource.sha256 !== input.rigBinding.sha256 ||
+    rigSource.copy_ref === undefined
+  ) {
+    return false;
+  }
+  const normalizeBenchBinding = (binding: { ref: string; sha256: string }):
+    | { ref: string; sha256: string }
+    | undefined => {
+    const parts = binding.ref.split("/");
+    if (
+      binding.ref.length === 0 ||
+      isAbsolute(binding.ref) ||
+      parts.some((part) => part.length === 0 || part === "." || part === "..")
+    ) {
+      return undefined;
+    }
+    return binding.ref.startsWith(`${input.attemptDir}/`)
+      ? binding
+      : { ...binding, ref: `${input.attemptDir}/${binding.ref}` };
+  };
+  const hasCopiedSource = (binding: { ref: string; sha256: string }): boolean => {
+    const normalized = normalizeBenchBinding(binding);
+    const source = normalized === undefined ? undefined : sourceByRef.get(normalized.ref);
+    return (
+      source !== undefined &&
+      source.material === "file" &&
+      source.sha256 === normalized?.sha256 &&
+      source.copy_ref !== undefined
+    );
+  };
+  const readRepeat = (binding: { ref: string; sha256: string }):
+    | BenchPolicyRepeatResult
+    | undefined => {
+    const normalized = normalizeBenchBinding(binding);
+    const source = normalized === undefined ? undefined : sourceByRef.get(normalized.ref);
+    if (
+      normalized === undefined ||
+      source === undefined ||
+      source.material !== "file" ||
+      source.sha256 !== normalized.sha256 ||
+      source.copy_ref === undefined
+    ) {
+      return undefined;
+    }
+    const parsed = verifyNamedCanonicalJsonBytes({
+      root: input.root,
+      ref: source.copy_ref,
+      sha256: normalized.sha256,
+      schema: BenchPolicyRepeatResultSchema,
+      maxBytes: MAX_POLICY_SOURCE_BYTES,
+      privateMode: true,
+    });
+    return parsed.ok ? parsed.value : undefined;
+  };
+  const profileById = bundle.success
+    ? new Map(bundle.data.profiles.map((profile) => [profile.id, profile]))
+    : undefined;
+  const baselineProfile = profileById?.get("baseline");
+
+  const sameSingletonEvents = (
+    left: readonly PolicySingletonIdentityEvent[],
+    right: readonly PolicySingletonIdentityEvent[],
+  ): boolean =>
+    canonicalJson(sortSingletonIdentityEvents(left).map(singletonIdentityEventKey)) ===
+    canonicalJson(sortSingletonIdentityEvents(right).map(singletonIdentityEventKey));
+  const sameProtectionEvents = (
+    left: readonly PolicyBaselineProtectionEvent[],
+    right: readonly PolicyBaselineProtectionEvent[],
+  ): boolean =>
+    canonicalJson(sortBaselineProtectionEvents(left).map(baselineProtectionEventKey)) ===
+    canonicalJson(sortBaselineProtectionEvents(right).map(baselineProtectionEventKey));
+  const appendSingletonEvents = (input: {
+    into: PolicySingletonIdentityEvent[];
+    lane: "stateless-bench" | "stateful-rig";
+    unit: string;
+    identityPrefix: string;
+    baseline: ReadonlySet<string>;
+    ablated: ReadonlySet<string>;
+    passId: PolicyPassId;
+    source: { ref: string; sha256: string };
+  }): void => {
+    for (const identity of input.ablated) {
+      if (input.baseline.has(identity)) continue;
+      input.into.push({
+        lane: input.lane,
+        unit: input.unit,
+        identity: `${input.identityPrefix}:${identity}`,
+        direction: "worsened",
+        count: 1,
+        pass_id: input.passId,
+        source: input.source,
+      });
+    }
+    for (const identity of input.baseline) {
+      if (input.ablated.has(identity)) continue;
+      input.into.push({
+        lane: input.lane,
+        unit: input.unit,
+        identity: `${input.identityPrefix}:${identity}`,
+        direction: "improved",
+        count: 1,
+        pass_id: input.passId,
+        source: input.source,
+      });
+    }
+  };
+  const verifyBenchRepeatSources = (input: {
+    repeat: {
+      response_manifest: { ref: string; sha256: string };
+      result: { ref: string; sha256: string };
+      policy_trace_set: { ref: string; sha256: string };
+    };
+    result: BenchPolicyRepeatResult;
+  }): boolean =>
+    hasCopiedSource(input.repeat.response_manifest) &&
+    hasCopiedSource(input.repeat.result) &&
+    hasCopiedSource(input.repeat.policy_trace_set) &&
+    hasCopiedSource(input.result.source_result) &&
+    input.result.cases.every(
+      (row) =>
+        row.policy_trace?.trace_ref !== undefined &&
+        row.policy_trace.trace_sha256 !== undefined &&
+        hasCopiedSource({
+          ref: row.policy_trace.trace_ref,
+          sha256: row.policy_trace.trace_sha256,
+        }),
+    );
+
+  const expectedBenchSingleton = new Map<
+    PolicyPassId,
+    { events: PolicySingletonIdentityEvent[]; protectionEvents: PolicyBaselineProtectionEvent[] }
+  >();
+  if (bundle.success && baselineProfile !== undefined) {
+    for (const passId of POLICY_PASS_IDS) {
+      const profile = profileById?.get(`single:${passId}`);
+      const normalizedProfile =
+        profile === undefined ? undefined : normalizeBenchBinding(profile.artifact);
+      if (
+        profile === undefined ||
+        normalizedProfile === undefined ||
+        !hasCopiedSource(profile.artifact)
+      )
+        return false;
+      const events: PolicySingletonIdentityEvent[] = [];
+      const protectionEvents: PolicyBaselineProtectionEvent[] = [];
+      for (const repeat of profile.data.repeats) {
+        const baselineRepeat = baselineProfile.data.repeats.find(
+          (candidate) => candidate.repeat === repeat.repeat,
+        );
+        if (baselineRepeat === undefined) return false;
+        const baseline = readRepeat(baselineRepeat.result);
+        const ablated = readRepeat(repeat.result);
+        if (
+          baseline === undefined ||
+          ablated === undefined ||
+          baseline.repeat !== ablated.repeat ||
+          !verifyBenchRepeatSources({ repeat, result: ablated }) ||
+          !verifyBenchRepeatSources({ repeat: baselineRepeat, result: baseline })
+        ) {
+          return false;
+        }
+        const baselineByCase = new Map(baseline.cases.map((row) => [row.id, row]));
+        const catalog = POLICY_PASSES.find((candidate) => candidate.id === passId);
+        if (catalog === undefined) return false;
+        for (const row of ablated.cases) {
+          const base = baselineByCase.get(row.id);
+          const trace = base?.policy_trace?.trace;
+          if (base === undefined || trace === undefined) return false;
+          const carriers = trace.evaluations.filter(
+            (evaluation) => evaluation.pass_id === passId && evaluation.result !== "no-opportunity",
+          );
+          if (carriers.length === 0) continue;
+          const baselineErrors = benchErrorIdentities(base);
+          const ablatedErrors = benchErrorIdentities(row);
+          if (baselineErrors === undefined || ablatedErrors === undefined) return false;
+          const unit = `bench:${row.id}:repeat-${repeat.repeat}`;
+          appendSingletonEvents({
+            into: events,
+            lane: "stateless-bench",
+            unit,
+            identityPrefix: `bench:${row.id}`,
+            baseline: baselineErrors,
+            ablated: ablatedErrors,
+            passId,
+            source: normalizedProfile,
+          });
+          for (const errorIdentity of ablatedErrors) {
+            if (!errorIdentity.startsWith("blocking-fp:")) continue;
+            const signature = errorIdentity.slice("blocking-fp:".length);
+            const protectedEvaluation = trace.evaluations.find(
+              (evaluation) =>
+                evaluation.pass_id === passId &&
+                evaluation.result === "protected" &&
+                evaluation.protected_by !== undefined &&
+                evaluation.source_signatures.includes(signature) &&
+                catalog.protection_rules.some(
+                  (rule) =>
+                    rule.reason_code === evaluation.reason_code &&
+                    rule.protected_by === evaluation.protected_by &&
+                    rule.before === evaluation.before,
+                ),
+            );
+            if (protectedEvaluation?.protected_by === undefined) continue;
+            const normalizedBaseline = normalizeBenchBinding(baselineProfile.artifact);
+            if (normalizedBaseline === undefined) return false;
+            protectionEvents.push({
+              lane: "stateless-bench",
+              unit,
+              identity: `bench:${row.id}:${errorIdentity}`,
+              pass_id: passId,
+              result: "protected",
+              source: normalizedBaseline,
+              reason_code: protectedEvaluation.reason_code,
+              protected_by: protectedEvaluation.protected_by,
+              before: protectedEvaluation.before,
+            });
+          }
+        }
+      }
+      expectedBenchSingleton.set(passId, { events, protectionEvents });
+    }
+  }
+
+  const expectedRigSingleton = new Map<PolicyPassId, PolicySingletonIdentityEvent[]>();
+  for (const sequence of input.rig.sequences) {
+    const sequenceIdentity = sequence.scenario_id.startsWith(`${sequence.pass_id}-`)
+      ? sequence.scenario_id.slice(sequence.pass_id.length + 1)
+      : sequence.scenario_id;
+    const events = expectedRigSingleton.get(sequence.pass_id) ?? [];
+    expectedRigSingleton.set(sequence.pass_id, events);
+    for (const turn of sequence.turns) {
+      appendSingletonEvents({
+        into: events,
+        lane: "stateful-rig",
+        unit: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+        identityPrefix: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+        baseline: new Set(turn.baseline.errors.map((row) => `${row.kind}:${row.identity}`)),
+        ablated: new Set(turn.counterfactual.errors.map((row) => `${row.kind}:${row.identity}`)),
+        passId: sequence.pass_id,
+        source: input.rigBinding,
+      });
+    }
+  }
+  for (const facts of input.result.identity_evidence) {
+    const lane = POLICY_MEASUREMENT_LANES[facts.pass_id];
+    if (lane === "stateless-bench") {
+      const expected = expectedBenchSingleton.get(facts.pass_id);
+      if (
+        expected === undefined
+          ? facts.singleton_inventory.events.length > 0 ||
+            facts.singleton_inventory.protection_events.length > 0
+          : !sameSingletonEvents(facts.singleton_inventory.events, expected.events) ||
+            !sameProtectionEvents(
+              facts.singleton_inventory.protection_events,
+              expected.protectionEvents,
+            )
+      ) {
+        return false;
+      }
+    } else if (
+      !sameSingletonEvents(
+        facts.singleton_inventory.events,
+        expectedRigSingleton.get(facts.pass_id) ?? [],
+      ) ||
+      facts.singleton_inventory.protection_events.length > 0
+    ) {
+      return false;
+    }
+  }
+
+  for (const [index, interaction] of input.result.interactions.entries()) {
+    const expected: PolicyIdentityEvent[] = [];
+    if (interaction.primary_lane === "stateless-bench") {
+      // A historical unparseable Bench source has no source authority for this lane, so it may
+      // only omit a zero-event Bench claim. Rig remains independently authoritative below.
+      if (!bundle.success) {
+        if (interaction.identity_inventory.events.length > 0) return false;
+        continue;
+      }
+      if (profileById === undefined || baselineProfile === undefined) return false;
+      const profile = profileById.get(`interaction:${index + 1}`);
+      const normalizedProfile =
+        profile === undefined ? undefined : normalizeBenchBinding(profile.artifact);
+      if (
+        profile === undefined ||
+        normalizedProfile === undefined ||
+        normalizedProfile.ref !== interaction.artifact.ref ||
+        normalizedProfile.sha256 !== interaction.artifact.sha256 ||
+        !hasCopiedSource(profile.artifact)
+      ) {
+        return false;
+      }
+      for (const repeat of profile.data.repeats) {
+        const baselineRepeat = baselineProfile.data.repeats.find(
+          (candidate) => candidate.repeat === repeat.repeat,
+        );
+        if (baselineRepeat === undefined) return false;
+        const baseline = readRepeat(baselineRepeat.result);
+        const ablated = readRepeat(repeat.result);
+        if (baseline === undefined || ablated === undefined || baseline.repeat !== ablated.repeat)
+          return false;
+        if (
+          !hasCopiedSource(repeat.response_manifest) ||
+          !hasCopiedSource(repeat.result) ||
+          !hasCopiedSource(repeat.policy_trace_set) ||
+          !hasCopiedSource(baselineRepeat.response_manifest) ||
+          !hasCopiedSource(baselineRepeat.result) ||
+          !hasCopiedSource(baselineRepeat.policy_trace_set) ||
+          !hasCopiedSource(ablated.source_result) ||
+          !hasCopiedSource(baseline.source_result) ||
+          ablated.cases.some(
+            (row) =>
+              row.policy_trace?.trace_ref === undefined ||
+              row.policy_trace.trace_sha256 === undefined ||
+              !hasCopiedSource({
+                ref: row.policy_trace.trace_ref,
+                sha256: row.policy_trace.trace_sha256,
+              }),
+          ) ||
+          baseline.cases.some(
+            (row) =>
+              row.policy_trace?.trace_ref === undefined ||
+              row.policy_trace.trace_sha256 === undefined ||
+              !hasCopiedSource({
+                ref: row.policy_trace.trace_ref,
+                sha256: row.policy_trace.trace_sha256,
+              }),
+          )
+        ) {
+          return false;
+        }
+        const baselineByCase = new Map(baseline.cases.map((row) => [row.id, row]));
+        for (const row of ablated.cases) {
+          const base = baselineByCase.get(row.id);
+          const trace = base?.policy_trace?.trace;
+          if (base === undefined || trace === undefined) return false;
+          const carriers = trace.evaluations.filter(
+            (evaluation) =>
+              interaction.pass_ids.includes(evaluation.pass_id) &&
+              evaluation.result !== "no-opportunity",
+          );
+          if (carriers.length === 0) continue;
+          const baselineErrors = benchErrorIdentities(base);
+          const ablatedErrors = benchErrorIdentities(row);
+          if (baselineErrors === undefined || ablatedErrors === undefined) return false;
+          for (const identity of ablatedErrors) {
+            if (baselineErrors.has(identity)) continue;
+            expected.push({
+              lane: "stateless-bench",
+              unit: `bench:${row.id}:repeat-${repeat.repeat}`,
+              identity: `bench:${row.id}:${identity}`,
+              direction: "worsened",
+              count: 1,
+              source: normalizedProfile,
+            });
+          }
+          for (const identity of baselineErrors) {
+            if (ablatedErrors.has(identity)) continue;
+            expected.push({
+              lane: "stateless-bench",
+              unit: `bench:${row.id}:repeat-${repeat.repeat}`,
+              identity: `bench:${row.id}:${identity}`,
+              direction: "improved",
+              count: 1,
+              source: normalizedProfile,
+            });
+          }
+        }
+      }
+    } else {
+      if (
+        interaction.artifact.ref !== input.rigBinding.ref ||
+        interaction.artifact.sha256 !== input.rigBinding.sha256
+      ) {
+        return false;
+      }
+      for (const sequence of input.rig.sequences) {
+        const group = sequence.history_interaction;
+        if (group === null) continue;
+        const sequenceIdentity = sequence.scenario_id.startsWith(`${sequence.pass_id}-`)
+          ? sequence.scenario_id.slice(sequence.pass_id.length + 1)
+          : sequence.scenario_id;
+        for (const turn of group.turns) {
+          const baseline = new Set(
+            turn.baseline.errors.map((row) => `${row.kind}:${row.identity}`),
+          );
+          const ablated = new Set(
+            turn.counterfactual.errors.map((row) => `${row.kind}:${row.identity}`),
+          );
+          for (const identity of ablated) {
+            if (baseline.has(identity)) continue;
+            expected.push({
+              lane: "stateful-rig",
+              unit: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+              identity: `rig:${sequenceIdentity}:turn-${turn.turn_index}:${identity}`,
+              direction: "worsened",
+              count: 1,
+              source: input.rigBinding,
+              member_pass_id: sequence.pass_id,
+            });
+          }
+          for (const identity of baseline) {
+            if (ablated.has(identity)) continue;
+            expected.push({
+              lane: "stateful-rig",
+              unit: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+              identity: `rig:${sequenceIdentity}:turn-${turn.turn_index}:${identity}`,
+              direction: "improved",
+              count: 1,
+              source: input.rigBinding,
+              member_pass_id: sequence.pass_id,
+            });
+          }
+        }
+      }
+    }
+    const persisted = sortIdentityEvents(interaction.identity_inventory.events);
+    if (
+      canonicalJson(sortIdentityEvents(expected).map(identityEventKey)) !==
+      canonicalJson(persisted.map(identityEventKey))
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function verifyPublishedPolicyBundle(output: string): boolean {
   const marker = verifyUnboundNamedCanonicalJsonBytes({
     root: output,
@@ -443,6 +922,22 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     privateMode: true,
   });
   const outputs = marker.value.outputs;
+  const benchBundle = verifyNamedCanonicalJsonBytes({
+    root: output,
+    ref: outputs.bench_bundle.ref,
+    sha256: outputs.bench_bundle.sha256,
+    schema: z.unknown(),
+    maxBytes: MAX_POLICY_SOURCE_BYTES,
+    privateMode: true,
+  });
+  const rigBundle = verifyNamedCanonicalJsonBytes({
+    root: output,
+    ref: outputs.rig_bundle.ref,
+    sha256: outputs.rig_bundle.sha256,
+    schema: PolicyRigEvidenceSchema,
+    maxBytes: MAX_POLICY_SOURCE_BYTES,
+    privateMode: true,
+  });
   const registeredRef = (
     key: Exclude<keyof PolicyMeasurementPreregistration["outputs"], "attempt_dir">,
   ): string | undefined => {
@@ -460,22 +955,8 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     outputs.dogfood_snapshot.ref !== registeredRef("dogfood_snapshot") ||
     outputs.result_json.ref !== registeredRef("result_json") ||
     outputs.report_md.ref !== registeredRef("report_md") ||
-    !verifyNamedCanonicalJsonBytes({
-      root: output,
-      ref: outputs.bench_bundle.ref,
-      sha256: outputs.bench_bundle.sha256,
-      schema: z.unknown(),
-      maxBytes: MAX_POLICY_SOURCE_BYTES,
-      privateMode: true,
-    }).ok ||
-    !verifyNamedCanonicalJsonBytes({
-      root: output,
-      ref: outputs.rig_bundle.ref,
-      sha256: outputs.rig_bundle.sha256,
-      schema: PolicyRigEvidenceSchema,
-      maxBytes: MAX_POLICY_SOURCE_BYTES,
-      privateMode: true,
-    }).ok ||
+    !benchBundle.ok ||
+    !rigBundle.ok ||
     !verifyNamedCanonicalJsonBytes({
       root: output,
       ref: outputs.dogfood_snapshot.ref,
@@ -493,7 +974,7 @@ function verifyPublishedPolicyBundle(output: string): boolean {
     (source) => source.ref === preregistration.value.outputs.bench_bundle,
   );
   if (benchInventory?.sha256 !== outputs.bench_bundle.sha256) return false;
-  return marker.value.sources.every((source, index) => {
+  const sourcesValid = marker.value.sources.every((source, index) => {
     const inventory = result.value.artifacts.inventory[index];
     if (source.ref !== inventory?.ref || source.sha256 !== inventory.sha256) return false;
     if (source.material === "file") {
@@ -540,6 +1021,21 @@ function verifyPublishedPolicyBundle(output: string): boolean {
       policyStateTreeDigest(entries as never) === source.sha256
     );
   });
+  return (
+    sourcesValid &&
+    verifyPublishedIdentityEventClosure({
+      root: output,
+      attemptDir: preregistration.value.outputs.attempt_dir,
+      rigBinding: {
+        ref: preregistration.value.stateful.manifest_ref,
+        sha256: preregistration.value.stateful.manifest_sha256,
+      },
+      result: result.value,
+      benchBundle: benchBundle.value,
+      rig: rigBundle.value,
+      sources: marker.value.sources,
+    })
+  );
 }
 
 function verifyPublishedPolicyBundleWithoutMarker(

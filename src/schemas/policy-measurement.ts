@@ -3,12 +3,22 @@ import { z } from "zod";
 import { canonicalJson } from "../audit/canonical.ts";
 import { POLICY_CATALOG_VERSION, POLICY_PASSES, POLICY_PASS_IDS } from "../core/policy/catalog.ts";
 import {
+  baselineProtectionEventKey,
+  identityDirectionFromEvents,
+  identityEventKey,
+  identityOutcomesFromEvents,
+  isStableWorsening,
+  singletonIdentityDirectionFromEvents,
+  singletonIdentityEventKey,
+} from "../core/policy/identity-events.ts";
+import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_LANES,
   POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
   type PolicyClassification,
   type PolicyMeasurementLane,
 } from "../core/policy/measurement-contract.ts";
+import { classifyPolicyPasses } from "../stats/policy/classify.ts";
 import {
   BenchPolicyProfileArtifactBindingSchema,
   PolicyBenchProfileArtifactSchema,
@@ -37,6 +47,150 @@ const ArtifactRefSchema = z
   );
 
 const ArtifactBindingSchema = z.object({ ref: ArtifactRefSchema, sha256: Sha256Schema }).strict();
+/**
+ * The exact preregistered paired comparison used to corroborate one singleton identity.  This is
+ * deliberately a binding closure rather than a self-declared outcome label: the enclosing
+ * measurement schema re-derives the registered group and every raw reference from interactions.
+ */
+const PolicyGroupComparisonSchema = z
+  .object({
+    pass_ids: z.array(PolicyPassIdSchema).min(2),
+    artifact: ArtifactBindingSchema,
+    raw_evidence: z.array(ArtifactBindingSchema).min(1),
+  })
+  .strict();
+const PolicyIdentityDirectionSchema = z
+  .object({
+    lane: z.enum(["stateless-bench", "stateful-rig"]),
+    units: z.number().int().nonnegative(),
+    worsened: z.number().int().nonnegative(),
+    improved: z.number().int().nonnegative(),
+  })
+  .strict();
+const PolicyBaselineProtectionSchema = z
+  .object({
+    evidence: ArtifactBindingSchema,
+    reason_code: z.string().min(1),
+    protected_by: PolicyProtectionCodeSchema,
+    before: z.enum(["INFO", "WARN", "ERROR", "CRITICAL"]),
+  })
+  .strict();
+const PolicyIdentityEventSchema = z
+  .object({
+    lane: z.enum(["stateless-bench", "stateful-rig"]),
+    unit: z.string().min(1),
+    identity: z.string().min(1),
+    direction: z.enum(["worsened", "improved"]),
+    count: z.number().int().positive(),
+    source: ArtifactBindingSchema,
+    member_pass_id: PolicyPassIdSchema.optional(),
+  })
+  .strict();
+const PolicySingletonIdentityEventSchema = z
+  .object({
+    lane: z.enum(["stateless-bench", "stateful-rig"]),
+    unit: z.string().min(1),
+    identity: z.string().min(1),
+    direction: z.enum(["worsened", "improved"]),
+    count: z.number().int().positive(),
+    pass_id: PolicyPassIdSchema,
+    source: ArtifactBindingSchema,
+  })
+  .strict();
+const PolicyBaselineProtectionEventSchema = z
+  .object({
+    lane: z.enum(["stateless-bench", "stateful-rig"]),
+    unit: z.string().min(1),
+    identity: z.string().min(1),
+    pass_id: PolicyPassIdSchema,
+    result: z.literal("protected"),
+    source: ArtifactBindingSchema,
+    reason_code: z.string().min(1),
+    protected_by: PolicyProtectionCodeSchema,
+    before: z.enum(["INFO", "WARN", "ERROR", "CRITICAL"]),
+  })
+  .strict();
+const PolicySingletonIdentityInventorySchema = z
+  .object({
+    raw_evidence: z.array(ArtifactBindingSchema).min(1),
+    events: z.array(PolicySingletonIdentityEventSchema),
+    protection_events: z.array(PolicyBaselineProtectionEventSchema),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    let previousEvent = "";
+    for (const [index, event] of value.events.entries()) {
+      const key = singletonIdentityEventKey(event);
+      if (key <= previousEvent) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["events", index],
+          message: "singleton identity events must be code-unit sorted and unique",
+        });
+      }
+      previousEvent = key;
+    }
+    let previousProtection = "";
+    for (const [index, event] of value.protection_events.entries()) {
+      const key = baselineProtectionEventKey(event);
+      if (key <= previousProtection) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["protection_events", index],
+          message: "baseline protection events must be code-unit sorted and unique",
+        });
+      }
+      previousProtection = key;
+    }
+  });
+const PolicyInteractionIdentityInventorySchema = z
+  .object({
+    raw_evidence: z.array(ArtifactBindingSchema).min(1),
+    events: z.array(PolicyIdentityEventSchema),
+    outcomes: z.array(
+      z
+        .object({
+          identity: z.string().min(1),
+          worsened: z.number().int().nonnegative(),
+          improved: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    let previousEvent = "";
+    for (const [index, event] of value.events.entries()) {
+      const key = identityEventKey(event);
+      if (key <= previousEvent) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["events", index],
+          message: "interaction identity events must be code-unit sorted and unique",
+        });
+      }
+      previousEvent = key;
+    }
+    let previous = "";
+    for (const [index, outcome] of value.outcomes.entries()) {
+      if (outcome.identity <= previous || (outcome.worsened === 0 && outcome.improved === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["outcomes", index],
+          message:
+            "interaction identity outcomes must be code-unit sorted, unique, and non-vacuous",
+        });
+      }
+      previous = outcome.identity;
+    }
+    if (canonicalJson(value.outcomes) !== canonicalJson(identityOutcomesFromEvents(value.events))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["outcomes"],
+        message: "interaction identity outcomes must be the exact projection of unit-level events",
+      });
+    }
+  });
 const LaneEligibilitySchema = z
   .object({ stateless: z.boolean(), stateful: z.boolean(), dogfood: z.boolean() })
   .strict();
@@ -118,6 +272,19 @@ function isCodeUnitSortedUnique(values: readonly string[]): boolean {
 }
 function sameStringList(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameBindingList(
+  left: readonly { ref: string; sha256: string }[],
+  right: readonly { ref: string; sha256: string }[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (binding, index) =>
+        binding.ref === right[index]?.ref && binding.sha256 === right[index]?.sha256,
+    )
+  );
 }
 function codeUnitSortedUnion(values: readonly string[]): string[] {
   return [...new Set(values)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
@@ -963,8 +1130,13 @@ export const PolicyPassEvidenceSchema = z
     unique_contributions: z.array(
       z
         .object({
+          identity: z.string().min(1),
           kind: z.enum(["prevented-blocking-fp", "preserved-blocking-tp", "required-backstop"]),
           evidence: ArtifactBindingSchema,
+          singleton_direction: PolicyIdentityDirectionSchema,
+          group_direction: PolicyIdentityDirectionSchema,
+          baseline_protection: PolicyBaselineProtectionSchema.optional(),
+          group_comparison: PolicyGroupComparisonSchema,
         })
         .strict(),
     ),
@@ -1195,6 +1367,7 @@ export const PolicyMeasurementSchema = z
           primary_lane: PolicyMeasurementLaneSchema,
           evidence: PolicyInteractionEvidenceSchema,
           lane_summaries: z.array(PolicyLaneSummarySchema),
+          identity_inventory: PolicyInteractionIdentityInventorySchema,
         })
         .strict()
         .superRefine((value, ctx) => {
@@ -1233,6 +1406,7 @@ export const PolicyMeasurementSchema = z
       z
         .object({
           pass_id: PolicyPassIdSchema,
+          singleton_inventory: PolicySingletonIdentityInventorySchema,
           ground_truth_harms: z.array(
             z.object({ identity: z.string().min(1), evidence_ref: z.string().min(1) }).strict(),
           ),
@@ -1253,7 +1427,22 @@ export const PolicyMeasurementSchema = z
               .object({
                 identity: z.string().min(1),
                 evidence_ref: z.string().min(1),
+                singleton_evidence: ArtifactBindingSchema,
+                singleton_direction: PolicyIdentityDirectionSchema,
+                group_direction: PolicyIdentityDirectionSchema,
+                baseline_protection: PolicyBaselineProtectionSchema.optional(),
+                group_comparison: PolicyGroupComparisonSchema.optional(),
                 reproduced_by_pass_ids: z.array(PolicyPassIdSchema),
+                reproducer_facts: z.array(
+                  z
+                    .object({
+                      pass_id: PolicyPassIdSchema,
+                      singleton_evidence: ArtifactBindingSchema,
+                      singleton_direction: PolicyIdentityDirectionSchema,
+                      group_direction: PolicyIdentityDirectionSchema,
+                    })
+                    .strict(),
+                ),
               })
               .strict(),
           ),
@@ -1362,6 +1551,141 @@ export const PolicyMeasurementSchema = z
           message: "interaction artifact must be present exactly in the global inventory",
         });
       }
+      const expectedIdentityRefs = codeUnitSortedUnion([
+        interaction.artifact.ref,
+        ...interaction.evidence.raw_evidence_refs,
+        ...interaction.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+      ]);
+      const expectedIdentityBindings = expectedIdentityRefs.map((ref) => inventory.get(ref));
+      if (
+        expectedIdentityBindings.some((binding) => binding === undefined) ||
+        !sameBindingList(
+          interaction.identity_inventory.raw_evidence,
+          expectedIdentityBindings.filter(
+            (binding): binding is { ref: string; sha256: string } => binding !== undefined,
+          ),
+        )
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["interactions", index, "identity_inventory", "raw_evidence"],
+          message:
+            "interaction identity inventory must bind the exact sorted paired-comparison raw closure",
+        });
+      }
+      for (const [eventIndex, event] of interaction.identity_inventory.events.entries()) {
+        const source = inventory.get(event.source.ref);
+        const sourceBound =
+          source?.sha256 === event.source.sha256 &&
+          interaction.identity_inventory.raw_evidence.some(
+            (binding) => binding.ref === event.source.ref && binding.sha256 === event.source.sha256,
+          );
+        const laneValid = event.lane === interaction.primary_lane;
+        const memberValid =
+          event.lane === "stateful-rig"
+            ? event.member_pass_id !== undefined &&
+              interaction.pass_ids.includes(event.member_pass_id)
+            : event.member_pass_id === undefined;
+        if (!sourceBound || !laneValid || !memberValid) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["interactions", index, "identity_inventory", "events", eventIndex],
+            message:
+              "identity event must bind its exact closed primary-lane source and applicable member",
+          });
+        }
+      }
+      const outcomeDelta = interaction.identity_inventory.outcomes.reduce(
+        (total, outcome) => total + outcome.worsened - outcome.improved,
+        0,
+      );
+      const truthDelta =
+        interaction.evidence.truth_effects.ablated.blocking_fp +
+        interaction.evidence.truth_effects.ablated.blocking_fn -
+        interaction.evidence.truth_effects.baseline.blocking_fp -
+        interaction.evidence.truth_effects.baseline.blocking_fn;
+      if (outcomeDelta !== truthDelta) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["interactions", index, "identity_inventory", "outcomes"],
+          message:
+            "interaction identity outcomes must exactly close the paired group ground-truth error delta",
+        });
+      }
+    }
+    for (const [index, facts] of result.identity_evidence.entries()) {
+      const pass = result.passes.find((candidate) => candidate.pass_id === facts.pass_id);
+      if (pass === undefined) continue;
+      const expectedSingletonRefs = codeUnitSortedUnion(
+        pass.evidence.lane_summaries
+          .filter((summary) => summary.lane === pass.evidence.lane)
+          .flatMap((summary) => summary.raw_evidence_refs),
+      );
+      const expectedSingletonBindings = expectedSingletonRefs.map((ref) => inventory.get(ref));
+      if (
+        expectedSingletonBindings.some((binding) => binding === undefined) ||
+        !sameBindingList(
+          facts.singleton_inventory.raw_evidence,
+          expectedSingletonBindings.filter(
+            (binding): binding is { ref: string; sha256: string } => binding !== undefined,
+          ),
+        )
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["identity_evidence", index, "singleton_inventory", "raw_evidence"],
+          message: "singleton identity inventory must bind the exact primary-lane source closure",
+        });
+      }
+      for (const [eventIndex, event] of facts.singleton_inventory.events.entries()) {
+        const source = inventory.get(event.source.ref);
+        if (
+          event.pass_id !== facts.pass_id ||
+          event.lane !== pass.evidence.lane ||
+          source?.sha256 !== event.source.sha256 ||
+          !facts.singleton_inventory.raw_evidence.some(
+            (binding) => binding.ref === event.source.ref && binding.sha256 === event.source.sha256,
+          )
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["identity_evidence", index, "singleton_inventory", "events", eventIndex],
+            message:
+              "singleton identity event must bind its exact pass, primary lane, and closed source",
+          });
+        }
+      }
+      const catalog = POLICY_PASSES.find((candidate) => candidate.id === facts.pass_id);
+      for (const [eventIndex, event] of facts.singleton_inventory.protection_events.entries()) {
+        const source = inventory.get(event.source.ref);
+        if (
+          event.pass_id !== facts.pass_id ||
+          event.lane !== pass.evidence.lane ||
+          source?.sha256 !== event.source.sha256 ||
+          !facts.singleton_inventory.raw_evidence.some(
+            (binding) => binding.ref === event.source.ref && binding.sha256 === event.source.sha256,
+          ) ||
+          !catalog?.protection_rules.some(
+            (rule) =>
+              rule.reason_code === event.reason_code &&
+              rule.protected_by === event.protected_by &&
+              rule.before === event.before,
+          )
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [
+              "identity_evidence",
+              index,
+              "singleton_inventory",
+              "protection_events",
+              eventIndex,
+            ],
+            message:
+              "baseline protection event must bind an exact catalog protection in the primary-lane source",
+          });
+        }
+      }
     }
     for (const [passIndex, pass] of result.passes.entries()) {
       const expectedRefs = codeUnitSortedUnion([
@@ -1402,6 +1726,25 @@ export const PolicyMeasurementSchema = z
         });
       }
     }
+    const comparisonBindings = (interaction: (typeof result.interactions)[number]) => {
+      const refs = codeUnitSortedUnion([
+        interaction.artifact.ref,
+        ...interaction.evidence.raw_evidence_refs,
+        ...interaction.lane_summaries.flatMap((summary) => summary.raw_evidence_refs),
+      ]);
+      const bindings = refs.map((ref) => inventory.get(ref));
+      return bindings.some((binding) => binding === undefined)
+        ? undefined
+        : (bindings as Array<{ ref: string; sha256: string }>);
+    };
+    const sameComparison = (
+      left: z.infer<typeof PolicyGroupComparisonSchema>,
+      right: z.infer<typeof PolicyGroupComparisonSchema>,
+    ): boolean =>
+      sameStringList(left.pass_ids, right.pass_ids) &&
+      left.artifact.ref === right.artifact.ref &&
+      left.artifact.sha256 === right.artifact.sha256 &&
+      sameBindingList(left.raw_evidence, right.raw_evidence);
     for (const [index, row] of result.identity_evidence.entries()) {
       for (const facts of [
         row.ground_truth_harms,
@@ -1421,29 +1764,167 @@ export const PolicyMeasurementSchema = z
           previousIdentity = fact.identity;
         }
       }
-      for (const benefit of row.beneficial_effects) {
+      const pass = POLICY_PASSES.find((candidate) => candidate.id === row.pass_id);
+      const measuredPass = result.passes.find((candidate) => candidate.pass_id === row.pass_id);
+      const interaction = result.interactions.find((candidate) =>
+        candidate.pass_ids.includes(row.pass_id),
+      );
+      for (const [benefitIndex, benefit] of row.beneficial_effects.entries()) {
+        const comparison = benefit.group_comparison;
+        const expectedBindings =
+          interaction === undefined ? undefined : comparisonBindings(interaction);
+        const expectedGroupDirection =
+          interaction === undefined
+            ? undefined
+            : identityDirectionFromEvents({
+                events: interaction.identity_inventory.events,
+                identity: benefit.identity,
+                lane: interaction.primary_lane,
+                ...(interaction.primary_lane === "stateful-rig"
+                  ? { memberPassId: row.pass_id }
+                  : {}),
+              });
+        const expectedSingletonDirection = singletonIdentityDirectionFromEvents({
+          events: row.singleton_inventory.events,
+          identity: benefit.identity,
+          lane: measuredPass?.evidence.lane ?? POLICY_MEASUREMENT_LANES[row.pass_id],
+          passId: row.pass_id,
+        });
+        const singletonEvidenceValid =
+          exactInventoryBinding(benefit.singleton_evidence) &&
+          (benefit.reproduced_by_pass_ids.length === 0
+            ? isStableWorsening(expectedSingletonDirection) &&
+              row.singleton_inventory.events.some(
+                (event) =>
+                  event.identity === benefit.identity &&
+                  event.pass_id === row.pass_id &&
+                  event.source.ref === benefit.singleton_evidence.ref &&
+                  event.source.sha256 === benefit.singleton_evidence.sha256,
+              )
+            : !isStableWorsening(expectedSingletonDirection) &&
+              row.singleton_inventory.raw_evidence.some(
+                (binding) =>
+                  binding.ref === benefit.singleton_evidence.ref &&
+                  binding.sha256 === benefit.singleton_evidence.sha256,
+              ));
+        const matchingProtection = row.singleton_inventory.protection_events.find(
+          (event) =>
+            event.identity === benefit.identity &&
+            event.pass_id === row.pass_id &&
+            event.lane === expectedSingletonDirection.lane,
+        );
+        const protectionValid =
+          benefit.baseline_protection === undefined
+            ? matchingProtection === undefined
+            : pass !== undefined &&
+              exactInventoryBinding(benefit.baseline_protection.evidence) &&
+              matchingProtection !== undefined &&
+              benefit.baseline_protection.evidence.ref === matchingProtection.source.ref &&
+              benefit.baseline_protection.evidence.sha256 === matchingProtection.source.sha256 &&
+              benefit.baseline_protection.reason_code === matchingProtection.reason_code &&
+              benefit.baseline_protection.protected_by === matchingProtection.protected_by &&
+              benefit.baseline_protection.before === matchingProtection.before &&
+              pass.protection_rules.some(
+                (rule) =>
+                  rule.reason_code === benefit.baseline_protection?.reason_code &&
+                  rule.protected_by === benefit.baseline_protection?.protected_by &&
+                  rule.before === benefit.baseline_protection?.before,
+              );
+        const comparisonInvalid =
+          (interaction !== undefined && comparison === undefined) ||
+          (comparison !== undefined &&
+            (interaction === undefined ||
+              !singletonEvidenceValid ||
+              benefit.evidence_ref !== benefit.singleton_evidence.ref ||
+              !exactInventoryBinding(comparison.artifact) ||
+              !sameStringList(comparison.pass_ids, interaction.pass_ids) ||
+              comparison.artifact.ref !== interaction.artifact.ref ||
+              comparison.artifact.sha256 !== interaction.artifact.sha256 ||
+              expectedBindings === undefined ||
+              !sameBindingList(comparison.raw_evidence, expectedBindings) ||
+              expectedGroupDirection === undefined ||
+              canonicalJson(benefit.singleton_direction) !==
+                canonicalJson(expectedSingletonDirection) ||
+              canonicalJson(benefit.group_direction) !== canonicalJson(expectedGroupDirection) ||
+              benefit.singleton_direction.lane !== POLICY_MEASUREMENT_LANES[row.pass_id] ||
+              !isStableWorsening(benefit.group_direction) ||
+              !protectionValid));
+        if (comparisonInvalid) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["identity_evidence", index, "beneficial_effects", benefitIndex],
+            message:
+              "benefit attribution must bind the exact singleton and applicable registered group comparison closure",
+          });
+        }
         const reproduced = benefit.reproduced_by_pass_ids;
-        const pass = POLICY_PASSES.find((candidate) => candidate.id === row.pass_id);
         if (
+          !sameStringList(
+            benefit.reproducer_facts.map((fact) => fact.pass_id),
+            reproduced,
+          ) ||
           pass === undefined ||
+          comparison === undefined ||
           reproduced.some((passId, passIndex) => {
-            const reproducer = result.identity_evidence.find(
-              (candidate) => candidate.pass_id === passId,
+            const reproducer = result.passes.find((candidate) => candidate.pass_id === passId);
+            const contribution = reproducer?.evidence.unique_contributions.find(
+              (candidate) => candidate.identity === benefit.identity,
             );
             return (
               (passIndex > 0 && passId <= (reproduced[passIndex - 1] ?? "")) ||
               !(pass.overlaps_with as readonly string[]).includes(passId) ||
-              !reproducer?.beneficial_effects.some(
-                (candidate) => candidate.identity === benefit.identity,
-              )
+              contribution === undefined ||
+              !sameComparison(contribution.group_comparison, comparison) ||
+              reproducer?.classification !== "retain" ||
+              !isStableWorsening(contribution.singleton_direction) ||
+              !isStableWorsening(contribution.group_direction) ||
+              canonicalJson(benefit.reproducer_facts.find((fact) => fact.pass_id === passId)) !==
+                canonicalJson({
+                  pass_id: passId,
+                  singleton_evidence: contribution.evidence,
+                  singleton_direction: contribution.singleton_direction,
+                  group_direction: contribution.group_direction,
+                })
             );
           })
         ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            path: ["identity_evidence", index, "beneficial_effects"],
-            message: "reproduction pass ids must be sorted, overlapping, and identity-corroborated",
+            path: ["identity_evidence", index, "beneficial_effects", benefitIndex],
+            message:
+              "reproduction pass ids must be sorted, overlapping, and bind a retained singleton contribution in the same group comparison",
           });
+        }
+      }
+      if (interaction !== undefined && measuredPass !== undefined) {
+        const singletonIdentities = new Set(
+          row.singleton_inventory.events.map((event) => event.identity),
+        );
+        for (const identity of singletonIdentities) {
+          const singletonDirection = singletonIdentityDirectionFromEvents({
+            events: row.singleton_inventory.events,
+            identity,
+            lane: measuredPass.evidence.lane,
+            passId: row.pass_id,
+          });
+          const groupDirection = identityDirectionFromEvents({
+            events: interaction.identity_inventory.events,
+            identity,
+            lane: interaction.primary_lane,
+            ...(interaction.primary_lane === "stateful-rig" ? { memberPassId: row.pass_id } : {}),
+          });
+          if (
+            isStableWorsening(singletonDirection) &&
+            isStableWorsening(groupDirection) &&
+            !row.beneficial_effects.some((benefit) => benefit.identity === identity)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["identity_evidence", index, "beneficial_effects"],
+              message:
+                "every stable singleton loss corroborated by its registered group must remain source-bound in the identity dossier",
+            });
+          }
         }
       }
     }
@@ -1452,13 +1933,83 @@ export const PolicyMeasurementSchema = z
         contributionIndex,
         contribution,
       ] of pass.evidence.unique_contributions.entries()) {
-        if (!exactInventoryBinding(contribution.evidence)) {
+        const facts = result.identity_evidence.find((row) => row.pass_id === pass.pass_id);
+        const matchingBenefit = facts?.beneficial_effects.find(
+          (benefit) => benefit.identity === contribution.identity,
+        );
+        const expectedKind =
+          !isStableWorsening(contribution.singleton_direction) ||
+          !isStableWorsening(contribution.group_direction)
+            ? undefined
+            : contribution.identity.includes(":blocking-fp:")
+              ? contribution.baseline_protection === undefined
+                ? "prevented-blocking-fp"
+                : "required-backstop"
+              : contribution.identity.includes(":blocking-fn:")
+                ? "preserved-blocking-tp"
+                : undefined;
+        const protectionMatches =
+          canonicalJson(matchingBenefit?.baseline_protection ?? null) ===
+          canonicalJson(contribution.baseline_protection ?? null);
+        if (
+          !exactInventoryBinding(contribution.evidence) ||
+          (contribution.baseline_protection !== undefined &&
+            !exactInventoryBinding(contribution.baseline_protection.evidence)) ||
+          expectedKind === undefined ||
+          contribution.kind !== expectedKind ||
+          matchingBenefit === undefined ||
+          matchingBenefit.reproduced_by_pass_ids.length !== 0 ||
+          matchingBenefit.evidence_ref !== contribution.evidence.ref ||
+          matchingBenefit.evidence_ref !== matchingBenefit.singleton_evidence.ref ||
+          canonicalJson(matchingBenefit.singleton_direction) !==
+            canonicalJson(contribution.singleton_direction) ||
+          canonicalJson(matchingBenefit.group_direction) !==
+            canonicalJson(contribution.group_direction) ||
+          !protectionMatches ||
+          matchingBenefit.group_comparison === undefined ||
+          !sameComparison(matchingBenefit.group_comparison, contribution.group_comparison)
+        ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["passes", passIndex, "evidence", "unique_contributions", contributionIndex],
-            message: "unique contribution must bind exact global inventory bytes",
+            message:
+              "unique contribution must bind an unreproduced singleton identity and its exact group comparison",
           });
         }
+      }
+    }
+    // The persisted recommendation is a projection, never a second authority. Re-running the
+    // deterministic two-phase classifier over the closed identity facts prevents a serialized
+    // retain/delete/veto/reason from changing the safety decision by declaration alone.
+    const freshClassifications = classifyPolicyPasses(
+      result.passes.map((row) => row.evidence),
+      { passFacts: result.identity_evidence, interactions: result.interactions },
+    );
+    for (const [index, persisted] of result.passes.entries()) {
+      const fresh = freshClassifications[index];
+      if (
+        fresh === undefined ||
+        canonicalJson({
+          classification: persisted.classification,
+          reasons: persisted.reasons,
+          vetoes: persisted.vetoes,
+          harm_observed: persisted.harm_observed,
+          evidence_refs: persisted.evidence_refs,
+        }) !==
+          canonicalJson({
+            classification: fresh.classification,
+            reasons: fresh.reasons,
+            vetoes: fresh.vetoes,
+            harm_observed: fresh.harm_observed,
+            evidence_refs: fresh.evidence_refs,
+          })
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["passes", index],
+          message:
+            "persisted policy classification must equal the deterministic two-phase closed-evidence result",
+        });
       }
     }
   });

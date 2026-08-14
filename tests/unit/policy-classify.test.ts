@@ -27,12 +27,23 @@ type FixtureOptions = {
   rawEvidenceRefs?: string[];
 };
 
+const GROUP_REF = "artifacts/policy/group-comparison.json";
+
+function groupComparison() {
+  return {
+    pass_ids: ["evidence.fact-location", "evidence.self-refutation"] as PolicyPassId[],
+    artifact: { ref: GROUP_REF, sha256: "b".repeat(64) },
+    raw_evidence: [{ ref: GROUP_REF, sha256: "b".repeat(64) }],
+  };
+}
+
 function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
   const fixturePass = POLICY_PASSES.find(
     (entry) => entry.id === (options.passId ?? defaultPass().id),
   );
   if (fixturePass === undefined) throw new Error("fixture pass missing from catalog");
   const ref = options.rawEvidenceRefs?.[0] ?? "artifacts/policy/evidence.json";
+  const rawEvidenceRefs = [...new Set([...(options.rawEvidenceRefs ?? [ref]), GROUP_REF])].sort();
   const lane =
     fixturePass.id.startsWith("history.") || fixturePass.id === "judgment.reputation"
       ? "stateful-rig"
@@ -89,9 +100,38 @@ function onePass(options: FixtureOptions = {}): PolicyPassEvidence[] {
       trace_totals: traceTotals,
       statistics,
       unique_contributions: options.uniqueContribution
-        ? [{ kind: options.uniqueContribution, evidence: { ref, sha256: "a".repeat(64) } }]
+        ? [
+            {
+              identity: "bench:case-a:blocking-fp:benefit-a",
+              kind: options.uniqueContribution,
+              evidence: { ref, sha256: "a".repeat(64) },
+              singleton_direction: {
+                lane,
+                units: lane === "stateful-rig" ? 1 : 2,
+                worsened: lane === "stateful-rig" ? 1 : 2,
+                improved: 0,
+              },
+              group_direction: {
+                lane,
+                units: lane === "stateful-rig" ? 1 : 2,
+                worsened: lane === "stateful-rig" ? 1 : 2,
+                improved: 0,
+              },
+              ...(options.uniqueContribution === "required-backstop"
+                ? {
+                    baseline_protection: {
+                      evidence: { ref, sha256: "a".repeat(64) },
+                      reason_code: "required-backstop",
+                      protected_by: "claimed-fixed-pin",
+                      before: "WARN" as const,
+                    },
+                  }
+                : {}),
+              group_comparison: groupComparison(),
+            },
+          ]
         : [],
-      raw_evidence_refs: options.rawEvidenceRefs ?? [ref],
+      raw_evidence_refs: rawEvidenceRefs,
       lane_summaries:
         lane === "stateful-rig"
           ? [
@@ -379,6 +419,8 @@ describe("policy pass classification", () => {
         {
           identity: "benefit-a",
           evidence_ref: "artifacts/policy/self.json",
+          singleton_evidence: { ref: "artifacts/policy/self.json", sha256: "a".repeat(64) },
+          group_comparison: groupComparison(),
           reproduced_by_pass_ids: [retained.pass_id],
         },
       ],
@@ -392,6 +434,132 @@ describe("policy pass classification", () => {
     expect(classifyPolicyPasses([target], { passFacts: [targetFacts] })[0]?.classification).toBe(
       "inconclusive",
     );
+  });
+
+  test("discharges a group-harm veto only when every worsened identity has a retained overlap", () => {
+    const target = onlyPass(
+      onePass({
+        passId: "evidence.fact-location",
+        rawEvidenceRefs: ["artifacts/policy/fact.json", GROUP_REF],
+      }),
+    );
+    const retained = onlyPass(
+      onePass({
+        passId: "evidence.self-refutation",
+        uniqueContribution: "prevented-blocking-fp",
+        rawEvidenceRefs: ["artifacts/policy/self.json", GROUP_REF],
+      }),
+    );
+    const targetFacts = {
+      pass_id: target.pass_id,
+      ground_truth_harms: [],
+      dogfood_dispositions: [],
+      beneficial_effects: [
+        {
+          identity: "benefit-a",
+          evidence_ref: "artifacts/policy/fact.json",
+          singleton_evidence: { ref: "artifacts/policy/fact.json", sha256: "a".repeat(64) },
+          group_comparison: groupComparison(),
+          reproduced_by_pass_ids: [retained.pass_id],
+        },
+      ],
+    } satisfies PolicyPassClassificationFacts;
+    const interaction = {
+      pass_ids: [target.pass_id, retained.pass_id],
+      artifact: { ref: GROUP_REF, sha256: "b".repeat(64) },
+      primary_lane: "stateless-bench",
+      evidence: {
+        authoritative: true,
+        eligibility: { stateless: true, stateful: false, dogfood: false },
+        authority: { stateless: true, stateful: false, dogfood: false },
+        opportunities: { cases: 8, signatures: 15, turns: 0, runs: 0 },
+        exclusions: [],
+        truth_effects: {
+          baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+          ablated: { blocking_fp: 2, blocking_fn: 0, blocking_tp: 1 },
+          error_reduction: 2,
+        },
+        statistics: {
+          raw_effects: [-1, -1, -1],
+          interval: { lo: -1, hi: -1 },
+          p_value: 1,
+          adjusted_p_value: 1,
+        },
+        raw_evidence_refs: [GROUP_REF],
+      },
+      identity_inventory: {
+        raw_evidence: [{ ref: GROUP_REF, sha256: "b".repeat(64) }],
+        events: [],
+        outcomes: [
+          { identity: "benefit-a", worsened: 1, improved: 0 },
+          { identity: "uncovered-b", worsened: 1, improved: 0 },
+        ],
+      },
+      lane_summaries: [
+        {
+          lane: "stateless-bench",
+          primary: true,
+          descriptive: false,
+          eligible: true,
+          authoritative: true,
+          opportunities: { cases: 8, signatures: 15, turns: 0, runs: 0 },
+          exclusions: [],
+          truth_effects: {
+            baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+            ablated: { blocking_fp: 2, blocking_fn: 0, blocking_tp: 1 },
+            error_reduction: 2,
+          },
+          trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+          statistics: {
+            raw_effects: [-1, -1, -1],
+            interval: { lo: -1, hi: -1 },
+            p_value: 1,
+            adjusted_p_value: 1,
+          },
+          raw_evidence_refs: [GROUP_REF],
+        },
+      ],
+    } as PolicyInteractionEvidenceInput;
+    const partial = classifyPolicyPasses([target, retained], {
+      passFacts: [targetFacts],
+      interactions: [interaction],
+    });
+    const partialTarget = partial.find((row) => row.pass_id === target.pass_id);
+    expect(partialTarget).toMatchObject({ classification: "inconclusive" });
+    expect(partialTarget?.reasons).toContain("interaction-removal-harm");
+
+    const offsetInteraction = structuredClone(interaction);
+    const offsetTruth = {
+      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+      error_reduction: 0,
+    };
+    offsetInteraction.evidence.truth_effects = offsetTruth;
+    const offsetSummary = offsetInteraction.lane_summaries[0];
+    if (offsetSummary === undefined) throw new Error("missing offset interaction primary lane");
+    offsetSummary.truth_effects = offsetTruth;
+    offsetInteraction.identity_inventory.outcomes = [
+      { identity: "benefit-a", worsened: 1, improved: 0 },
+      { identity: "offset-improved", worsened: 0, improved: 2 },
+      { identity: "uncovered-b", worsened: 1, improved: 0 },
+    ];
+    const offset = classifyPolicyPasses([target, retained], {
+      passFacts: [targetFacts],
+      interactions: [offsetInteraction],
+    });
+    const offsetTarget = offset.find((row) => row.pass_id === target.pass_id);
+    expect(offsetTarget).toMatchObject({ classification: "inconclusive" });
+    expect(offsetTarget?.reasons).toContain("interaction-removal-harm");
+
+    interaction.identity_inventory.outcomes = [{ identity: "benefit-a", worsened: 2, improved: 0 }];
+    const closed = classifyPolicyPasses([target, retained], {
+      passFacts: [targetFacts],
+      interactions: [interaction],
+    });
+    expect(closed.find((row) => row.pass_id === target.pass_id)).toMatchObject({
+      classification: "delete-candidate",
+      reasons: ["sufficient-covered-zero-unique-benefit"],
+    });
   });
 
   test("keeps harmful group removal inconclusive without allocating a retain", () => {
@@ -420,6 +588,11 @@ describe("policy pass classification", () => {
           adjusted_p_value: 1,
         },
         raw_evidence_refs: ["interactions/0.json"],
+      },
+      identity_inventory: {
+        raw_evidence: [{ ref: "interactions/0.json", sha256: "b".repeat(64) }],
+        events: [],
+        outcomes: [{ identity: "group-harm", worsened: 3, improved: 0 }],
       },
       lane_summaries: [
         {
@@ -478,6 +651,11 @@ describe("policy pass classification", () => {
         },
         raw_evidence_refs: ["interactions/0.json"],
       },
+      identity_inventory: {
+        raw_evidence: [{ ref: "interactions/0.json", sha256: "b".repeat(64) }],
+        events: [],
+        outcomes: [{ identity: "group-improved", worsened: 0, improved: 3 }],
+      },
       lane_summaries: [
         {
           lane: "stateless-bench",
@@ -526,7 +704,13 @@ describe("policy pass classification", () => {
         onePass(),
         facts({
           beneficial_effects: [
-            { identity: "benefit", evidence_ref: "outside-ref", reproduced_by_pass_ids: [] },
+            {
+              identity: "benefit",
+              evidence_ref: "outside-ref",
+              singleton_evidence: { ref: "outside-ref", sha256: "a".repeat(64) },
+              group_comparison: groupComparison(),
+              reproduced_by_pass_ids: [],
+            },
           ],
         }),
       )[0]?.reasons,

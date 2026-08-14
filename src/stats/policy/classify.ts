@@ -1,5 +1,11 @@
 import { POLICY_PASSES, POLICY_PASS_IDS, type PolicyPassId } from "../../core/policy/catalog.ts";
 import {
+  type PolicyBaselineProtectionEvent,
+  type PolicyIdentityDirection,
+  type PolicySingletonIdentityEvent,
+  isStableWorsening,
+} from "../../core/policy/identity-events.ts";
+import {
   POLICY_MEASUREMENT_THRESHOLDS,
   type PolicyClassification,
 } from "../../core/policy/measurement-contract.ts";
@@ -18,6 +24,11 @@ type DogfoodEffect = "suppressed" | "preserved" | "none";
 /** Identity-level facts are assembled from schema-validated source artifacts by Task 8. */
 export interface PolicyPassClassificationFacts {
   readonly pass_id: PolicyPassId;
+  readonly singleton_inventory?: {
+    readonly raw_evidence: readonly { readonly ref: string; readonly sha256: string }[];
+    readonly events: readonly PolicySingletonIdentityEvent[];
+    readonly protection_events: readonly PolicyBaselineProtectionEvent[];
+  };
   readonly ground_truth_harms: readonly {
     readonly identity: string;
     readonly evidence_ref: string;
@@ -33,6 +44,24 @@ export interface PolicyPassClassificationFacts {
   readonly beneficial_effects: readonly {
     readonly identity: string;
     readonly evidence_ref: string;
+    readonly singleton_evidence: { readonly ref: string; readonly sha256: string };
+    readonly singleton_direction?: PolicyIdentityDirection;
+    readonly group_direction?: PolicyIdentityDirection;
+    readonly baseline_protection?:
+      | {
+          readonly evidence: { readonly ref: string; readonly sha256: string };
+          readonly reason_code: string;
+          readonly protected_by: string;
+          readonly before: "INFO" | "WARN" | "ERROR" | "CRITICAL";
+        }
+      | undefined;
+    readonly group_comparison?:
+      | {
+          readonly pass_ids: readonly PolicyPassId[];
+          readonly artifact: { readonly ref: string; readonly sha256: string };
+          readonly raw_evidence: readonly { readonly ref: string; readonly sha256: string }[];
+        }
+      | undefined;
     readonly reproduced_by_pass_ids: readonly PolicyPassId[];
   }[];
 }
@@ -149,7 +178,15 @@ function factsAreBound(
     codeUnitSortedByIdentity(facts.beneficial_effects) &&
     facts.ground_truth_harms.every((fact) => refs.has(fact.evidence_ref)) &&
     facts.dogfood_dispositions.every((fact) => refs.has(fact.evidence_ref)) &&
-    facts.beneficial_effects.every((fact) => refs.has(fact.evidence_ref))
+    facts.beneficial_effects.every(
+      (fact) =>
+        refs.has(fact.evidence_ref) &&
+        fact.evidence_ref === fact.singleton_evidence.ref &&
+        refs.has(fact.singleton_evidence.ref) &&
+        (fact.group_comparison === undefined ||
+          (refs.has(fact.group_comparison.artifact.ref) &&
+            fact.group_comparison.raw_evidence.every((binding) => refs.has(binding.ref)))),
+    )
   );
 }
 
@@ -163,19 +200,38 @@ function dogfoodIsSufficient(facts: PolicyPassClassificationFacts): boolean {
 
 function uniqueContributionsAreBound(evidence: PolicyPassEvidence): boolean {
   const refs = new Set(evidence.raw_evidence_refs);
-  return evidence.unique_contributions.every((contribution) => refs.has(contribution.evidence.ref));
+  return evidence.unique_contributions.every(
+    (contribution) =>
+      refs.has(contribution.evidence.ref) &&
+      refs.has(contribution.group_comparison.artifact.ref) &&
+      contribution.group_comparison.raw_evidence.every((binding) => refs.has(binding.ref)),
+  );
+}
+
+function derivedContributionVeto(
+  contribution: PolicyPassEvidence["unique_contributions"][number],
+): SafetyVeto | undefined {
+  if (
+    !isStableWorsening(contribution.singleton_direction) ||
+    !isStableWorsening(contribution.group_direction)
+  ) {
+    return undefined;
+  }
+  if (contribution.identity.includes(":blocking-fp:")) {
+    return contribution.baseline_protection === undefined
+      ? "unique-prevented-fp"
+      : "required-backstop";
+  }
+  if (contribution.identity.includes(":blocking-fn:")) return "unique-preserved-tp";
+  return undefined;
 }
 
 function directVetoes(evidence: PolicyPassEvidence): SafetyVeto[] {
   if (!uniqueContributionsAreBound(evidence)) return [];
   const vetoes: SafetyVeto[] = [];
   for (const contribution of evidence.unique_contributions) {
-    const veto =
-      contribution.kind === "prevented-blocking-fp"
-        ? "unique-prevented-fp"
-        : contribution.kind === "preserved-blocking-tp"
-          ? "unique-preserved-tp"
-          : "required-backstop";
+    const veto = derivedContributionVeto(contribution);
+    if (veto === undefined) continue;
     if (!vetoes.includes(veto)) vetoes.push(veto);
   }
   return vetoes;
@@ -186,7 +242,9 @@ type InteractionStatus = "none" | "harm" | "incomplete-authority";
 function interactionStatus(
   passId: PolicyPassId,
   evidence: PolicyPassEvidence,
+  facts: PolicyPassClassificationFacts,
   interactions: readonly PolicyInteractionEvidenceInput[],
+  retained: ReadonlySet<PolicyPassId>,
 ): InteractionStatus {
   const refs = new Set(evidence.raw_evidence_refs);
   let harmObserved = false;
@@ -201,15 +259,34 @@ function interactionStatus(
       !row.authoritative ||
       !authoritative ||
       !refs.has(interaction.artifact.ref) ||
-      !row.raw_evidence_refs.every((ref) => refs.has(ref))
+      !row.raw_evidence_refs.every((ref) => refs.has(ref)) ||
+      !interaction.identity_inventory.raw_evidence.every((binding) => refs.has(binding.ref))
     ) {
       return "incomplete-authority";
     }
-    const harm =
+    const harmfulOutcomes = interaction.identity_inventory.outcomes.filter(
+      (outcome) => outcome.worsened > 0,
+    );
+    const aggregateHarm =
       row.truth_effects.ablated.blocking_fp + row.truth_effects.ablated.blocking_fn >
         row.truth_effects.baseline.blocking_fp + row.truth_effects.baseline.blocking_fn ||
       row.truth_effects.ablated.blocking_tp < row.truth_effects.baseline.blocking_tp;
-    harmObserved ||= harm;
+    if (!aggregateHarm && harmfulOutcomes.length === 0) continue;
+    const completeCausalClosure =
+      harmfulOutcomes.length > 0 &&
+      harmfulOutcomes.every((outcome) =>
+        facts.beneficial_effects.some(
+          (benefit) =>
+            benefit.identity === outcome.identity &&
+            benefit.group_comparison?.artifact.ref === interaction.artifact.ref &&
+            benefit.group_comparison?.artifact.sha256 === interaction.artifact.sha256 &&
+            benefit.reproduced_by_pass_ids.some((cover) => cover !== passId && retained.has(cover)),
+        ),
+      );
+    // A paired group harm remains a veto unless its complete persisted identity inventory is
+    // causally closed by independently retained singleton contributors.  This does not allocate
+    // a group result to P; it proves every observed group loss survives without P.
+    harmObserved ||= !completeCausalClosure;
   }
   return harmObserved ? "harm" : "none";
 }
@@ -321,7 +398,13 @@ export function classifyPolicyPasses(
         );
       }),
     );
-    const interaction = interactionStatus(row.pass_id, row, context.interactions ?? []);
+    const interaction = interactionStatus(
+      row.pass_id,
+      row,
+      facts,
+      context.interactions ?? [],
+      retained,
+    );
     const interactionHarm = interaction === "harm";
     if (interaction === "incomplete-authority") addReason(reasons, "incomplete-authority");
     if (interactionHarm) addReason(reasons, "interaction-removal-harm");

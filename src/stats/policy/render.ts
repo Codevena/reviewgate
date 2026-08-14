@@ -94,7 +94,7 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
       `- Exclusions: ${pass.evidence.exclusions.length === 0 ? "none" : pass.evidence.exclusions.map((row) => `${row.lane}:${row.code}=${row.count}`).join(", ")}`,
       `- Raw evidence: ${pass.evidence.raw_evidence_refs.map((ref) => `\`${cell(ref)}\``).join(", ")}`,
       `- Lane summaries: ${pass.evidence.lane_summaries.map(laneSummaryLine).join(" | ")}`,
-      `- Unique contributions: ${pass.evidence.unique_contributions.length === 0 ? "none" : pass.evidence.unique_contributions.map((row) => `${row.kind} via ${binding(row.evidence.ref, row.evidence.sha256)}`).join("; ")}`,
+      `- Unique contributions: ${pass.evidence.unique_contributions.length === 0 ? "none" : pass.evidence.unique_contributions.map((row) => `${row.kind} identity=${cell(row.identity)} singleton=${binding(row.evidence.ref, row.evidence.sha256)} group=${binding(row.group_comparison.artifact.ref, row.group_comparison.artifact.sha256)} group_raw=${row.group_comparison.raw_evidence.map((entry) => binding(entry.ref, entry.sha256)).join(",")}`).join("; ")}`,
       `- Identity evidence: ${(() => {
         const identity = parsed.identity_evidence.find((row) => row.pass_id === pass.pass_id);
         if (identity === undefined) return "none";
@@ -108,7 +108,7 @@ export function renderPolicyMeasurement(result: PolicyMeasurement): string {
         );
         const benefits = identity.beneficial_effects.map(
           (row) =>
-            `benefit identity=${cell(row.identity)} evidence=${cell(row.evidence_ref)} reproduced_by=${row.reproduced_by_pass_ids.map((id) => `\`${id}\``).join(",") || "none"}`,
+            `benefit identity=${cell(row.identity)} evidence=${cell(row.evidence_ref)} singleton=${binding(row.singleton_evidence.ref, row.singleton_evidence.sha256)} group=${row.group_comparison === undefined ? "none" : binding(row.group_comparison.artifact.ref, row.group_comparison.artifact.sha256)} group_raw=${row.group_comparison === undefined ? "none" : row.group_comparison.raw_evidence.map((entry) => binding(entry.ref, entry.sha256)).join(",")} reproduced_by=${row.reproduced_by_pass_ids.map((id) => `\`${id}\``).join(",") || "none"}`,
         );
         return [...harms, ...dogfood, ...benefits].join("; ") || "none";
       })()}`,

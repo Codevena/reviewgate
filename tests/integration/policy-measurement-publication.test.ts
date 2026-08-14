@@ -20,8 +20,13 @@ import {
   POLICY_MEASUREMENT_STATEFUL_PASS_IDS,
 } from "../../src/core/policy/measurement-contract.ts";
 import { PolicyMeasurementPreregistrationSchema } from "../../src/schemas/policy-measurement-preregistration.ts";
-import { PolicyMeasurementSchema } from "../../src/schemas/policy-measurement.ts";
 import {
+  type PolicyMeasurement,
+  PolicyMeasurementSchema,
+} from "../../src/schemas/policy-measurement.ts";
+import { classifyPolicyPasses } from "../../src/stats/policy/classify.ts";
+import {
+  rigFixtureIdentityInventories,
   validPolicyDogfoodSnapshot,
   validPolicyRigEvidence,
 } from "../fixtures/policy-publication.ts";
@@ -31,7 +36,7 @@ const SHA = "a".repeat(64);
 const ATTEMPT = "attempt-publication";
 const ATTEMPT_ROOT = `bench/results/policy-measurement/${ATTEMPT}`;
 
-function preregistration(nested = false) {
+function preregistration(nested: boolean, statefulManifest: { ref: string; sha256: string }) {
   const outputs = nested
     ? {
         attempt_dir: ATTEMPT_ROOT,
@@ -98,8 +103,8 @@ function preregistration(nested = false) {
       interactions: POLICY_MEASUREMENT_INTERACTIONS.map((group) => [...group]),
     },
     stateful: {
-      manifest_ref: "rig/policy-scenarios.json",
-      manifest_sha256: SHA,
+      manifest_ref: statefulManifest.ref,
+      manifest_sha256: statefulManifest.sha256,
       min_sequences_per_pass: 3,
       min_opportunity_turns: 2,
     },
@@ -151,7 +156,7 @@ type FixtureSource = {
   sha256: string;
 };
 
-function measurement(sources: readonly FixtureSource[]) {
+function measurement(sources: readonly FixtureSource[], rigBundle: unknown) {
   const preregistrationSource = sources.find(
     (source) => source.ref === "bench/preregistrations/policy.json",
   );
@@ -167,6 +172,8 @@ function measurement(sources: readonly FixtureSource[]) {
     "stateful-rig": binding("rig"),
     dogfood: binding("dogfood"),
   };
+  const bindingsByRef = new Map(sources.map(({ ref, sha256 }) => [ref, { ref, sha256 }]));
+  const rigInventories = rigFixtureIdentityInventories(rigBundle);
   const emptyEvidence = (pass: (typeof POLICY_PASSES)[number]) => ({
     pass_id: pass.id,
     lane: POLICY_MEASUREMENT_LANES[pass.id],
@@ -255,10 +262,17 @@ function measurement(sources: readonly FixtureSource[]) {
     );
     const primaryLane = stateful ? ("stateful-rig" as const) : ("stateless-bench" as const);
     const opportunities = { cases: 0, signatures: 0, turns: 0, runs: 0 };
+    const group = stateful
+      ? rigInventories.interactions.get([...pass_ids].sort().join("\u0000"))
+      : undefined;
+    if (stateful && group === undefined)
+      throw new Error(`missing Rig history inventory for ${pass_ids.join(",")}`);
+    const worsened = group?.outcomes.reduce((total, outcome) => total + outcome.worsened, 0) ?? 0;
+    const improved = group?.outcomes.reduce((total, outcome) => total + outcome.improved, 0) ?? 0;
     const truthEffects = {
       baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
-      error_reduction: 0,
+      ablated: { blocking_fp: 0, blocking_fn: worsened - improved, blocking_tp: 0 },
+      error_reduction: improved - worsened,
     };
     const statistics = {
       raw_effects: [],
@@ -279,9 +293,23 @@ function measurement(sources: readonly FixtureSource[]) {
       statistics,
       raw_evidence_refs: [refs[lane]],
     });
+    const artifact = stateful ? bindingsByRef.get(refs[primaryLane]) : prereg;
+    if (artifact === undefined) throw new Error("publication fixture missing Rig source binding");
+    const identityRefs = [
+      artifact.ref,
+      refs[primaryLane],
+      ...(stateful ? [refs["stateless-bench"], refs["stateful-rig"]] : [refs["stateless-bench"]]),
+    ]
+      .filter((ref, index, values) => values.indexOf(ref) === index)
+      .sort();
+    const identityBindings = identityRefs.map((ref) => {
+      const source = bindingsByRef.get(ref);
+      if (source === undefined) throw new Error(`publication fixture source missing: ${ref}`);
+      return source;
+    });
     return {
       pass_ids: [...pass_ids],
-      artifact: prereg,
+      artifact,
       primary_lane: primaryLane,
       evidence: {
         authoritative: false,
@@ -296,6 +324,11 @@ function measurement(sources: readonly FixtureSource[]) {
       lane_summaries: stateful
         ? [summary("stateless-bench", false), summary("stateful-rig", true)]
         : [summary("stateless-bench", true)],
+      identity_inventory: {
+        raw_evidence: identityBindings,
+        events: group?.events ?? [],
+        outcomes: group?.outcomes ?? [],
+      },
     };
   });
   for (const pass of passes) {
@@ -314,18 +347,50 @@ function measurement(sources: readonly FixtureSource[]) {
     pass.evidence.raw_evidence_refs = closedRefs;
     pass.evidence_refs = closedRefs;
   }
+  const identity_evidence = passes.map((pass) => ({
+    pass_id: pass.pass_id,
+    singleton_inventory: {
+      raw_evidence: pass.evidence.lane_summaries
+        .filter((summary) => summary.lane === pass.evidence.lane)
+        .flatMap((summary) => summary.raw_evidence_refs)
+        .sort()
+        .map((ref) => {
+          const source = bindingsByRef.get(ref);
+          if (source === undefined) throw new Error(`publication fixture source missing: ${ref}`);
+          return source;
+        }),
+      events: rigInventories.singleton.get(pass.pass_id) ?? [],
+      protection_events: [],
+    },
+    ground_truth_harms: [],
+    dogfood_dispositions: [],
+    beneficial_effects: [],
+  }));
+  const classifications = classifyPolicyPasses(
+    passes.map((pass) => pass.evidence as never),
+    {
+      passFacts: identity_evidence as never,
+      interactions: interactions as never,
+    },
+  );
+  for (const [index, classification] of classifications.entries()) {
+    const pass = passes[index];
+    if (pass === undefined) throw new Error("missing publication classification fixture pass");
+    Object.assign(pass, {
+      classification: classification.classification,
+      reasons: classification.reasons,
+      vetoes: classification.vetoes,
+      harm_observed: classification.harm_observed,
+      evidence_refs: classification.evidence_refs,
+    });
+  }
   return PolicyMeasurementSchema.parse({
     schema: "reviewgate.policy-measurement.v1",
     preregistration: prereg,
     catalog_version: "reviewgate.policy-catalog.v1",
     passes,
     interactions,
-    identity_evidence: POLICY_PASS_IDS.map((pass_id) => ({
-      pass_id,
-      ground_truth_harms: [],
-      dogfood_dispositions: [],
-      beneficial_effects: [],
-    })),
+    identity_evidence,
     artifacts: {
       authoritative: true,
       sources: sources.map(({ ref, sha256 }) => ({ ref, sha256 })),
@@ -336,9 +401,11 @@ function measurement(sources: readonly FixtureSource[]) {
   });
 }
 
-function fixture(nested = false) {
+function fixture(nested = false, rigWithHistoryEvent = false) {
   const root = mkdtempSync(join(tmpdir(), "rg-policy-publication-"));
-  const prereg = preregistration(nested);
+  const rigRef = "rig/scenarios.json";
+  const rigText = canonicalJson({ schema: "fixture.rig-source.v1" });
+  const prereg = preregistration(nested, { ref: rigRef, sha256: sha256(rigText) });
   const files = new Map<
     string,
     { kind: "preregistration" | "bench" | "rig" | "dogfood"; text: string; mode: number }
@@ -351,10 +418,7 @@ function fixture(nested = false) {
       prereg.outputs.bench_bundle,
       { kind: "bench", text: canonicalJson({ schema: "fixture.bench.v1" }), mode: 0o600 },
     ],
-    [
-      "rig/evidence.json",
-      { kind: "rig", text: canonicalJson({ schema: "fixture.rig-source.v1" }), mode: 0o600 },
-    ],
+    [rigRef, { kind: "rig", text: rigText, mode: 0o600 }],
     [
       "dogfood/source.json",
       {
@@ -384,13 +448,36 @@ function fixture(nested = false) {
     })),
     { kind: "dogfood" as const, ref: auditRef, sha256: sha256(audit) },
   ].sort((left, right) => left.ref.localeCompare(right.ref));
+  const rigSource = sources.find((source) => source.kind === "rig");
+  if (rigSource === undefined) throw new Error("fixture Rig source missing");
+  const rigBundle = validPolicyRigEvidence({
+    scenarioManifest: { ref: rigSource.ref, sha256: rigSource.sha256 },
+    withErrorEvents: rigWithHistoryEvent,
+  });
+  const mutableRigBundle = structuredClone(rigBundle) as {
+    sequences: Array<{
+      history_interaction: null | {
+        turns: Array<{
+          baseline: { errors: unknown[] };
+          counterfactual: { errors: unknown[] };
+        }>;
+      };
+    }>;
+  };
+  if (!rigWithHistoryEvent) {
+    for (const sequence of mutableRigBundle.sequences) {
+      for (const turn of sequence.history_interaction?.turns ?? []) {
+        turn.counterfactual.errors = structuredClone(turn.baseline.errors);
+      }
+    }
+  }
   const runtime = {
     async assemble() {
       return {
-        result: measurement(sources),
+        result: measurement(sources, mutableRigBundle),
         sources,
         publication: {
-          rig_bundle: validPolicyRigEvidence(),
+          rig_bundle: mutableRigBundle,
           dogfood_snapshot: validPolicyDogfoodSnapshot(),
         },
       } as never;
@@ -444,6 +531,110 @@ describe("policy measurement capture publication", () => {
       auditSource.copy_ref,
     ])
       expect(lstatSync(join(out, ref)).mode & 0o7777).toBe(0o600);
+  });
+
+  test("the external verifier rejects event evidence it cannot recompute from copied sources", async () => {
+    const value = fixture();
+    const runtime = {
+      ...value.runtime,
+      async assemble() {
+        const assembled = (await value.runtime.assemble()) as {
+          result: PolicyMeasurement;
+          sources: unknown;
+          publication: unknown;
+        };
+        const result = structuredClone(assembled.result);
+        const interaction = result.interactions[0];
+        if (interaction === undefined) throw new Error("missing stateless interaction fixture");
+        const source = interaction.artifact;
+        interaction.identity_inventory.events = [
+          {
+            lane: "stateless-bench",
+            unit: "bench:fixture:repeat-1",
+            identity: "bench:fixture:blocking-fp:fixture-a",
+            direction: "worsened",
+            count: 1,
+            source,
+          },
+          {
+            lane: "stateless-bench",
+            unit: "bench:fixture:repeat-2",
+            identity: "bench:fixture:blocking-fp:fixture-a",
+            direction: "improved",
+            count: 1,
+            source,
+          },
+        ];
+        interaction.identity_inventory.outcomes = [
+          { identity: "bench:fixture:blocking-fp:fixture-a", worsened: 1, improved: 1 },
+        ];
+        const classifications = classifyPolicyPasses(
+          result.passes.map((pass) => pass.evidence),
+          { passFacts: result.identity_evidence, interactions: result.interactions },
+        );
+        for (const [index, classification] of classifications.entries()) {
+          const pass = result.passes[index];
+          if (pass === undefined) throw new Error("missing event fixture pass");
+          Object.assign(pass, {
+            classification: classification.classification,
+            reasons: classification.reasons,
+            vetoes: classification.vetoes,
+            harm_observed: classification.harm_observed,
+            evidence_refs: classification.evidence_refs,
+          });
+        }
+        return { ...assembled, result: PolicyMeasurementSchema.parse(result) } as never;
+      },
+    };
+    const publication = await __policyStatsTest.run(
+      {
+        repoRoot: value.root,
+        preregistration: "bench/preregistrations/policy.json",
+        bench: value.prereg.outputs.bench_bundle,
+        rig: "rig/evidence.json",
+        out: value.prereg.outputs.attempt_dir,
+      },
+      runtime,
+    );
+    expect(publication.exitCode).toBe(4);
+    expect(existsSync(join(value.root, ATTEMPT_ROOT, "complete.json"))).toBe(false);
+  });
+
+  test("rejects an empty Rig lane event claim when Bench is legacy", async () => {
+    const value = fixture();
+    const rigSource = value.sources.find((source) => source.kind === "rig");
+    if (rigSource === undefined) throw new Error("fixture Rig source missing");
+    const runtime = {
+      ...value.runtime,
+      async assemble() {
+        const assembled = (await value.runtime.assemble()) as {
+          result: PolicyMeasurement;
+          sources: unknown;
+          publication: unknown;
+        };
+        return {
+          ...assembled,
+          publication: {
+            rig_bundle: validPolicyRigEvidence({
+              scenarioManifest: { ref: rigSource.ref, sha256: rigSource.sha256 },
+              withErrorEvents: true,
+            }),
+            dogfood_snapshot: validPolicyDogfoodSnapshot(),
+          },
+        } as never;
+      },
+    };
+    const publication = await __policyStatsTest.run(
+      {
+        repoRoot: value.root,
+        preregistration: "bench/preregistrations/policy.json",
+        bench: value.prereg.outputs.bench_bundle,
+        rig: "rig/evidence.json",
+        out: value.prereg.outputs.attempt_dir,
+      },
+      runtime,
+    );
+    expect(publication.exitCode).toBe(4);
   });
 
   test("publishes all five valid nested registered descendants", async () => {

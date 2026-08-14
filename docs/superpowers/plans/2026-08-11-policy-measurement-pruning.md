@@ -1770,13 +1770,43 @@ is the next authorized implementation step.
 The next review is limited to this C1 correction, its marker/no-replace/cleanup side effects, and
 the mapped focused/static evidence. It must not reopen the previously passed plan-gate rounds.
 
-### Final contract review C2/C3 — threshold/all-lanes corrections and R3 persisted raw-ref ownership ready for exact mapping confirmation
+### Final contract review C2/C3/C4 — C4 group-identity causal closure ready for delta review
 
 | Finding | Minimal correction incorporated | Owning task(s) |
 |---|---|---|
 | C2 one-ground-truth-plus-one-confirmed-dogfood-TP threshold was incorrectly coupled to broad 5/3 corroboration | Classification now treats one bound suppressed TP as a deletion-vetoing counterexample and combines it with one bound ground-truth harm for `harmful-candidate`; literal 1/1, lone-TP, unbound, and historical/missing-source guards are mutation-proven without changing the broad 5/3 corroboration rule. | Task 12 review-bound C2 delta |
 | C3 valid secondary Bench/Rig/Dogfood lanes were dropped or could blur primary authority | Strict canonical per-lane summaries now preserve every applicable in-memory verified Bench/Rig/Dogfood source, identify exactly one primary lane, render all rows, retain descriptive no-opportunity rows, and require source-inventory-bound raw refs. Classification still consumes only legacy primary evidence; a secondary-Bench deletion mutant is RED. R2 additionally binds each persisted primary pass lane to the catalog and each closed interaction to its registered Bench/Rig authority. R3 limits supplementary runs/exclusions to Dogfood, preserves lane-specific refs, closes the top-level code-unit-sorted union without projecting it into the selected row, and forbids a raw ref from appearing in more than one pass lane summary. There is no shared-lane exception: interaction refs aggregate only at the top level. The final aggregate regression corrected stale test producers that reused a ref across lanes; it added no production exception. | Task 12 review-bound C3 delta |
+| C4 singleton labels were used as a proxy for paired group identity causality | Every interaction now persists an exact sorted identity-level worsened/improved inventory and its verified group raw refs. Direct unique and catalog backstop facts require the target singleton loss plus the same paired-group identity. Reproduction is allowed only where the target singleton does not worsen, the group does, and a separately retained overlapping singleton worsens that exact identity. Classification leaves any aggregate or identity-level group harm inconclusive unless every worsened identity is explicitly covered by such a retained overlap; group results are never allocated back to a pass by label matching. | Task 12 review-bound C4 delta |
 
-The next review is limited to the C2/C3 corrections, especially the R3 Dogfood-ownership,
-lane-specific-reference, and persisted lane-disjointness closure with its schema/assembler/fixture side effects, plus the recorded focused/static
-evidence. It must not reopen already-passed contract areas.
+The next review is limited to the C4 group-identity inventory, singleton/group/raw-reference
+bindings, retained-overlap causal closure, required-backstop boundary, and their schema,
+assembler, classifier, renderer, and fixture side effects. It must not reopen already-passed
+contract areas.
+
+### Final contract review C4 R1 — remediation ready for delta review
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C4 Rig identities were incorrectly held to Bench's repeat threshold | `PolicyIdentityEvent` makes stability lane-aware: Bench retains the two-repeat rule and a verified Rig scenario/turn is an independent one-unit observation. Target singleton/group directions persist and the real Rig singleton-plus-history group fixture retains the exact identity. | Task 12 review-bound C4 R1 delta |
+| C4 group inventory was only scalar-sum closed | Unit rows contain identity, direction, unit, lane, exact source binding, and Rig member when applicable; aggregate outcome rows must be their exact sorted projection. The publication verifier recomputes the authoritative event closure from copied Bench/verified Rig inputs. | Task 12 review-bound C4 R1 delta |
+| C4 attribution/classification remained declarative | Benefits and contributions bind singleton/group directions, catalog baseline protection and exact retained-Q reproducer facts; schema derives contribution kind and compares persisted decisions to a fresh deterministic two-phase classification. | Task 12 review-bound C4 R1 delta |
+
+The C4 R1 delta review must inspect only these three mappings, their source-closure compatibility
+boundary, and immediate assembler/schema/classifier/publisher/fixture side effects. Do not reopen
+C1--C3 or turn the additive legacy parse path into a competing authority.
+
+### Final contract review C4 R3 — preregistered Rig source anchor ready for limited delta review
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| C4 external closure derived Rig singleton/group sources from the mutable published graph | `stats` now carries the byte-verified preregistered `stateful.manifest_ref`/`manifest_sha256` into external closure. The copied source, published Rig manifest, and every stateful interaction artifact must equal that binding exactly; all expected Rig singleton and history-group events derive from it. | Task 12 review-bound C4 R3 delta |
+
+The permanent self-consistent manifest/group substitution probes were RED **0/2/28/8** before the
+anchor and GREEN **2/0/28/8** after it. Both anchor-bypass mutants were **0/1/29/4** and restored
+byte-exactly. The final current-source group probe is **1/0/29/4**. The default eight-file focus
+and a serial diagnostic hit only the same expensive guards' existing 120s per-test timing budget
+(**124/2** and **125/1**); controller explicitly ruled out a composite retry or timeout increase.
+The individual current-source guards are the proportional final test evidence. Fresh TypeScript,
+Biome (695 files/no fixes), working-tree and cached diff checks exit 0. The next review is limited
+to this preregistered Rig anchor, its source-closure effects, the two permanent probes, and that
+documented composite timing limitation; it must not reopen C1--C3.

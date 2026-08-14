@@ -13,6 +13,7 @@ import {
   PolicyRigEvidenceSchema,
   PolicyRigScenarioManifestSchema,
 } from "../../src/schemas/policy-measurement.ts";
+import { classifyPolicyPasses } from "../../src/stats/policy/classify.ts";
 import { renderPolicyMeasurement } from "../../src/stats/policy/render.ts";
 
 const SHA = "b".repeat(64);
@@ -386,13 +387,13 @@ function measurement(): Record<string, unknown> {
     const primaryLane = stateful ? "stateful-rig" : "stateless-bench";
     const opportunities = { cases: 8, signatures: 15, turns: 2, runs: 3 };
     const truthEffects = {
-      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
-      ablated: { blocking_fp: 1, blocking_fn: 0, blocking_tp: 1 },
-      error_reduction: 1,
+      baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      ablated: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 0 },
+      error_reduction: 0,
     };
     const statistics = {
-      raw_effects: [1],
-      interval: { lo: 1, hi: 1 },
+      raw_effects: [0],
+      interval: { lo: 0, hi: 0 },
       p_value: 1,
       adjusted_p_value: 1,
     };
@@ -405,7 +406,7 @@ function measurement(): Record<string, unknown> {
       opportunities,
       exclusions: [],
       truth_effects: truthEffects,
-      trace_totals: { applied: 1, would_apply: 1, protected: 0, no_opportunity: 0 },
+      trace_totals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
       statistics,
       raw_evidence_refs: rawEvidenceRefs,
     });
@@ -422,6 +423,11 @@ function measurement(): Record<string, unknown> {
         truth_effects: truthEffects,
         statistics,
         raw_evidence_refs: rawEvidenceRefs,
+      },
+      identity_inventory: {
+        raw_evidence: [binding(`interactions/${index}.json`)],
+        events: [],
+        outcomes: [],
       },
       lane_summaries: stateful
         ? [summary("stateless-bench", false), summary("stateful-rig", true)]
@@ -447,7 +453,7 @@ function measurement(): Record<string, unknown> {
     evidence.raw_evidence_refs = closedRefs;
     pass.evidence_refs = closedRefs;
   }
-  return {
+  const value = {
     schema: "reviewgate.policy-measurement.v1",
     preregistration,
     catalog_version: "reviewgate.policy-catalog.v1",
@@ -455,6 +461,15 @@ function measurement(): Record<string, unknown> {
     interactions,
     identity_evidence: POLICY_PASS_IDS.map((passId) => ({
       pass_id: passId,
+      singleton_inventory: {
+        raw_evidence: [
+          binding(
+            `${STATEFUL.includes(passId) ? "stateful-rig" : "stateless-bench"}/${passId}.json`,
+          ),
+        ],
+        events: [],
+        protection_events: [],
+      },
       ground_truth_harms: [],
       dogfood_dispositions: [],
       beneficial_effects: [],
@@ -467,6 +482,30 @@ function measurement(): Record<string, unknown> {
       inventory,
     },
   };
+  refreshFixtureClassifications(value);
+  return value;
+}
+
+function refreshFixtureClassifications(value: Record<string, unknown>): void {
+  const passes = value.passes as Array<Record<string, unknown>>;
+  const classifications = classifyPolicyPasses(
+    passes.map((row) => row.evidence as never),
+    {
+      passFacts: value.identity_evidence as never,
+      interactions: value.interactions as never,
+    },
+  );
+  for (const [index, classification] of classifications.entries()) {
+    const pass = passes[index];
+    if (pass === undefined) throw new Error("missing classification fixture pass");
+    Object.assign(pass, {
+      classification: classification.classification,
+      reasons: classification.reasons,
+      vetoes: classification.vetoes,
+      harm_observed: classification.harm_observed,
+      evidence_refs: classification.evidence_refs,
+    });
+  }
 }
 
 function first<T>(values: readonly T[]): T {
@@ -504,6 +543,136 @@ function laneSummary(
   );
   if (summary === undefined) throw new Error(`missing fixture lane ${lane}`);
   return summary;
+}
+
+function groupBoundIdentityMeasurement(
+  targetPassId: (typeof POLICY_PASS_IDS)[number] = "evidence.fact-location",
+): Record<string, unknown> {
+  const value = measurement();
+  const identity = "bench:case-a:blocking-fp:fp-a";
+  const unrelatedIdentity = "bench:case-b:blocking-fp:fp-b";
+  const interaction = (value.interactions as Array<Record<string, unknown>>)[3];
+  if (interaction === undefined) throw new Error("missing evidence interaction fixture");
+  const interactionEvidence = interaction.evidence as Record<string, unknown>;
+  const truthEffects = {
+    baseline: { blocking_fp: 0, blocking_fn: 0, blocking_tp: 1 },
+    ablated: { blocking_fp: 3, blocking_fn: 0, blocking_tp: 1 },
+    error_reduction: 3,
+  };
+  interactionEvidence.truth_effects = truthEffects;
+  for (const summary of interaction.lane_summaries as Array<Record<string, unknown>>) {
+    summary.truth_effects = truthEffects;
+  }
+  const identityInventory = interaction.identity_inventory as Record<string, unknown>;
+  const interactionSource = first(identityInventory.raw_evidence as Array<Record<string, unknown>>);
+  identityInventory.events = [
+    {
+      lane: "stateless-bench",
+      unit: "case-a:repeat-1",
+      identity,
+      direction: "worsened",
+      count: 1,
+      source: interactionSource,
+    },
+    {
+      lane: "stateless-bench",
+      unit: "case-a:repeat-2",
+      identity,
+      direction: "worsened",
+      count: 1,
+      source: interactionSource,
+    },
+    {
+      lane: "stateless-bench",
+      unit: "case-b:repeat-1",
+      identity: unrelatedIdentity,
+      direction: "worsened",
+      count: 1,
+      source: interactionSource,
+    },
+  ];
+  identityInventory.outcomes = [
+    { identity, worsened: 2, improved: 0 },
+    { identity: unrelatedIdentity, worsened: 1, improved: 0 },
+  ];
+  const pass = passById(value, targetPassId);
+  const evidence = pass.evidence as Record<string, unknown>;
+  const singleton = binding(`stateless-bench/${targetPassId}.json`);
+  const group = {
+    pass_ids: [...POLICY_MEASUREMENT_INTERACTIONS[3]],
+    artifact: structuredClone(interaction.artifact),
+    raw_evidence: structuredClone(
+      (interaction.identity_inventory as Record<string, unknown>).raw_evidence,
+    ),
+  };
+  (evidence.unique_contributions as unknown[]).push({
+    identity,
+    kind: "prevented-blocking-fp",
+    evidence: singleton,
+    singleton_direction: {
+      lane: "stateless-bench",
+      units: 2,
+      worsened: 2,
+      improved: 0,
+    },
+    group_direction: {
+      lane: "stateless-bench",
+      units: 2,
+      worsened: 2,
+      improved: 0,
+    },
+    group_comparison: group,
+  });
+  const facts = (value.identity_evidence as Array<Record<string, unknown>>).find(
+    (row) => row.pass_id === targetPassId,
+  );
+  if (facts === undefined) throw new Error("missing fact-location dossier fixture");
+  facts.singleton_inventory = {
+    raw_evidence: [singleton],
+    events: [
+      {
+        lane: "stateless-bench",
+        unit: "case-a:repeat-1",
+        identity,
+        direction: "worsened",
+        count: 1,
+        pass_id: targetPassId,
+        source: singleton,
+      },
+      {
+        lane: "stateless-bench",
+        unit: "case-a:repeat-2",
+        identity,
+        direction: "worsened",
+        count: 1,
+        pass_id: targetPassId,
+        source: singleton,
+      },
+    ],
+    protection_events: [],
+  };
+  (facts.beneficial_effects as unknown[]).push({
+    identity,
+    evidence_ref: singleton.ref,
+    singleton_evidence: singleton,
+    singleton_direction: {
+      lane: "stateless-bench",
+      units: 2,
+      worsened: 2,
+      improved: 0,
+    },
+    group_direction: {
+      lane: "stateless-bench",
+      units: 2,
+      worsened: 2,
+      improved: 0,
+    },
+    group_comparison: structuredClone(group),
+    reproduced_by_pass_ids: [],
+    reproducer_facts: [],
+  });
+  refreshFixtureClassifications(value);
+  return value;
 }
 
 function duplicateDogfoodRefIntoSelectedLane(
@@ -553,6 +722,188 @@ function duplicateDogfoodRefIntoSelectedLane(
 }
 
 describe("policy measurement result contracts", () => {
+  test("requires every paired group identity outcome and exact singleton/group bindings", () => {
+    const valid = groupBoundIdentityMeasurement();
+    expect(() => PolicyMeasurementSchema.parse(valid)).not.toThrow();
+
+    const missingComparison = structuredClone(valid);
+    const missingBenefit = (
+      missingComparison.identity_evidence as Array<Record<string, unknown>>
+    ).find((row) => row.pass_id === "evidence.fact-location");
+    if (missingBenefit === undefined) throw new Error("missing C4 benefit fixture");
+    const benefits = missingBenefit.beneficial_effects as Array<Record<string, unknown>>;
+    const initialBenefit = benefits[0];
+    if (initialBenefit === undefined) throw new Error("missing C4 beneficial-effect fixture");
+    benefits[0] = Object.fromEntries(
+      Object.entries(initialBenefit).filter(([key]) => key !== "group_comparison"),
+    );
+    expect(() => PolicyMeasurementSchema.parse(missingComparison)).toThrow();
+
+    const wrongComparison = structuredClone(valid);
+    const wrongContribution = passById(wrongComparison, "evidence.fact-location")
+      .evidence as Record<string, unknown>;
+    (
+      (wrongContribution.unique_contributions as Array<Record<string, unknown>>)[0]
+        ?.group_comparison as Record<string, unknown>
+    ).raw_evidence = [];
+    expect(() => PolicyMeasurementSchema.parse(wrongComparison)).toThrow();
+
+    const omittedOutcome = structuredClone(valid);
+    const omittedInventory = ((omittedOutcome.interactions as Array<Record<string, unknown>>)[3]
+      ?.identity_inventory ?? {}) as Record<string, unknown>;
+    omittedInventory.outcomes = (omittedInventory.outcomes as unknown[]).slice(0, 1);
+    expect(() => PolicyMeasurementSchema.parse(omittedOutcome)).toThrow();
+
+    const extraOutcome = structuredClone(valid);
+    const extraInventory = ((extraOutcome.interactions as Array<Record<string, unknown>>)[3]
+      ?.identity_inventory ?? {}) as Record<string, unknown>;
+    extraInventory.outcomes = [
+      ...(extraInventory.outcomes as unknown[]),
+      { identity: "bench:case-c:blocking-fp:fp-c", worsened: 1, improved: 0 },
+    ];
+    expect(() => PolicyMeasurementSchema.parse(extraOutcome)).toThrow();
+  });
+
+  test("rejects a same-delta group identity count transfer or identity substitution", () => {
+    const valid = groupBoundIdentityMeasurement();
+    expect(PolicyMeasurementSchema.safeParse(valid).success).toBe(true);
+
+    const transferred = structuredClone(valid);
+    const transferredInventory = ((transferred.interactions as Array<Record<string, unknown>>)[3]
+      ?.identity_inventory ?? {}) as Record<string, unknown>;
+    transferredInventory.outcomes = [
+      { identity: "bench:case-a:blocking-fp:fp-a", worsened: 3, improved: 0 },
+    ];
+    expect(PolicyMeasurementSchema.safeParse(transferred).success).toBe(false);
+
+    const substituted = structuredClone(valid);
+    const substitutedInventory = ((substituted.interactions as Array<Record<string, unknown>>)[3]
+      ?.identity_inventory ?? {}) as Record<string, unknown>;
+    substitutedInventory.outcomes = [
+      { identity: "bench:case-a:blocking-fp:fp-a", worsened: 2, improved: 0 },
+      { identity: "bench:case-c:blocking-fp:fp-c", worsened: 1, improved: 0 },
+    ];
+    expect(PolicyMeasurementSchema.safeParse(substituted).success).toBe(false);
+  });
+
+  test("rejects a retain classification without a target singleton loss", () => {
+    const forged = groupBoundIdentityMeasurement();
+    const pass = passById(forged, "evidence.fact-location");
+    const evidence = pass.evidence as Record<string, unknown>;
+    first(evidence.unique_contributions as Array<Record<string, unknown>>).singleton_direction = {
+      lane: "stateless-bench",
+      units: 0,
+      worsened: 0,
+      improved: 0,
+    };
+    const facts = (forged.identity_evidence as Array<Record<string, unknown>>).find(
+      (row) => row.pass_id === "evidence.fact-location",
+    );
+    if (facts === undefined) throw new Error("missing target identity fact");
+    first(facts.beneficial_effects as Array<Record<string, unknown>>).singleton_direction = {
+      lane: "stateless-bench",
+      units: 0,
+      worsened: 0,
+      improved: 0,
+    };
+    expect(PolicyMeasurementSchema.safeParse(forged).success).toBe(false);
+  });
+
+  test("rejects a refreshed classification that erases a bound singleton loss", () => {
+    const forged = groupBoundIdentityMeasurement();
+    const pass = passById(forged, "evidence.fact-location");
+    const facts = (forged.identity_evidence as Array<Record<string, unknown>>).find(
+      (row) => row.pass_id === "evidence.fact-location",
+    );
+    if (facts === undefined) throw new Error("missing C4 singleton-loss fixture");
+    (pass.evidence as Record<string, unknown>).unique_contributions = [];
+    facts.beneficial_effects = [];
+    refreshFixtureClassifications(forged);
+
+    expect(PolicyMeasurementSchema.safeParse(forged).success).toBe(false);
+  });
+
+  test("rejects a self-declared required-backstop without catalog protection", () => {
+    const forged = groupBoundIdentityMeasurement();
+    const evidence = passById(forged, "evidence.fact-location").evidence as Record<string, unknown>;
+    const contribution = first(evidence.unique_contributions as Array<Record<string, unknown>>);
+    contribution.kind = "required-backstop";
+    expect(PolicyMeasurementSchema.safeParse(forged).success).toBe(false);
+  });
+
+  test("rejects a catalog-shaped required-backstop without a baseline protection event", () => {
+    const forged = groupBoundIdentityMeasurement("evidence.self-refutation");
+    const pass = passById(forged, "evidence.self-refutation");
+    const facts = (forged.identity_evidence as Array<Record<string, unknown>>).find(
+      (row) => row.pass_id === "evidence.self-refutation",
+    );
+    const rule = POLICY_PASSES.find((row) => row.id === "evidence.self-refutation")
+      ?.protection_rules[0];
+    if (facts === undefined || rule === undefined)
+      throw new Error("missing C4 required-backstop fixture authority");
+    const contribution = first(
+      (pass.evidence as Record<string, unknown>).unique_contributions as Array<
+        Record<string, unknown>
+      >,
+    );
+    const benefit = first(facts.beneficial_effects as Array<Record<string, unknown>>);
+    const protection = {
+      evidence: structuredClone(contribution.evidence),
+      reason_code: rule.reason_code,
+      protected_by: rule.protected_by,
+      before: rule.before,
+    };
+    contribution.kind = "required-backstop";
+    contribution.baseline_protection = protection;
+    benefit.baseline_protection = structuredClone(protection);
+    refreshFixtureClassifications(forged);
+
+    expect(PolicyMeasurementSchema.safeParse(forged).success).toBe(false);
+  });
+
+  test("rejects a covered deletion whose reproducer is not phase-one retained", () => {
+    const forged = groupBoundIdentityMeasurement();
+    const target = passById(forged, "evidence.fact-location");
+    const cover = passById(forged, "evidence.grounding-token");
+    const targetFacts = (forged.identity_evidence as Array<Record<string, unknown>>).find(
+      (row) => row.pass_id === "evidence.fact-location",
+    );
+    const coverFacts = (forged.identity_evidence as Array<Record<string, unknown>>).find(
+      (row) => row.pass_id === "evidence.grounding-token",
+    );
+    if (targetFacts === undefined || coverFacts === undefined) {
+      throw new Error("missing C4 covered-deletion fixture facts");
+    }
+    const benefit = first(targetFacts.beneficial_effects as Array<Record<string, unknown>>);
+    benefit.reproduced_by_pass_ids = ["evidence.grounding-token"];
+    const targetEvidence = target.evidence as Record<string, unknown>;
+    const coverContribution = structuredClone(
+      first(targetEvidence.unique_contributions as Array<Record<string, unknown>>),
+    );
+    targetEvidence.unique_contributions = [];
+    const coverEvidence = cover.evidence as Record<string, unknown>;
+    coverEvidence.unique_contributions = [coverContribution];
+    const coverBenefit = structuredClone(benefit);
+    coverBenefit.reproduced_by_pass_ids = [];
+    coverBenefit.reproducer_facts = [];
+    benefit.reproducer_facts = [
+      {
+        pass_id: "evidence.grounding-token",
+        singleton_evidence: structuredClone(coverContribution.evidence),
+        singleton_direction: structuredClone(coverContribution.singleton_direction),
+        group_direction: structuredClone(coverContribution.group_direction),
+      },
+    ];
+    coverFacts.beneficial_effects = [coverBenefit];
+    target.classification = "delete-candidate";
+    target.reasons = ["sufficient-covered-zero-unique-benefit"];
+    target.vetoes = [];
+    cover.classification = "inconclusive";
+    cover.reasons = ["insufficient-opportunities"];
+    cover.vetoes = [];
+    expect(PolicyMeasurementSchema.safeParse(forged).success).toBe(false);
+  });
+
   test("requires a complete inventory-bound identity dossier and preserves cutoff exclusions", () => {
     const value = measurement();
     const firstIdentity = first(value.identity_evidence as Array<Record<string, unknown>>);
@@ -560,6 +911,7 @@ describe("policy measurement result contracts", () => {
     const firstEvidence = firstPassEvidence(value);
     firstEvidence.exclusions = [{ lane: "dogfood", code: "post-registered-at", count: 2 }];
     laneSummary(firstEvidence, "dogfood").exclusions = firstEvidence.exclusions;
+    refreshFixtureClassifications(value);
     expect(() => PolicyMeasurementSchema.parse(value)).not.toThrow();
 
     const missingPass = structuredClone(value);

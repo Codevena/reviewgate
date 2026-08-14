@@ -26,7 +26,19 @@ import {
   POLICY_PASSES,
   POLICY_PASS_IDS,
   type PolicyPassId,
+  type PolicyProtectionCode,
 } from "../../core/policy/catalog.ts";
+import {
+  type PolicyBaselineProtectionEvent,
+  type PolicyIdentityDirection,
+  type PolicyIdentityEvent,
+  type PolicySingletonIdentityEvent,
+  identityOutcomesFromEvents,
+  isStableWorsening,
+  sortBaselineProtectionEvents,
+  sortIdentityEvents,
+  sortSingletonIdentityEvents,
+} from "../../core/policy/identity-events.ts";
 import {
   POLICY_MEASUREMENT_INTERACTIONS,
   POLICY_MEASUREMENT_LANES,
@@ -122,6 +134,44 @@ interface ProfileAnalysis {
   evidence: PolicyPassEvidence;
   facts: PolicyPassClassificationFacts;
   laneSummary: PolicyLaneSummary;
+  /** Direct singleton counterfactual directions, retained only until group attribution is closed. */
+  singletonDirections: ReadonlyMap<string, IdentityDirection>;
+  /** Bench trace lineage that binds an identity to this pass's applicable evaluation. */
+  identityBindings: ReadonlyMap<string, IdentityBinding>;
+  singletonBinding: Binding;
+  /** The verified baseline source carrying any catalog protection/backstop evaluation. */
+  baselineBinding: Binding;
+  /** Exact direct singleton observations; these are published for independent source re-verification. */
+  singletonEvents: readonly PolicySingletonIdentityEvent[];
+  /** Exact baseline protected evaluations for required-backstop attribution. */
+  protectionEvents: readonly PolicyBaselineProtectionEvent[];
+  /** Closed primary-lane source inventory for direct singleton observations. */
+  singletonRawEvidence: readonly Binding[];
+}
+
+interface IdentityDirection {
+  benefit: number;
+  harm: number;
+}
+
+interface IdentityBinding {
+  traceBound: boolean;
+  requiredBackstop: boolean;
+  protection?: {
+    reason_code: string;
+    protected_by: PolicyProtectionCode;
+    before: "INFO" | "WARN" | "ERROR" | "CRITICAL";
+  };
+}
+
+interface InteractionAnalysis {
+  row: PolicyMeasurement["interactions"][number];
+  /** The exact paired identity deltas, partitioned by member so group harm is never allocated. */
+  directionsByPass: ReadonlyMap<PolicyPassId, ReadonlyMap<string, IdentityDirection>>;
+  /** Baseline evaluation lineage for each group member and paired identity. */
+  identityBindingsByPass: ReadonlyMap<PolicyPassId, ReadonlyMap<string, IdentityBinding>>;
+  /** Exact source-derived member/unit events, persisted as the authority for aggregate outcomes. */
+  eventsByPass: ReadonlyMap<PolicyPassId, readonly PolicyIdentityEvent[]>;
 }
 
 interface DogfoodPassEvidence {
@@ -577,10 +627,17 @@ function sameObservedBenchOutcome(left: CaseResult, right: CaseResult): boolean 
 }
 
 function recordIdentityDirections(
-  directions: Map<string, { benefit: number; harm: number }>,
+  directions: Map<string, IdentityDirection>,
   identityPrefix: string,
   baseline: ReadonlySet<string>,
   ablated: ReadonlySet<string>,
+  event?: {
+    lane: "stateless-bench" | "stateful-rig";
+    unit: string;
+    source: Binding;
+    memberPassId?: PolicyPassId;
+    into: PolicyIdentityEvent[];
+  },
 ): void {
   for (const errorIdentity of ablated) {
     if (baseline.has(errorIdentity)) continue;
@@ -588,6 +645,15 @@ function recordIdentityDirections(
     const row = directions.get(identity) ?? { benefit: 0, harm: 0 };
     row.benefit += 1;
     directions.set(identity, row);
+    event?.into.push({
+      lane: event.lane,
+      unit: event.unit,
+      identity,
+      direction: "worsened",
+      count: 1,
+      source: event.source,
+      ...(event.memberPassId === undefined ? {} : { member_pass_id: event.memberPassId }),
+    });
   }
   for (const errorIdentity of baseline) {
     if (ablated.has(errorIdentity)) continue;
@@ -595,7 +661,114 @@ function recordIdentityDirections(
     const row = directions.get(identity) ?? { benefit: 0, harm: 0 };
     row.harm += 1;
     directions.set(identity, row);
+    event?.into.push({
+      lane: event.lane,
+      unit: event.unit,
+      identity,
+      direction: "improved",
+      count: 1,
+      source: event.source,
+      ...(event.memberPassId === undefined ? {} : { member_pass_id: event.memberPassId }),
+    });
   }
+}
+
+function recordSingletonIdentityEvents(input: {
+  into: PolicySingletonIdentityEvent[];
+  lane: "stateless-bench" | "stateful-rig";
+  unit: string;
+  identityPrefix: string;
+  baseline: ReadonlySet<string>;
+  ablated: ReadonlySet<string>;
+  passId: PolicyPassId;
+  source: Binding;
+}): void {
+  for (const errorIdentity of input.ablated) {
+    if (input.baseline.has(errorIdentity)) continue;
+    input.into.push({
+      lane: input.lane,
+      unit: input.unit,
+      identity: `${input.identityPrefix}:${errorIdentity}`,
+      direction: "worsened",
+      count: 1,
+      pass_id: input.passId,
+      source: input.source,
+    });
+  }
+  for (const errorIdentity of input.baseline) {
+    if (input.ablated.has(errorIdentity)) continue;
+    input.into.push({
+      lane: input.lane,
+      unit: input.unit,
+      identity: `${input.identityPrefix}:${errorIdentity}`,
+      direction: "improved",
+      count: 1,
+      pass_id: input.passId,
+      source: input.source,
+    });
+  }
+}
+
+function asIdentityDirection(
+  lane: "stateless-bench" | "stateful-rig",
+  direction: IdentityDirection | undefined,
+): PolicyIdentityDirection {
+  return {
+    lane,
+    units: (direction?.benefit ?? 0) + (direction?.harm ?? 0),
+    worsened: direction?.benefit ?? 0,
+    improved: direction?.harm ?? 0,
+  };
+}
+
+function stableAddedIdentity(
+  lane: "stateless-bench" | "stateful-rig",
+  direction: IdentityDirection | undefined,
+): boolean {
+  return isStableWorsening(asIdentityDirection(lane, direction));
+}
+
+function benchIdentityBinding(input: {
+  passId: PolicyPassId;
+  trace: NonNullable<NonNullable<CaseResult["policy_trace"]>["trace"]>;
+  errorIdentity: string;
+}): IdentityBinding {
+  if (!input.errorIdentity.startsWith("blocking-fp:")) {
+    return { traceBound: false, requiredBackstop: false };
+  }
+  const signature = input.errorIdentity.slice("blocking-fp:".length);
+  const pass = POLICY_PASSES.find((candidate) => candidate.id === input.passId);
+  if (pass === undefined) authority("catalog-mismatch", `unknown pass: ${input.passId}`);
+  const evaluations = input.trace.evaluations.filter(
+    (evaluation) =>
+      evaluation.pass_id === input.passId &&
+      evaluation.result !== "no-opportunity" &&
+      evaluation.source_signatures.includes(signature),
+  );
+  const protectedEvaluation = evaluations.find(
+    (evaluation) =>
+      evaluation.result === "protected" &&
+      evaluation.protected_by !== undefined &&
+      pass.protection_rules.some(
+        (rule) =>
+          rule.reason_code === evaluation.reason_code &&
+          rule.protected_by === evaluation.protected_by &&
+          rule.before === evaluation.before,
+      ),
+  );
+  return {
+    traceBound: evaluations.length > 0,
+    requiredBackstop: protectedEvaluation !== undefined,
+    ...(protectedEvaluation?.protected_by === undefined
+      ? {}
+      : {
+          protection: {
+            reason_code: protectedEvaluation.reason_code,
+            protected_by: protectedEvaluation.protected_by,
+            before: protectedEvaluation.before,
+          },
+        }),
+  };
 }
 
 function addTruth(left: TruthCounts, right: TruthCounts): TruthCounts {
@@ -762,6 +935,8 @@ function analyzeBenchProfile(input: {
   passId: PolicyPassId;
   baseline: CaseResult[];
   ablated: CaseResult[];
+  baselineBinding: Binding;
+  baselineBindings: Binding[];
   profileBinding: Binding;
   profileBindings: Binding[];
   interactionBindings: Binding[];
@@ -777,7 +952,10 @@ function analyzeBenchProfile(input: {
   const effects: Array<{ caseId: string; repeat: 1 | 2 | 3; errorReduction: number }> = [];
   const opportunityCases = new Set<string>();
   const opportunitySignatures = new Set<string>();
-  const identityDirections = new Map<string, { benefit: number; harm: number }>();
+  const identityDirections = new Map<string, IdentityDirection>();
+  const identityBindings = new Map<string, IdentityBinding>();
+  const singletonEvents: PolicySingletonIdentityEvent[] = [];
+  const protectionEvents: PolicyBaselineProtectionEvent[] = [];
   const totals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
   for (const row of input.ablated) {
     const repeat = (row.repeat ?? 1) as 1 | 2 | 3;
@@ -823,21 +1001,40 @@ function analyzeBenchProfile(input: {
       benchErrorIdentities(baseline),
       benchErrorIdentities(row),
     );
+    recordSingletonIdentityEvents({
+      into: singletonEvents,
+      lane: "stateless-bench",
+      unit: `bench:${row.id}:repeat-${repeat}`,
+      identityPrefix: `bench:${row.id}`,
+      baseline: benchErrorIdentities(baseline),
+      ablated: benchErrorIdentities(row),
+      passId: input.passId,
+      source: input.profileBinding,
+    });
+    for (const errorIdentity of benchErrorIdentities(row)) {
+      const identity = `bench:${row.id}:${errorIdentity}`;
+      const binding = benchIdentityBinding({ passId: input.passId, trace, errorIdentity });
+      identityBindings.set(identity, binding);
+      if (binding.requiredBackstop && binding.protection !== undefined) {
+        protectionEvents.push({
+          lane: "stateless-bench",
+          unit: `bench:${row.id}:repeat-${repeat}`,
+          identity,
+          pass_id: input.passId,
+          result: "protected",
+          source: input.baselineBinding,
+          ...binding.protection,
+        });
+      }
+    }
   }
   const computed = stats(effects, input.seed);
   const rawRefs = [
     ...input.profileBindings.map((row) => row.ref),
+    ...input.baselineBindings.map((row) => row.ref),
     ...input.interactionBindings.map((row) => row.ref),
     ...input.dogfood.refs.map((row) => row.ref),
   ].sort(compareCodeUnits);
-  const beneficial = [...identityDirections.entries()]
-    .filter(([, direction]) => direction.benefit >= 2 && direction.harm === 0)
-    .map(([identity]) => ({
-      identity,
-      evidence_ref: input.profileBinding.ref,
-      reproduced_by_pass_ids: [] as PolicyPassId[],
-    }))
-    .sort((left, right) => compareCodeUnits(left.identity, right.identity));
   const harms = [...identityDirections.entries()]
     .filter(([, direction]) => direction.harm >= 2 && direction.benefit === 0)
     .map(([identity]) => ({ identity, evidence_ref: input.profileBinding.ref }))
@@ -885,14 +1082,26 @@ function analyzeBenchProfile(input: {
       },
       traceTotals: totals,
       statistics: computed.statistics,
-      rawEvidenceRefs: input.profileBindings.map((binding) => binding.ref),
+      rawEvidenceRefs: [...input.profileBindings, ...input.baselineBindings]
+        .map((binding) => binding.ref)
+        .filter((ref, index, values) => values.indexOf(ref) === index)
+        .sort(compareCodeUnits),
     }),
     facts: {
       pass_id: input.passId,
       ground_truth_harms: harms,
       dogfood_dispositions: input.dogfood.dispositions,
-      beneficial_effects: beneficial,
+      beneficial_effects: [],
     },
+    singletonDirections: identityDirections,
+    identityBindings,
+    singletonBinding: input.profileBinding,
+    baselineBinding: input.baselineBinding,
+    singletonEvents: sortSingletonIdentityEvents(singletonEvents),
+    protectionEvents: sortBaselineProtectionEvents(protectionEvents),
+    singletonRawEvidence: [...input.profileBindings, ...input.baselineBindings]
+      .sort((left, right) => compareCodeUnits(left.ref, right.ref))
+      .filter((binding, index, all) => index === 0 || all[index - 1]?.ref !== binding.ref),
   };
 }
 
@@ -929,7 +1138,8 @@ function analyzeRigPass(input: {
       sequence.initial_state.ref,
     ]),
   ].sort(compareCodeUnits);
-  const identityDirections = new Map<string, { benefit: number; harm: number }>();
+  const identityDirections = new Map<string, IdentityDirection>();
+  const singletonEvents: PolicySingletonIdentityEvent[] = [];
   for (const sequence of sequences) {
     const sequenceIdentity = sequence.scenario_id.startsWith(`${sequence.pass_id}-`)
       ? sequence.scenario_id.slice(sequence.pass_id.length + 1)
@@ -941,16 +1151,18 @@ function analyzeRigPass(input: {
         new Set(turn.baseline.errors.map((row) => `${row.kind}:${row.identity}`)),
         new Set(turn.counterfactual.errors.map((row) => `${row.kind}:${row.identity}`)),
       );
+      recordSingletonIdentityEvents({
+        into: singletonEvents,
+        lane: "stateful-rig",
+        unit: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+        identityPrefix: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+        baseline: new Set(turn.baseline.errors.map((row) => `${row.kind}:${row.identity}`)),
+        ablated: new Set(turn.counterfactual.errors.map((row) => `${row.kind}:${row.identity}`)),
+        passId: input.passId,
+        source: input.scenarioBinding,
+      });
     }
   }
-  const beneficial = [...identityDirections.entries()]
-    .filter(([, direction]) => direction.benefit > 0 && direction.harm === 0)
-    .map(([identity]) => ({
-      identity,
-      evidence_ref: input.scenarioBinding.ref,
-      reproduced_by_pass_ids: [] as PolicyPassId[],
-    }))
-    .sort((left, right) => compareCodeUnits(left.identity, right.identity));
   return {
     evidence: {
       pass_id: input.passId,
@@ -1011,8 +1223,26 @@ function analyzeRigPass(input: {
         .map(([identity]) => ({ identity, evidence_ref: input.scenarioBinding.ref }))
         .sort((left, right) => compareCodeUnits(left.identity, right.identity)),
       dogfood_dispositions: input.dogfood.dispositions,
-      beneficial_effects: beneficial,
+      beneficial_effects: [],
     },
+    singletonDirections: identityDirections,
+    identityBindings: new Map(),
+    singletonBinding: input.scenarioBinding,
+    baselineBinding: input.scenarioBinding,
+    singletonEvents: sortSingletonIdentityEvents(singletonEvents),
+    protectionEvents: [],
+    singletonRawEvidence: [
+      input.scenarioBinding,
+      ...input.rigBindings.map(({ ref, sha256 }) => ({ ref, sha256 })),
+      ...sequences.flatMap((sequence) => [
+        sequence.manifest,
+        sequence.result,
+        sequence.script,
+        sequence.initial_state,
+      ]),
+    ]
+      .sort((left, right) => compareCodeUnits(left.ref, right.ref))
+      .filter((binding, index, all) => index === 0 || all[index - 1]?.ref !== binding.ref),
   };
 }
 
@@ -1032,6 +1262,9 @@ function evidenceForInteraction(input: {
   const opportunityCases = new Set<string>();
   const opportunitySignatures = new Set<string>();
   const effects: Array<{ caseId: string; repeat: 1 | 2 | 3; errorReduction: number }> = [];
+  const identityDirections = new Map<string, IdentityDirection>();
+  const identityBindingsByPass = new Map<PolicyPassId, Map<string, IdentityBinding>>();
+  const identityEvents: PolicyIdentityEvent[] = [];
   const totals: TraceTotals = { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 };
   for (const row of input.ablated) {
     const repeat = (row.repeat ?? 1) as 1 | 2 | 3;
@@ -1073,6 +1306,26 @@ function evidenceForInteraction(input: {
       repeat,
       errorReduction: error(variantTruth) - error(baseTruth),
     });
+    recordIdentityDirections(
+      identityDirections,
+      `bench:${row.id}`,
+      benchErrorIdentities(base),
+      benchErrorIdentities(row),
+      {
+        lane: "stateless-bench",
+        unit: `bench:${row.id}:repeat-${repeat}`,
+        source: input.binding,
+        into: identityEvents,
+      },
+    );
+    for (const passId of input.passIds) {
+      const bindings = identityBindingsByPass.get(passId) ?? new Map<string, IdentityBinding>();
+      identityBindingsByPass.set(passId, bindings);
+      for (const errorIdentity of benchErrorIdentities(row)) {
+        const identity = `bench:${row.id}:${errorIdentity}`;
+        bindings.set(identity, benchIdentityBinding({ passId, trace, errorIdentity }));
+      }
+    }
   }
   const computed = stats(effects, input.seed);
   return {
@@ -1096,6 +1349,9 @@ function evidenceForInteraction(input: {
       raw_evidence_refs: input.bindings.map((row) => row.ref).sort(compareCodeUnits),
     },
     traceTotals: totals,
+    identityDirections,
+    identityBindingsByPass,
+    identityEvents: sortIdentityEvents(identityEvents),
   };
 }
 
@@ -1111,11 +1367,35 @@ function evidenceForRigInteraction(input: {
   }
   let baseline = zeroTruth();
   let ablated = zeroTruth();
+  const directionsByPass = new Map<PolicyPassId, Map<string, IdentityDirection>>();
+  const eventsByPass = new Map<PolicyPassId, PolicyIdentityEvent[]>();
   const effects = sequences.flatMap((sequence) => {
     const group = sequence.history_interaction;
     if (group === null) return [];
     baseline = addTruth(baseline, group.truth_effects.baseline);
     ablated = addTruth(ablated, group.truth_effects.ablated);
+    const sequenceIdentity = sequence.scenario_id.startsWith(`${sequence.pass_id}-`)
+      ? sequence.scenario_id.slice(sequence.pass_id.length + 1)
+      : sequence.scenario_id;
+    const directions = directionsByPass.get(sequence.pass_id) ?? new Map();
+    directionsByPass.set(sequence.pass_id, directions);
+    const events = eventsByPass.get(sequence.pass_id) ?? [];
+    eventsByPass.set(sequence.pass_id, events);
+    for (const turn of group.turns) {
+      recordIdentityDirections(
+        directions,
+        `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+        new Set(turn.baseline.errors.map((row) => `${row.kind}:${row.identity}`)),
+        new Set(turn.counterfactual.errors.map((row) => `${row.kind}:${row.identity}`)),
+        {
+          lane: "stateful-rig",
+          unit: `rig:${sequenceIdentity}:turn-${turn.turn_index}`,
+          source: input.binding,
+          memberPassId: sequence.pass_id,
+          into: events,
+        },
+      );
+    }
     return [group.truth_effects.error_reduction];
   });
   const computed = independentSequenceStats(effects, input.seed);
@@ -1144,6 +1424,10 @@ function evidenceForRigInteraction(input: {
       raw_evidence_refs: [...new Set(refs)].sort(compareCodeUnits),
     },
     traceTotals: { applied: 0, would_apply: 0, protected: 0, no_opportunity: 0 },
+    directionsByPass,
+    eventsByPass: new Map(
+      [...eventsByPass.entries()].map(([passId, events]) => [passId, sortIdentityEvents(events)]),
+    ),
   };
 }
 
@@ -1427,34 +1711,31 @@ export async function assemblePolicyMeasurement(input: {
   const baselineProfile = profiles[0];
   if (baselineProfile === undefined) authority("partial-inventory", "Bench baseline is absent");
   const baselineCases = baselineProfile.cases;
-  const interactions = POLICY_MEASUREMENT_INTERACTIONS.map((passIds, index) => {
-    const profile = profiles[POLICY_PASS_IDS.length + 1 + index];
-    if (profile === undefined) authority("partial-inventory", `interaction ${index + 1} absent`);
-    const bench = evidenceForInteraction({
-      binding: profile.artifact,
-      bindings: profile.rawBindings,
-      passIds,
-      baseline: baselineCases,
-      ablated: profile.cases,
-      seed: prereg.analysis.seed + index,
-    });
-    const rigArtifact = { ref: rigNamed.ref, sha256: rigNamed.sha256 };
-    const rigInteraction =
-      index === 2
-        ? evidenceForRigInteraction({
-            binding: rigArtifact,
-            rig,
-            rigBindings: rig.artifacts,
-            seed: prereg.analysis.seed + index,
-          })
-        : undefined;
-    return {
-      pass_ids: [...passIds],
-      artifact: rigInteraction === undefined ? profile.artifact : rigArtifact,
-      primary_lane:
-        rigInteraction === undefined ? ("stateless-bench" as const) : ("stateful-rig" as const),
-      evidence: rigInteraction?.evidence ?? bench.evidence,
-      lane_summaries: [
+  const interactionAnalyses: InteractionAnalysis[] = POLICY_MEASUREMENT_INTERACTIONS.map(
+    (passIds, index) => {
+      const profile = profiles[POLICY_PASS_IDS.length + 1 + index];
+      if (profile === undefined) authority("partial-inventory", `interaction ${index + 1} absent`);
+      const bench = evidenceForInteraction({
+        binding: profile.artifact,
+        bindings: profile.rawBindings,
+        passIds,
+        baseline: baselineCases,
+        ablated: profile.cases,
+        seed: prereg.analysis.seed + index,
+      });
+      const rigArtifact = { ref: rigNamed.ref, sha256: rigNamed.sha256 };
+      const rigInteraction =
+        index === 2
+          ? evidenceForRigInteraction({
+              binding: rigArtifact,
+              rig,
+              rigBindings: rig.artifacts,
+              seed: prereg.analysis.seed + index,
+            })
+          : undefined;
+      const artifact = rigInteraction === undefined ? profile.artifact : rigArtifact;
+      const evidence = rigInteraction?.evidence ?? bench.evidence;
+      const laneSummaries = [
         laneSummary({
           lane: "stateless-bench",
           primary: rigInteraction === undefined,
@@ -1479,9 +1760,61 @@ export async function assemblePolicyMeasurement(input: {
                 rawEvidenceRefs: rigInteraction.evidence.raw_evidence_refs,
               }),
             ]),
-      ],
-    };
-  });
+      ];
+      const identityEvents =
+        rigInteraction === undefined
+          ? bench.identityEvents
+          : sortIdentityEvents([...rigInteraction.eventsByPass.values()].flat());
+      const identityRawRefs = [
+        artifact.ref,
+        ...evidence.raw_evidence_refs,
+        ...laneSummaries.flatMap((summary) => summary.raw_evidence_refs),
+      ]
+        .filter((ref, index, values) => values.indexOf(ref) === index)
+        .sort(compareCodeUnits);
+      const row = {
+        pass_ids: [...passIds],
+        artifact,
+        primary_lane:
+          rigInteraction === undefined ? ("stateless-bench" as const) : ("stateful-rig" as const),
+        evidence,
+        lane_summaries: laneSummaries,
+        identity_inventory: {
+          raw_evidence: identityRawRefs.map(
+            (ref) =>
+              inventory.get(ref) ??
+              authority("partial-inventory", `interaction identity ref is absent: ${ref}`),
+          ),
+          events: identityEvents,
+          outcomes: identityOutcomesFromEvents(identityEvents),
+        },
+      };
+      return {
+        row,
+        directionsByPass: new Map(
+          passIds.map((passId) => [
+            passId,
+            rigInteraction?.directionsByPass.get(passId) ?? bench.identityDirections,
+          ]),
+        ),
+        identityBindingsByPass: new Map(
+          passIds.map((passId) => [
+            passId,
+            rigInteraction === undefined
+              ? (bench.identityBindingsByPass.get(passId) ?? new Map<string, IdentityBinding>())
+              : new Map<string, IdentityBinding>(),
+          ]),
+        ),
+        eventsByPass: new Map(
+          passIds.map((passId) => [
+            passId,
+            rigInteraction?.eventsByPass.get(passId) ?? bench.identityEvents,
+          ]),
+        ),
+      };
+    },
+  );
+  const interactions = interactionAnalyses.map((analysis) => analysis.row);
 
   const analyses = POLICY_PASS_IDS.map((passId, index) => {
     const dogfoodEvidence = dogfoodForPass({
@@ -1509,6 +1842,8 @@ export async function assemblePolicyMeasurement(input: {
       passId,
       baseline: baselineCases,
       ablated: profile.cases,
+      baselineBinding: baselineProfile.artifact,
+      baselineBindings: baselineProfile.rawBindings,
       profileBinding: profile.artifact,
       profileBindings: profile.rawBindings,
       interactionBindings,
@@ -1545,6 +1880,14 @@ export async function assemblePolicyMeasurement(input: {
         ...interactionRefs,
       ]),
     ].sort(compareCodeUnits);
+    primary.facts = {
+      ...primary.facts,
+      singleton_inventory: {
+        raw_evidence: primary.singletonRawEvidence,
+        events: primary.singletonEvents,
+        protection_events: primary.protectionEvents,
+      },
+    };
     return primary;
   });
   const adjusted = holmAdjustPolicyFamilies({
@@ -1563,47 +1906,221 @@ export async function assemblePolicyMeasurement(input: {
   for (const [index, interaction] of interactions.entries()) {
     interaction.evidence.statistics.adjusted_p_value = adjusted.interaction[index] ?? 1;
   }
+  const analysisByPass = new Map(analyses.map((analysis) => [analysis.facts.pass_id, analysis]));
+  const comparisonFor = (passId: PolicyPassId) => {
+    const matches = interactionAnalyses.filter((analysis) =>
+      analysis.row.pass_ids.includes(passId),
+    );
+    if (matches.length > 1) {
+      authority("catalog-mismatch", `pass ${passId} belongs to multiple interaction authorities`);
+    }
+    const match = matches[0];
+    if (match === undefined) return undefined;
+    return {
+      pass_ids: [...match.row.pass_ids],
+      artifact: match.row.artifact,
+      raw_evidence: match.row.identity_inventory.raw_evidence,
+      lane: match.row.primary_lane,
+      directions: match.directionsByPass.get(passId) ?? new Map<string, IdentityDirection>(),
+      identityBindings:
+        match.identityBindingsByPass.get(passId) ?? new Map<string, IdentityBinding>(),
+    };
+  };
+  const comparisons = new Map(
+    POLICY_PASS_IDS.map((passId) => [passId, comparisonFor(passId)] as const),
+  );
+  const sameComparison = (
+    left: NonNullable<ReturnType<typeof comparisonFor>>,
+    right: NonNullable<ReturnType<typeof comparisonFor>>,
+  ): boolean =>
+    canonicalJson({
+      pass_ids: left.pass_ids,
+      artifact: left.artifact,
+      raw_evidence: left.raw_evidence,
+    }) ===
+    canonicalJson({
+      pass_ids: right.pass_ids,
+      artifact: right.artifact,
+      raw_evidence: right.raw_evidence,
+    });
+  type RegisteredComparison = NonNullable<ReturnType<typeof comparisonFor>>;
+  const directIdentities = (
+    analysis: ProfileAnalysis,
+    comparison: RegisteredComparison | undefined,
+  ): string[] =>
+    comparison === undefined
+      ? []
+      : [...analysis.singletonDirections.entries()].flatMap(([identity, singletonDirection]) =>
+          stableAddedIdentity(analysis.evidence.lane, singletonDirection) &&
+          stableAddedIdentity(comparison.lane, comparison.directions.get(identity))
+            ? [identity]
+            : [],
+        );
+  const directContributions = (
+    analysis: ProfileAnalysis,
+    comparison: RegisteredComparison | undefined,
+    direct: readonly string[],
+  ): PolicyPassEvidence["unique_contributions"] =>
+    direct.map((identity) => {
+      const trace = analysis.identityBindings.get(identity);
+      return {
+        identity,
+        kind:
+          trace?.requiredBackstop === true
+            ? ("required-backstop" as const)
+            : identity.includes(":blocking-fp:")
+              ? ("prevented-blocking-fp" as const)
+              : identity.includes(":blocking-fn:")
+                ? ("preserved-blocking-tp" as const)
+                : authority(
+                    "bench-profile-mismatch",
+                    `unknown singleton error identity: ${identity}`,
+                  ),
+        evidence: analysis.singletonBinding,
+        singleton_direction: asIdentityDirection(
+          analysis.evidence.lane,
+          analysis.singletonDirections.get(identity),
+        ),
+        group_direction: asIdentityDirection(
+          comparison?.lane ?? analysis.evidence.lane,
+          comparison?.directions.get(identity),
+        ),
+        ...(trace?.requiredBackstop !== true || trace.protection === undefined
+          ? {}
+          : {
+              baseline_protection: {
+                evidence: analysis.baselineBinding,
+                ...trace.protection,
+              },
+            }),
+        group_comparison: {
+          pass_ids: comparison?.pass_ids ?? [],
+          artifact: comparison?.artifact ?? analysis.singletonBinding,
+          raw_evidence: comparison?.raw_evidence ?? [],
+        },
+      };
+    });
+  const directByPass = new Map(
+    analyses.map((analysis) => {
+      const comparison = comparisons.get(analysis.facts.pass_id);
+      const direct = directIdentities(analysis, comparison);
+      analysis.evidence.unique_contributions = directContributions(analysis, comparison, direct);
+      return [analysis.facts.pass_id, direct] as const;
+    }),
+  );
+  // This call uses the classifier's shared phase-1 rule: only direct, source-bound singleton
+  // contributions may retain a cover before group results are used for causal closure.
+  const phaseOneRetained = new Set(
+    classifyPolicyPasses(analyses.map((analysis) => analysis.evidence))
+      .filter((row) => row.classification === "retain")
+      .map((row) => row.pass_id),
+  );
   for (const analysis of analyses) {
     const pass = POLICY_PASSES.find((candidate) => candidate.id === analysis.facts.pass_id);
     if (pass === undefined) authority("catalog-mismatch", `unknown pass ${analysis.facts.pass_id}`);
+    const comparison = comparisons.get(analysis.facts.pass_id);
+    const direct = directByPass.get(analysis.facts.pass_id) ?? [];
+    const reproduced =
+      comparison === undefined
+        ? new Map<string, PolicyPassId[]>()
+        : new Map(
+            [...comparison.directions.entries()]
+              .filter(([identity, direction]) => {
+                const trace = comparison.identityBindings.get(identity);
+                return (
+                  stableAddedIdentity(comparison.lane, direction) &&
+                  !stableAddedIdentity(
+                    analysis.evidence.lane,
+                    analysis.singletonDirections.get(identity),
+                  ) &&
+                  trace?.traceBound === true
+                );
+              })
+              .flatMap(([identity]) => {
+                const covers = (pass.overlaps_with as readonly PolicyPassId[])
+                  .flatMap((passId) => {
+                    const candidate = analysisByPass.get(passId);
+                    const candidateComparison = comparisons.get(passId);
+                    return candidate === undefined ||
+                      candidateComparison === undefined ||
+                      !sameComparison(comparison, candidateComparison) ||
+                      !phaseOneRetained.has(passId) ||
+                      !stableAddedIdentity(
+                        candidate.evidence.lane,
+                        candidate.singletonDirections.get(identity),
+                      )
+                      ? []
+                      : [passId];
+                  })
+                  .sort(compareCodeUnits);
+                return covers.length === 0 ? [] : ([[identity, covers]] as const);
+              }),
+          );
+    const identities = [...new Set([...direct, ...reproduced.keys()])].sort(compareCodeUnits);
     analysis.facts = {
       ...analysis.facts,
-      beneficial_effects: analysis.facts.beneficial_effects.map((benefit) => ({
-        ...benefit,
-        reproduced_by_pass_ids: analyses
-          .filter(
-            (candidate) =>
-              candidate.facts.pass_id !== analysis.facts.pass_id &&
-              (pass.overlaps_with as readonly PolicyPassId[]).includes(candidate.facts.pass_id) &&
-              candidate.facts.beneficial_effects.some(
-                (candidateBenefit) => candidateBenefit.identity === benefit.identity,
-              ),
-          )
-          .map((candidate) => candidate.facts.pass_id)
-          .sort(compareCodeUnits),
-      })),
+      beneficial_effects:
+        comparison === undefined
+          ? []
+          : identities.map((identity) => {
+              const trace = analysis.identityBindings.get(identity);
+              const protection = trace?.requiredBackstop === true ? trace.protection : undefined;
+              return {
+                identity,
+                evidence_ref: analysis.singletonBinding.ref,
+                singleton_evidence: analysis.singletonBinding,
+                singleton_direction: asIdentityDirection(
+                  analysis.evidence.lane,
+                  analysis.singletonDirections.get(identity),
+                ),
+                group_direction: asIdentityDirection(
+                  comparison.lane,
+                  comparison.directions.get(identity),
+                ),
+                ...(protection === undefined
+                  ? {}
+                  : {
+                      baseline_protection: {
+                        evidence: analysis.baselineBinding,
+                        ...protection,
+                      },
+                    }),
+                group_comparison: {
+                  pass_ids: comparison.pass_ids,
+                  artifact: comparison.artifact,
+                  raw_evidence: comparison.raw_evidence,
+                },
+                // A group result is never allocated back to a member. Reproduction only exists
+                // when another overlap independently has a singleton loss for this identity.
+                reproduced_by_pass_ids: direct.includes(identity)
+                  ? []
+                  : (reproduced.get(identity) ?? []),
+                reproducer_facts: (direct.includes(identity)
+                  ? []
+                  : (reproduced.get(identity) ?? [])
+                ).map((passId) => {
+                  const cover = analysisByPass.get(passId);
+                  const coverComparison = comparisons.get(passId);
+                  if (cover === undefined || coverComparison === undefined) {
+                    authority("catalog-mismatch", `missing causal reproducer ${passId}`);
+                  }
+                  return {
+                    pass_id: passId,
+                    singleton_evidence: cover.singletonBinding,
+                    singleton_direction: asIdentityDirection(
+                      cover.evidence.lane,
+                      cover.singletonDirections.get(identity),
+                    ),
+                    group_direction: asIdentityDirection(
+                      coverComparison.lane,
+                      coverComparison.directions.get(identity),
+                    ),
+                  };
+                }),
+              };
+            }),
     };
-    analysis.evidence.unique_contributions = analysis.facts.beneficial_effects
-      .filter((benefit) => benefit.reproduced_by_pass_ids.length === 0)
-      .map((benefit) => ({
-        kind: benefit.identity.includes(":blocking-fp:")
-          ? ("prevented-blocking-fp" as const)
-          : benefit.identity.includes(":blocking-fn:")
-            ? ("preserved-blocking-tp" as const)
-            : authority(
-                "bench-profile-mismatch",
-                `unknown Bench error identity: ${benefit.identity}`,
-              ),
-        evidence: {
-          ref: benefit.evidence_ref,
-          sha256:
-            inventory.get(benefit.evidence_ref)?.sha256 ??
-            authority(
-              "partial-inventory",
-              `unique contribution ref is absent: ${benefit.evidence_ref}`,
-            ),
-        },
-      }));
+    analysis.evidence.unique_contributions = directContributions(analysis, comparison, direct);
   }
   const passes = classifyPolicyPasses(
     analyses.map((row) => row.evidence),
