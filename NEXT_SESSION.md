@@ -4,10 +4,17 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A Tasks 1–10 are locally committed through `34447ea` and Task 10 is review-clean. The
-next task is Task 11: documentation, trailhead, and preregistration handoff only. Task 12 owns the
-full serial suite, static gates, build, compiled CLI smokes, and final reviews. No push,
-merge, provider, paid Bench, real Rig, Gate, credits, or measurement has occurred.**
+**Slice 2A implementation is complete; final verification remains pending in Task 12. No policy
+pass changed and no paid measurement ran.**
+
+Immediate next checkpoint: complete Task 12 final verification, static/build checks, compiled CLI
+smokes, and final contract/security review. Only after Task 12 passes: author and dry-validate the
+15 real stateful scenarios (three independent two-opportunity
+sequences for each of five stateful passes); accrue explicit dogfood decisions with complete traces;
+freeze the audit/trace inventory; obtain the TTY human attestation; then choose and cost the concrete
+provider roster. Only after those inputs exist, write and review one committed attempt-specific
+`reviewgate.policy-measurement.preregistration.v1` and run exactly one registered capture.
+Qwen remains a separate parked measurement stream.
 
 ## Checkout state
 
@@ -15,13 +22,13 @@ merge, provider, paid Bench, real Rig, Gate, credits, or measurement has occurre
 |---|---|
 | branch | `feat/policy-measurement-pruning` |
 | isolated worktree | `/Users/markus/.config/superpowers/worktrees/reviewgate/policy-measurement-pruning` |
-| HEAD before this handoff commit | `34447eaeb33dd08d6e76200197ccd75616b7719a` — `feat(cli): expose policy measurement commands` |
-| upstream | none; branch is 30 commits ahead of `origin/master`, 0 behind |
+| Task-10 code baseline | `34447eaeb33dd08d6e76200197ccd75616b7719a` — `feat(cli): expose policy measurement commands` |
+| upstream | none; observed at this checkpoint: branch was 30 commits ahead of `origin/master`, 0 behind |
 | pushed? | **NO** — do not push/merge without Markus's explicit authorization |
 | locks | `.reviewgate/gate.lock` and Git index lock absent before Task-10 commit |
 | main checkout | out of scope; preserve its foreign `.reviewgate/lore/approvals.jsonl` |
 
-## Task 10 delivered
+## Slice 2A implementation delivered
 
 - `bench policy --preregistration <path> --out <path>` exposes the preregistered one-capture,
   offline-counterfactual Bench boundary without changing existing Bench commands.
@@ -68,19 +75,11 @@ The implemented fail-closed protocol is:
 - Ignored evidence report:
   `.superpowers/sdd/2026-08-11-policy-measurement-pruning/task-10-report.md`.
 
-## Next task — Task 11
+## Immediate next task — Task 12 final verification
 
-Execute Task 11 in `docs/superpowers/plans/2026-08-11-policy-measurement-pruning.md`.
-
-1. Read the final Task-10 report, design spec, and Task-11 plan section before editing docs.
-2. Update architecture, test plan, trailhead/map only where the implemented code proves it, and this
-   handoff at the end.
-3. Run only Task 11's documentation checks (`git diff --check` plus the placeholder scan) and commit
-   `docs: document policy measurement workflow` after its checkpoint review.
-4. Leave the focused/full suites, `tsc`, lint, build, compiled CLI smokes, mutation dossier, and final
-   contract/security reviews to Task 12 exactly as the plan specifies.
-5. Preserve the no-provider/no-credits boundary. Paid preregistration and measurement remain a later
-   explicit Markus decision.
+Task 12 owns final serial verification, build/smoke, and final review. The human-authorized
+preregistration preparation described above begins only after Task 12 passes. Preserve the
+no-provider/no-credits boundary until a separate Markus authorization.
 
 ## Traps that still hold
 
@@ -103,4 +102,4 @@ Execute Task 11 in `docs/superpowers/plans/2026-08-11-policy-measurement-pruning
 1. `.superpowers/sdd/2026-08-11-policy-measurement-pruning/task-10-report.md`
 2. `.superpowers/sdd/2026-08-11-policy-measurement-pruning/progress.md`
 3. `docs/superpowers/specs/2026-08-11-policy-measurement-pruning-design.md`
-4. Task 11 in `docs/superpowers/plans/2026-08-11-policy-measurement-pruning.md`
+4. Task 12 in `docs/superpowers/plans/2026-08-11-policy-measurement-pruning.md`

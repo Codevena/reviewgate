@@ -1,6 +1,8 @@
 # Policy Accountability & Pruning — Slice 2: Measurement before deletion
 
-**Status:** Approved design, ready for implementation planning
+**Status:** Implemented; preregistration and measurement pending
+
+**Implementation plan:** [`2026-08-11-policy-measurement-pruning.md`](../plans/2026-08-11-policy-measurement-pruning.md)
 
 **Date:** 2026-08-11
 
@@ -407,8 +409,8 @@ affected passes are `inconclusive`.
 - Existing Rig capture/replay commands produce the preregistered stateful artifacts; Slice 2A adds
   orchestration only where needed to enforce the full scenario inventory.
 - `reviewgate stats policy --preregistration <path> --bench <manifest> --rig <manifest>
-  --out <attempt-dir>` validates all lanes, snapshots dogfood, classifies passes, and atomically
-  publishes the result JSON plus Markdown report as one bundle directory.
+  --out <attempt-dir>` validates all lanes, snapshots dogfood, classifies passes, and publishes the
+  result JSON plus Markdown report through the fail-closed completion-marker bundle protocol.
 - Existing `reviewgate stats [--since|--last|--json]` output and semantics remain unchanged.
 
 CLI syntax errors exit `2`. Authority, provenance, catalog, trace, state, response, artifact, or

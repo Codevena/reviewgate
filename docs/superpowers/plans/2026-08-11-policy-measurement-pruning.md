@@ -1452,7 +1452,7 @@ git commit -m "feat(cli): expose policy measurement commands"
 - Produces an accurate trailhead and an explicit “implementation complete, paid preregistration not
   yet authorized” handoff.
 
-- [ ] **Step 1: Update architecture and test documentation**
+- [x] **Step 1: Update architecture and test documentation**
 
 Document:
 
@@ -1463,7 +1463,7 @@ Document:
 - threshold/mutation tests and why repeats are not independent cases; and
 - the Slice 2A/2B boundary.
 
-- [ ] **Step 2: Update the session handoff**
+- [x] **Step 2: Update the session handoff**
 
 `NEXT_SESSION.md` must say:
 
@@ -1477,14 +1477,14 @@ reviewgate.policy-measurement.preregistration.v1 and run exactly one registered 
 Qwen remains a separate parked measurement stream.
 ```
 
-- [ ] **Step 3: Refresh the trailhead only from actual paths**
+- [x] **Step 3: Refresh the trailhead only from actual paths**
 
 Run `node /Users/markus/.claude/scripts/verify-map.js`. Update the Stats and Bench rows in
 `AGENTS.md` to name `src/stats/policy/assemble.ts` and the new focused tests; set `verified_commit`
 to the Task-10 code commit, which is the complete code state being documented. Do not touch
 unrelated rows.
 
-- [ ] **Step 4: Mark the design implemented without claiming measurement**
+- [x] **Step 4: Mark the design implemented without claiming measurement**
 
 Change the design status to “Implemented; preregistration and measurement pending” and link this
 plan. Do not add results or candidate classifications.
