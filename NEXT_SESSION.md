@@ -4,13 +4,12 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A implementation is complete; Task 12's C4 R3 preregistered-Rig-anchor remediation is
-unstaged, uncommitted, and ready for its limited delta review. Its permanent guards and two isolated
-mutation families are green/killed; the disclosed composite-focus timeout limitation is resolved by
-the individual current-source guard evidence below, without raising timeouts or retrying the
-composite. No policy pass changed and no paid measurement ran.**
+**Slice 2A implementation is complete through the review-clean C4 identity-attribution checkpoint
+`68b2b0e` (`fix(policy): bind causal identity attribution`). Task 12 continues with C5 report and
+statistics completeness, followed by the remaining durable mutation dossier and final reviews. No
+policy pass changed and no paid measurement ran.**
 
-## Current Task 12 C4 R3 — ready for limited delta review
+## Completed Task 12 C4 R3 checkpoint
 
 - The C4 R2 delta review found one remaining authority gap: the external publication verifier
   derived Rig singleton and stateful-group source bindings from the mutable published Rig/result
@@ -38,10 +37,12 @@ composite. No policy pass changed and no paid measurement ran.**
   these individually passing substitution guards crossing their 120s test budget during composite
   scheduling. Controller direction is explicit: do not rerun that composite and do not raise its
   timeout; retain this limitation alongside the standalone current-source evidence.
-- After a test-only `unknown`-spread type assertion and mechanical Biome formatting of the affected
-  files, fresh `bunx tsc --noEmit` exited 0 and `bun run lint` checked **695 files, no fixes**.
-  `git diff --check` and `git diff --cached --check` both exit 0; staging remains empty. No stage,
-  commit, push, merge, build, provider, Gate, real Rig, credits, or measurement has run.
+- The limited convergence review is **PASS, zero CRITICAL/WARN**. It independently reproduced both
+  permanent guards and both anchor-bypass mutants, verified byte-exact restoration, and passed the
+  immediate fixture side-effect checks. After a test-only `unknown`-spread assertion and mechanical
+  Biome formatting, fresh `bunx tsc --noEmit` exited 0, `bun run lint` checked **695 files/no fixes**,
+  and both diff checks passed. The exact 15-path checkpoint is commit **`68b2b0e`**. No push, merge,
+  build, provider, Gate, real Rig, credits, or measurement has run.
 
 ## Historical C4 R1 delta
 

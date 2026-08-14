@@ -1810,3 +1810,10 @@ The individual current-source guards are the proportional final test evidence. F
 Biome (695 files/no fixes), working-tree and cached diff checks exit 0. The next review is limited
 to this preregistered Rig anchor, its source-closure effects, the two permanent probes, and that
 documented composite timing limitation; it must not reopen C1--C3.
+
+### Final contract review C4 convergence — `PASS`, checkpoint committed
+
+The limited convergence review reproduced both self-consistent Rig substitution guards and both
+anchor-bypass mutants, verified byte-exact restore, and found zero CRITICAL/WARN. The exact
+15-path C4 checkpoint is **`68b2b0e`** (`fix(policy): bind causal identity attribution`). C4 is
+closed; Task 12 proceeds to C5 output/statistics/report completeness without reopening C1--C4.
