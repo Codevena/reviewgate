@@ -4,12 +4,12 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A is complete through the review-clean C4 identity-attribution checkpoint `68b2b0e`
-(`fix(policy): bind causal identity attribution`). Task 12 C5 output/statistics completeness is
-implemented and proportionally verified, but remains pending independent delta review; the durable
-mutation dossier and final reviews still follow. No policy pass changed and no paid measurement ran.**
+**Slice 2A is complete through the review-clean C5 measurement-dossier checkpoint `39fdacb`
+(`fix(policy): complete measurement dossiers`). Task 12 now owns only the durable final dossier,
+post-fix verification, and final contract/security reviews. No policy pass changed and no paid
+measurement ran.**
 
-## Current Task 12 C5 checkpoint — review-pending
+## Completed Task 12 C5 checkpoint
 
 - Authoritative Bench lane statistics now persist all 90 case/repeat observations and exact source
   dossiers, their raw projection, case-level mean/median, three preregistered repeat directions,
@@ -37,8 +37,9 @@ mutation dossier and final reviews still follow. No policy pass changed and no p
   **8/0/687**, publication **6/0/30**, C1--C4 sample **6/0/20**, fresh `tsc` exit 0, and Biome
   **696 files/no fixes**; working and cached diff checks are both clean. The first TypeScript RED
   found only nullable-delta narrowing plus missing typed fixture limitations; all are minimally
-  fixed. C5 is **review-pending**, unstaged, and uncommitted: do not mark Task 12 complete or
-  commit before the independent C5 R1 delta review.
+  fixed. The independent C5 R1 delta review is **PASS, zero CRITICAL/WARN** and reproduced the
+  permanent authority/parity guards and bypass mutations. The exact 19-path C5 checkpoint is commit
+  **`39fdacb`**. No push, merge, build, provider, Gate, real Rig, credits, or measurement has run.
 
 ## Completed Task 12 C4 R3 checkpoint
 

@@ -1833,3 +1833,11 @@ focus, a **6/0/20** C1--C4 side-effect sample, fresh TypeScript, and Biome over 
 one-buffer Dogfood cache mutant is **0/1/21/1** and restored exactly. This is ready for an
 independent C5 delta review only; Task 12 Steps 6--8 remain unchecked, no commit is authorized,
 and the documented C4 composite timing limitation remains unchanged.
+
+### Final contract review C5 R1 — `PASS`, checkpoint committed
+
+The limited delta review found zero CRITICAL/WARN. It independently verified copied-source
+recomputation for Bench/Rig/Dogfood statistics and dossiers, Dogfood single-read snapshot parity,
+exact Markdown projection, complete lane interval/exclusion rendering, and the tracked C5 mutation
+ledger. The exact 19-path checkpoint is **`39fdacb`** (`fix(policy): complete measurement
+dossiers`). C5 is closed; Task 12 proceeds only to final durable evidence and review gates.
