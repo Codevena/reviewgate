@@ -1489,7 +1489,7 @@ unrelated rows.
 Change the design status to “Implemented; preregistration and measurement pending” and link this
 plan. Do not add results or candidate classifications.
 
-- [ ] **Step 5: Verify docs and commit**
+- [x] **Step 5: Verify docs and commit**
 
 Run:
 

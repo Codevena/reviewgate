@@ -72,6 +72,7 @@ The implemented fail-closed protocol is:
   and hidden TTY source identities. Round 2 found one vacuous `reproduced_by` assertion. After the
   fixes, Slot A Round 3 **PASS** and Slot B **PASS**, both with zero CRITICAL/WARN.
 - Task-10 code commit: `34447eaeb33dd08d6e76200197ccd75616b7719a`.
+- Task-11 documentation commit: `f23b930` — `docs: document policy measurement workflow`.
 - Ignored evidence report:
   `.superpowers/sdd/2026-08-11-policy-measurement-pruning/task-10-report.md`.
 
