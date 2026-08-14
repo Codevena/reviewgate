@@ -451,3 +451,178 @@ guard is **1 pass / 0 fail / 29 filtered / 4 expects**. Fresh `bunx tsc --noEmit
 limitation remains disclosed above and was not rerun or retuned. This checkpoint is
 **review-pending**, unstaged, and uncommitted; no full suite, build, provider, Gate, real Rig,
 measurement, credit use, push, or merge occurred.
+
+## Final Task 12 dossier audit — current-source recovery for legacy rows
+
+At final-verification checkpoint `b48bfc3d4e272b598f6695676b1c5fe4a926a374`, the Task 1 and
+Task 9--10 ledgers already carried literal WITH/WITHOUT quantities, named commands, and
+restoration records. C1--C5 review-fix tables likewise have a named current command or focused
+suite, literal RED, and restore record. The earlier compact Task 2--8 index rows, however, pointed
+to ignored reports whose historical killer prose did not always retain a Bun pass/fail count. The
+missing items are limited to the original/fix families below; no value was inferred from a plan or
+backfilled from a different source revision:
+
+| Legacy family with a non-numeric compact row | Missing historical field recovered at current source |
+| --- | --- |
+| Task 2 original, R1, R2 contract/schema mutants | Literal per-mutant Bun RED count was not recorded next to several named killers. |
+| Task 3 original/R1 profile-pair mutants | Literal Bun RED count was not recorded beside the profile/truth killer prose. |
+| Task 4 statistics mutants | Per-mutant source SHA and Bun RED count were absent. |
+| Task 5 original/R1 classification mutants | Per-mutant Bun RED count was absent. |
+| Task 6 original/R1 Dogfood-source mutants | Some rows had domain counts but no Bun RED count/current source SHA. |
+| Task 7 Rig-state/opportunity mutants | Literal state values and old restore SHA existed, but no Bun RED count. |
+| Task 8 capture-schedule mutants | Literal schedule values and old restore SHA existed, but no Bun RED count. |
+
+Each recoverable contract was therefore recreated once in the one authorized disposable copy
+`/private/tmp/reviewgate-c1-r3-mut-soo5X1/repo`, reset to the final checkpoint before and after each
+probe. This is a current-contract confirmation, not a claim that historical source bytes were
+identical. Every listed owner was rehashed after restore and matched the final-checkpoint SHA below.
+
+| Family / final source SHA-256 | Single current mutant and exact RED command | Literal RED / restored GREEN |
+| --- | --- | --- |
+| T2 exact catalog authority; `src/schemas/policy-measurement.ts` `f7f47028a208dd15da6b345674610b8f9d1c34d89fd7917fb7b29a8f9db0c591` | Replaced the catalog `order !== pass.order` term with `false`; `bun test tests/unit/policy-measurement-schema.test.ts -t 'requires every pass to carry its exact catalog authority snapshot'` | WITHOUT **0 pass / 1 fail / 32 filtered / 2 expects**; restore SHA exact. |
+| T3 exact expected multi-pass profile; `src/bench/runner.ts` `ff87e6acc00d9d9221b75c2f0986d10361c320abd98cc9db3ba39eccf436e169` | Bypassed `counterfactual.requestedAblations === expectedAblations`; `bun test tests/unit/bench-matrix.test.ts -t 'accepts only an exact ordered multi-pass trace profile and keeps the legacy guard'` | WITHOUT **0/1/22/3**, `missing requested pass` became accepted; restore SHA exact. A first weaker trace-self-consistency bypass remained green because the stronger expected-profile comparison still rejected the fixture; it was discarded, then the named contract guard above was killed. |
+| T4 cumulative Holm maximum; `src/stats/policy/statistics.ts` `39e24e3c523722313d5b856fe202c471274367d67e17813fac02d03de61aed87` | Changed the cumulative `Math.max` to `Math.min`; `bun test tests/unit/policy-statistics.test.ts -t 'Holm adjustment preserves original order and cumulative sorted maxima'` | WITHOUT **0/1/7/1**, `[0.03,0.06,0.06]` became `[0,0,0]`; restore SHA exact. |
+| T5 bound suppressed-TP deletion veto; `src/stats/policy/classify.ts` `1cf41c723c5e00bf2f8c863a88e1b06c894972a860aef10d4dc392232f96cf68` | Dropped `factsBound && suppressedTp` from `harmObserved`; `bun test tests/unit/policy-classify.test.ts -t 'a lone bound confirmed suppressed TP observes harm and vetoes deletion'` | WITHOUT **0/1/19/1**, `harm_observed` became false; restore SHA exact. |
+| T6 frozen Dogfood entry read; `src/stats/policy/dogfood-snapshot.ts` `43cafeb586f0481761d753152c55cb3f3d11ad8614ee1dcacd3627f271f54837` | Removed the memoized-entry early return; `bun test tests/unit/policy-dogfood.test.ts -t 'uses one bounded read buffer and rejects a same-inode source grow'` | WITHOUT **0/1/21/1**, expected two reads but received three; restore SHA exact. |
+| T7 opportunity carrier; `src/stats/policy/rig.ts` `6325ce79e0c46682f85f3bd2d065d0693bd76fbcdef0a2623b3b1c0fb897f2dc` | Hardcoded `observed: true`; `bun test tests/unit/policy-rig-evidence.test.ts -t 'does not turn ran-with-zero-opportunity into an opportunity carrier'` | WITHOUT **0/1/5/10**, zero carriers became observed; restore SHA exact. |
+| T8 closed 23-profile schedule; `src/cli/commands/bench.ts` `2f7f4795051959d399107ea5c6a0bbc36566a6659b793f8efd5ce578f0437ec0` | Dropped the first singleton profile with `POLICY_PASS_IDS.slice(1)`; `bun test tests/unit/bench-policy.test.ts -t 'captures two cases across three repeats once and fully replays the closed 23 profiles'` | WITHOUT **0/1/8/1**, expected 23 profiles but received 22; restore SHA exact. |
+
+The restored-copy final GREEN was:
+
+```bash
+bun test tests/unit/policy-measurement-schema.test.ts tests/unit/bench-matrix.test.ts \
+  tests/unit/policy-statistics.test.ts tests/unit/policy-classify.test.ts \
+  tests/unit/policy-dogfood.test.ts tests/unit/policy-rig-evidence.test.ts \
+  tests/unit/bench-policy.test.ts -t \
+  'requires every pass to carry its exact catalog authority snapshot|accepts only an exact ordered multi-pass trace profile and keeps the legacy guard|Holm adjustment preserves original order and cumulative sorted maxima|a lone bound confirmed suppressed TP observes harm and vetoes deletion|uses one bounded read buffer and rejects a same-inode source grow|does not turn ran-with-zero-opportunity into an opportunity carrier|captures two cases across three repeats once and fully replays the closed 23 profiles'
+# 7 pass / 0 fail / 114 filtered / 57 expects
+```
+
+Final-source binding for every production owner named in Tasks 1--10 and C1--C5 review fixes:
+
+| Source | SHA-256 at `b48bfc3` |
+| --- | --- |
+| `src/artifacts/canonical-json.ts` | `c8c3928e13fcefa933abf34fe339c95a4220475991ac53ada8645fd5bb9c8f13` |
+| `src/core/policy/measurement-contract.ts` | `f6904cfcd3b821f7f6075032a7cd2b69575fbf705517e58a96f594e8f79e5ca1` |
+| `src/schemas/policy-measurement-preregistration.ts` | `2d24189d413792ee936b2119cbdf5cfea4ee00ae7da947e78b5b1cb5610ebbf8` |
+| `src/schemas/policy-measurement.ts` | `f7f47028a208dd15da6b345674610b8f9d1c34d89fd7917fb7b29a8f9db0c591` |
+| `src/schemas/bench-result.ts` | `969787879c0cd6fbf80a1c9d50889d10b8998274c92517ce4f588ff7a9becc85` |
+| `src/bench/runner.ts` | `ff87e6acc00d9d9221b75c2f0986d10361c320abd98cc9db3ba39eccf436e169` |
+| `src/cli/commands/bench.ts` | `2f7f4795051959d399107ea5c6a0bbc36566a6659b793f8efd5ce578f0437ec0` |
+| `src/stats/policy/statistics.ts` | `39e24e3c523722313d5b856fe202c471274367d67e17813fac02d03de61aed87` |
+| `src/stats/policy/classify.ts` | `1cf41c723c5e00bf2f8c863a88e1b06c894972a860aef10d4dc392232f96cf68` |
+| `src/core/decision-outcome.ts` | `6dc048350f586924c819650043a6301e7aec4dc6a8c9eeaa245ab78dbcf284db` |
+| `src/core/loop-driver.ts` | `c799f5cde8b2807c711edd957aace849f245164cbbc8ca8ce186abee2deb5fab` |
+| `src/audit/verifier.ts` | `70836128bf1d13227219b66deed70057a7f385d2cedb879eb2a9300538e4ff2b` |
+| `src/stats/policy/dogfood-attestation.ts` | `22ca3ce9c5e87294f3e9ab0e7dd097f647fdfb97f64dbcbed18e6d5784ace7ae` |
+| `src/stats/policy/dogfood.ts` | `7166d8d8ccece66e95c2ec247c52ed033738f18cb2c73a6f2463efa93fbf3b52` |
+| `src/stats/policy/dogfood-snapshot.ts` | `43cafeb586f0481761d753152c55cb3f3d11ad8614ee1dcacd3627f271f54837` |
+| `src/rig/replay.ts` | `05e0d6633831e1144fa6ff162916fca036333f303e2eed525da69d816e38f290` |
+| `src/rig/policy-replay-state.ts` | `6b7f068b6e124a652fb43a1b689ef4d6a9c3cfab60fd42955d142fc3efd485ad` |
+| `src/rig/turn-script.ts` | `57f3d9d0834d0da120fd602aab6b8161f927361b8f3d880103be266e534bee72` |
+| `src/rig/driver.ts` | `05eaf212123ae4546af8b21c47ef2b4588d234cf555717a4a9d5744927a170e2` |
+| `src/rig/harvest.ts` | `b60a269d55b218bc0bd27cc716997685354750ec21ccd245fa7371375e06514c` |
+| `src/cli/commands/rig.ts` | `93389a4af56da7ed28d4f450cf00abdad750ba07424e81b5dc1bc10e2ca4ae4f` |
+| `src/schemas/rig-manifest.ts` | `7b37a09d559376720016d75370abbea8197e0dc70624f9a00ad5429d533cda52` |
+| `src/schemas/rig-result.ts` | `25edc802ac0f1cc883c49d9f3ef86b63d5b543eb41e543609324bac1c67664b9` |
+| `src/stats/policy/rig.ts` | `6325ce79e0c46682f85f3bd2d065d0693bd76fbcdef0a2623b3b1c0fb897f2dc` |
+| `src/stats/policy/assemble.ts` | `288b5627eaaf49a89529629f39701526abf326f82d791148b2c12eb03fe63e64` |
+| `src/stats/policy/render.ts` | `e6433cb120262316c74141349fb53bb322338283f2359f7d650ece80fd817441` |
+| `src/cli/commands/stats.ts` | `74f2f5b7a9cf74bcee70c7333ba3ecf9c0b5f911f8e7fad3aafaccf847af2ce9` |
+| `src/cli/index.ts` | `cbe90329bdceb7a2ed855b2da99ecb362f5ec7a926813cbf4986ee9467c1a476` |
+
+## Final Task 12 execution — post-fix gates
+
+The recovery table above is the final current-source mutation closure for the historically compact
+Task 2--8 rows; it does not claim that their older source bytes matched this checkpoint. The source
+baseline for the post-fix execution was `b48bfc3d4e272b598f6695676b1c5fe4a926a374`
+(`docs: checkpoint measurement dossier review`), with documentation evidence as the only
+working-tree change. No production or test source was changed during final verification.
+
+| Gate | Exact command / observed result |
+| --- | --- |
+| Complete prescribed focus | `bun test tests/unit/canonical-json-artifact.test.ts tests/unit/policy-measurement-preregistration.test.ts tests/unit/policy-measurement-schema.test.ts tests/unit/bench-policy.test.ts tests/unit/policy-statistics.test.ts tests/unit/policy-classify.test.ts tests/unit/policy-dogfood.test.ts tests/unit/policy-rig-evidence.test.ts tests/unit/policy-assemble.test.ts tests/unit/policy-render.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/integration/policy-trace-equivalence.test.ts tests/integration/policy-trace-offline-replay.test.ts` → **173 pass / 0 fail / 2,115 expects**, 657.12 s. |
+| Static gates | `bunx tsc --noEmit` → exit 0; `bun run lint` → exit 0, Biome checked **696 files** with no fixes; working and cached `git diff --check` → exit 0. |
+| Exactly one post-fix full suite | `bun test > /tmp/reviewgate-policy-slice2-full-postfix.txt 2>&1` → process exit 0; **3,707 pass / 12 skip / 0 fail / 14,269 expects**, 3,719 tests across 466 files in 843.08 s. No retry, timeout change, or pipe was used. |
+| Compiled binary | `bun run build` → exit 0; Bun bundled 259 modules and compiled `dist/reviewgate` in 219 ms. |
+| Compiled help smokes | `./dist/reviewgate bench policy --help`, `./dist/reviewgate stats --help`, and `./dist/reviewgate stats policy --help` → each exit 0. Bare `stats` remains its default command and advertises `policy`; policy help states the authoritative no-provider publication boundary and required inputs. |
+
+The earlier C4 eight-file composite timing limitation remains a limitation of that historical
+composite only: it was neither retried nor retuned. The complete post-fix focus and full suite above
+both completed with zero failures. No Gate, provider, credits, live Rig, real measurement, push,
+merge, staging, or commit occurred during that execution checkpoint. The later narrow Dogfood
+review fixes are recorded below and intentionally did not trigger a second full/build run.
+
+## Final contract review fix — source-bound complete Dogfood lane projection
+
+The final contract review correctly found that `verifyPublishedPolicyBundle` recomputed the frozen
+Dogfood snapshot and exclusions but accepted a marker-rebound `lane_summaries[].trace_totals.applied`
+change. The permanent real-publication guard first rewrites a completed 30-case bundle, re-renders
+and rebinds its report/result/marker, and confirms that the rewritten `result.json` still passes the
+strict persisted schema. Before the fix, its exact command was RED at **0 pass / 1 fail / 39
+filtered / 4 expects** in **86.63 s**: the external verifier returned `true` for the drift.
+
+`src/cli/commands/stats.ts` now projects the entire descriptive Dogfood lane from the already
+byte-verified copied snapshot and manifest values, without another source-path read: opportunities,
+truth/trace totals, exclusions, statistics, limitations, and the pass-owned manifest/attestation
+raw-reference closure. It exact-compares that projection with the persisted lane summary. The
+projection is deliberately pass-owned: an audit/trace ref appears only when it owns a labeled run
+for that pass, while the manifest and attestation always bind the lane. The assembler initially
+failed to emit that same projection for nonempty manifests; the R2 correction below aligns its seed
+without changing the verifier, schema, renderer, or Dogfood-snapshot owner.
+
+| Guard / final source SHA-256 | Exact command | WITH / WITHOUT / restore |
+| --- | --- | --- |
+| Marker-rebound Dogfood trace total; `src/cli/commands/stats.ts` `81bf8e22ba426d9446fe4715281ece34822a14ce00c6a08b086aaaadb4eac066` | `bun test tests/integration/policy-measurement-pipeline.test.ts -t 'marker-rebound Dogfood trace total'` | Final WITH is **1 pass / 0 fail / 39 filtered / 4 expects** in **53.90 s**. In sole copy `/private/tmp/reviewgate-c1-r3-mut-soo5X1/repo`, replacing the exact summary comparison with `false` was WITHOUT **0 pass / 1 fail / 39 filtered / 4 expects** in **51.93 s**; `stats.ts` restored byte-exactly to the final SHA. |
+
+The synthetic no-provider publication fixture was the only affected fixture producer: it still
+emitted the historic placeholder Dogfood limits and only its manifest ref. It now emits the same
+source-bound manifest/attestation refs and derived empty-lane limitations, so it remains a valid
+producer rather than weakening the verifier. `bun test tests/unit/policy-dogfood.test.ts
+tests/integration/policy-measurement-publication.test.ts` is **28 pass / 0 fail / 89 expects** in
+**1.26 s**. Fresh final-source `bunx tsc --noEmit`, `bun run lint` (Biome **696 files**, no fixes),
+and working/cached diff checks all exit 0. Its first delta review found the nonempty-manifest
+producer mismatch documented below; no full suite, build, provider, Gate, real Rig/measurement,
+push, or merge was run for this narrow fix.
+
+## Final contract review R2 — Dogfood pass-owned nonempty manifest assembly
+
+The limited final-contract delta correctly found that `dogfoodForPass` pre-seeded every Dogfood
+lane with every frozen manifest entry, even before it evaluated any label ownership. The final
+verifier's already-correct projection seeded only manifest/attestation and added audit/trace refs
+when `ownsRun` matched a pass label. Thus, a real nonempty manifest gave an unrelated no-label pass
+audit/trace refs and made producer output fail its own final verification.
+
+The permanent real assembly-to-publication guard materializes one complete 0600 audit chain and
+trace, freezes both as Dogfood manifest entries, attests a label owned only by
+`evidence.fact-location`, publishes the normal 30-case bundle, and checks the external verifier.
+It additionally asserts that `judgment.hypothetical` contains exactly the manifest/attestation refs
+while the labeled pass contains the two owned source refs. Before the production correction, its
+actual behavioral RED was:
+
+```bash
+bun test tests/integration/policy-measurement-pipeline.test.ts -t \
+  'publishes a nonempty Dogfood manifest with audit and trace refs owned only by labeled passes'
+# 0 pass / 1 fail / 40 filtered / 1 expect / 35.04s
+# exit 4: policy completion marker is invalid
+```
+
+The minimal producer correction removes only the all-entry spread from the `dogfoodForPass` ref-map
+seed. Manifest and attestation remain unconditional and the pre-existing `ownsRun` addition remains
+unchanged. Its GREEN is **1 pass / 0 fail / 40 filtered / 6 expects** in **42.35s**. In the sole
+authorized copy `/private/tmp/reviewgate-c1-r3-mut-soo5X1/repo`, restoring just the all-entry seed
+killed the same guard at **0 pass / 1 fail / 40 filtered / 1 expect** in **37.25s**. The mutation
+was removed and both copy and primary `src/stats/policy/assemble.ts` were rehashed exactly to
+`7d77d97e023ed5b6d01eb939cdd89716ce77890c7f1b6d4de0b254da2bff3af7`.
+
+The previous marker-rebound Dogfood trace-total guard still passes current source at **1/0/40/4** in
+**51.73s**. `bun test tests/unit/policy-dogfood.test.ts
+tests/integration/policy-measurement-publication.test.ts` is **28/0/89** in **1.217s**. Fresh
+`bunx tsc --noEmit`, `bun run lint` (Biome **696 files**, no fixes), and working/cached
+`git diff --check` all exit 0. The limited R2 delta review then passed with **zero
+CRITICAL/WARN**: the real nonempty publication guard was freshly **1/0/40/6** and the original
+marker-rebound guard **1/0/40/4**. The independent security/failure-mode audit found **zero
+exploitable vulnerabilities**; `~/security-audit-skill/reviewgate/run-1/findings.json` validates as
+an empty finding set. Review-bound code/tests are committed as `eb7f278` (`fix(policy): bind
+dogfood lane publication`). No second full/build, provider, Gate, live Rig/measurement, credits,
+push, or merge occurred.

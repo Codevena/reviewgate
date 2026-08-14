@@ -1584,7 +1584,29 @@ bun run build
 Expected: all exit 0; default Stats help remains present; policy help states authoritative exact
 replay and required arguments.
 
-- [ ] **Step 6: Run independent contract and security/failure-mode reviews**
+**Post-fix execution evidence (2026-08-14):** The exact Step 2 command completed
+**173 pass / 0 fail / 2,115 expects** in 657.12 s. Fresh TypeScript and Biome gates exited 0
+(Biome: **696 files**, no fixes), as did working and cached diff checks. The exactly-once full run
+`bun test > /tmp/reviewgate-policy-slice2-full-postfix.txt 2>&1` exited 0 with **3,707 pass / 12
+skip / 0 fail / 14,269 expects** across 3,719 tests in 843.08 s. `bun run build` exited 0 (259
+modules bundled) and all three compiled helps above exited 0. This records the exactly-once
+executable evidence; the later narrow review fix was verified proportionally and did not rerun the
+full/build gates.
+
+**Final contract review remediation (2026-08-14):** The review found one valid external-verifier
+gap: a marker-rebound Dogfood lane `trace_totals.applied` field could drift while the frozen snapshot
+remained self-consistent. The real completed-publication RED was **0/1/39/4**; the final
+source-bound complete-lane projection guard is **1/0/39/4**, and bypassing its exact comparison in
+the sole authorized copy is **0/1/39/4**, restored to `stats.ts`
+`81bf8e22ba426d9446fe4715281ece34822a14ce00c6a08b086aaaadb4eac066`. The projection uses the
+already copied verified snapshot/manifest values only and exact-compares opportunities, truth/trace
+totals, limitations, exclusions, statistics, and raw-reference ownership. Its updated no-provider
+fixture and Dogfood/publication focus are **28/0/89**; fresh TypeScript, Biome, and working/cached
+diff checks are green. The first delta review found one nonempty-manifest producer/ref mismatch; R2
+aligned the assembler to the pass-owned projection. Both the final R2 contract delta and the
+security/failure-mode audit now pass with zero CRITICAL/WARN.
+
+- [x] **Step 6: Run independent contract and security/failure-mode reviews**
 
 Contract review must map every approved spec requirement to code/tests and reject missing lanes,
 threshold drift, false independence, or production behavior changes. Security review must probe
@@ -1593,7 +1615,7 @@ atomicity, provider ceilings, and typed exit 4. Any CRITICAL/WARN receives a nam
 minimal fix, focused/full gate proportional to the fix, and delta re-review. Converge within three
 rounds or escalate the remaining judgment call to Markus.
 
-- [ ] **Step 7: Final repository and Brain handoff**
+- [x] **Step 7: Final repository and Brain handoff**
 
 Check explicit staged paths, absent `.reviewgate/gate.lock`, clean tracked worktree, commit ancestry,
 and no foreign process. Update `/Users/markus/Documents/Brain/02 Projekte/Aktiv/ReviewGate.md` and
@@ -1601,7 +1623,7 @@ the current Daily Note with commits, exact verification, review verdicts, and th
 provider/cost preregistration decision. Do not push, merge, run a real Rig, or spend provider credits
 without separate authorization.
 
-- [ ] **Step 8: Commit the final mutation dossier and any review-bound fixes**
+- [x] **Step 8: Commit the final mutation dossier and any review-bound fixes**
 
 If review rounds changed code, commit each fix separately after its delta re-review. Then stage only
 `docs/dev/2026-08-11-policy-measurement-mutation-evidence.md` and any final documentation line that
@@ -1613,6 +1635,16 @@ git commit -m "docs(test): record policy measurement evidence"
 
 Recheck a clean tracked worktree after the commit. The ignored `.superpowers` report and Brain notes
 remain outside the commit.
+
+**Completion evidence (2026-08-14):** The final contract review first found the source-detached
+Dogfood trace-total claim; its first delta then found the nonempty-manifest producer/ref mismatch.
+Both permanent guards, isolated reversions, and fresh static gates are recorded in the dossier.
+The R2 contract delta is **PASS, zero CRITICAL/WARN**. The independent security/failure-mode audit
+confirmed **zero exploitable findings** and validated `findings.json` at
+`~/security-audit-skill/reviewgate/run-1/`; its three hardening notes are non-blocking. The
+review-bound production/test fix is commit `eb7f278` (`fix(policy): bind dogfood lane publication`).
+The historical exactly-once full/build evidence was not misrepresented as a post-review-fix run and
+was not repeated. Brain, Daily, NEXT_SESSION, plan, and the tracked mutation dossier are current.
 
 ---
 
@@ -1841,3 +1873,24 @@ recomputation for Bench/Rig/Dogfood statistics and dossiers, Dogfood single-read
 exact Markdown projection, complete lane interval/exclusion rendering, and the tracked C5 mutation
 ledger. The exact 19-path checkpoint is **`39fdacb`** (`fix(policy): complete measurement
 dossiers`). C5 is closed; Task 12 proceeds only to final durable evidence and review gates.
+
+### Final contract review — Dogfood complete-lane projection remediated
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| External verifier accepted marker-rebound Dogfood `trace_totals.applied` because it compared only snapshot/exclusions/statistics | Final verifier derives every Dogfood lane field from already copied verified snapshot/manifest values and exact-compares the persisted summary. The permanent real-publication guard is RED **0/1/39/4**, GREEN **1/0/39/4**, and comparison-bypass mutation **0/1/39/4**, byte-restored. | Task 12 final review fix |
+
+The first limited delta review confirmed the complete-lane source closure but exposed the
+nonempty-manifest producer mismatch below. It did not reopen C1--C5 or reinterpret the historical
+full/build evidence as execution after this fix.
+
+### Final contract review R2 — Dogfood assembler ownership `PASS`, committed
+
+| Finding | Minimal correction incorporated | Owning task(s) |
+|---|---|---|
+| Nonempty Dogfood producer seeded every pass with all manifest entries while the final verifier permits only manifest/attestation plus pass-owned audit/trace refs | `dogfoodForPass` now seeds only manifest and attestation; its unchanged `ownsRun` loop is the exclusive audit/trace admission path. A permanent real nonempty audit/trace assembly-to-publication guard checks both exact ownership and external verification. RED **0/1/40/1**, GREEN **1/0/40/6**, all-entry reversion mutant **0/1/40/1**, `assemble.ts` SHA-restored. | Task 12 final review R2 |
+
+The previous marker-rebound trace-total guard remains **1/0/40/4**; Dogfood/publication focus is
+**28/0/89**, fresh TypeScript/lint and working/cached diff checks exit 0. The limited R2 review is
+**PASS with zero CRITICAL/WARN** and the code/test fix is committed as `eb7f278`. The historical
+full/build evidence was not rerun.

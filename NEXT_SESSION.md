@@ -4,10 +4,77 @@ _Last updated: 2026-08-14. Supersedes all earlier content._
 
 ## One-line state
 
-**Slice 2A is complete through the review-clean C5 measurement-dossier checkpoint `39fdacb`
-(`fix(policy): complete measurement dossiers`). Task 12 now owns only the durable final dossier,
-post-fix verification, and final contract/security reviews. No policy pass changed and no paid
-measurement ran.**
+**Slice 2A implementation and Task 12 are complete. The two final Dogfood publication findings are
+closed in review-clean commit `eb7f278` (`fix(policy): bind dogfood lane publication`); final
+contract and security/failure-mode reviews both PASS with zero CRITICAL/WARN. The durable dossier,
+focused/static/full/build/help evidence, and this handoff are complete. No policy pass changed and
+no paid measurement ran.**
+
+## Task 12 final Dogfood closure R2 — complete
+
+- Permanent nonempty real assembly-to-publication RED: a frozen schema-valid Dogfood audit/trace
+  pair owned only by `evidence.fact-location` made the prior all-entry assembler seed publish those
+  unrelated refs in `judgment.hypothetical` and fail final verification: **0/1/40/1** in 35.04s.
+  The fixture has an actual audit chain, complete trace, human attestation, nonempty manifest, and
+  asserts both external verification and exact absence/presence of the two run refs.
+- `dogfoodForPass` now seeds only the manifest and attestation bindings; its existing `ownsRun`
+  loop remains the sole path that adds audit/trace entries. The named GREEN is **1/0/40/6** in
+  42.35s. Reintroducing the all-entry seed in the sole copy is **0/1/40/1** in 37.25s; both copy
+  and primary restore to `assemble.ts` SHA-256
+  `7d77d97e023ed5b6d01eb939cdd89716ce77890c7f1b6d4de0b254da2bff3af7`.
+- The prior marker-rebound trace-total guard remains **1/0/40/4** in 51.73s. Dogfood/publication
+  focus is **28/0/89** in 1.217s; fresh `bunx tsc --noEmit`, Biome over 696 files/no fixes, and
+  working/cached diff checks exit 0. No full suite/build/provider/Gate/live Rig/measurement ran.
+- Limited R2 contract delta review: **PASS, zero CRITICAL/WARN**. The real nonempty publication
+  guard was freshly **1/0/40/6**; the prior marker-rebound guard was **1/0/40/4**. Review-bound code
+  and tests are committed as `eb7f278`.
+- Independent security/failure-mode audit found **no exploitable vulnerabilities**. Its validated
+  zero-finding report is `~/security-audit-skill/reviewgate/run-1/`; three defense-in-depth notes
+  remain non-blocking (descriptor-relative ancestors, non-recursive empty-dir cleanup, stable draft
+  attestation read).
+- Next: prepare and dry-validate the real 15-scenario/Dogfood/attestation/roster inputs described
+  below. Do not start providers, Gate, a real Rig, credits, or measurement—and do not push or
+  merge—without Markus's separate authorization.
+
+## Task 12 final Dogfood closure fix — complete
+
+- Permanent real-publication RED: a schema-valid, marker-rebound Dogfood
+  `lane_summaries[].trace_totals.applied + 1` bundle was accepted by the former external verifier
+  (**0 pass / 1 fail / 39 filtered / 4 expects**, 86.63s). `stats.ts` now derives and exact-compares
+  the complete Dogfood lane—opportunities, truth/trace totals, limitations, exclusions, statistics,
+  and pass-owned raw refs—from the already byte-verified copied snapshot/manifest values. It adds no
+  source reread and leaves `dogfood-snapshot.ts`, schema, and renderer untouched. Its originally
+  stated pass-owned projection was correct for the verifier; R2 aligns the assembler producer with
+  that same projection for nonempty manifests.
+- Final current-source guard is **1/0/39/4** in 53.90s. Its sole-copy comparison-bypass mutant is
+  **0/1/39/4** in 51.93s and restored `src/cli/commands/stats.ts` exactly to
+  `81bf8e22ba426d9446fe4715281ece34822a14ce00c6a08b086aaaadb4eac066`.
+- The only affected synthetic publication producer now generates the source-bound empty Dogfood
+  lane rather than the historic placeholder. `tests/unit/policy-dogfood.test.ts` plus
+  `tests/integration/policy-measurement-publication.test.ts` are **28/0/89** in 1.26s; fresh
+  TypeScript, Biome (696 files/no fixes), and working/cached diff checks are green.
+- The first delta review found the nonempty-manifest producer mismatch documented above; after R2,
+  the final contract convergence review is PASS with zero CRITICAL/WARN.
+
+## Task 12 final execution evidence
+
+- The tracked dossier now closes every Task 1--10/C1--C5 family. Seven formerly compact Task 2--8
+  families were recreated once in the sole authorized copy with numeric REDs, exact commands, and
+  byte restores; restored combined GREEN is **7 pass / 0 fail / 114 filtered / 57 expects**. This
+  is recorded as current-contract recovery, never as an invented historical result.
+- Exact 13-file Task 12 focus: **173 pass / 0 fail / 2,115 expects** in **657.12 s**. Fresh
+  `bunx tsc --noEmit` exit 0; `bun run lint` checked **696 files/no fixes**; working/cached diff
+  checks exit 0.
+- Exactly one post-fix full run executed and exited 0: **3,707 pass / 12 skip / 0 fail / 14,269
+  expects**, 3,719 tests across 466 files in **843.08 s**. Its log is
+  `/tmp/reviewgate-policy-slice2-full-postfix.txt`; it was neither piped, retried, nor retuned.
+- `bun run build` exit 0 (259 modules), then compiled `bench policy`, bare `stats`, and `stats
+  policy` help each exit 0. The C4 eight-file composite timing limitation is historical and still
+  disclosed; it was not rerun.
+- The exact full/build evidence predates the narrow final Dogfood review fix and was deliberately not
+  rerun. That fix instead has its named end-to-end guards, mutation reversions, fresh TypeScript,
+  Biome, diff checks, and two independent clean delta/security verdicts. No Gate, provider, credits,
+  live Rig, real measurement, push, or merge occurred.
 
 ## Completed Task 12 C5 checkpoint
 
@@ -139,13 +206,13 @@ measurement ran.**
   not stage, commit, push, merge, run a full suite, build, provider, Gate, real Rig, credits, or
   measurement before direction.
 
-Immediate next checkpoint: host-clear Task 12 C4-R3 primary verification. The final
-controller aggregate regression was fixture-only: stale Stats/publication/classification producers
+Task 12 has now passed its final contract and security gates. Its earlier final controller
+aggregate regression was fixture-only: stale Stats/publication/classification producers
 reused one raw reference across Bench/Rig/Dogfood lane summaries, which the persisted no-sharing
 contract correctly rejected. They now assign distinct inventory-bound lane refs and close only the
 top-level lane-plus-interaction union; no production/schema exception was added. The exact
 eight-file controller command is **105 pass / 0 fail**, with fresh TypeScript, Biome (694 files),
-working-tree and cached diff checks clean. Only after Task 12 passes: author and dry-validate the
+working-tree and cached diff checks clean. Next, author and dry-validate the
 15 real stateful scenarios (three independent two-opportunity
 sequences for each of five stateful passes); accrue explicit dogfood decisions with complete traces;
 freeze the audit/trace inventory; obtain the TTY human attestation; then choose and cost the concrete
@@ -213,11 +280,13 @@ The implemented fail-closed protocol is:
 - Ignored evidence report:
   `.superpowers/sdd/2026-08-11-policy-measurement-pruning/task-10-report.md`.
 
-## Immediate next task — Task 12 final verification
+## Immediate next task — measurement input preparation (no paid run yet)
 
-Task 12 owns final serial verification, build/smoke, and final review. The human-authorized
-preregistration preparation described above begins only after Task 12 passes. Preserve the
-no-provider/no-credits boundary until a separate Markus authorization.
+Task 12 passed. Prepare and dry-validate the 15 real stateful scenarios, accrue/freeze the complete
+Dogfood audit/trace inventory, obtain the TTY human attestation, and then choose/cost the concrete
+provider roster. Only after those inputs exist should one attempt-specific preregistration be
+written and reviewed. Preserve the no-provider/no-credits boundary until a separate Markus
+authorization; Qwen remains a separate parked measurement stream.
 
 ## Traps that still hold
 
