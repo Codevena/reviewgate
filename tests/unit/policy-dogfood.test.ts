@@ -15,7 +15,7 @@ import {
   PolicyDogfoodAttestationSchema,
   PolicyDogfoodInputManifestSchema,
 } from "../../src/schemas/policy-measurement.ts";
-import type { PolicyTrace } from "../../src/schemas/policy-trace.ts";
+import { type PolicyTrace, PolicyTraceSchema } from "../../src/schemas/policy-trace.ts";
 import {
   attestPolicyDogfood,
   policyDogfoodAttestationPreflight,
@@ -102,6 +102,94 @@ function trace(runId: string, signature = "sig-a"): PolicyTrace {
       finding_severities: [{ signature, severity: "INFO" }],
     },
   };
+}
+
+function traceWithEvaluation(
+  runId: string,
+  evaluation: PolicyTrace["evaluations"][number],
+): PolicyTrace {
+  const signature = evaluation.source_signatures[0];
+  if (signature === undefined) throw new Error("evaluation fixture needs a signature");
+  const value = trace(runId, signature);
+  value.evaluations = [evaluation];
+  value.passes = POLICY_PASS_IDS.map((passId) =>
+    passId === evaluation.pass_id
+      ? {
+          pass_id: passId,
+          status: "ran",
+          considered: 1,
+          opportunities: evaluation.result === "no-opportunity" ? 0 : 1,
+          would_apply: ["would-apply", "protected", "applied"].includes(evaluation.result) ? 1 : 0,
+          applied: evaluation.result === "applied" ? 1 : 0,
+          protected: evaluation.result === "protected" ? 1 : 0,
+          blocking_removed:
+            evaluation.result === "applied" &&
+            evaluation.before !== "INFO" &&
+            (evaluation.after === null || evaluation.after === "INFO")
+              ? 1
+              : 0,
+          blocking_preserved:
+            ["would-apply", "protected", "applied"].includes(evaluation.result) &&
+            evaluation.before !== "INFO" &&
+            evaluation.after !== null &&
+            evaluation.after !== "INFO"
+              ? 1
+              : 0,
+          dropped: evaluation.result === "applied" && evaluation.after === null ? 1 : 0,
+        }
+      : {
+          pass_id: passId,
+          status: "ran",
+          considered: 0,
+          opportunities: 0,
+          would_apply: 0,
+          applied: 0,
+          protected: 0,
+          blocking_removed: 0,
+          blocking_preserved: 0,
+          dropped: 0,
+        },
+  );
+  const finalSeverity = evaluation.after;
+  value.stages = [
+    {
+      stage_id: "aggregation.cluster" as const,
+      order: 65,
+      reason_code: "singleton" as const,
+      member_count: 1,
+      input_signatures: [signature],
+      output_signature: signature,
+    },
+    {
+      stage_id: "verdict.compute" as const,
+      order: 190,
+      reason_code:
+        finalSeverity === "CRITICAL"
+          ? ("hard-critical" as const)
+          : finalSeverity === "WARN"
+            ? ("blocking-present" as const)
+            : ("no-blocking-findings" as const),
+      input_signatures: finalSeverity === "CRITICAL" || finalSeverity === "WARN" ? [signature] : [],
+      verdict:
+        finalSeverity === "CRITICAL"
+          ? ("FAIL" as const)
+          : finalSeverity === "WARN"
+            ? ("SOFT-PASS" as const)
+            : ("PASS" as const),
+    },
+  ];
+  value.final = {
+    verdict:
+      finalSeverity === "CRITICAL" ? "FAIL" : finalSeverity === "WARN" ? "SOFT-PASS" : "PASS",
+    counts: {
+      critical: finalSeverity === "CRITICAL" ? 1 : 0,
+      warn: finalSeverity === "WARN" ? 1 : 0,
+      info: finalSeverity === "INFO" ? 1 : 0,
+    },
+    finding_signatures: finalSeverity === null ? [] : [signature],
+    finding_severities: finalSeverity === null ? [] : [{ signature, severity: finalSeverity }],
+  };
+  return value;
 }
 
 function sourceSha256(bytes: Buffer): string {
@@ -199,14 +287,26 @@ function boundInput(
 
 function frozenFixture(
   disposition: "tp" | "fp",
-  opts: { legacyAgentDecision?: boolean; extraDecisionSignature?: string } = {},
+  opts: {
+    legacyAgentDecision?: boolean;
+    extraDecisionSignature?: string;
+    evaluation?: PolicyTrace["evaluations"][number];
+  } = {},
 ) {
   const root = mkdtempSync(join(process.cwd(), ".rg-policy-dogfood-"));
   const auditDir = join(root, "audit");
   mkdirSync(auditDir, { recursive: true, mode: 0o700 });
   const log = new AuditLogger(auditDir);
-  const stored = log.writePolicyTrace(trace("run-a"));
-  if (stored.status !== "complete") throw new Error("expected complete trace fixture");
+  const traceFixture =
+    opts.evaluation === undefined ? trace("run-a") : traceWithEvaluation("run-a", opts.evaluation);
+  const parsedTrace = PolicyTraceSchema.safeParse(traceFixture);
+  if (!parsedTrace.success) {
+    throw new Error(`${opts.evaluation?.result ?? "default"}: ${parsedTrace.error.message}`);
+  }
+  const stored = log.writePolicyTrace(parsedTrace.data);
+  if (stored.status !== "complete") {
+    throw new Error(`expected complete trace fixture: ${JSON.stringify(stored)}`);
+  }
   return (async () => {
     await log.append({
       event: "run.complete",
@@ -261,7 +361,7 @@ function frozenFixture(
       run_id: "run-a",
       iter: 1,
       trigger: "stop-hook",
-      finding_signatures: ["sig-a"],
+      finding_signatures: [opts.evaluation?.source_signatures[0] ?? "sig-a"],
       decision_outcome: {
         finding_id: "F-001",
         severity: "WARN",
@@ -277,7 +377,14 @@ function frozenFixture(
       since,
       until,
     });
-    const rows = [{ run_id: "run-a", iter: 1, finding_signature: "sig-a", disposition }] as const;
+    const rows = [
+      {
+        run_id: "run-a",
+        iter: 1,
+        finding_signature: opts.evaluation?.source_signatures[0] ?? "sig-a",
+        disposition,
+      },
+    ] as const;
     const preflight = policyDogfoodAttestationPreflight({ manifest, actor: "Markus", rows });
     const attestation = attestPolicyDogfood({
       manifest,
@@ -653,12 +760,98 @@ describe("policy dogfood harvesting", () => {
           finding_signature: "sig-a",
           disposition: "tp",
           source_signatures: ["sig-a"],
+          evaluation_result: "applied",
+          before: "WARN",
+          after: "INFO",
+          effect: "suppressed",
         },
       ]);
       expect(Object.values(snapshot.exclusions).every((count) => count === 0)).toBe(true);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
+  });
+
+  test("persists protected, demoted, dropped, and no-effect evaluation authority without rereading traces", async () => {
+    const evaluations = [
+      {
+        pass_id: "judgment.confidence" as const,
+        order: 140,
+        result: "protected" as const,
+        before: "WARN" as const,
+        after: "WARN" as const,
+        reason_code: "below-confidence-floor" as const,
+        protected_by: "claimed-fixed-pin" as const,
+        source_signatures: ["sig-protected"],
+        final_signature: "sig-protected",
+      },
+      {
+        pass_id: "judgment.confidence" as const,
+        order: 140,
+        result: "applied" as const,
+        before: "CRITICAL" as const,
+        after: "WARN" as const,
+        reason_code: "below-confidence-floor" as const,
+        source_signatures: ["sig-demoted"],
+        final_signature: "sig-demoted",
+      },
+      {
+        pass_id: "judgment.critic" as const,
+        order: 70,
+        result: "applied" as const,
+        before: "INFO" as const,
+        after: null,
+        reason_code: "critic-likely-fp" as const,
+        source_signatures: ["sig-dropped"],
+      },
+      {
+        pass_id: "judgment.confidence" as const,
+        order: 140,
+        result: "no-match" as const,
+        before: "WARN" as const,
+        after: "WARN" as const,
+        reason_code: "predicate-miss" as const,
+        source_signatures: ["sig-reanchor"],
+        final_signature: "sig-reanchor",
+      },
+    ];
+    const harvested: Array<Record<string, unknown>> = [];
+    for (const evaluation of evaluations) {
+      const fixture = await frozenFixture("tp", { evaluation });
+      try {
+        const snapshot = harvestPolicyDogfood({
+          preregistration: fixture.preregistration,
+          inputManifest: fixture.manifest,
+          attestation: fixture.attestation,
+          artifactRoot: fixture.artifactRoot,
+        });
+        const label = snapshot.labels[0];
+        if (label === undefined) throw new Error("missing harvested evaluation label");
+        harvested.push(label);
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    }
+    expect(
+      harvested.map(({ evaluation_result, before, after, protected_by, effect }) => ({
+        evaluation_result,
+        before,
+        after,
+        ...(protected_by === undefined ? {} : { protected_by }),
+        effect,
+      })),
+    ).toEqual([
+      {
+        evaluation_result: "protected",
+        before: "WARN",
+        after: "WARN",
+        protected_by: "claimed-fixed-pin",
+        effect: "preserved",
+      },
+      { evaluation_result: "applied", before: "CRITICAL", after: "WARN", effect: "suppressed" },
+      { evaluation_result: "applied", before: "INFO", after: null, effect: "suppressed" },
+      { evaluation_result: "no-match", before: "WARN", after: "WARN", effect: "none" },
+    ]);
   });
 
   test("excludes agent-authored legacy labels and an attestation without a decision", async () => {

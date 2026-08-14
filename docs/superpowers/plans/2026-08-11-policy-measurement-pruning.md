@@ -1200,17 +1200,33 @@ git commit -m "feat(bench): execute preregistered policy schedule"
 ### Task 9: Assemble and validate the authoritative evidence bundle
 
 **Files:**
+- Modify: `src/schemas/policy-measurement.ts`
+- Modify: `src/stats/policy/dogfood.ts`
+- Modify: `src/cli/commands/bench.ts`
+- Modify: `src/rig/policy-replay-state.ts`
+- Modify: `src/stats/policy/rig.ts`
 - Create: `src/stats/policy/assemble.ts`
+- Modify: `tests/unit/policy-measurement-schema.test.ts`
+- Modify: `tests/unit/policy-dogfood.test.ts`
+- Modify: `tests/unit/policy-rig-evidence.test.ts`
+- Modify: `tests/unit/rig-replay.test.ts`
 - Create: `tests/unit/policy-assemble.test.ts`
 - Create: `tests/integration/policy-measurement-pipeline.test.ts`
 
 **Interfaces:**
 - Consumes parsed preregistration, Bench bundle, Rig scenario manifest, dogfood audit roots, and
   source repository.
+- Extends the unreleased dogfood snapshot with the exact verified evaluation result/severity/
+  protection authority and a schema-cross-validated derived effect, copied during the existing
+  single frozen trace read so assembly never rescans dogfood traces.
+- Extends the existing Bench and Rig verification success values with their already-verified parsed
+  artifacts, complete ref/hash inventories, source commit, and per-turn error identities. Assembly
+  consumes those values without trace/result rescans and rebinds persisted provenance to the
+  preregistration and resolved source HEAD.
 - Produces `assemblePolicyMeasurement(...)` and a fully schema-valid in-memory result plus source
   artifact inventory. It does not publish files.
 
-- [ ] **Step 1: Write the end-to-end in-memory RED**
+- [x] **Step 1: Write the end-to-end in-memory RED**
 
 ```ts
 const assembled = await assemblePolicyMeasurement({
@@ -1228,20 +1244,20 @@ expect(assembled.result.artifacts.authoritative).toBe(true);
 The fixture must include one `retain`, one `harmful-candidate`, one `delete-candidate`, and one
 `inconclusive`, with remaining catalog rows valid/inconclusive.
 
-- [ ] **Step 2: Write fail-closed RED matrix**
+- [x] **Step 2: Write fail-closed RED matrix**
 
 Require typed `PolicyMeasurementAuthorityError` code and no output for: dirty or wrong source HEAD,
 prereg bytes/hash mismatch, catalog drift, corpus truth mismatch, missing repeat/profile, response
 hash/order mismatch, trace-set swap, state digest mismatch, unverified Rig result, dogfood audit hash
 change, wrong correction-family cardinality, and any ref outside the declared input roots.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 Run: `bun test tests/unit/policy-assemble.test.ts tests/integration/policy-measurement-pipeline.test.ts`
 
 Expected: missing module failure.
 
-- [ ] **Step 4: Implement authoritative assembly**
+- [x] **Step 4: Implement authoritative assembly**
 
 ```ts
 export class PolicyMeasurementAuthorityError extends Error {
@@ -1270,13 +1286,13 @@ inventory/state → dogfood audit/trace joins → case/sequence/run evidence →
 families → two-phase classification → final schema parse. Do not catch an authority error and emit a
 partial result.
 
-- [ ] **Step 5: Compute opportunity-conditioned evidence**
+- [x] **Step 5: Compute opportunity-conditioned evidence**
 
 Derive distinct opportunity cases and signatures from trace evaluations, not `status: ran`. Derive
 truth effects from `policy_truth` and Rig final findings. Store every raw evidence ref used by a
 classification and every excluded lane/reason. Do not pool repeats, sequences, or dogfood runs.
 
-- [ ] **Step 6: Run GREEN**
+- [x] **Step 6: Run GREEN**
 
 ```bash
 bun test tests/unit/policy-assemble.test.ts tests/integration/policy-measurement-pipeline.test.ts tests/unit/policy-statistics.test.ts tests/unit/policy-classify.test.ts tests/unit/policy-dogfood.test.ts tests/unit/policy-rig-evidence.test.ts
@@ -1284,13 +1300,13 @@ bunx tsc --noEmit
 bun run lint
 ```
 
-- [ ] **Step 7: Kill bundle-authority mutants**
+- [x] **Step 7: Kill bundle-authority mutants**
 
 Bypass prereg source binding, accept 17 passes, accept 2 repeats, merge Holm families, count
 no-opportunity rows, drop one raw evidence ref, skip dogfood source hash, and continue after one
 invalid lane. Each must fail a named unit/integration test; restore SHAs.
 
-- [ ] **Step 8: Review and commit**
+- [x] **Step 8: Review and commit**
 
 ```bash
 git commit -m "feat(stats): assemble authoritative policy evidence"

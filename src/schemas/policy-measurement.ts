@@ -12,6 +12,7 @@ import {
   BenchPolicyProfileArtifactBindingSchema,
   PolicyBenchProfileArtifactSchema,
 } from "./bench-result.ts";
+import { PolicyProtectionCodeSchema } from "./policy-trace.ts";
 
 const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/i);
 const PolicyPassIdSchema = z.enum(POLICY_PASS_IDS);
@@ -65,6 +66,7 @@ const ExclusionSchema = z
       "ambiguous-run-iter",
       "signature-absent-lineage",
       "historical-unsigned-decision",
+      "post-registered-at",
       "not-run",
       "artifact-mismatch",
     ]),
@@ -144,6 +146,29 @@ export const PolicyDogfoodAdjudicationSchema = z
     disposition: z.enum(["tp", "fp"]),
   })
   .strict();
+
+const DogfoodEvaluationResultSchema = z.enum([
+  "no-opportunity",
+  "no-match",
+  "would-apply",
+  "protected",
+  "applied",
+]);
+const DogfoodSeveritySchema = z.enum(["CRITICAL", "WARN", "INFO"]);
+const DogfoodEffectSchema = z.enum(["suppressed", "preserved", "none"]);
+
+export function policyDogfoodEvaluationEffect(input: {
+  result: z.infer<typeof DogfoodEvaluationResultSchema>;
+  before: z.infer<typeof DogfoodSeveritySchema>;
+  after: z.infer<typeof DogfoodSeveritySchema> | null;
+}): z.infer<typeof DogfoodEffectSchema> {
+  if (input.result === "protected") return "preserved";
+  if (input.result !== "applied") return "none";
+  if (input.after === null) return "suppressed";
+  if (input.before === "CRITICAL" && input.after !== "CRITICAL") return "suppressed";
+  if (input.before === "WARN" && input.after === "INFO") return "suppressed";
+  return "none";
+}
 
 export const PolicyDogfoodInputManifestSchema = z
   .object({
@@ -317,6 +342,11 @@ export const PolicyDogfoodSnapshotSchema = z
           iter: z.number().int().positive(),
           finding_signature: z.string().min(1),
           disposition: z.enum(["tp", "fp"]),
+          evaluation_result: DogfoodEvaluationResultSchema,
+          before: DogfoodSeveritySchema,
+          after: DogfoodSeveritySchema.nullable(),
+          protected_by: PolicyProtectionCodeSchema.optional(),
+          effect: DogfoodEffectSchema,
           source_signatures: z
             .array(z.string().min(1))
             .min(1)
@@ -332,7 +362,40 @@ export const PolicyDogfoodSnapshotSchema = z
               }
             }),
         })
-        .strict(),
+        .strict()
+        .superRefine((label, ctx) => {
+          if ((label.evaluation_result === "protected") !== (label.protected_by !== undefined)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["protected_by"],
+              message: "only a protected evaluation requires its exact protection authority",
+            });
+          }
+          if (
+            label.evaluation_result !== "applied" &&
+            (label.after === null || label.after !== label.before)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["after"],
+              message: "a non-applied evaluation must preserve severity",
+            });
+          }
+          if (
+            label.effect !==
+            policyDogfoodEvaluationEffect({
+              result: label.evaluation_result,
+              before: label.before,
+              after: label.after,
+            })
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["effect"],
+              message: "dogfood effect must be derived from the exact verified evaluation",
+            });
+          }
+        }),
     ),
     exclusions: z.record(z.number().int().nonnegative()),
   })
@@ -435,13 +498,42 @@ const PolicyRigStateEvidenceSchema = z
   })
   .strict();
 
+const PolicyRigErrorIdentitySchema = z
+  .object({
+    kind: z.enum(["blocking-fp", "blocking-fn"]),
+    identity: z.string().min(1),
+  })
+  .strict();
+
+const PolicyRigErrorIdentitiesSchema = z
+  .array(PolicyRigErrorIdentitySchema)
+  .superRefine((rows, ctx) => {
+    const keys = rows.map((row) => `${row.kind}\u0000${row.identity}`);
+    if (!isCodeUnitSortedUnique(keys)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Rig error identities must be code-unit sorted and unique",
+      });
+    }
+  });
+
 const PolicyRigTurnEvidenceSchema = z
   .object({
     turn_index: z.number().int().positive(),
     opportunity: PolicyRigOpportunitySchema,
-    baseline: z.object({ truth: TruthCountsSchema, state: PolicyRigStateEvidenceSchema }).strict(),
+    baseline: z
+      .object({
+        truth: TruthCountsSchema,
+        errors: PolicyRigErrorIdentitiesSchema,
+        state: PolicyRigStateEvidenceSchema,
+      })
+      .strict(),
     counterfactual: z
-      .object({ truth: TruthCountsSchema, state: PolicyRigStateEvidenceSchema })
+      .object({
+        truth: TruthCountsSchema,
+        errors: PolicyRigErrorIdentitiesSchema,
+        state: PolicyRigStateEvidenceSchema,
+      })
       .strict(),
   })
   .strict();
@@ -638,6 +730,11 @@ export const PolicyRigEvidenceSchema = z
     scenario_manifest: ArtifactBindingSchema,
     manifest: PolicyRigScenarioManifestSchema,
     authoritative: z.literal(true),
+    source_commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
+    artifacts: z.array(
+      ArtifactBindingSchema.extend({ kind: z.enum(["rig", "cassette", "trace", "state"]) }),
+    ),
+    artifact_inventory_sha256: Sha256Schema,
     sequences: z.array(
       z
         .object({
@@ -658,6 +755,52 @@ export const PolicyRigEvidenceSchema = z
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (
+      createHash("sha256").update(canonicalJson(value.artifacts)).digest("hex") !==
+      value.artifact_inventory_sha256
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["artifact_inventory_sha256"],
+        message: "Rig artifact inventory digest must bind the exact closed inventory",
+      });
+    }
+    const artifactRefs = new Map<string, (typeof value.artifacts)[number]>();
+    let previousArtifactRef = "";
+    for (const [index, artifact] of value.artifacts.entries()) {
+      if (artifact.ref <= previousArtifactRef || artifactRefs.has(artifact.ref)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["artifacts", index],
+          message: "Rig artifact inventory must be code-unit sorted and unique",
+        });
+      }
+      previousArtifactRef = artifact.ref;
+      artifactRefs.set(artifact.ref, artifact);
+    }
+    const required = [
+      { ...value.scenario_manifest, kind: "rig" as const },
+      ...value.manifest.scenarios.flatMap((scenario) => [
+        { ...scenario.manifest, kind: "rig" as const },
+        { ...scenario.result, kind: "rig" as const },
+        { ...scenario.script, kind: "rig" as const },
+        { ...scenario.initial_state, kind: "state" as const },
+      ]),
+    ];
+    for (const binding of required) {
+      const artifact = artifactRefs.get(binding.ref);
+      if (
+        artifact === undefined ||
+        artifact.sha256 !== binding.sha256 ||
+        artifact.kind !== binding.kind
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["artifacts"],
+          message: `Rig artifact inventory omits or changes ${binding.ref}`,
+        });
+      }
+    }
     const declared = new Map(value.manifest.scenarios.map((scenario) => [scenario.id, scenario]));
     const ids = new Set<string>();
     for (const [index, sequence] of value.sequences.entries()) {
@@ -844,6 +987,37 @@ export const PolicyMeasurementSchema = z
         })
         .strict(),
     ),
+    identity_evidence: z.array(
+      z
+        .object({
+          pass_id: PolicyPassIdSchema,
+          ground_truth_harms: z.array(
+            z.object({ identity: z.string().min(1), evidence_ref: z.string().min(1) }).strict(),
+          ),
+          dogfood_dispositions: z.array(
+            z
+              .object({
+                identity: z.string().min(1),
+                run_id: z.string().min(1),
+                iter: z.number().int().positive(),
+                disposition: z.enum(["tp", "fp"]),
+                effect: z.enum(["suppressed", "preserved", "none"]),
+                evidence_ref: z.string().min(1),
+              })
+              .strict(),
+          ),
+          beneficial_effects: z.array(
+            z
+              .object({
+                identity: z.string().min(1),
+                evidence_ref: z.string().min(1),
+                reproduced_by_pass_ids: z.array(PolicyPassIdSchema),
+              })
+              .strict(),
+          ),
+        })
+        .strict(),
+    ),
     artifacts: z
       .object({
         authoritative: z.literal(true),
@@ -883,7 +1057,17 @@ export const PolicyMeasurementSchema = z
         message: "authoritative measurements require every registered interaction",
       });
     }
-    const inventory = new Set<string>();
+    if (
+      result.identity_evidence.length !== POLICY_PASS_IDS.length ||
+      result.identity_evidence.some((row, index) => row.pass_id !== POLICY_PASS_IDS[index])
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["identity_evidence"],
+        message: "identity evidence must cover every catalog pass in order",
+      });
+    }
+    const inventory = new Map<string, (typeof result.artifacts.inventory)[number]>();
     let previous = "";
     for (const [index, artifact] of result.artifacts.inventory.entries()) {
       if (artifact.ref <= previous || inventory.has(artifact.ref)) {
@@ -894,7 +1078,48 @@ export const PolicyMeasurementSchema = z
         });
       }
       previous = artifact.ref;
-      inventory.add(artifact.ref);
+      inventory.set(artifact.ref, artifact);
+    }
+    const exactInventoryBinding = (binding: { ref: string; sha256: string }): boolean =>
+      inventory.get(binding.ref)?.sha256 === binding.sha256;
+    if (
+      result.artifacts.sources.length !== result.artifacts.inventory.length ||
+      result.artifacts.sources.some(
+        (artifact, index) =>
+          artifact.ref !== result.artifacts.inventory[index]?.ref ||
+          artifact.sha256 !== result.artifacts.inventory[index]?.sha256,
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["artifacts", "sources"],
+        message: "source artifacts must equal the exact closed global inventory",
+      });
+    }
+    if (!exactInventoryBinding(result.preregistration)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preregistration"],
+        message: "preregistration binding must be present exactly in the global inventory",
+      });
+    }
+    for (const [index, artifact] of result.artifacts.evidence.entries()) {
+      if (!exactInventoryBinding(artifact)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["artifacts", "evidence", index],
+          message: "evidence artifact must be present exactly in the global inventory",
+        });
+      }
+    }
+    for (const [index, interaction] of result.interactions.entries()) {
+      if (!exactInventoryBinding(interaction.artifact)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["interactions", index, "artifact"],
+          message: "interaction artifact must be present exactly in the global inventory",
+        });
+      }
     }
     const rawEvidenceRefs = [
       ...result.passes.flatMap((pass) => pass.evidence.raw_evidence_refs),
@@ -907,6 +1132,65 @@ export const PolicyMeasurementSchema = z
           path: ["artifacts", "inventory"],
           message: `raw evidence ref is absent from the global artifact inventory: ${ref}`,
         });
+      }
+    }
+    for (const [index, row] of result.identity_evidence.entries()) {
+      for (const facts of [
+        row.ground_truth_harms,
+        row.dogfood_dispositions,
+        row.beneficial_effects,
+      ]) {
+        let previousIdentity = "";
+        for (const fact of facts) {
+          if (fact.identity <= previousIdentity || !inventory.has(fact.evidence_ref)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["identity_evidence", index],
+              message: "identity facts must be sorted, unique, and inventory-bound",
+            });
+            break;
+          }
+          previousIdentity = fact.identity;
+        }
+      }
+      for (const benefit of row.beneficial_effects) {
+        const reproduced = benefit.reproduced_by_pass_ids;
+        const pass = POLICY_PASSES.find((candidate) => candidate.id === row.pass_id);
+        if (
+          pass === undefined ||
+          reproduced.some((passId, passIndex) => {
+            const reproducer = result.identity_evidence.find(
+              (candidate) => candidate.pass_id === passId,
+            );
+            return (
+              (passIndex > 0 && passId <= (reproduced[passIndex - 1] ?? "")) ||
+              !(pass.overlaps_with as readonly string[]).includes(passId) ||
+              !reproducer?.beneficial_effects.some(
+                (candidate) => candidate.identity === benefit.identity,
+              )
+            );
+          })
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["identity_evidence", index, "beneficial_effects"],
+            message: "reproduction pass ids must be sorted, overlapping, and identity-corroborated",
+          });
+        }
+      }
+    }
+    for (const [passIndex, pass] of result.passes.entries()) {
+      for (const [
+        contributionIndex,
+        contribution,
+      ] of pass.evidence.unique_contributions.entries()) {
+        if (!exactInventoryBinding(contribution.evidence)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["passes", passIndex, "evidence", "unique_contributions", contributionIndex],
+            message: "unique contribution must bind exact global inventory bytes",
+          });
+        }
       }
     }
   });

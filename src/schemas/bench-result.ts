@@ -505,8 +505,12 @@ export const BenchResponseManifestSchema = z
           kind: z.enum(["review", "complete"]),
           ordinal: z.number().int().nonnegative(),
           repeat: z.number().int().positive().optional(),
+          /** Policy capture binds every logical provider call to its corpus case. */
+          case_id: z.string().min(1).optional(),
           request_sha256: Sha256Schema,
           response_sha256: Sha256Schema,
+          /** Raw model-text digest; distinct from the normalized wrapper response digest. */
+          raw_response_sha256: Sha256Schema.optional(),
           outcome: z.enum(["return", "throw"]),
           throw_snapshot: CapturedThrowableSnapshotSchema.optional(),
         })
@@ -1195,6 +1199,15 @@ const PolicyBenchProfileCaseIdentitySchema = z
     repeat: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     content_sha256: Sha256Schema,
     policy_truth_sha256: Sha256Schema,
+    /** Additive so legacy Bench artifacts remain parseable; policy assembly requires both. */
+    request_identity_sha256: Sha256Schema.optional(),
+    response_span: z
+      .object({
+        first_ordinal: z.number().int().nonnegative(),
+        entry_count: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

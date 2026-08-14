@@ -122,6 +122,7 @@ describe("runBenchPolicy", () => {
           context.repeat = repeat;
           await adapter.preflight(providerConfig);
           for (const caseId of ["case-a", "case-b"]) {
+            context.caseId = caseId;
             await adapter.review({
               promptFile,
               workingDir: dir,
@@ -166,6 +167,17 @@ describe("runBenchPolicy", () => {
       const repeat = index + 1;
       expect(manifest.preflights?.map((entry) => entry.repeat)).toEqual([repeat]);
       expect(manifest.entries.every((entry) => entry.repeat === repeat)).toBe(true);
+      expect(
+        manifest.entries.map((entry) => ({
+          caseId: entry.case_id,
+          rawResponseSha256: entry.raw_response_sha256,
+        })),
+      ).toEqual([
+        { caseId: "case-a", rawResponseSha256: sha256("") },
+        { caseId: "case-a", rawResponseSha256: sha256('{"verdicts":[]}') },
+        { caseId: "case-b", rawResponseSha256: sha256("") },
+        { caseId: "case-b", rawResponseSha256: sha256('{"verdicts":[]}') },
+      ]);
     }
     expect(
       new Set(manifests.map((manifest) => sha256(canonicalJson(manifest))).values()).size,

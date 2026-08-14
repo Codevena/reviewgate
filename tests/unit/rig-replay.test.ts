@@ -1121,6 +1121,20 @@ describe("rig replay — exact policy authority", () => {
       manifestPath: fixture.manifestPath,
     });
     expect(validated).not.toBeNull();
+    expect(validated?.artifacts.map((row) => row.ref)).toEqual(
+      [...(validated?.artifacts.map((row) => row.ref) ?? [])].sort(),
+    );
+    expect(validated?.artifacts.some((row) => row.kind === "cassette")).toBe(true);
+    expect(validated?.artifacts.some((row) => row.kind === "trace")).toBe(true);
+    expect(
+      validated?.artifacts.filter((row) => row.kind === "state").map((row) => row.ref),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\.json$/),
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\/\.reviewgate$/),
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\/\.reviewgate\/.+$/),
+      ]),
+    );
     const item = validated?.turns.get(1)?.[0];
     if (item === undefined) throw new Error("validated trace missing");
     const pair = await replayPolicyEnvelopePair({

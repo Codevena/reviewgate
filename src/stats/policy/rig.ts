@@ -38,6 +38,7 @@ import type { PolicyTrace } from "../../schemas/policy-trace.ts";
 import { RigManifestSchema } from "../../schemas/rig-manifest.ts";
 import { RigResultSchema } from "../../schemas/rig-result.ts";
 import { RigTurnScriptSchema } from "../../schemas/rig-turn-script.ts";
+import { compareCodeUnits } from "../../utils/compare.ts";
 
 const MAX_BOUND_ARTIFACT_BYTES = 8 * 1_048_576;
 export const POLICY_RIG_HISTORY_GROUP = POLICY_PASS_IDS.filter((passId) =>
@@ -175,20 +176,48 @@ export function policyRigOpportunity(trace: PolicyTrace, passIds: readonly Polic
   return { summary, evaluations, stages: 0, observed: summary + evaluations > 0 };
 }
 
-function truth(findings: readonly Finding[], tags: readonly string[] | null) {
+function truthEvidence(findings: readonly Finding[], tags: readonly string[] | null) {
   const blocking = findings.filter(
     (finding) => finding.severity === "CRITICAL" || finding.severity === "WARN",
   );
+  if (new Set(blocking.map((finding) => finding.signature)).size !== blocking.length) {
+    throw new Error("policy Rig truth contains duplicate blocking signatures");
+  }
   if (tags === null) {
-    return { blocking_fp: blocking.length, blocking_fn: 0, blocking_tp: 0 };
+    return {
+      truth: { blocking_fp: blocking.length, blocking_fn: 0, blocking_tp: 0 },
+      errors: blocking
+        .map((finding) => ({ kind: "blocking-fp" as const, identity: finding.signature }))
+        .sort((left, right) => compareCodeUnits(left.identity, right.identity)),
+    };
   }
   const matched = blocking.findIndex((finding) =>
     matchesAnyTag(`${finding.message} ${finding.details}`, [...tags]),
   );
   return {
-    blocking_fp: blocking.length - (matched >= 0 ? 1 : 0),
-    blocking_fn: matched >= 0 ? 0 : 1,
-    blocking_tp: matched >= 0 ? 1 : 0,
+    truth: {
+      blocking_fp: blocking.length - (matched >= 0 ? 1 : 0),
+      blocking_fn: matched >= 0 ? 0 : 1,
+      blocking_tp: matched >= 0 ? 1 : 0,
+    },
+    errors: [
+      ...blocking.flatMap((finding, index) =>
+        index === matched ? [] : [{ kind: "blocking-fp" as const, identity: finding.signature }],
+      ),
+      ...(matched >= 0
+        ? []
+        : [
+            {
+              kind: "blocking-fn" as const,
+              identity: `seed:${[...tags].sort(compareCodeUnits).join("\u001f")}`,
+            },
+          ]),
+    ].sort((left, right) =>
+      compareCodeUnits(
+        `${left.kind}\u0000${left.identity}`,
+        `${right.kind}\u0000${right.identity}`,
+      ),
+    ),
   };
 }
 
@@ -204,7 +233,7 @@ export function policyRigSeedTags(
   return seeded.tags;
 }
 
-type TruthCounts = ReturnType<typeof truth>;
+type TruthCounts = ReturnType<typeof truthEvidence>["truth"];
 
 function sumTruth(
   rows: readonly { baseline: { truth: TruthCounts }; counterfactual: { truth: TruthCounts } }[],
@@ -262,9 +291,9 @@ function turnEvidence(input: {
         stages: carriers.reduce((sum, carrier) => sum + carrier.stages, 0),
         observed,
       },
-      baseline: { truth: truth(last.findings.baseline, tags), state: last.state.baseline },
+      baseline: { ...truthEvidence(last.findings.baseline, tags), state: last.state.baseline },
       counterfactual: {
-        truth: truth(last.findings.counterfactual, tags),
+        ...truthEvidence(last.findings.counterfactual, tags),
         state: last.state.counterfactual,
       },
     };
@@ -324,7 +353,35 @@ export async function collectPolicyRigEvidence(input: {
     throw new Error("policy Rig scenario manifest differs from preregistered bytes");
   }
 
+  const artifacts = new Map<string, PolicyRigEvidence["artifacts"][number]>();
+  const expectedArtifacts = new Map<string, PolicyRigEvidence["artifacts"][number]>();
+  const addArtifact = (artifact: PolicyRigEvidence["artifacts"][number]): void => {
+    const previous = artifacts.get(artifact.ref);
+    if (
+      previous !== undefined &&
+      (previous.sha256 !== artifact.sha256 || previous.kind !== artifact.kind)
+    ) {
+      throw new Error(`policy Rig evidence artifact conflicts: ${artifact.ref}`);
+    }
+    artifacts.set(artifact.ref, artifact);
+  };
+  const addExpectedArtifact = (artifact: PolicyRigEvidence["artifacts"][number]): void => {
+    const previous = expectedArtifacts.get(artifact.ref);
+    if (
+      previous !== undefined &&
+      (previous.sha256 !== artifact.sha256 || previous.kind !== artifact.kind)
+    ) {
+      throw new Error(`policy Rig expected artifact conflicts: ${artifact.ref}`);
+    }
+    expectedArtifacts.set(artifact.ref, artifact);
+  };
+  const addVerifiedArtifact = (artifact: PolicyRigEvidence["artifacts"][number]): void => {
+    addExpectedArtifact(artifact);
+    addArtifact(artifact);
+  };
+  addVerifiedArtifact({ ...scenarioBinding, kind: "rig" });
   const sequences: PolicyRigEvidence["sequences"] = [];
+  let sourceCommit: string | null = null;
   for (const scenario of scenarios.scenarios) {
     const manifestBytes = readBound(input.sourceRepoRoot, scenario.manifest);
     const rigManifestPath = artifactPath(input.sourceRepoRoot, scenario.manifest.ref);
@@ -335,6 +392,10 @@ export async function collectPolicyRigEvidence(input: {
     const script = RigTurnScriptSchema.parse(
       parseJson(readBound(input.sourceRepoRoot, scenario.script), "turn script"),
     );
+    addVerifiedArtifact({ ...scenario.manifest, kind: "rig" });
+    addVerifiedArtifact({ ...scenario.result, kind: "rig" });
+    addVerifiedArtifact({ ...scenario.script, kind: "rig" });
+    addVerifiedArtifact({ ...scenario.initial_state, kind: "state" });
     if (scenario.id !== rigManifest.runId || scenario.id !== result.runId) {
       throw new Error(
         `policy Rig scenario run identity differs from its bound artifacts: ${scenario.id}`,
@@ -391,13 +452,24 @@ export async function collectPolicyRigEvidence(input: {
     ) {
       throw new Error(`policy Rig scenario state binding mismatch: ${scenario.id}`);
     }
-    readBound(input.sourceRepoRoot, scenario.initial_state);
     const validated = validateRigPolicyReplayArtifacts({
       manifest: rigManifest,
       manifestPath: rigManifestPath,
     });
     if (validated === null) {
       throw new Error(`policy Rig scenario is not authoritative: ${scenario.id}`);
+    }
+    if (sourceCommit !== null && sourceCommit !== validated.sourceCommit) {
+      throw new Error(`policy Rig scenarios name different source commits: ${scenario.id}`);
+    }
+    sourceCommit = validated.sourceCommit;
+    const scenarioRootRef = dirname(scenario.manifest.ref);
+    for (const artifact of validated.artifacts) {
+      addVerifiedArtifact({
+        kind: artifact.kind,
+        ref: `${scenarioRootRef}/${artifact.ref}`,
+        sha256: artifact.sha256,
+      });
     }
     const flat: FlatTurn[] = [...validated.turns.entries()]
       .sort(([left], [right]) => left - right)
@@ -461,11 +533,29 @@ export async function collectPolicyRigEvidence(input: {
       rmSync(copied.root, { recursive: true, force: true });
     }
   }
+  if (sourceCommit === null) throw new Error("policy Rig evidence has no source commit");
+  if (
+    artifacts.size !== expectedArtifacts.size ||
+    [...expectedArtifacts.values()].some((expected) => {
+      const actual = artifacts.get(expected.ref);
+      return (
+        actual === undefined || actual.sha256 !== expected.sha256 || actual.kind !== expected.kind
+      );
+    })
+  ) {
+    throw new Error("policy Rig artifact inventory differs from the verified source closure");
+  }
+  const artifactInventory = [...artifacts.values()].sort((left, right) =>
+    compareCodeUnits(left.ref, right.ref),
+  );
   return PolicyRigEvidenceSchema.parse({
     schema: "reviewgate.policy-rig-evidence.v1",
     scenario_manifest: scenarioBinding,
     manifest: scenarios,
     authoritative: true,
+    source_commit: sourceCommit,
+    artifacts: artifactInventory,
+    artifact_inventory_sha256: sha256(Buffer.from(canonicalJson(artifactInventory), "utf8")),
     sequences,
   });
 }

@@ -700,6 +700,32 @@ describe("policy Rig evidence", () => {
     });
 
     expect(evidence.sequences).toHaveLength(15);
+    expect(evidence.source_commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(evidence.artifact_inventory_sha256).toBe(sha256(canonicalJson(evidence.artifacts)));
+    const declaredRefs = [
+      input.preregistration.stateful.manifest_ref,
+      ...input.manifest.scenarios.flatMap((scenario) => [
+        scenario.manifest.ref,
+        scenario.result.ref,
+        scenario.script.ref,
+        scenario.initial_state.ref,
+      ]),
+    ].sort();
+    expect(evidence.artifacts).toHaveLength(217);
+    expect(
+      evidence.artifacts
+        .filter((artifact) => declaredRefs.includes(artifact.ref))
+        .map((row) => row.ref),
+    ).toEqual(declaredRefs);
+    expect(evidence.artifacts.filter((artifact) => artifact.kind === "cassette")).toHaveLength(15);
+    expect(evidence.artifacts.filter((artifact) => artifact.kind === "trace")).toHaveLength(30);
+    expect(evidence.artifacts.filter((artifact) => artifact.kind === "state")).toHaveLength(126);
+    expect(evidence.artifacts.map((row) => row.ref)).toEqual(
+      [...evidence.artifacts.map((row) => row.ref)].sort(),
+    );
+    expect(evidence.artifacts.some((row) => row.kind === "cassette")).toBe(true);
+    expect(evidence.artifacts.some((row) => row.kind === "trace")).toBe(true);
+    expect(evidence.artifacts.some((row) => row.kind === "state")).toBe(true);
     for (const passId of STATEFUL) {
       const sequences = evidence.sequences.filter((sequence) => sequence.pass_id === passId);
       expect(sequences, passId).toHaveLength(3);

@@ -8,6 +8,7 @@ import {
   PolicyBenchBundleSchema,
   PolicyDogfoodAttestationSchema,
   PolicyDogfoodInputManifestSchema,
+  PolicyDogfoodSnapshotSchema,
   PolicyMeasurementSchema,
   PolicyRigEvidenceSchema,
   PolicyRigScenarioManifestSchema,
@@ -30,14 +31,86 @@ const HISTORY_INTERACTION = [
   "history.region-rejected",
 ];
 
-function binding(ref: string): Record<string, string> {
+function binding(ref: string): { ref: string; sha256: string } {
   return { ref, sha256: createHash("sha256").update(ref).digest("hex") };
 }
 
-function contentBinding(directory: string, seed: string): Record<string, string> {
+function contentBinding(directory: string, seed: string): { ref: string; sha256: string } {
   const sha256 = createHash("sha256").update(seed).digest("hex");
   return { ref: `artifacts/${directory}/${sha256}.json`, sha256 };
 }
+
+function dogfoodSnapshotLabel(overrides: Record<string, unknown> = {}) {
+  return {
+    schema: "reviewgate.policy-dogfood-snapshot.v1",
+    input_manifest: binding("dogfood/input.json"),
+    attestation: binding("dogfood/attestation.json"),
+    labels: [
+      {
+        pass_id: "judgment.confidence",
+        run_id: "run-1",
+        iter: 1,
+        finding_signature: "sig-1",
+        disposition: "tp",
+        source_signatures: ["sig-1"],
+        evaluation_result: "protected",
+        before: "WARN",
+        after: "WARN",
+        protected_by: "claimed-fixed-pin",
+        effect: "preserved",
+        ...overrides,
+      },
+    ],
+    exclusions: {},
+  };
+}
+
+test("dogfood labels bind the exact verified evaluation to a strict derived effect", () => {
+  expect(PolicyDogfoodSnapshotSchema.safeParse(dogfoodSnapshotLabel()).success).toBe(true);
+  expect(
+    PolicyDogfoodSnapshotSchema.safeParse(
+      dogfoodSnapshotLabel({
+        evaluation_result: "applied",
+        before: "WARN",
+        after: "INFO",
+        protected_by: undefined,
+        effect: "suppressed",
+      }),
+    ).success,
+  ).toBe(true);
+  expect(
+    PolicyDogfoodSnapshotSchema.safeParse(
+      dogfoodSnapshotLabel({
+        evaluation_result: "applied",
+        before: "INFO",
+        after: null,
+        protected_by: undefined,
+        effect: "suppressed",
+      }),
+    ).success,
+  ).toBe(true);
+  expect(
+    PolicyDogfoodSnapshotSchema.safeParse(
+      dogfoodSnapshotLabel({
+        evaluation_result: "no-match",
+        before: "WARN",
+        after: "WARN",
+        protected_by: undefined,
+        effect: "none",
+      }),
+    ).success,
+  ).toBe(true);
+  for (const invalid of [
+    dogfoodSnapshotLabel({ effect: undefined }),
+    dogfoodSnapshotLabel({ effect: "suppressed" }),
+    dogfoodSnapshotLabel({ evaluation_result: "applied", after: "WARN", effect: "suppressed" }),
+    dogfoodSnapshotLabel({ evaluation_result: "protected", protected_by: undefined }),
+    dogfoodSnapshotLabel({ evaluation_result: "protected", protected_by: "invented-protection" }),
+    dogfoodSnapshotLabel({ evaluation_result: "no-match", protected_by: "claimed-fixed-pin" }),
+  ]) {
+    expect(PolicyDogfoodSnapshotSchema.safeParse(invalid).success).toBe(false);
+  }
+});
 
 function policyProfileArtifact(id: string, ablatedPassIds: readonly string[]) {
   return {
@@ -145,6 +218,7 @@ function rigTurn(turnIndex: number) {
     opportunity: { summary: 1, evaluations: 1, stages: 0, observed: true },
     baseline: {
       truth: truth(0, 1, 0),
+      errors: [],
       state: {
         digest: "c".repeat(64),
         implicit_outcomes: turnIndex,
@@ -154,6 +228,7 @@ function rigTurn(turnIndex: number) {
     },
     counterfactual: {
       truth: truth(0, 0, 1),
+      errors: [{ kind: "blocking-fn", identity: `seed-${turnIndex}` }],
       state: {
         digest: "d".repeat(64),
         implicit_outcomes: 0,
@@ -166,11 +241,35 @@ function rigTurn(turnIndex: number) {
 
 function rigEvidence() {
   const manifest = scenarios();
+  const scenarioManifest = binding("rig/scenarios.json");
+  const artifacts: Array<{
+    ref: string;
+    sha256: string;
+    kind: "rig" | "state";
+  }> = [
+    { ...scenarioManifest, kind: "rig" as const },
+    ...(
+      manifest.scenarios as Array<{
+        manifest: { ref: string; sha256: string };
+        result: { ref: string; sha256: string };
+        script: { ref: string; sha256: string };
+        initial_state: { ref: string; sha256: string };
+      }>
+    ).flatMap((scenario) => [
+      { ...scenario.manifest, kind: "rig" as const },
+      { ...scenario.result, kind: "rig" as const },
+      { ...scenario.script, kind: "rig" as const },
+      { ...scenario.initial_state, kind: "state" as const },
+    ]),
+  ].sort((left, right) => (left.ref < right.ref ? -1 : 1));
   return {
     schema: "reviewgate.policy-rig-evidence.v1",
-    scenario_manifest: binding("rig/scenarios.json"),
+    scenario_manifest: scenarioManifest,
     manifest,
     authoritative: true,
+    source_commit: "a".repeat(40),
+    artifacts,
+    artifact_inventory_sha256: createHash("sha256").update(canonicalJson(artifacts)).digest("hex"),
     sequences: (manifest.scenarios as Record<string, unknown>[]).map((scenario) => ({
       scenario_id: scenario.id,
       pass_id: scenario.pass_id,
@@ -227,9 +326,15 @@ function passEvidence(
 }
 
 function measurement(): Record<string, unknown> {
+  const preregistration = binding("bench/preregistrations/a.json");
+  const inventory = [
+    preregistration,
+    binding("evidence/a.json"),
+    ...POLICY_MEASUREMENT_INTERACTIONS.map((_, index) => binding(`interactions/${index}.json`)),
+  ].sort((left, right) => (left.ref < right.ref ? -1 : 1));
   return {
     schema: "reviewgate.policy-measurement.v1",
-    preregistration: binding("bench/preregistrations/a.json"),
+    preregistration,
     catalog_version: "reviewgate.policy-catalog.v1",
     passes: POLICY_PASS_IDS.map((passId) => ({
       pass_id: passId,
@@ -266,15 +371,18 @@ function measurement(): Record<string, unknown> {
         raw_evidence_refs: [`interactions/${index}.json`],
       },
     })),
+    identity_evidence: POLICY_PASS_IDS.map((passId) => ({
+      pass_id: passId,
+      ground_truth_harms: [],
+      dogfood_dispositions: [],
+      beneficial_effects: [],
+    })),
     artifacts: {
       authoritative: true,
-      sources: [binding("sources/preregistration.json")],
+      sources: structuredClone(inventory),
       exclusions: [],
-      evidence: [binding("sources/preregistration.json")],
-      inventory: [
-        binding("evidence/a.json"),
-        ...POLICY_MEASUREMENT_INTERACTIONS.map((_, index) => binding(`interactions/${index}.json`)),
-      ],
+      evidence: [binding("evidence/a.json")],
+      inventory,
     },
   };
 }
@@ -300,6 +408,26 @@ function firstInteractionEvidence(value: Record<string, unknown>): Record<string
 }
 
 describe("policy measurement result contracts", () => {
+  test("requires a complete inventory-bound identity dossier and preserves cutoff exclusions", () => {
+    const value = measurement();
+    const firstIdentity = first(value.identity_evidence as Array<Record<string, unknown>>);
+    firstIdentity.ground_truth_harms = [{ identity: "case-a", evidence_ref: "evidence/a.json" }];
+    firstPassEvidence(value).exclusions = [
+      { lane: "dogfood", code: "post-registered-at", count: 2 },
+    ];
+    expect(() => PolicyMeasurementSchema.parse(value)).not.toThrow();
+
+    const missingPass = structuredClone(value);
+    (missingPass.identity_evidence as unknown[]).pop();
+    expect(() => PolicyMeasurementSchema.parse(missingPass)).toThrow();
+
+    const unbound = structuredClone(value);
+    first(unbound.identity_evidence as Array<Record<string, unknown>>).ground_truth_harms = [
+      { identity: "case-a", evidence_ref: "outside-inventory.json" },
+    ];
+    expect(() => PolicyMeasurementSchema.parse(unbound)).toThrow();
+  });
+
   test("rejects a non-code-unit-sorted or partial dogfood input inventory", () => {
     const manifest = {
       schema: "reviewgate.policy-dogfood-input-manifest.v1",
@@ -469,6 +597,18 @@ describe("policy measurement result contracts", () => {
     const missing = measurement();
     (missing.artifacts as Record<string, unknown>).inventory = [binding("interactions/0.json")];
     expect(() => PolicyMeasurementSchema.parse(missing)).toThrow();
+
+    const sourceHashDrift = measurement();
+    const sourceArtifacts = (sourceHashDrift.artifacts as { sources: Array<{ sha256: string }> })
+      .sources;
+    first(sourceArtifacts).sha256 = "f".repeat(64);
+    expect(() => PolicyMeasurementSchema.parse(sourceHashDrift)).toThrow();
+
+    const interactionHashDrift = measurement();
+    first(
+      interactionHashDrift.interactions as Array<{ artifact: { sha256: string } }>,
+    ).artifact.sha256 = "f".repeat(64);
+    expect(() => PolicyMeasurementSchema.parse(interactionHashDrift)).toThrow();
   });
 
   test("requires authority for every eligible interaction lane", () => {
@@ -530,6 +670,15 @@ describe("policy measurement result contracts", () => {
       observed: true,
     };
     expect(() => PolicyRigEvidenceSchema.parse(ranWithoutOpportunity)).toThrow();
+    const missingVerifiedArtifact = rigEvidence();
+    missingVerifiedArtifact.artifacts.pop();
+    expect(() => PolicyRigEvidenceSchema.parse(missingVerifiedArtifact)).toThrow();
+    const changedInventoryDigest = rigEvidence();
+    changedInventoryDigest.artifact_inventory_sha256 = "f".repeat(64);
+    expect(() => PolicyRigEvidenceSchema.parse(changedInventoryDigest)).toThrow();
+    const invalidSourceCommit = rigEvidence();
+    invalidSourceCommit.source_commit = "not-a-commit";
+    expect(() => PolicyRigEvidenceSchema.parse(invalidSourceCommit)).toThrow();
     evidence.sequences.pop();
     expect(() => PolicyRigEvidenceSchema.parse(evidence)).toThrow();
   });

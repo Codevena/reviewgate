@@ -191,8 +191,8 @@ export interface BenchRunInput {
   policyExecution?: PolicyExecutionOptions;
   /** Internal Matrix-owned real artifact sink for per-case policy traces. */
   policyTraceStore?: { root: string; refPrefix: string; now?: Date };
-  /** Internal capture-owned repeat cursor; never accepted from the CLI boundary. */
-  captureContext?: { repeat: number };
+  /** Internal capture-owned repeat/case cursor; never accepted from the CLI boundary. */
+  captureContext?: { repeat: number; caseId?: string };
 }
 
 export interface BenchRunnerInfo {
@@ -770,6 +770,7 @@ async function runBenchRunInternal(input: BenchRunInput): Promise<BenchRunOutput
         caseResults.push(invalidCaseResult(loaded, panelConfigured, r));
         continue;
       }
+      if (input.captureContext !== undefined) input.captureContext.caseId = loaded.benchCase.id;
       const outcome = await runBenchCase({
         benchCase: loaded.benchCase,
         diffPatch: loaded.diffPatch,
@@ -1711,8 +1712,10 @@ interface CapturedReviewEntry {
   kind: "review" | "complete";
   ordinal: number;
   repeat: number;
+  case_id?: string;
   request_sha256: string;
   response_sha256: string;
+  raw_response_sha256?: string;
   outcome: "return" | "throw";
   throw_snapshot?: CapturedThrowableSnapshot;
 }
@@ -1743,7 +1746,7 @@ interface ReviewCaptureState {
   throws: Map<number, CapturedThrowableSnapshot>;
   nextOrdinal: number;
   mismatch: string | null;
-  context: { repeat: number };
+  context: { repeat: number; caseId?: string };
 }
 
 function normalizedReview(result: ReviewResult): ReviewResult {
@@ -1873,8 +1876,12 @@ function captureReviewerAdapters(
             kind: "review",
             ordinal,
             repeat: state.context.repeat,
+            ...(state.context.caseId === undefined ? {} : { case_id: state.context.caseId }),
             request_sha256: requestHash,
             response_sha256: responseHash,
+            ...(response.rawText === undefined
+              ? {}
+              : { raw_response_sha256: sha256(response.rawText) }),
             outcome: "return",
           });
           return structuredClone(response);
@@ -1890,6 +1897,7 @@ function captureReviewerAdapters(
             kind: "review",
             ordinal,
             repeat: state.context.repeat,
+            ...(state.context.caseId === undefined ? {} : { case_id: state.context.caseId }),
             request_sha256: requestHash,
             response_sha256: captured.sha256,
             outcome: "throw",
@@ -1911,8 +1919,10 @@ function captureReviewerAdapters(
                   kind: "complete",
                   ordinal,
                   repeat: state.context.repeat,
+                  ...(state.context.caseId === undefined ? {} : { case_id: state.context.caseId }),
                   request_sha256: requestHash,
                   response_sha256: sha256(response),
+                  raw_response_sha256: sha256(response),
                   outcome: "return",
                 });
                 return response;
@@ -1928,6 +1938,7 @@ function captureReviewerAdapters(
                   kind: "complete",
                   ordinal,
                   repeat: state.context.repeat,
+                  ...(state.context.caseId === undefined ? {} : { case_id: state.context.caseId }),
                   request_sha256: requestHash,
                   response_sha256: captured.sha256,
                   outcome: "throw",
@@ -2353,7 +2364,7 @@ async function executeCapturedProfileSchedule<T>(input: {
     adapters: Partial<Record<ProviderId, ProviderAdapter>>,
     live: boolean,
     index: number,
-    context: { repeat: number },
+    context: { repeat: number; caseId?: string },
   ) => Promise<T>;
 }): Promise<{ values: T[]; capture: ReviewCaptureState }> {
   const firstProfile = input.profiles[0];
@@ -2422,7 +2433,7 @@ async function runCapturedProfiles(
     adapters: Partial<Record<ProviderId, ProviderAdapter>>,
     countProviderCalls: boolean,
     index: number,
-    captureContext: { repeat: number },
+    captureContext: { repeat: number; caseId?: string },
   ): Promise<{ result?: BenchResult; output: BenchRunOutput }> => {
     const out = join(work, `profile-${String(index).padStart(2, "0")}.json`);
     const output = await runBenchRunInternal({
@@ -2649,9 +2660,9 @@ function profileRepeatAuthority(input: {
   run: CapturedProfileRun;
   repeat: 1 | 2 | 3;
   responseManifest: { ref: string; sha256: string };
+  response: BenchResponseManifest;
   result: { ref: string; sha256: string };
   traceSet: { ref: string; sha256: string };
-  orderedResponses: readonly string[];
 }): PolicyBenchProfileArtifact["repeats"][number] {
   const cases = input.run.result.cases
     .filter((row) => row.repeat === input.repeat)
@@ -2677,26 +2688,138 @@ function profileRepeatAuthority(input: {
     response_manifest: input.responseManifest,
     result: input.result,
     policy_trace_set: input.traceSet,
-    ordered_response_sha256: [...input.orderedResponses],
+    ordered_response_sha256: input.response.entries.map((entry) => entry.response_sha256),
     requested_passes: requestedPasses,
-    cases: cases.map((row) => {
-      if (row.policy_truth === undefined) {
-        throw new Error(`missing policy truth for ${row.id} repeat ${input.repeat}`);
+    cases: (() => {
+      let cursor = 0;
+      const authorityCases = cases.map((row) => {
+        if (row.policy_truth === undefined) {
+          throw new Error(`missing policy truth for ${row.id} repeat ${input.repeat}`);
+        }
+        const firstOrdinal = cursor;
+        while (input.response.entries[cursor]?.case_id === row.id) cursor += 1;
+        const entries = input.response.entries.slice(firstOrdinal, cursor);
+        const policy = row.policy_trace;
+        if (
+          entries.length === 0 ||
+          policy?.trace === undefined ||
+          entries.some(
+            (entry) =>
+              entry.outcome !== "return" ||
+              entry.case_id !== row.id ||
+              entry.raw_response_sha256 === undefined,
+          ) ||
+          !sameCanonical(
+            entries.map((entry) => entry.raw_response_sha256),
+            policy.trace.raw_response_sha256,
+          )
+        ) {
+          throw new Error(`response manifest does not close ${row.id} repeat ${input.repeat}`);
+        }
+        return {
+          case_id: row.id,
+          repeat: input.repeat,
+          content_sha256: row.content_hash,
+          policy_truth_sha256: sha256(canonicalJson(row.policy_truth)),
+          request_identity_sha256: policy.request_identity_sha256,
+          response_span: { first_ordinal: firstOrdinal, entry_count: entries.length },
+        };
+      });
+      if (cursor !== input.response.entries.length) {
+        throw new Error(`response manifest is not fully consumed for repeat ${input.repeat}`);
       }
-      return {
-        case_id: row.id,
-        repeat: input.repeat,
-        content_sha256: row.content_hash,
-        policy_truth_sha256: sha256(canonicalJson(row.policy_truth)),
-      };
-    }),
+      return authorityCases;
+    })(),
   };
 }
+
+function verifyPolicyBenchResponseClosure(input: {
+  profileId: string;
+  repeat: 1 | 2 | 3;
+  manifest: BenchResponseManifest;
+  cases: readonly CaseResult[];
+  authorityCases: readonly PolicyBenchProfileArtifact["repeats"][number]["cases"][number][];
+}): { ok: true } | { ok: false; reason: string } {
+  let cursor = 0;
+  for (const [index, row] of input.cases.entries()) {
+    const authority = input.authorityCases[index];
+    const span = authority?.response_span;
+    const policy = row.policy_trace;
+    if (
+      authority === undefined ||
+      authority.request_identity_sha256 === undefined ||
+      span === undefined ||
+      policy?.trace === undefined ||
+      authority.request_identity_sha256 !== policy.request_identity_sha256 ||
+      span.first_ordinal !== cursor
+    ) {
+      return {
+        ok: false,
+        reason: `${input.profileId} repeat ${input.repeat} response case authority mismatch`,
+      };
+    }
+    const entries = input.manifest.entries.slice(cursor, cursor + span.entry_count);
+    if (
+      entries.length !== span.entry_count ||
+      entries.some(
+        (entry, entryIndex) =>
+          entry.ordinal !== cursor + entryIndex ||
+          entry.case_id !== row.id ||
+          entry.outcome !== "return" ||
+          entry.raw_response_sha256 === undefined,
+      ) ||
+      !sameCanonical(
+        entries.map((entry) => entry.raw_response_sha256),
+        policy.trace.raw_response_sha256,
+      )
+    ) {
+      return {
+        ok: false,
+        reason: `${input.profileId} repeat ${input.repeat} response manifest case closure mismatch`,
+      };
+    }
+    cursor += span.entry_count;
+  }
+  return cursor === input.manifest.entries.length
+    ? { ok: true }
+    : {
+        ok: false,
+        reason: `${input.profileId} repeat ${input.repeat} response manifest is not fully consumed`,
+      };
+}
+
+export interface VerifiedPolicyBenchBinding<T> {
+  readonly binding: { readonly ref: string; readonly sha256: string };
+  readonly value: T;
+}
+
+export interface VerifiedPolicyBenchRepeatArtifacts {
+  readonly authority: PolicyBenchProfileArtifact["repeats"][number];
+  readonly response_manifest: VerifiedPolicyBenchBinding<BenchResponseManifest>;
+  readonly repeat_result: VerifiedPolicyBenchBinding<BenchPolicyRepeatResult>;
+  readonly source_result: VerifiedPolicyBenchBinding<BenchResult>;
+  readonly trace_set: VerifiedPolicyBenchBinding<BenchPolicyProfileTraceSet>;
+  readonly traces: readonly VerifiedPolicyBenchBinding<
+    NonNullable<CaseResult["policy_trace"]>["trace"]
+  >[];
+}
+
+export interface VerifiedPolicyBenchProfileArtifacts {
+  readonly id: string;
+  readonly ablated_pass_ids: readonly PolicyPassId[];
+  readonly profile: VerifiedPolicyBenchBinding<PolicyBenchProfileArtifact>;
+  readonly repeats: readonly VerifiedPolicyBenchRepeatArtifacts[];
+}
+
+export type VerifiedPolicyBenchBundleArtifacts =
+  | { ok: true; profiles: readonly VerifiedPolicyBenchProfileArtifacts[] }
+  | { ok: false; reason: string };
 
 export function verifyPolicyBenchBundleArtifacts(
   root: string,
   bundle: PolicyBenchBundle,
-): { ok: true } | { ok: false; reason: string } {
+): VerifiedPolicyBenchBundleArtifacts {
+  const profiles: VerifiedPolicyBenchProfileArtifacts[] = [];
   for (const profile of bundle.profiles) {
     const verifiedProfile = verifyCanonicalJsonArtifact({
       root,
@@ -2712,6 +2835,7 @@ export function verifyPolicyBenchBundleArtifacts(
         reason: `${profile.id} profile ${verifiedProfile.ok ? "identity-mismatch" : verifiedProfile.reason}`,
       };
     }
+    const repeats: VerifiedPolicyBenchRepeatArtifacts[] = [];
     for (const repeat of profile.data.repeats) {
       const response = verifyCanonicalJsonArtifact({
         root,
@@ -2775,6 +2899,14 @@ export function verifyPolicyBenchBundleArtifacts(
       ) {
         return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} case/truth mismatch` };
       }
+      const responseClosure = verifyPolicyBenchResponseClosure({
+        profileId: profile.id,
+        repeat: repeat.repeat,
+        manifest: response.value,
+        cases: resultCases,
+        authorityCases: repeat.cases,
+      });
+      if (!responseClosure.ok) return responseClosure;
       for (const requested of repeat.requested_passes) {
         let ran = 0;
         let opportunities = 0;
@@ -2815,9 +2947,73 @@ export function verifyPolicyBenchBundleArtifacts(
       ) {
         return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} trace-set mismatch` };
       }
+      const traceSetRun = traceSet.value.runs.find(
+        (run) =>
+          run.profile_id === profile.id &&
+          run.result.sha256 === repeat.result.sha256 &&
+          sameCanonical(run.ablated_pass_ids, profile.ablated_pass_ids),
+      );
+      if (
+        traceSetRun === undefined ||
+        traceSetRun.traces.length !== resultCases.length ||
+        traceSetRun.traces.some((trace, index) => {
+          const row = resultCases[index];
+          return (
+            row === undefined ||
+            trace.case_id !== row.id ||
+            trace.repeat !== row.repeat ||
+            trace.trace_ref !== row.policy_trace?.trace_ref ||
+            trace.trace_sha256 !== row.policy_trace?.trace_sha256 ||
+            trace.effective_config_sha256 !== row.policy_trace?.effective_config_sha256 ||
+            trace.request_identity_sha256 !== row.policy_trace?.request_identity_sha256 ||
+            trace.final_identity_sha256 !== row.policy_trace?.final_identity_sha256 ||
+            !sameCanonical(trace.raw_response_sha256, row.policy_trace?.trace?.raw_response_sha256)
+          );
+        })
+      ) {
+        return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} trace-set mismatch` };
+      }
+      const traces: VerifiedPolicyBenchRepeatArtifacts["traces"][number][] = [];
+      for (const row of resultCases) {
+        const policy = row.policy_trace;
+        if (
+          policy?.trace === undefined ||
+          policy.trace_ref === undefined ||
+          policy.trace_sha256 === undefined
+        ) {
+          return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} trace missing` };
+        }
+        const trace = verifyBenchArtifactReference({
+          root,
+          ref: policy.trace_ref,
+          sha256: policy.trace_sha256,
+          kind: "policy-trace",
+        });
+        if (!trace.ok || !sameCanonical(trace.value, policy.trace)) {
+          return { ok: false, reason: `${profile.id} repeat ${repeat.repeat} trace mismatch` };
+        }
+        traces.push({
+          binding: { ref: policy.trace_ref, sha256: policy.trace_sha256 },
+          value: policy.trace,
+        });
+      }
+      repeats.push({
+        authority: repeat,
+        response_manifest: { binding: repeat.response_manifest, value: response.value },
+        repeat_result: { binding: repeat.result, value: result.value },
+        source_result: { binding: result.value.source_result, value: sourceResult.value },
+        trace_set: { binding: repeat.policy_trace_set, value: traceSet.value },
+        traces,
+      });
     }
+    profiles.push({
+      id: profile.id,
+      ablated_pass_ids: profile.ablated_pass_ids,
+      profile: { binding: profile.artifact, value: verifiedProfile.value },
+      repeats,
+    });
   }
-  return { ok: true };
+  return { ok: true, profiles };
 }
 
 export function verifyPolicyBenchCaseAuthority(
@@ -2830,6 +3026,8 @@ export function verifyPolicyBenchCaseAuthority(
     row.content_hash === authority.content_sha256 &&
     row.policy_truth !== undefined &&
     sha256(canonicalJson(row.policy_truth)) === authority.policy_truth_sha256 &&
+    (authority.request_identity_sha256 === undefined ||
+      row.policy_trace?.request_identity_sha256 === authority.request_identity_sha256) &&
     row.policy_trace?.authoritative === true
   );
 }
@@ -2896,6 +3094,30 @@ function buildPolicyConfig(
       maxFailedFrac: 0,
     },
   };
+}
+
+/**
+ * The two persisted configuration identities use their historical encodings: Bench provenance
+ * records `JSON.stringify(config)`, whereas every authoritative case trace records canonical JSON.
+ * Keep their derivation beside `buildPolicyConfig` so policy assembly can verify both against the
+ * exact preregistered execution configuration without reconstructing a competing config authority.
+ */
+export function policyBenchConfigurationHashes(
+  preregistration: PolicyMeasurementPreregistration,
+): { provenance: string; effective: string } | null {
+  const config = policyBenchEffectiveConfiguration(preregistration);
+  if (config === null) return null;
+  return {
+    provenance: sha256(JSON.stringify(config)),
+    effective: sha256(canonicalJson(config)),
+  };
+}
+
+/** The one preregistration-derived effective config shared by policy execution and assembly. */
+export function policyBenchEffectiveConfiguration(
+  preregistration: PolicyMeasurementPreregistration,
+): ReviewgateConfig | null {
+  return buildPolicyConfig(preregistration)?.config ?? null;
 }
 
 export function validatePolicyEffectiveConfiguration(
@@ -3199,9 +3421,9 @@ export async function runBenchPolicy(input: BenchPolicyInput): Promise<BenchRunO
             run,
             repeat,
             responseManifest,
+            response,
             result,
             traceSet,
-            orderedResponses: response.entries.map((entry) => entry.response_sha256),
           });
         }),
       });

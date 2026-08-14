@@ -21,6 +21,7 @@ import {
   PolicyDogfoodInputManifestSchema,
   type PolicyDogfoodSnapshot,
   PolicyDogfoodSnapshotSchema,
+  policyDogfoodEvaluationEffect,
 } from "../../schemas/policy-measurement.ts";
 import { type PolicyTrace, PolicyTraceSchema } from "../../schemas/policy-trace.ts";
 import { policyDogfoodAttestationPreflight } from "./dogfood-attestation.ts";
@@ -357,9 +358,12 @@ export function harvestPolicyDogfood(input: {
   inputManifest: PolicyDogfoodInputManifest;
   attestation: PolicyDogfoodAttestation;
   artifactRoot: string;
+  /** Repository root that contains the frozen audit/trace refs. Defaults to the caller cwd. */
+  sourceRoot?: string;
   /** Observability-only hook; callers cannot change the frozen source set. */
   onFrozenSourceRead?: (entry: ManifestEntry) => void;
 }): PolicyDogfoodSnapshot {
+  const sourceRoot = input.sourceRoot ?? process.cwd();
   const exclusionsByCode = exclusions();
   const pre = input.preregistration.dogfood;
   const manifestArtifact = verifyCanonicalJsonArtifact({
@@ -421,7 +425,7 @@ export function harvestPolicyDogfood(input: {
   for (const entry of manifest.entries) {
     let bytes: Buffer;
     try {
-      bytes = stableRead(process.cwd(), entry.ref, () => input.onFrozenSourceRead?.(entry));
+      bytes = stableRead(sourceRoot, entry.ref, () => input.onFrozenSourceRead?.(entry));
     } catch {
       increment(exclusionsByCode, "changed-source-file");
       continue;
@@ -433,7 +437,7 @@ export function harvestPolicyDogfood(input: {
     if (entry.kind === "audit") {
       const result = verifyAuditBytes({
         bytes,
-        auditDir: resolve(process.cwd(), entry.ref, "..", "..", "..", ".."),
+        auditDir: resolve(sourceRoot, entry.ref, "..", "..", "..", ".."),
       });
       if (!result.ok) {
         increment(exclusionsByCode, "malformed-chain");
@@ -529,6 +533,15 @@ export function harvestPolicyDogfood(input: {
         iter: row.iter,
         finding_signature: row.finding_signature,
         disposition: row.disposition,
+        evaluation_result: evaluation.result,
+        before: evaluation.before,
+        after: evaluation.after,
+        ...(evaluation.protected_by === undefined ? {} : { protected_by: evaluation.protected_by }),
+        effect: policyDogfoodEvaluationEffect({
+          result: evaluation.result,
+          before: evaluation.before,
+          after: evaluation.after,
+        }),
         source_signatures: evaluation.source_signatures,
       });
     }

@@ -141,10 +141,17 @@ export interface ValidatedRigPolicyReplay {
   initialStateRoot: string;
   initialStateSha256: string;
   cassettePath: string;
+  artifacts: readonly VerifiedRigReplayArtifact[];
   turns: Map<
     number,
     Array<{ ref: string; sha256: string; envelope: PolicyReplayEnvelope; stateRoot: string }>
   >;
+}
+
+export interface VerifiedRigReplayArtifact {
+  readonly kind: "cassette" | "trace" | "state";
+  readonly ref: string;
+  readonly sha256: string;
 }
 
 function sha256(value: string | Buffer): string {
@@ -561,7 +568,11 @@ export function verifyPolicyStateSnapshot(input: {
   ref: string;
   sha256: string;
   expectedStateSha256: string;
-}): { stateRoot: string; stateSha256: string } {
+}): {
+  stateRoot: string;
+  stateSha256: string;
+  artifacts: readonly VerifiedRigReplayArtifact[];
+} {
   if (
     !STATE_MANIFEST_REF.test(input.ref) ||
     !/^[0-9a-f]{64}$/.test(input.sha256) ||
@@ -613,7 +624,20 @@ export function verifyPolicyStateSnapshot(input: {
   if (canonicalJson(actualFiles) !== canonicalJson(manifest.files)) {
     throw new Error("policy state tree does not match manifest");
   }
-  return { stateRoot: persistedState.stateRoot, stateSha256: manifest.state_sha256 };
+  const treeRef = relative(outputReal, persistedState.stateRoot).split(sep).join("/");
+  return {
+    stateRoot: persistedState.stateRoot,
+    stateSha256: manifest.state_sha256,
+    artifacts: [
+      { kind: "state", ref: input.ref, sha256: input.sha256 },
+      { kind: "state", ref: treeRef, sha256: manifest.state_sha256 },
+      ...entries.map((entry) => ({
+        kind: "state" as const,
+        ref: `${treeRef}/${entry.path}`,
+        sha256: entry.sha256,
+      })),
+    ],
+  };
 }
 
 function authority(code: RigAuthorityInvalidity, message: string): never {
@@ -698,7 +722,11 @@ export function validateRigPolicyReplayArtifacts(input: {
   } catch (error) {
     return authority("invalid-trace", `invalid Rig output root: ${String(error)}`);
   }
-  let initial: { stateRoot: string; stateSha256: string };
+  let initial: {
+    stateRoot: string;
+    stateSha256: string;
+    artifacts: readonly VerifiedRigReplayArtifact[];
+  };
   try {
     initial = verifyPolicyStateSnapshot({
       outputRoot,
@@ -723,6 +751,19 @@ export function validateRigPolicyReplayArtifacts(input: {
   if (sha256(cassetteBytes) !== metadata.cassetteSha256) {
     return authority("cassette-hash-mismatch", "cassette bytes do not match the manifest");
   }
+  const artifacts = new Map<string, VerifiedRigReplayArtifact>();
+  const addArtifact = (artifact: VerifiedRigReplayArtifact): void => {
+    const previous = artifacts.get(artifact.ref);
+    if (
+      previous !== undefined &&
+      (previous.sha256 !== artifact.sha256 || previous.kind !== artifact.kind)
+    ) {
+      authority("state-digest-mismatch", `conflicting artifact identity ${artifact.ref}`);
+    }
+    artifacts.set(artifact.ref, artifact);
+  };
+  for (const artifact of initial.artifacts) addArtifact(artifact);
+  addArtifact({ kind: "cassette", ref: metadata.cassetteRef, sha256: metadata.cassetteSha256 });
   const cassetteResponses = responseBindingsFromCassette(cassetteBytes);
   const cassetteByCallId = new Map<string, CassetteResponseBinding>();
   for (const response of cassetteResponses) {
@@ -782,6 +823,11 @@ export function validateRigPolicyReplayArtifacts(input: {
         return authority(code, `turn ${turn.index} ${trace.ref}: ${verified.reason}`);
       }
       const envelope = verified.envelope;
+      addArtifact({
+        kind: "trace",
+        ref: `${metadata.captureDir}/${trace.ref}`,
+        sha256: trace.sha256,
+      });
       if (envelope.source_commit !== metadata.sourceCommit) {
         return authority(
           "source-commit-mismatch",
@@ -805,6 +851,19 @@ export function validateRigPolicyReplayArtifacts(input: {
             "state-digest-mismatch",
             `turn ${turn.index} trace ${trace.ref} state does not match`,
           );
+        }
+        const treeRef = relative(outputRoot, stateRoot).split(sep).join("/");
+        addArtifact({
+          kind: "state",
+          ref: treeRef,
+          sha256: envelope.state_sha256,
+        });
+        for (const entry of persistedState.entries) {
+          addArtifact({
+            kind: "state",
+            ref: `${treeRef}/${entry.path}`,
+            sha256: entry.sha256,
+          });
         }
       } catch (error) {
         return authority("state-digest-mismatch", String(error));
@@ -858,6 +917,7 @@ export function validateRigPolicyReplayArtifacts(input: {
     initialStateRoot: initial.stateRoot,
     initialStateSha256: initial.stateSha256,
     cassettePath,
+    artifacts: [...artifacts.values()].sort((left, right) => compareCodeUnits(left.ref, right.ref)),
     turns,
   };
 }

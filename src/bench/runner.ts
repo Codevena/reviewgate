@@ -518,18 +518,11 @@ function buildAuthoritativeTraceRun(input: {
     })),
   };
   const effectiveConfigSha256 = sha256Text(canonicalJson(input.config));
-  const requestIdentitySha256 = sha256Text(
-    canonicalJson({
-      bench_case: input.benchCase,
-      diff_sha256: sha256Text(input.diffPatch),
-      git: FIXED_SYNTHETIC_GIT_INFO,
-      reviewers: input.config.phases.review.reviewers,
-      grounding: input.config.phases.grounding,
-      critic: input.config.phases.critic,
-      effective_config_sha256: effectiveConfigSha256,
-      state: "per-case-fresh",
-    }),
-  );
+  const requestIdentitySha256 = policyBenchRequestIdentity({
+    benchCase: input.benchCase,
+    diffPatch: input.diffPatch,
+    config: input.config,
+  });
   if (input.trace === undefined) {
     return {
       authoritative: false,
@@ -597,6 +590,31 @@ function buildAuthoritativeTraceRun(input: {
     effectiveConfigSha256,
     finalIdentitySha256: sha256Text(canonicalJson(finalIdentity)),
   };
+}
+
+/**
+ * Exact per-case request identity used by authoritative Bench traces. It is shared with
+ * policy assembly so the persisted identity is derived from the registered case bytes and
+ * preregistered effective configuration, rather than trusted as a self-declared digest.
+ */
+export function policyBenchRequestIdentity(input: {
+  benchCase: BenchCase;
+  diffPatch: string;
+  config: ReviewgateConfig;
+}): string {
+  const effectiveConfigSha256 = sha256Text(canonicalJson(input.config));
+  return sha256Text(
+    canonicalJson({
+      bench_case: input.benchCase,
+      diff_sha256: sha256Text(input.diffPatch),
+      git: FIXED_SYNTHETIC_GIT_INFO,
+      reviewers: input.config.phases.review.reviewers,
+      grounding: input.config.phases.grounding,
+      critic: input.config.phases.critic,
+      effective_config_sha256: effectiveConfigSha256,
+      state: "per-case-fresh",
+    }),
+  );
 }
 
 /** Adapt a persisted Finding to the matcher's shape. Index-derived id guarantees
