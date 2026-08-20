@@ -210,7 +210,7 @@ type FixtureSource = {
 };
 
 function laneRefs(sources: readonly FixtureSource[]) {
-  const binding = (kind: "bench" | "rig" | "dogfood-input"): string => {
+  const binding = (kind: "bench" | "rig" | "dogfood-input" | "dogfood-attestation"): string => {
     const source = sources.find((row) => row.kind === kind);
     if (source === undefined) throw new Error(`fixture source missing for ${kind}`);
     return source.ref;
@@ -219,6 +219,7 @@ function laneRefs(sources: readonly FixtureSource[]) {
     "stateless-bench": binding("bench"),
     "stateful-rig": binding("rig"),
     dogfood: binding("dogfood-input"),
+    dogfoodAttestation: binding("dogfood-attestation"),
   };
 }
 
@@ -315,8 +316,18 @@ function emptyEvidence(pass: (typeof POLICY_PASSES)[number], refs: ReturnType<ty
     truth_effects: truthEffects,
     trace_totals: traceTotals,
     statistics,
-    limitations: ["fixture-synthetic"],
-    raw_evidence_refs: [refs[lane]],
+    limitations:
+      lane === "dogfood"
+        ? [
+            "no-opportunities-observed",
+            "precision-denominator-unavailable",
+            "recall-denominator-unavailable",
+            "run-level-effects-are-descriptive",
+            "secondary-lane-does-not-classify",
+          ]
+        : ["fixture-synthetic"],
+    raw_evidence_refs:
+      lane === "dogfood" ? [refs.dogfoodAttestation, refs.dogfood].sort() : [refs[lane]],
   });
   return {
     pass_id: pass.id,
