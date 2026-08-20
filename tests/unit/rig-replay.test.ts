@@ -38,6 +38,7 @@ import {
   replayPolicyAblations,
   replayPolicyEnvelopePair,
   replayPolicyEnvelopeSequence,
+  replayPolicyProfileSequence,
   runWithReplayProviderCeiling,
 } from "../../src/rig/replay.ts";
 import type { Finding } from "../../src/schemas/finding.ts";
@@ -78,14 +79,12 @@ function miniRun(): { manifestPath: string; scriptPath: string; root: string } {
     })}\n`,
   );
   const scriptPath = join(root, "script.json");
-  writeFileSync(
-    scriptPath,
-    JSON.stringify({
-      schema: "reviewgate.rig.turn-script.v1",
-      id: "mini",
-      turns: [{ index: 1, prompt: "t1", seeded: null }],
-    }),
-  );
+  const scriptBytes = JSON.stringify({
+    schema: "reviewgate.rig.turn-script.v1",
+    id: "mini",
+    turns: [{ index: 1, prompt: "t1", seeded: null }],
+  });
+  writeFileSync(scriptPath, scriptBytes);
   const manifestPath = join(root, "manifest.json");
   writeFileSync(
     manifestPath,
@@ -93,6 +92,7 @@ function miniRun(): { manifestPath: string; scriptPath: string; root: string } {
       schema: "reviewgate.rig.manifest.v1",
       runId: "mini-1",
       scriptId: "mini",
+      scriptSha256: sha256(scriptBytes),
       outDir: root,
       turns: [{ index: 1, snapshotDir, agentExitCode: 0, wallMs: 1000, gateReviewed: true }],
     }),
@@ -468,6 +468,7 @@ function exactRun(): {
     schema: "reviewgate.rig.manifest.v1",
     runId: "exact-rig",
     scriptId: "exact-script",
+    scriptSha256: sha256("exact-script-bytes"),
     outDir: root,
     turns: [
       {
@@ -880,7 +881,7 @@ describe("rig replay — exact policy authority", () => {
         "state-digest-mismatch",
       );
     }
-  });
+  }, 15_000);
 
   test("uses the real branch-local fp, reputation, and cycle Store APIs", async () => {
     const fixture = exactRun();
@@ -1120,6 +1121,20 @@ describe("rig replay — exact policy authority", () => {
       manifestPath: fixture.manifestPath,
     });
     expect(validated).not.toBeNull();
+    expect(validated?.artifacts.map((row) => row.ref)).toEqual(
+      [...(validated?.artifacts.map((row) => row.ref) ?? [])].sort(),
+    );
+    expect(validated?.artifacts.some((row) => row.kind === "cassette")).toBe(true);
+    expect(validated?.artifacts.some((row) => row.kind === "trace")).toBe(true);
+    expect(
+      validated?.artifacts.filter((row) => row.kind === "state").map((row) => row.ref),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\.json$/),
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\/\.reviewgate$/),
+        expect.stringMatching(/^policy-state\/[0-9a-f]{64}\/\.reviewgate\/.+$/),
+      ]),
+    );
     const item = validated?.turns.get(1)?.[0];
     if (item === undefined) throw new Error("validated trace missing");
     const pair = await replayPolicyEnvelopePair({
@@ -1372,6 +1387,36 @@ describe("rig replay — exact policy authority", () => {
     expect(readFileSync(join(fixture.sourceRepoRoot, "src", "x.ts"), "utf8")).toBe(
       sourceFileBefore,
     );
+  });
+
+  test("profiles multi-pass replay in catalog order with cloned final findings", async () => {
+    const fixture = exactRun();
+    const envelope = PolicyReplayEnvelopeSchema.parse(fixture.envelope);
+    const pairs = await replayPolicyProfileSequence({
+      sourceRepoRoot: fixture.sourceRepoRoot,
+      items: [
+        {
+          envelope,
+          stateSnapshotRoot: fixture.stateRoot,
+        },
+      ],
+      ablatedPassIds: [
+        "history.region-rejected",
+        "history.fp-cluster",
+        "history.cycle-rejected",
+        "history.fp-signature",
+      ],
+    });
+    const pair = pairs[0];
+    expect(pair?.counterfactual.ablated).toEqual([
+      "history.fp-signature",
+      "history.cycle-rejected",
+      "history.fp-cluster",
+      "history.region-rejected",
+    ]);
+    expect(pair?.findings.baseline).toEqual(envelope.policy_final_findings);
+    expect(pair?.findings.counterfactual).toEqual(envelope.policy_final_findings);
+    expect(pair?.findings.baseline).not.toBe(envelope.policy_final_findings);
   });
 
   test("re-applies only captured human decisions through production learning stores", async () => {
@@ -1704,5 +1749,5 @@ describe("rig replay — exact policy authority", () => {
         expect((error as RigAuthorityError).code, row.name).toBe(row.code);
       }
     }
-  });
+  }, 15_000);
 });

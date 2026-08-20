@@ -246,6 +246,19 @@ describe("runBenchCase", () => {
     expect(out.counts.fp).toBe(0);
     expect(out.panelConfigured).toBe(2);
     expect(out.panelOk).toBe(2);
+    expect(out.policyTruth).toEqual({
+      expectedLabelCount: 1,
+      findings: [
+        {
+          signature: "8dfccfb7ed70068875825c18167afc1bc34258d715a9ff9007b76ec32b6ea669",
+          severity: "CRITICAL",
+          outcome: "TP",
+          labelIndex: 0,
+          nearMiss: false,
+        },
+      ],
+      fnLabelIndexes: [],
+    });
     // Per-provider RAW layer: each reviewer independently caught it.
     expect(out.perProvider).toHaveLength(2);
     for (const pp of out.perProvider) {

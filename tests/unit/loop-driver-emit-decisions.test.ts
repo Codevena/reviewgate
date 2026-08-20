@@ -79,6 +79,7 @@ describe("emitDecisionOutcomes", () => {
       providers: ["codex"],
     });
     expect(byId.get("F-002")?.bucket).toBe("fp");
+    expect(audit.events[0]?.finding_signatures).toEqual(["sig-F-001"]);
     expect(audit.events.every((e) => e.event === "decision.applied")).toBe(true);
   });
 

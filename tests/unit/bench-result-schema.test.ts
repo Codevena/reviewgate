@@ -288,6 +288,79 @@ describe("BenchResultSchema", () => {
     expect(BenchResultSchema.safeParse(validResult).success).toBe(true);
   });
 
+  it("accepts additive identity-level policy truth for a scored case", () => {
+    const parsed = BenchResultSchema.safeParse({
+      ...validResult,
+      cases: [
+        {
+          ...validResult.cases[0],
+          policy_truth: {
+            expected_label_count: 1,
+            findings: [
+              {
+                signature: "expected-signature",
+                severity: "WARN",
+                outcome: "TP",
+                label_index: 0,
+                near_miss: false,
+              },
+            ],
+            fn_label_indexes: [],
+          },
+        },
+      ],
+    });
+    if (!parsed.success) console.error(parsed.error);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("rejects invalid identity-level policy truth instead of accepting ambiguous labels", () => {
+    const truth = {
+      expected_label_count: 2,
+      findings: [
+        {
+          signature: "first",
+          severity: "WARN",
+          outcome: "TP",
+          label_index: 0,
+          near_miss: false,
+        },
+      ],
+      fn_label_indexes: [1],
+    };
+    const parse = (policyTruth: unknown, status = "scored") =>
+      BenchResultSchema.safeParse({
+        ...validResult,
+        cases: [{ ...validResult.cases[0], status, policy_truth: policyTruth }],
+      }).success;
+
+    expect(parse(truth)).toBe(true);
+    expect(
+      parse({
+        ...truth,
+        findings: [...truth.findings, { ...truth.findings[0] }],
+      }),
+    ).toBe(false);
+    expect(parse({ ...truth, findings: [{ ...truth.findings[0], label_index: null }] })).toBe(
+      false,
+    );
+    expect(
+      parse({
+        ...truth,
+        findings: [
+          {
+            ...truth.findings[0],
+            outcome: "FP",
+            label_index: 0,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(parse({ ...truth, findings: [{ ...truth.findings[0], label_index: 2 }] })).toBe(false);
+    expect(parse({ ...truth, fn_label_indexes: [0] })).toBe(false);
+    expect(parse(truth, "review-error")).toBe(false);
+  });
+
   it("rejects complete trace provenance with a missing ref/hash instead of defaulting it", () => {
     const policy = completePolicyRecord();
     const { trace_ref: _missing, ...withoutRef } = policy;

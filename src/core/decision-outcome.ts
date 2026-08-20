@@ -31,6 +31,13 @@ export function normalizeProviders(f: Finding): string[] {
   return [...set].sort();
 }
 
+/** Stable identity set for one surfaced finding, including clustered members. */
+export function findingSignatures(f: Finding): string[] {
+  return [...new Set([f.signature, ...(f.members?.map((member) => member.signature) ?? [])])].sort(
+    (left, right) => (left < right ? -1 : left > right ? 1 : 0),
+  );
+}
+
 export function buildDecisionOutcome(d: DecisionEntry, f: Finding): DecisionOutcome {
   const base: DecisionOutcome = {
     finding_id: f.id,

@@ -65,6 +65,18 @@ suite. Slice 1 is measurement plumbing, not evidence that a pass is useful or us
 opportunities do not support deletion, Lore is additive/outside the 18, and history passes need
 seeded multi-turn sequences.
 
+### Policy Measurement — Slice 2A
+
+The focused policy suite covers canonical artifact authority, preregistration/schema contracts,
+exact 23-profile Bench response pairing, stateful Rig replay, dogfood audit/trace joins, pure
+assembly/classification, Markdown parity, and bundle publication/CLI boundaries. It proves that the
+three evidence lanes remain distinct, repeats are not independent cases, stateful opportunities use
+independent seeded sequences, and missing or mismatched authority exits `4` rather than becoming a
+zero measurement. Publication tests require private modes, no-follow stable reads, an exclusive
+reservation, and a valid `complete.json` authority marker; TTY attestation tests require a complete
+defanged frozen dossier before exact confirmation. Slice 2A records candidates only: no pass change,
+paid capture, or result-specific pruning is authorized here.
+
 ## Layer 2 — Real CLI/API e2e (gated; needs real providers + OPENROUTER_API_KEY)
 ```
 REVIEWGATE_E2E=1 bun test tests/e2e/

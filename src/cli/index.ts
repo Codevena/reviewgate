@@ -14,6 +14,7 @@ import { runAuditVerify } from "./commands/audit.ts";
 import {
   parseProviderModels,
   runBenchMatrix,
+  runBenchPolicy,
   runBenchReport,
   runBenchRun,
 } from "./commands/bench.ts";
@@ -51,7 +52,7 @@ import {
   runRigRun,
 } from "./commands/rig.ts";
 import { runSetup } from "./commands/setup.ts";
-import { runStats } from "./commands/stats.ts";
+import { runPolicyDogfoodAttestation, runPolicyStats, runStats } from "./commands/stats.ts";
 import { hookFeedbackMessage } from "./hook-feedback.ts";
 import { readHookStdin } from "./hook-stdin.ts";
 import { validateSince, validateWeek } from "./validate-time-args.ts";
@@ -621,6 +622,96 @@ const stats = defineCommand({
     description: "Show review stats (verdicts, cost, reviewers, learn-state)",
   },
   args: { since: { type: "string" }, last: { type: "string" }, json: { type: "boolean" } },
+  subCommands: {
+    policy: defineCommand({
+      meta: {
+        name: "policy",
+        description:
+          "Validate no-provider policy counterfactual evidence and atomically publish its report; authority failures exit 4.",
+      },
+      args: {
+        preregistration: {
+          type: "string",
+          description: "Committed policy measurement JSON (required for direct policy analysis)",
+        },
+        bench: {
+          type: "string",
+          description: "Authoritative Bench bundle JSON (required for direct policy analysis)",
+        },
+        rig: {
+          type: "string",
+          description:
+            "Authoritative Rig scenario manifest JSON (required for direct policy analysis)",
+        },
+        out: {
+          type: "string",
+          description: "Absent attempt directory to publish (required for direct policy analysis)",
+        },
+      },
+      async run({ args }) {
+        for (const name of ["preregistration", "bench", "rig", "out"] as const) {
+          if (typeof args[name] !== "string" || args[name].length === 0) {
+            process.stderr.write(`Missing required argument: --${name}\n`);
+            process.exit(2);
+          }
+        }
+        const result = await runPolicyStats({
+          repoRoot: process.cwd(),
+          preregistration: args.preregistration as string,
+          bench: args.bench as string,
+          rig: args.rig as string,
+          out: args.out as string,
+        });
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        process.exit(result.exitCode);
+      },
+      subCommands: {
+        "attest-dogfood": defineCommand({
+          meta: {
+            name: "attest-dogfood",
+            description:
+              "TTY-only human attestation for a frozen dogfood manifest; prints the full dossier before its exact challenge.",
+          },
+          args: {
+            "input-manifest": {
+              type: "string",
+              required: true,
+              description: "Frozen content-addressed dogfood input manifest",
+            },
+            adjudication: {
+              type: "string",
+              required: true,
+              description: "JSON draft containing the human TP/FP adjudication rows",
+            },
+            actor: {
+              type: "string",
+              required: true,
+              description: "Explicit human attestation actor",
+            },
+            out: {
+              type: "string",
+              required: true,
+              description: "Artifact root for the immutable attestation",
+            },
+          },
+          async run({ args }) {
+            const result = await runPolicyDogfoodAttestation({
+              repoRoot: process.cwd(),
+              inputManifest: args["input-manifest"] as string,
+              adjudication: args.adjudication as string,
+              actor: args.actor as string,
+              out: args.out as string,
+            });
+            if (result.exitCode === 0 && result.artifact !== undefined) {
+              process.stdout.write(`Dogfood attestation written: ${result.artifact.ref}\n`);
+            }
+            process.exit(result.exitCode);
+          },
+        }),
+      },
+    }),
+  },
   async run({ args }) {
     const since = typeof args.since === "string" ? args.since : undefined;
     if (since !== undefined) {
@@ -729,6 +820,31 @@ const bench = defineCommand({
     description: "Benchmark the reviewer panel against a labelled ground-truth corpus",
   },
   subCommands: {
+    policy: defineCommand({
+      meta: {
+        name: "policy",
+        description:
+          "Capture one live baseline and no-provider offline policy counterfactuals from a committed preregistration.",
+      },
+      args: {
+        preregistration: {
+          type: "string",
+          required: true,
+          description: "Committed policy measurement preregistration JSON",
+        },
+        out: { type: "string", required: true, description: "Absent immutable Bench bundle path" },
+      },
+      async run({ args }) {
+        const result = await runBenchPolicy({
+          repoRoot: process.cwd(),
+          preregistration: args.preregistration as string,
+          out: args.out as string,
+        });
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        process.exit(result.exitCode);
+      },
+    }),
     run: defineCommand({
       meta: {
         name: "run",

@@ -107,6 +107,22 @@ passes require seeded multi-turn sequences. Branch-local `ImplicitOutcomeStore` 
 as causal evidence, but current production writes that store without feeding it back into later
 policy inputs.
 
+### Slice 2A policy measurement
+
+`src/stats/policy/` is the pure measurement owner: it validates authoritative inputs, joins the
+three evidence lanes (stateless Bench, stateful Rig, and explicitly human-attested dogfood), and
+classifies the unchanged 18-pass catalog. Bench truth identities and audit decision signatures are
+additive evidence bindings; repeats reduce response sensitivity but are not independent cases.
+Each repeat pairs one live baseline with the exact ordered 23-profile response replay, while real
+stateful replay uses isolated branch-local state.
+
+`bench policy` and `stats policy` retain typed syntax (`2`) and authority (`4`) boundaries. A final
+policy output is authoritative only with its canonical `complete.json` marker: it binds result and
+report hashes plus the closed source inventory after stable no-follow verification. A pre-marker
+directory is non-authoritative and cleanup is identity-bound. Slice 2A changes no production pass;
+Slice 2B requires a later result-specific pruning design after committed preregistration and one
+authorized capture.
+
 ## Module map
 
 | Area | Responsibility |

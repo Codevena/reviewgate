@@ -20,7 +20,7 @@ import type { RigManifest, RigManifestTurn } from "../schemas/rig-manifest.ts";
 import { writeFileAtomic } from "../utils/atomic-write.ts";
 import { collectDiff } from "../utils/git.ts";
 import { dirtyFlagPath, gateLockPath, reviewgateDir } from "../utils/paths.ts";
-import { loadTurnScript } from "./turn-script.ts";
+import { readTurnScript } from "./turn-script.ts";
 
 export interface DriverOpts {
   scriptPath: string;
@@ -372,7 +372,9 @@ async function captureTurnDiff(repoRoot: string, snapshotDir: string): Promise<n
 }
 
 export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
-  const script = loadTurnScript(opts.scriptPath);
+  const scriptArtifact = readTurnScript(opts.scriptPath);
+  const script = scriptArtifact.script;
+  const scriptSha256 = createHash("sha256").update(scriptArtifact.bytes).digest("hex");
   const maxTurns = Math.max(1, Math.min(opts.maxTurns ?? script.turns.length, script.turns.length));
   const quiesceTimeoutMs = opts.quiesceTimeoutMs ?? QUIESCE_TIMEOUT_MS;
   const manifestPath = join(opts.outDir, "manifest.json");
@@ -386,6 +388,7 @@ export async function runDriver(opts: DriverOpts): Promise<DriverRunManifest> {
     // manifest stays traceable to its turn script without a side lookup.
     runId: `${script.id}-${new Date().toISOString().replace(/[:.]/g, "-")}`,
     scriptId: script.id,
+    scriptSha256,
     outDir: opts.outDir,
     cassettePath: opts.policyReplay?.cassettePath ?? recordingCassettePath(),
     ...(opts.policyReplay === undefined ? {} : { policyReplay: opts.policyReplay.metadata }),

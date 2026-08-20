@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -231,18 +232,16 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
   const root = mkdtempSync(join(tmpdir(), "rg-harvest-"));
   const scriptId = opts.scriptId ?? "fx";
   const scriptPath = join(root, "script.json");
-  writeFileSync(
-    scriptPath,
-    JSON.stringify({
-      schema: "reviewgate.rig.turn-script.v1",
-      id: scriptId,
-      turns: turns.map((t, i) => ({
-        index: i + 1,
-        prompt: `turn ${i + 1}`,
-        seeded: t.seeded ?? null,
-      })),
-    }),
-  );
+  const scriptBytes = JSON.stringify({
+    schema: "reviewgate.rig.turn-script.v1",
+    id: scriptId,
+    turns: turns.map((t, i) => ({
+      index: i + 1,
+      prompt: `turn ${i + 1}`,
+      seeded: t.seeded ?? null,
+    })),
+  });
+  writeFileSync(scriptPath, scriptBytes);
 
   const manifestTurns: unknown[] = [];
   for (const [i, turn] of turns.entries()) {
@@ -293,6 +292,7 @@ function buildFixture(turns: FxTurn[], opts: { scriptId?: string } = {}): Fixtur
       schema: "reviewgate.rig.manifest.v1",
       runId: `${scriptId}-2026-07-30T09-00-00-000Z`,
       scriptId,
+      scriptSha256: createHash("sha256").update(scriptBytes).digest("hex"),
       outDir: root,
       turns: manifestTurns,
     }),
@@ -704,6 +704,25 @@ describe("rig harvest", () => {
     const fx = buildFixture([{ seeded: null, iterations: [{}] }], { scriptId: "fx" });
     const other = buildFixture([{ seeded: null, iterations: [{}] }], { scriptId: "other" });
     expect(() => harvest(fx.manifestPath, other.scriptPath)).toThrow(/script/i);
+  });
+
+  test("refuses changed same-id turn-script bytes but preserves hashless legacy harvest", () => {
+    const changed = buildFixture([{ seeded: null, iterations: [{}] }], { scriptId: "fx" });
+    writeFileSync(
+      changed.scriptPath,
+      JSON.stringify({
+        schema: "reviewgate.rig.turn-script.v1",
+        id: "fx",
+        turns: [{ index: 1, prompt: "changed truth labels", seeded: null }],
+      }),
+    );
+    expect(() => harvest(changed.manifestPath, changed.scriptPath)).toThrow(/content address/i);
+
+    const missing = buildFixture([{ seeded: null, iterations: [{}] }], { scriptId: "fx" });
+    const manifest = JSON.parse(readFileSync(missing.manifestPath, "utf8"));
+    manifest.scriptSha256 = undefined;
+    writeFileSync(missing.manifestPath, JSON.stringify(manifest));
+    expect(() => harvest(missing.manifestPath, missing.scriptPath)).not.toThrow();
   });
 
   test("refuses a malformed manifest instead of harvesting a partial shape", () => {

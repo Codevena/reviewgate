@@ -100,6 +100,8 @@ export const RigManifestSchema = z
     schema: z.literal("reviewgate.rig.manifest.v1"),
     runId: z.string().min(1),
     scriptId: z.string().min(1),
+    /** Optional for legacy parseability; exact policy authority requires it. */
+    scriptSha256: Sha256Schema.optional(),
     outDir: z.string().min(1),
     /** Cassette the run recorded into, or null when it was not recording. */
     cassettePath: z.string().nullable().optional(),

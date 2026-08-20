@@ -1,6 +1,6 @@
 ---
-verified_commit: eb602b3
-verified_at: 2026-08-10
+verified_commit: 34447ea
+verified_at: 2026-08-14
 ---
 
 # reviewgate — Trailhead
@@ -44,8 +44,8 @@ Einzeltest `bun test tests/unit/foo.test.ts` bzw. `bun test -t "Namensteil"`. `l
 | Sandbox / Isolation | `src/sandbox/` | `src/utils/spawn.ts` | `tests/unit/` |
 | Mess-Rig (Turn-Skripte) | `src/rig/driver.ts` | `src/rig/harvest.ts`, `src/rig/replay.ts`, `src/rig/ablate.ts`, `rig/scripts/`, `rig/preregistrations/` | `tests/unit/rig-driver.test.ts` |
 | Cassette (Roh-Findings) | `src/cassette/store.ts` | `src/cassette/recording-adapter.ts`, `src/cassette/replay-adapter.ts` | `tests/unit/` |
-| Benchmark | `src/cli/commands/bench.ts` | `src/bench/runner.ts`, `src/bench/metrics.ts`, `src/schemas/bench-result.ts` | `tests/unit/bench-preregistration.test.ts` |
-| Statistik / Reports | `src/stats/aggregate.ts` | `src/stats/render.ts`, `src/cli/commands/stats.ts` | `tests/unit/` |
+| Benchmark | `src/cli/commands/bench.ts` | `src/bench/runner.ts`, `src/bench/metrics.ts`, `src/schemas/bench-result.ts`, `src/stats/policy/assemble.ts` | `tests/unit/bench-policy.test.ts`, `tests/integration/policy-measurement-pipeline.test.ts` |
+| Statistik / Reports | `src/stats/aggregate.ts` | `src/stats/render.ts`, `src/cli/commands/stats.ts`, `src/stats/policy/assemble.ts`, `src/stats/policy/render.ts` | `tests/unit/stats-command.test.ts`, `tests/unit/policy-render.test.ts`, `tests/integration/policy-measurement-pipeline.test.ts` |
 | Erstinstallation | `src/cli/commands/init.ts` | `src/cli/setup/prefill.ts`, `src/cli/setup/build-config.ts`, `src/cli/setup/probe.ts` | `tests/unit/setup-prefill.test.ts` |
 | Persistierte Formate | `src/schemas/` | `src/schemas/pending-report.ts`, `src/schemas/finding.ts` | `tests/unit/` |
 | Website | `website/index.html` | `website/styles.css` | — |

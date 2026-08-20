@@ -30,6 +30,8 @@ export const RigPolicyReplayArtifactBindingSchema = z
     manifestRef: z.string().regex(/^[^/\\]+$/),
     manifestSha256: Sha256Schema,
     scriptId: z.string().min(1),
+    /** Optional for legacy parseability; exact policy authority requires it. */
+    scriptSha256: Sha256Schema.optional(),
     initialStateRef: z.string().regex(/^policy-state\/[0-9a-f]{64}\.json$/),
     initialStateSha256: Sha256Schema,
     initialStateDigest: Sha256Schema,

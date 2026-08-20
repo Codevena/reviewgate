@@ -23,6 +23,7 @@ import {
   type AuthoritativeTraceInvalidityCode,
   type AuthoritativeTraceRun,
   validateAuthoritativeTracePair,
+  validateAuthoritativeTraceProfilePair,
 } from "../../src/bench/runner.ts";
 import {
   captureThrowableSnapshot,
@@ -256,9 +257,23 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function traceArtifactRef(trace: PolicyTrace, traceSha256: string): string {
+  return `artifacts/policy-traces/2026/07/01/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`;
+}
+
+/** Rebind test-fixture identity after mutating embedded trace bytes. */
+function refreshTraceIdentity(run: AuthoritativeTraceRun): void {
+  const trace = run.trace;
+  if (trace === undefined) return;
+  const traceSha256 = sha256(canonicalJson(trace));
+  run.traceSha256 = traceSha256;
+  run.traceRef = traceArtifactRef(trace, traceSha256);
+  run.finalIdentitySha256 = sha256(canonicalJson(trace.final));
+}
+
 function emptyTrace(ablated: PolicyTrace["ablated"]): PolicyTrace {
   const passes = POLICY_PASS_IDS.map((passId) =>
-    passId === "judgment.confidence"
+    passId === "judgment.confidence" || ablated.includes(passId)
       ? {
           pass_id: passId,
           status: "ran" as const,
@@ -313,7 +328,7 @@ function traceRun(ablated: PolicyTrace["ablated"]): AuthoritativeTraceRun {
     catalogVersion: POLICY_CATALOG_VERSION,
     requestedAblations: ablated,
     trace,
-    traceRef: `artifacts/policy-traces/2026/07/01/policy/${sha256(trace.run_id).slice(0, 12)}-i${trace.iter}-${traceSha256.slice(0, 12)}.json`,
+    traceRef: traceArtifactRef(trace, traceSha256),
     traceSha256,
     requestIdentitySha256: "c".repeat(64),
     effectiveConfigSha256: "d".repeat(64),
@@ -366,6 +381,19 @@ describe("runBenchMatrix", () => {
     expect(baseline?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.authoritative).toBe(true);
     expect(ablated?.policy?.ablated_pass_id).toBe("judgment.confidence");
+    expect(baselineResult.cases.find((row) => row.kind === "seeded-bug")?.policy_truth).toEqual({
+      expected_label_count: 1,
+      findings: [
+        {
+          signature: "8dfccfb7ed70068875825c18167afc1bc34258d715a9ff9007b76ec32b6ea669",
+          severity: "CRITICAL",
+          outcome: "TP",
+          label_index: 0,
+          near_miss: false,
+        },
+      ],
+      fn_label_indexes: [],
+    });
     const resultRefs = [m.artifacts?.baseline, ...(m.artifacts?.variants ?? [])];
     for (const resultRef of resultRefs) {
       expect(resultRef).toBeDefined();
@@ -854,6 +882,7 @@ describe("runBenchMatrix", () => {
       name: string;
       mutate: (base: AuthoritativeTraceRun, variant: AuthoritativeTraceRun) => void;
       code: AuthoritativeTraceInvalidityCode;
+      refreshTraceIdentity?: "baseline" | "counterfactual";
     }> = [
       {
         name: "missing trace",
@@ -868,6 +897,7 @@ describe("runBenchMatrix", () => {
           if (variant.trace) variant.trace.passes = variant.trace.passes.slice(1);
         },
         code: "missing-pass-row",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "ablated pass not run",
@@ -885,6 +915,7 @@ describe("runBenchMatrix", () => {
           }
         },
         code: "pass-not-run",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "trace error",
@@ -934,6 +965,7 @@ describe("runBenchMatrix", () => {
           if (variant.trace) variant.trace.raw_response_sha256.reverse();
         },
         code: "response-hash-mismatch",
+        refreshTraceIdentity: "counterfactual",
       },
       {
         name: "request mismatch",
@@ -972,6 +1004,7 @@ describe("runBenchMatrix", () => {
           if (row?.status === "ran") Reflect.deleteProperty(row, "opportunities");
         },
         code: "missing-counter",
+        refreshTraceIdentity: "counterfactual",
       },
     ];
 
@@ -979,12 +1012,83 @@ describe("runBenchMatrix", () => {
       const nextBaseline = structuredClone(baseline);
       const nextVariant = structuredClone(counterfactual);
       testCase.mutate(nextBaseline, nextVariant);
+      if (testCase.refreshTraceIdentity === "baseline") refreshTraceIdentity(nextBaseline);
+      if (testCase.refreshTraceIdentity === "counterfactual") refreshTraceIdentity(nextVariant);
       const result = validateAuthoritativeTracePair(nextBaseline, nextVariant);
       expect(result.ok, testCase.name).toBe(false);
       if (!result.ok) {
         expect(result.code, testCase.name).toBe(testCase.code);
         expect(result.reason.length, testCase.name).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it("accepts only an exact ordered multi-pass trace profile and keeps the legacy guard", () => {
+    const expected = ["scope.diff", "scope.delta", "scope.session"] as const;
+    const baseline = traceRun([]);
+    const grouped = traceRun([...expected]);
+
+    expect(validateAuthoritativeTraceProfilePair(baseline, grouped, expected)).toEqual({
+      ok: true,
+    });
+    // WITH legacy guard = 1 rejection; WITHOUT it = 0 rejections for the valid group.
+    expect(validateAuthoritativeTracePair(baseline, grouped).ok).toBe(false);
+
+    const invalidProfiles: Array<{
+      name: string;
+      requested: string[];
+      mutate?: (trace: NonNullable<AuthoritativeTraceRun["trace"]>) => void;
+      code?: AuthoritativeTraceInvalidityCode;
+      updateTraceProfile?: boolean;
+    }> = [
+      {
+        name: "missing requested pass",
+        requested: ["scope.diff", "scope.delta"],
+        code: "requested-pass-mismatch",
+        updateTraceProfile: true,
+      },
+      {
+        name: "extra requested pass",
+        requested: ["scope.diff", "scope.delta", "scope.session", "judgment.confidence"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "reordered requested pass",
+        requested: ["scope.delta", "scope.diff", "scope.session"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "duplicate requested pass",
+        requested: ["scope.diff", "scope.diff", "scope.session"],
+        code: "requested-pass-mismatch",
+      },
+      {
+        name: "requested pass did not run",
+        requested: [...expected],
+        mutate: (trace) => {
+          trace.passes = trace.passes.map((row) =>
+            row.pass_id === "scope.delta"
+              ? { pass_id: "scope.delta", status: "not-run", reason_code: "configured-off" }
+              : row,
+          );
+        },
+        code: "pass-not-run",
+      },
+    ];
+
+    for (const invalid of invalidProfiles) {
+      const variant = structuredClone(grouped);
+      variant.requestedAblations = invalid.requested as typeof variant.requestedAblations;
+      if (variant.trace) {
+        if (invalid.updateTraceProfile) {
+          variant.trace.ablated = [...invalid.requested] as typeof variant.trace.ablated;
+        }
+        invalid.mutate?.(variant.trace);
+        refreshTraceIdentity(variant);
+      }
+      const result = validateAuthoritativeTraceProfilePair(baseline, variant, expected);
+      expect(result.ok, invalid.name).toBe(false);
+      if (!result.ok && invalid.code) expect(result.code, invalid.name).toBe(invalid.code);
     }
   });
 

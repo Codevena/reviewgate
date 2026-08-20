@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import type { AuditEvent } from "../schemas/audit-event.ts";
 import { canonicalJson } from "./canonical.ts";
 import { verifyPolicyTraceReference } from "./policy-trace-store.ts";
 
@@ -15,11 +16,25 @@ export interface VerifyResult {
   totalLines: number;
 }
 
-export async function verifyChain(path: string): Promise<VerifyResult> {
-  const raw = await readFile(path, "utf8");
+export type VerifyAuditBytesResult =
+  | { ok: true; events: AuditEvent[] }
+  | { ok: false; brokenAtLine: number; totalLines: number };
+
+/**
+ * Verifies exactly the supplied audit buffer. Callers that hash or inventory an
+ * audit file must pass this same buffer so a second path read cannot validate a
+ * different inode revision.
+ */
+export function verifyAuditBytes(input: {
+  bytes: Buffer;
+  auditDir: string;
+  /** Lets a closed copied-source verifier resolve the exact trace bytes without a live path read. */
+  verifyPolicyTraceReference?: (input: { ref: string; sha256: string }) => boolean;
+}): VerifyAuditBytesResult {
+  const raw = input.bytes.toString("utf8");
   const lines = raw.split("\n").filter((l) => l.length > 0);
+  const events: AuditEvent[] = [];
   let prev = "";
-  const auditDir = resolve(dirname(path), "..", "..", "..");
   for (let i = 0; i < lines.length; i++) {
     // A tampered / truncated / half-flushed line is not valid JSON — treat it as a
     // BROKEN CHAIN at that line rather than letting JSON.parse throw an uncaught
@@ -56,16 +71,34 @@ export async function verifyChain(path: string): Promise<VerifyResult> {
         if (
           typeof summary.policy_trace_ref !== "string" ||
           typeof summary.policy_trace_sha256 !== "string" ||
-          !verifyPolicyTraceReference({
-            auditDir,
-            ref: summary.policy_trace_ref,
-            sha256: summary.policy_trace_sha256,
-          }).ok
+          !(
+            input.verifyPolicyTraceReference?.({
+              ref: summary.policy_trace_ref,
+              sha256: summary.policy_trace_sha256,
+            }) ??
+            verifyPolicyTraceReference({
+              auditDir: input.auditDir,
+              ref: summary.policy_trace_ref,
+              sha256: summary.policy_trace_sha256,
+            }).ok
+          )
         ) {
           return { ok: false, brokenAtLine: i + 1, totalLines: lines.length };
         }
       }
     }
+    events.push(obj as AuditEvent);
   }
-  return { ok: true, brokenAtLine: null, totalLines: lines.length };
+  return { ok: true, events };
+}
+
+export async function verifyChain(path: string): Promise<VerifyResult> {
+  const bytes = await readFile(path);
+  const result = verifyAuditBytes({
+    bytes,
+    auditDir: resolve(dirname(path), "..", "..", ".."),
+  });
+  return result.ok
+    ? { ok: true, brokenAtLine: null, totalLines: result.events.length }
+    : { ok: false, brokenAtLine: result.brokenAtLine, totalLines: result.totalLines };
 }

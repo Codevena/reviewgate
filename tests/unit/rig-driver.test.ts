@@ -268,6 +268,9 @@ describe("rig driver", () => {
       maxTurns: 2,
     });
     expect(manifest.turns).toHaveLength(2);
+    expect(manifest.scriptSha256).toBe(
+      new Bun.CryptoHasher("sha256").update(readFileSync(scriptPath)).digest("hex"),
+    );
     expect(existsSync(manifest.turns[0]?.snapshotDir ?? "")).toBe(true);
     expect(existsSync(manifest.turns[1]?.snapshotDir ?? "")).toBe(true);
   });
